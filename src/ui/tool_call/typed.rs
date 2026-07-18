@@ -212,8 +212,11 @@ pub(super) fn render_json_or_text_blocks(
         if let Ok(value) = serde_json::from_str::<Value>(&stripped)
             && let Some(object) = value.as_object()
         {
-            lines.extend(render_object(object));
-            continue;
+            let rendered = render_object(object);
+            if !rendered.is_empty() {
+                lines.extend(rendered);
+                continue;
+            }
         }
         lines.extend(non_empty_trimmed_lines(&stripped).map(|line| Line::from(line.to_owned())));
     }
@@ -267,4 +270,27 @@ pub(super) fn format_duration_seconds(seconds: i64) -> String {
     }
 
     parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
+    use serde_json::json;
+
+    #[test]
+    fn json_object_falls_back_to_raw_text_when_typed_renderer_is_empty() {
+        let tc = tool_call(
+            "tc-future-shape",
+            "Future typed tool",
+            "FutureTool",
+            json!({}),
+            Some(r#"{"futureShape":{"value":1}}"#),
+            model::ToolCallStatus::Completed,
+        );
+
+        let lines = render_json_or_text_blocks(&tc, |_| Vec::new());
+
+        assert_eq!(rendered_line_texts(&lines), vec![r#"{"futureShape":{"value":1}}"#]);
+    }
 }

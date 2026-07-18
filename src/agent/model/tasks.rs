@@ -19,6 +19,21 @@ pub struct TaskMetadata {
     pub terminal_status: Option<String>,
     pub blocked: Option<bool>,
     pub parent_agent_id: Option<String>,
+    pub subagent_retry: Option<SubagentRetryUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SubagentRetryUpdate {
+    Waiting {
+        agent_id: Option<String>,
+        attempt: u64,
+        max_retries: u64,
+        retry_delay_ms: u64,
+        error_status: Option<u64>,
+        error_category: Option<String>,
+    },
+    Clear,
 }
 
 impl TaskMetadata {
@@ -114,6 +129,12 @@ impl TaskMetadata {
     #[must_use]
     pub fn parent_agent_id(mut self, parent_agent_id: Option<String>) -> Self {
         self.parent_agent_id = parent_agent_id;
+        self
+    }
+
+    #[must_use]
+    pub fn subagent_retry(mut self, subagent_retry: Option<SubagentRetryUpdate>) -> Self {
+        self.subagent_retry = subagent_retry;
         self
     }
 }

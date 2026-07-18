@@ -48,6 +48,7 @@ import {
 import {
   buildApiRetryUpdate,
   buildRateLimitUpdate,
+  buildSubagentRetryUpdate,
   normalizeSettingsParseErrors,
   numberField,
   parseApiRetryError,
@@ -1410,7 +1411,30 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       },
     });
     if (resolvedToolUseId) {
-      emitToolProgressUpdate(session, resolvedToolUseId, toolName);
+      const hasSubagentRetry = Object.hasOwn(msg, "subagent_retry");
+      const subagentRetry = hasSubagentRetry ? buildSubagentRetryUpdate(msg) : null;
+      if (hasSubagentRetry && !subagentRetry) {
+        bridgeLogger.warn({
+          target: LOG_TARGETS.APP_TOOL,
+          eventName: "sdk_subagent_retry_rejected",
+          message: "ignored malformed SDK subagent retry progress",
+          outcome: "invalid_payload",
+          sessionId: session.sessionId,
+          toolCallId: resolvedToolUseId,
+        });
+      }
+      const subagentType =
+        typeof msg.subagent_type === "string" && msg.subagent_type.trim()
+          ? msg.subagent_type.trim()
+          : undefined;
+      emitToolProgressUpdate(session, resolvedToolUseId, toolName, {
+        ...(subagentRetry
+          ? { subagentRetry }
+          : hasSubagentRetry
+            ? {}
+            : { subagentRetry: { state: "clear" } }),
+        ...(subagentType ? { subagentType } : {}),
+      });
     }
     return;
   }

@@ -173,7 +173,12 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
 fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     let mut badges = Vec::new();
 
-    if tc.assistant_auto_backgrounded() {
+    if let Some(timeout_ms) = tc.timed_out_after_ms() {
+        badges.push(Span::styled(
+            format!("  [auto-backgrounded after {} ms]", format_u64_grouped(timeout_ms)),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    } else if tc.assistant_auto_backgrounded() {
         badges.push(Span::styled(
             "  [assistant backgrounded]",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
@@ -181,13 +186,24 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     }
 
     if matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task") {
+        if let Some(retry) = subagent_retry_badge(tc) {
+            badges.push(Span::styled(
+                format!("  [{retry}]"),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
+        }
         if let Some(agent_type) = agent_requested_type_badge(tc) {
             badges.push(Span::styled(
                 format!("  [type: {agent_type}]"),
                 Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
             ));
         }
-        if let Some(model) = agent_display_model_badge(tc) {
+        if let Some(models) = agent_model_route_badge(tc) {
+            badges.push(Span::styled(
+                format!("  [models: {}]", models.join(" -> ")),
+                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+            ));
+        } else if let Some(model) = agent_display_model_badge(tc) {
             badges.push(Span::styled(
                 format!("  [model: {model}]"),
                 Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
@@ -203,6 +219,43 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     }
 
     badges
+}
+
+fn subagent_retry_badge(tc: &ToolCallInfo) -> Option<String> {
+    if !matches!(tc.status, model::ToolCallStatus::InProgress) {
+        return None;
+    }
+    let model::SubagentRetryUpdate::Waiting { attempt, max_retries, retry_delay_ms, .. } =
+        tc.task_metadata.as_ref()?.subagent_retry.as_ref()?
+    else {
+        return None;
+    };
+    Some(format!("retry {attempt}/{max_retries} in {}", format_retry_delay(*retry_delay_ms)))
+}
+
+fn format_retry_delay(delay_ms: u64) -> String {
+    if delay_ms < 1_000 {
+        return format!("{delay_ms}ms");
+    }
+    let seconds = delay_ms / 1_000;
+    let milliseconds = delay_ms % 1_000;
+    if milliseconds == 0 {
+        return format!("{seconds}s");
+    }
+    let fractional = format!("{milliseconds:03}").trim_end_matches('0').to_owned();
+    format!("{seconds}.{fractional}s")
+}
+
+fn format_u64_grouped(value: u64) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    grouped
 }
 
 fn tool_raw_input_string<'a>(tc: &'a ToolCallInfo, key: &str) -> Option<&'a str> {
@@ -223,6 +276,14 @@ fn agent_requested_type_badge(tc: &ToolCallInfo) -> Option<String> {
         return None;
     }
     Some(subagent_type.to_owned())
+}
+
+fn agent_model_route_badge(tc: &ToolCallInfo) -> Option<&[String]> {
+    tc.output_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.agent.as_ref())
+        .and_then(|agent| agent.models_used.as_deref())
+        .filter(|models| models.len() >= 2)
 }
 
 fn agent_display_model_badge(tc: &ToolCallInfo) -> Option<String> {

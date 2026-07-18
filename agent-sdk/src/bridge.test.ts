@@ -7,6 +7,7 @@ import {
   buildRateLimitUpdate,
   buildRewindConversationPlan,
   buildQueryOptions,
+  buildPromptUserMessage,
   resolveClaudeCodeSpawnCommand,
   canGenerateSessionTitle,
   generatePersistedSessionTitle,
@@ -1316,6 +1317,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     outputStyle: "Default",
     spinnerTipsEnabled: true,
     terminalProgressBarEnabled: true,
+    feedbackDrafts: "off",
   });
   assert.deepEqual(options.systemPrompt, {
     type: "preset",
@@ -1332,6 +1334,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal(options.agentProgressSummaries, true);
   assert.equal(options.promptSuggestions, true);
   assert.equal(options.enableFileCheckpointing, true);
+  assert.deepEqual(options.disallowedTools, ["ProposeSkills"]);
   assert.equal(options.executable, "bun");
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
@@ -1391,6 +1394,7 @@ test("buildQueryOptions forwards settings and maps startup model and permission 
     outputStyle: "Learning",
     spinnerTipsEnabled: false,
     terminalProgressBarEnabled: false,
+    feedbackDrafts: "off",
   });
   assert.equal("model" in options, false);
   assert.equal(options.permissionMode, "default");
@@ -1506,6 +1510,34 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
     append: BRIDGE_RUNTIME_GUARD_PROMPT,
   });
   assert.equal("agentProgressSummaries" in options, false);
+  assert.deepEqual(options.settings, { feedbackDrafts: "off" });
+});
+
+test("buildQueryOptions disables feedback drafts without mutating launch settings", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const settings = {
+    feedbackDrafts: "notify",
+    spinnerTipsEnabled: true,
+  };
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: { settings },
+    provisionalSessionId: "session-feedback",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-feedback",
+  });
+
+  assert.deepEqual(options.settings, {
+    feedbackDrafts: "off",
+    spinnerTipsEnabled: true,
+  });
+  assert.deepEqual(settings, {
+    feedbackDrafts: "notify",
+    spinnerTipsEnabled: true,
+  });
 });
 
 test("dispatchCancelTurnCommand interrupts the matching session query", async () => {
@@ -1681,6 +1713,7 @@ test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
   });
 
   assert.deepEqual(options.settings, {
+    feedbackDrafts: "off",
     sandbox: {
       enabled: true,
       failIfUnavailable: false,
@@ -1709,6 +1742,7 @@ test("buildQueryOptions preserves explicit sandbox failIfUnavailable setting", (
   });
 
   assert.deepEqual(options.settings, {
+    feedbackDrafts: "off",
     sandbox: {
       enabled: true,
       failIfUnavailable: true,
@@ -3635,6 +3669,165 @@ test("emitToolProgressUpdate does not reopen completed tools", () => {
   assert.equal(session.toolCalls.get("tool-1")?.status, "completed");
 });
 
+test("handleSdkMessage updates and clears subagent retry progress in place", () => {
+  const session = makeSessionState();
+  const toolCall = createToolCall("tool-agent-retry", "Agent", {
+    description: "Review changes",
+    prompt: "Review the branch",
+  });
+  toolCall.status = "in_progress";
+  session.toolCalls.set(toolCall.tool_call_id, toolCall);
+
+  const waitingEvents = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "tool_progress",
+      tool_use_id: toolCall.tool_call_id,
+      tool_name: "Agent",
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 5,
+      heartbeat: true,
+      subagent_type: "reviewer",
+      subagent_retry: {
+        agent_id: "agent-1",
+        attempt: 2,
+        max_retries: 4,
+        retry_delay_ms: 1_500,
+        error_status: 429,
+        error_category: "rate_limit",
+      },
+      uuid: "message-retry-waiting",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(waitingEvents.at(-1), {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-agent-retry",
+        fields: {
+          task_metadata: {
+            subagent_retry: {
+              state: "waiting",
+              agent_id: "agent-1",
+              attempt: 2,
+              max_retries: 4,
+              retry_delay_ms: 1_500,
+              error_status: 429,
+              error_category: "rate_limit",
+            },
+            subagent_type: "reviewer",
+          },
+        },
+      },
+    },
+  });
+  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.status, "in_progress");
+  assert.equal(
+    session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry?.state,
+    "waiting",
+  );
+
+  const clearEvents = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "tool_progress",
+      tool_use_id: toolCall.tool_call_id,
+      tool_name: "Agent",
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 7,
+      heartbeat: true,
+      subagent_type: "reviewer",
+      uuid: "message-retry-cleared",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(clearEvents.at(-1), {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-agent-retry",
+        fields: {
+          task_metadata: { subagent_retry: { state: "clear" } },
+        },
+      },
+    },
+  });
+  assert.equal(
+    session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry,
+    undefined,
+  );
+});
+
+test("handleSdkMessage ignores malformed subagent retry progress", () => {
+  const session = makeSessionState();
+  const toolCall = createToolCall("tool-agent-invalid-retry", "Agent", {
+    prompt: "Review the branch",
+  });
+  toolCall.status = "in_progress";
+  session.toolCalls.set(toolCall.tool_call_id, toolCall);
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "tool_progress",
+      tool_use_id: toolCall.tool_call_id,
+      tool_name: "Agent",
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 5,
+      subagent_retry: {
+        agent_id: "agent-1",
+        attempt: 1.5,
+        max_retries: 4,
+        retry_delay_ms: -1,
+        error_status: null,
+        error_category: "rate_limit",
+      },
+      uuid: "message-invalid-retry",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.task_metadata, undefined);
+});
+
+test("emitToolResultUpdate clears active subagent retry metadata", () => {
+  const session = makeSessionState();
+  const toolCall = createToolCall("tool-agent-retry-result", "Agent", {
+    prompt: "Review the branch",
+  });
+  toolCall.status = "in_progress";
+  toolCall.task_metadata = {
+    subagent_retry: {
+      state: "waiting",
+      agent_id: "agent-1",
+      attempt: 2,
+      max_retries: 4,
+      retry_delay_ms: 1_500,
+    },
+  };
+  session.toolCalls.set(toolCall.tool_call_id, toolCall);
+
+  const events = captureBridgeEvents(() => {
+    emitToolResultUpdate(session, toolCall.tool_call_id, false, {
+      agentId: "agent-1",
+      content: [{ type: "text", text: "Done" }],
+      status: "completed",
+      prompt: "Review the branch",
+    });
+  });
+
+  const update = events.at(-1)?.update as Record<string, unknown>;
+  const toolCallUpdate = update.tool_call_update as Record<string, unknown>;
+  const fields = toolCallUpdate.fields as Record<string, unknown>;
+  assert.deepEqual(fields.task_metadata, { subagent_retry: { state: "clear" } });
+  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry, undefined);
+});
+
 test("buildQueryOptions trims language before appending system prompt", () => {
   const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
   const options = buildQueryOptions({
@@ -4967,6 +5160,50 @@ test("applySessionEffort uses live flag settings for xhigh and max", async () =>
   assert.deepEqual(calls, [{ effortLevel: "xhigh" }, { effortLevel: "max" }]);
 });
 
+test("buildPromptUserMessage attributes keyboard text input to a human", () => {
+  assert.deepEqual(
+    buildPromptUserMessage(
+      {
+        command: "prompt",
+        session_id: "session-1",
+        chunks: [{ kind: "text", value: "hello" }],
+      },
+      "session-1",
+    ),
+    {
+      type: "user",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      origin: { kind: "human" },
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "hello" }],
+      },
+    },
+  );
+});
+
+test("buildPromptUserMessage attributes structured keyboard input to a human", () => {
+  const message = buildPromptUserMessage(
+    {
+      command: "prompt",
+      session_id: "session-1",
+      chunks: [
+        { kind: "text", value: "inspect this" },
+        {
+          kind: "image",
+          value: { mime_type: "image/png", data: "aGVsbG8=" },
+        },
+      ],
+    },
+    "session-1",
+  );
+
+  assert.equal(message?.origin?.kind, "human");
+  assert.equal(Array.isArray(message?.message.content), true);
+  assert.equal(message?.message.content.length, 2);
+});
+
 test("applySessionAgent uses live flag settings for agent switch and reset", async () => {
   const calls: unknown[] = [];
   const query = {
@@ -5042,6 +5279,7 @@ test("shouldEmitStartupAuthRequiredForAccount skips Claude OAuth hint for extern
     "foundry",
     "gateway",
     "anthropicAws",
+    "anthropicGoogleCloud",
     "mantle",
   ] as const) {
     assert.equal(shouldEmitStartupAuthRequiredForAccount({ apiProvider }), false);
@@ -5373,6 +5611,78 @@ test("buildToolResultFields extracts plain-text output", () => {
   ]);
 });
 
+test("new SDK tools retain generic inputs and structured outputs losslessly", () => {
+  const feedbackInput = {
+    type: "bug",
+    title: "Feedback draft",
+    details: "Reproduction details",
+    area: "/feedback",
+  };
+  const feedback = createToolCall("tc-feedback", "SendFeedback", feedbackInput);
+  const feedbackOutput = { success: true, message: "Feedback queued for review." };
+  const feedbackFields = buildToolResultFields(false, feedbackOutput, feedback, feedbackOutput);
+
+  assert.deepEqual(feedback.raw_input, feedbackInput);
+  assert.equal(feedbackFields.raw_output, JSON.stringify(feedbackOutput));
+  assert.deepEqual(feedbackFields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: JSON.stringify(feedbackOutput) },
+    },
+  ]);
+
+  const refreshInput = { server: "docs" };
+  const refresh = createToolCall("tc-refresh", "RefreshMcpTools", refreshInput);
+  const refreshOutput = [
+    {
+      server: "docs",
+      status: "refreshed",
+      toolCount: 3,
+      added: ["lookup"],
+      removed: ["legacy_lookup"],
+    },
+    {
+      server: "offline",
+      status: "not_connected",
+      error: "No live connection",
+    },
+  ];
+  const refreshFields = buildToolResultFields(false, refreshOutput, refresh, refreshOutput);
+
+  assert.deepEqual(refresh.raw_input, refreshInput);
+  assert.equal(refreshFields.raw_output, JSON.stringify(refreshOutput));
+  assert.deepEqual(refreshFields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: JSON.stringify(refreshOutput) },
+    },
+  ]);
+
+  const proposalInput = {
+    proposals: [
+      {
+        name: "diagnose-bridge",
+        kind: "new",
+        description: "Diagnose the bridge",
+        evidence: ["memory/bridge.md"],
+        skillMd: "---\nname: diagnose-bridge\n---\n",
+      },
+    ],
+  };
+  const proposal = createToolCall("tc-propose", "ProposeSkills", proposalInput);
+  const proposalOutput = { proposalCount: 1 };
+  const proposalFields = buildToolResultFields(false, proposalOutput, proposal, proposalOutput);
+
+  assert.deepEqual(proposal.raw_input, proposalInput);
+  assert.equal(proposalFields.raw_output, JSON.stringify(proposalOutput));
+  assert.deepEqual(proposalFields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: JSON.stringify(proposalOutput) },
+    },
+  ]);
+});
+
 test("buildToolResultFields renders structured Grep output", () => {
   const base = createToolCall("tc-grep", "Grep", {
     pattern: "TODO",
@@ -5396,6 +5706,71 @@ test("buildToolResultFields renders structured Grep output", () => {
   assert.deepEqual(fields.content, [
     { type: "content", content: { type: "text", text: expected } },
   ]);
+});
+
+test("buildToolResultFields prefers target Grep totals over legacy counts", () => {
+  const base = createToolCall("tc-grep-totals", "Grep", {
+    pattern: "TODO",
+    path: "src",
+    output_mode: "content",
+  });
+  const fields = buildToolResultFields(false, "raw SDK text", base, {
+    mode: "content",
+    numFiles: 2,
+    totalFiles: 5,
+    filenames: ["src/a.rs", "src/b.rs"],
+    content: "src/a.rs:1:TODO\nsrc/b.rs:2:TODO",
+    numLines: 2,
+    totalLines: 9,
+    numMatches: 2,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "src/a.rs:1:TODO\nsrc/b.rs:2:TODO\nSummary: 5 files, 2 matches, 9 lines, mode content",
+  );
+});
+
+test("buildToolResultFields omits a contradictory legacy zero Grep file count", () => {
+  const base = createToolCall("tc-grep-unreported-files", "Grep", {
+    pattern: "ToolCallInfo",
+    path: "src",
+    output_mode: "content",
+  });
+  const fields = buildToolResultFields(false, "raw SDK text", base, {
+    mode: "content",
+    numFiles: 0,
+    filenames: [],
+    content: "src/app/mod.rs:1:ToolCallInfo\nsrc/ui/mod.rs:2:ToolCallInfo",
+    numLines: 239,
+    totalLines: 239,
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "src/app/mod.rs:1:ToolCallInfo\nsrc/ui/mod.rs:2:ToolCallInfo\nSummary: 239 lines, mode content",
+  );
+});
+
+test("buildToolResultFields ignores malformed Grep totals without losing output", () => {
+  const base = createToolCall("tc-grep-invalid-totals", "Grep", {
+    pattern: "TODO",
+    output_mode: "content",
+  });
+  const fields = buildToolResultFields(false, "raw SDK text", base, {
+    mode: "content",
+    numFiles: 2,
+    totalFiles: -5,
+    filenames: ["src/a.rs", "src/b.rs"],
+    content: "src/a.rs:1:TODO",
+    numLines: 1,
+    totalLines: "many",
+  });
+
+  assert.equal(
+    fields.raw_output,
+    "src/a.rs:1:TODO\nSummary: 2 files, 1 line, mode content",
+  );
 });
 
 test("buildToolResultFields renders structured empty Grep output", () => {
@@ -5664,6 +6039,52 @@ test("buildToolResultFields adds Bash auto-backgrounded metadata and message", (
       assistant_auto_backgrounded: true,
     },
   });
+});
+
+test("buildToolResultFields preserves Bash timeout and cwd metadata", () => {
+  const base = createToolCall("tc-bash-timeout", "Bash", { command: "npm run watch" });
+  const fields = buildToolResultFields(
+    false,
+    {
+      stdout: "watching",
+      stderr: "",
+      interrupted: false,
+      backgroundTaskId: "task-43",
+      timedOutAfterMs: 10_000.9,
+      backgroundCwdHint: " session cwd unchanged ",
+    },
+    base,
+  );
+
+  assert.equal(
+    fields.raw_output,
+    "watching\nCommand was auto-backgrounded after 10,000 ms with ID: task-43.",
+  );
+  assert.deepEqual(fields.output_metadata, {
+    bash: {
+      timed_out_after_ms: 10_000,
+      background_cwd_hint: "session cwd unchanged",
+    },
+  });
+});
+
+test("buildToolResultFields rejects malformed Bash timeout metadata", () => {
+  const base = createToolCall("tc-bash-invalid-timeout", "Bash", { command: "npm run watch" });
+  const fields = buildToolResultFields(
+    false,
+    {
+      stdout: "",
+      stderr: "",
+      interrupted: false,
+      backgroundTaskId: "task-44",
+      timedOutAfterMs: -1,
+      backgroundCwdHint: " ",
+    },
+    base,
+  );
+
+  assert.equal(fields.raw_output, "Command is running in background with ID: task-44.");
+  assert.equal(fields.output_metadata, undefined);
 });
 
 test("buildToolResultFields maps structured ReadMcpResource output to typed resource content", () => {
@@ -5987,6 +6408,65 @@ test("buildToolResultFields preserves Agent resolvedModel metadata", () => {
   });
 });
 
+test("buildToolResultFields preserves ordered Agent modelsUsed metadata", () => {
+  const base = createToolCall("tc-agent-model-route", "Agent", {
+    description: "review changes",
+    prompt: "Review the branch",
+    model: "opus",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      agentId: "agent-1",
+      resolvedModel: " claude-sonnet-4-7 ",
+      modelsUsed: [
+        " claude-opus-4-8 ",
+        "",
+        "claude-opus-4-8",
+        42,
+        "claude-sonnet-4-7",
+      ],
+      content: [{ type: "text", text: "Done" }],
+      status: "completed",
+      prompt: "Review the branch",
+      futureField: true,
+    },
+    base,
+  );
+
+  assert.deepEqual(fields.output_metadata, {
+    agent: {
+      resolved_model: "claude-sonnet-4-7",
+      models_used: ["claude-opus-4-8", "claude-sonnet-4-7"],
+    },
+  });
+});
+
+test("buildToolResultFields preserves Agent modelsUsed independently of resolvedModel", () => {
+  const base = createToolCall("tc-agent-background-route", "Agent", {
+    description: "review changes",
+    prompt: "Review the branch",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      status: "async_launched",
+      agentId: "agent-1",
+      description: "Review changes",
+      modelsUsed: ["claude-opus-4-8", "claude-sonnet-4-7"],
+      prompt: "Review the branch",
+      outputFile: "C:/tmp/agent.output",
+    },
+    base,
+  );
+
+  assert.deepEqual(fields.output_metadata, {
+    agent: {
+      models_used: ["claude-opus-4-8", "claude-sonnet-4-7"],
+    },
+  });
+});
+
 test("buildToolResultFields keeps Agent input name while preserving resolvedModel metadata", () => {
   const base = createToolCall("tc-agent-named-model", "Agent", {
     description: "review changes",
@@ -6206,7 +6686,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.207");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.214");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 

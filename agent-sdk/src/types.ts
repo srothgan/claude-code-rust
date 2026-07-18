@@ -147,10 +147,13 @@ export type ToolCallContent =
 
 export interface BashOutputMetadata {
   assistant_auto_backgrounded?: boolean;
+  timed_out_after_ms?: number;
+  background_cwd_hint?: string;
 }
 
 export interface AgentOutputMetadata {
   resolved_model?: string;
+  models_used?: string[];
 }
 
 export interface WebFetchArtifactReadMetadata {
@@ -168,6 +171,18 @@ export interface ToolOutputMetadata {
   web_fetch?: WebFetchOutputMetadata;
 }
 
+export type SubagentRetryUpdate =
+  | {
+      state: "waiting";
+      agent_id?: string;
+      attempt: number;
+      max_retries: number;
+      retry_delay_ms: number;
+      error_status?: number;
+      error_category?: string;
+    }
+  | { state: "clear" };
+
 export interface TaskMetadata {
   end_time?: number;
   total_paused_ms?: number;
@@ -184,6 +199,7 @@ export interface TaskMetadata {
   terminal_status?: string;
   blocked?: boolean;
   parent_agent_id?: string;
+  subagent_retry?: SubagentRetryUpdate;
 }
 
 export interface ToolLocation {

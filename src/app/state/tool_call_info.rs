@@ -106,6 +106,14 @@ impl ToolCallInfo {
     }
 
     #[must_use]
+    pub fn timed_out_after_ms(&self) -> Option<u64> {
+        self.output_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.bash.as_ref())
+            .and_then(|metadata| metadata.timed_out_after_ms)
+    }
+
+    #[must_use]
     pub fn task_is_backgrounded(&self) -> bool {
         self.task_metadata.as_ref().and_then(|metadata| metadata.is_backgrounded).unwrap_or(false)
     }

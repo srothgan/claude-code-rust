@@ -5,6 +5,7 @@ import type {
   RuntimeSessionState,
   SessionUpdate,
   SettingsParseErrorUpdate,
+  SubagentRetryUpdate,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 
@@ -24,6 +25,41 @@ function nonNegativeNumberField(record: Record<string, unknown>, ...keys: string
     return undefined;
   }
   return value;
+}
+
+function nonNegativeIntegerField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): number | undefined {
+  const value = numberField(record, ...keys);
+  return value !== undefined && value >= 0 && Number.isInteger(value) ? value : undefined;
+}
+
+export function buildSubagentRetryUpdate(message: Record<string, unknown>): SubagentRetryUpdate | null {
+  const retry = asRecordOrNull(message.subagent_retry);
+  if (!retry) {
+    return null;
+  }
+  const attempt = nonNegativeIntegerField(retry, "attempt");
+  const maxRetries = nonNegativeIntegerField(retry, "max_retries", "maxRetries");
+  const retryDelayMs = nonNegativeIntegerField(retry, "retry_delay_ms", "retryDelayMs");
+  if (attempt === undefined || maxRetries === undefined || retryDelayMs === undefined) {
+    return null;
+  }
+
+  const agentId = typeof retry.agent_id === "string" ? retry.agent_id.trim() : "";
+  const errorCategory =
+    typeof retry.error_category === "string" ? retry.error_category.trim() : "";
+  const errorStatus = nonNegativeIntegerField(retry, "error_status", "errorStatus");
+  return {
+    state: "waiting",
+    ...(agentId ? { agent_id: agentId } : {}),
+    attempt,
+    max_retries: maxRetries,
+    retry_delay_ms: retryDelayMs,
+    ...(errorStatus !== undefined ? { error_status: errorStatus } : {}),
+    ...(errorCategory ? { error_category: errorCategory } : {}),
+  };
 }
 
 export function parseFastModeState(value: unknown): FastModeState | null {

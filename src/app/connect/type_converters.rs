@@ -840,12 +840,14 @@ fn convert_tool_output_metadata(
         .bash(output_metadata.bash.map(|bash| {
             model::BashOutputMetadata::new()
                 .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
+                .timed_out_after_ms(bash.timed_out_after_ms)
+                .background_cwd_hint(bash.background_cwd_hint)
         }))
-        .agent(
-            output_metadata.agent.map(|agent| {
-                model::AgentOutputMetadata::new().resolved_model(agent.resolved_model)
-            }),
-        )
+        .agent(output_metadata.agent.map(|agent| {
+            model::AgentOutputMetadata::new()
+                .resolved_model(agent.resolved_model)
+                .models_used(agent.models_used)
+        }))
         .web_fetch(output_metadata.web_fetch.map(|web_fetch| {
             model::WebFetchOutputMetadata::new().artifact_read(web_fetch.artifact_read.map(
                 |artifact| model::WebFetchArtifactReadMetadata::new(artifact.slug, artifact.ver),
@@ -881,6 +883,28 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .terminal_status(task_metadata.terminal_status)
         .blocked(task_metadata.blocked)
         .parent_agent_id(task_metadata.parent_agent_id)
+        .subagent_retry(task_metadata.subagent_retry.map(convert_subagent_retry_update))
+}
+
+fn convert_subagent_retry_update(retry: types::SubagentRetryUpdate) -> model::SubagentRetryUpdate {
+    match retry {
+        types::SubagentRetryUpdate::Waiting {
+            agent_id,
+            attempt,
+            max_retries,
+            retry_delay_ms,
+            error_status,
+            error_category,
+        } => model::SubagentRetryUpdate::Waiting {
+            agent_id,
+            attempt,
+            max_retries,
+            retry_delay_ms,
+            error_status,
+            error_category,
+        },
+        types::SubagentRetryUpdate::Clear => model::SubagentRetryUpdate::Clear,
+    }
 }
 
 fn convert_tool_call_content(
@@ -1415,9 +1439,17 @@ mod tests {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
-                bash: Some(types::BashOutputMetadata { assistant_auto_backgrounded: Some(true) }),
+                bash: Some(types::BashOutputMetadata {
+                    assistant_auto_backgrounded: Some(true),
+                    timed_out_after_ms: Some(10_000),
+                    background_cwd_hint: Some("session cwd unchanged".to_owned()),
+                }),
                 agent: Some(types::AgentOutputMetadata {
                     resolved_model: Some("claude-sonnet-4-7".to_owned()),
+                    models_used: Some(vec![
+                        "claude-opus-4-8".to_owned(),
+                        "claude-sonnet-4-7".to_owned(),
+                    ]),
                 }),
                 web_fetch: Some(types::WebFetchOutputMetadata {
                     artifact_read: Some(types::WebFetchArtifactReadMetadata {
@@ -1434,11 +1466,18 @@ mod tests {
             Some(
                 model::ToolOutputMetadata::new()
                     .bash(Some(
-                        model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)),
+                        model::BashOutputMetadata::new()
+                            .assistant_auto_backgrounded(Some(true))
+                            .timed_out_after_ms(Some(10_000))
+                            .background_cwd_hint(Some("session cwd unchanged".to_owned())),
                     ))
                     .agent(Some(
                         model::AgentOutputMetadata::new()
-                            .resolved_model(Some("claude-sonnet-4-7".to_owned())),
+                            .resolved_model(Some("claude-sonnet-4-7".to_owned()))
+                            .models_used(Some(vec![
+                                "claude-opus-4-8".to_owned(),
+                                "claude-sonnet-4-7".to_owned(),
+                            ])),
                     ))
                     .web_fetch(Some(model::WebFetchOutputMetadata::new().artifact_read(Some(
                         model::WebFetchArtifactReadMetadata::new("dashboard", "v2"),
@@ -1505,6 +1544,7 @@ mod tests {
                 terminal_status: Some("completed".to_owned()),
                 blocked: Some(true),
                 parent_agent_id: Some("agent-parent".to_owned()),
+                subagent_retry: None,
             }),
             ..types::ToolCallUpdateFields::default()
         });
@@ -1560,6 +1600,7 @@ mod tests {
                 terminal_status: Some("killed".to_owned()),
                 blocked: Some(false),
                 parent_agent_id: Some("agent-root".to_owned()),
+                subagent_retry: None,
             }),
             locations: Vec::new(),
             meta: None,
