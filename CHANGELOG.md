@@ -12,6 +12,10 @@ All notable changes to this project will be documented in this file.
 
 - **Installer progress and idempotency** (#281, @srothgan): Add inline installer progress across PowerShell, macOS, and Linux while keeping CI output plain, and make same-version reinstalls a prompted opt-in with `--yes`/`-Yes` approval.
 
+### CI and Dependencies
+
+- **Claude Agent SDK update** (#285, @srothgan): Bump the bundled bridge to Agent SDK `0.3.214`, preserve subagent model routes, retry and Bash timeout state, keep Grep and Artifact output accurate, and disable new review-dependent tools until the TUI can present them safely.
+
 ## [0.14.0] - 2026-07-12 [Changes][v0.14.0]
 
 ### Features
