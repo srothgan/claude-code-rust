@@ -163,10 +163,14 @@ function mergeTaskMetadata(
   if (update === undefined) {
     return current;
   }
-  return {
+  const merged = {
     ...(current ?? {}),
     ...update,
   };
+  if (update.subagent_retry?.state === "clear") {
+    delete merged.subagent_retry;
+  }
+  return merged;
 }
 
 function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields): void {
@@ -320,6 +324,17 @@ export function emitToolCallUpdate(
   sourceMessageUuid?: string,
 ): void {
   const base = session.toolCalls.get(toolUseId);
+  const nextStatus = fields.status ?? base?.status;
+  const terminal = nextStatus === "completed" || nextStatus === "failed" || nextStatus === "killed";
+  const hasActiveRetry =
+    base?.task_metadata?.subagent_retry?.state === "waiting" ||
+    fields.task_metadata?.subagent_retry?.state === "waiting";
+  if (terminal && hasActiveRetry) {
+    fields.task_metadata = {
+      ...(fields.task_metadata ?? {}),
+      subagent_retry: { state: "clear" },
+    };
+  }
   logToolCallUpdateEmitted(session.sessionId, toolUseId, fields, base, updateKind);
   emitSessionUpdate(session.sessionId, {
     type: "tool_call_update",
@@ -459,14 +474,21 @@ export function finalizeOpenToolCalls(session: SessionState, status: "completed"
   }
 }
 
-export function emitToolProgressUpdate(session: SessionState, toolUseId: string, toolName: string): void {
-  const existing = session.toolCalls.get(toolUseId);
+export function emitToolProgressUpdate(
+  session: SessionState,
+  toolUseId: string,
+  toolName: string,
+  progress: {
+    subagentRetry?: import("../types.js").SubagentRetryUpdate;
+    subagentType?: string;
+  } = {},
+): void {
+  let existing = session.toolCalls.get(toolUseId);
   if (!existing) {
     emitToolCall(session, toolUseId, toolName, {});
-    return;
+    existing = session.toolCalls.get(toolUseId);
   }
-  if (
-    existing.status === "in_progress" ||
+  if (!existing ||
     existing.status === "completed" ||
     existing.status === "failed" ||
     existing.status === "killed"
@@ -474,7 +496,29 @@ export function emitToolProgressUpdate(session: SessionState, toolUseId: string,
     return;
   }
 
-  emitToolCallUpdate(session, toolUseId, { status: "in_progress" }, "progress");
+  const taskMetadata: import("../types.js").TaskMetadata = {};
+  if (progress.subagentRetry?.state === "waiting") {
+    taskMetadata.subagent_retry = progress.subagentRetry;
+  } else if (
+    progress.subagentRetry?.state === "clear" &&
+    existing.task_metadata?.subagent_retry?.state === "waiting"
+  ) {
+    taskMetadata.subagent_retry = progress.subagentRetry;
+  }
+  if (progress.subagentType && progress.subagentType !== existing.task_metadata?.subagent_type) {
+    taskMetadata.subagent_type = progress.subagentType;
+  }
+
+  const fields: ToolCallUpdateFields = {};
+  if (existing.status !== "in_progress") {
+    fields.status = "in_progress";
+  }
+  if (Object.keys(taskMetadata).length > 0) {
+    fields.task_metadata = taskMetadata;
+  }
+  if (Object.keys(fields).length > 0) {
+    emitToolCallUpdate(session, toolUseId, fields, "progress");
+  }
 }
 
 export function emitToolSummaryUpdate(session: SessionState, toolUseId: string, summary: string): void {

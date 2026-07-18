@@ -312,12 +312,14 @@ impl ToolCallUpdate {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
+    pub timed_out_after_ms: Option<u64>,
+    pub background_cwd_hint: Option<String>,
 }
 
 impl BashOutputMetadata {
     #[must_use]
     pub fn new() -> Self {
-        Self { assistant_auto_backgrounded: None }
+        Self::default()
     }
 
     #[must_use]
@@ -326,6 +328,18 @@ impl BashOutputMetadata {
         assistant_auto_backgrounded: Option<bool>,
     ) -> Self {
         self.assistant_auto_backgrounded = assistant_auto_backgrounded;
+        self
+    }
+
+    #[must_use]
+    pub fn timed_out_after_ms(mut self, timed_out_after_ms: Option<u64>) -> Self {
+        self.timed_out_after_ms = timed_out_after_ms;
+        self
+    }
+
+    #[must_use]
+    pub fn background_cwd_hint(mut self, background_cwd_hint: Option<String>) -> Self {
+        self.background_cwd_hint = background_cwd_hint;
         self
     }
 }
@@ -340,6 +354,7 @@ pub struct ToolOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentOutputMetadata {
     pub resolved_model: Option<String>,
+    pub models_used: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -387,6 +402,12 @@ impl AgentOutputMetadata {
     #[must_use]
     pub fn resolved_model(mut self, resolved_model: Option<String>) -> Self {
         self.resolved_model = resolved_model;
+        self
+    }
+
+    #[must_use]
+    pub fn models_used(mut self, models_used: Option<Vec<String>>) -> Self {
+        self.models_used = models_used;
         self
     }
 }

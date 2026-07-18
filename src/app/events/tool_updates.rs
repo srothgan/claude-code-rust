@@ -123,6 +123,7 @@ fn apply_tool_call_update_to_indexed_block(
         changed |= apply_tool_call_locations_update(tc, tcu.fields.locations.as_ref());
         changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
         changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
+        changed |= clear_subagent_retry_if_terminal(tc);
         changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
         changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
         changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
@@ -292,11 +293,33 @@ fn apply_tool_call_task_metadata_update(
     if task_metadata.parent_agent_id.is_some() {
         merged.parent_agent_id.clone_from(&task_metadata.parent_agent_id);
     }
+    match &task_metadata.subagent_retry {
+        Some(model::SubagentRetryUpdate::Waiting { .. }) => {
+            merged.subagent_retry.clone_from(&task_metadata.subagent_retry);
+        }
+        Some(model::SubagentRetryUpdate::Clear) => merged.subagent_retry = None,
+        None => {}
+    }
     if tc.task_metadata.as_ref() == Some(&merged) {
         return false;
     }
     tc.task_metadata = Some(merged);
     true
+}
+
+fn clear_subagent_retry_if_terminal(tc: &mut ToolCallInfo) -> bool {
+    if !matches!(
+        tc.status,
+        model::ToolCallStatus::Completed
+            | model::ToolCallStatus::Failed
+            | model::ToolCallStatus::Killed
+    ) {
+        return false;
+    }
+    let Some(task_metadata) = tc.task_metadata.as_mut() else {
+        return false;
+    };
+    task_metadata.subagent_retry.take().is_some()
 }
 
 fn apply_tool_call_raw_output_update(
@@ -977,6 +1000,99 @@ mod tests {
                     .terminal_status(Some("killed".to_owned())),
             )
         );
+    }
+
+    #[test]
+    fn task_metadata_update_applies_and_clears_subagent_retry() {
+        let mut app = App::test_default();
+        let tool_id = "task-retry";
+        app.transcript.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(make_task_tool_call(
+                tool_id,
+                model::ToolCallStatus::InProgress,
+            )))],
+            None,
+        ));
+        app.index_tool_call(tool_id.to_owned(), 0, 0);
+
+        let waiting = model::SubagentRetryUpdate::Waiting {
+            agent_id: Some("agent-1".to_owned()),
+            attempt: 2,
+            max_retries: 4,
+            retry_delay_ms: 1_500,
+            error_status: Some(429),
+            error_category: Some("rate_limit".to_owned()),
+        };
+        handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                tool_id,
+                model::ToolCallUpdateFields::new().task_metadata(
+                    model::TaskMetadata::new().subagent_retry(Some(waiting.clone())),
+                ),
+            ),
+        );
+
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(
+            tc.task_metadata.as_ref().and_then(|meta| meta.subagent_retry.clone()),
+            Some(waiting)
+        );
+
+        handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                tool_id,
+                model::ToolCallUpdateFields::new().task_metadata(
+                    model::TaskMetadata::new()
+                        .subagent_retry(Some(model::SubagentRetryUpdate::Clear)),
+                ),
+            ),
+        );
+
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.task_metadata.as_ref().and_then(|meta| meta.subagent_retry.as_ref()), None);
+    }
+
+    #[test]
+    fn terminal_tool_update_clears_subagent_retry_without_explicit_clear() {
+        let mut app = App::test_default();
+        let tool_id = "task-retry-terminal";
+        let mut tool_call = make_task_tool_call(tool_id, model::ToolCallStatus::InProgress);
+        tool_call.task_metadata = Some(model::TaskMetadata::new().subagent_retry(Some(
+            model::SubagentRetryUpdate::Waiting {
+                agent_id: None,
+                attempt: 1,
+                max_retries: 3,
+                retry_delay_ms: 500,
+                error_status: None,
+                error_category: None,
+            },
+        )));
+        app.transcript.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tool_call))],
+            None,
+        ));
+        app.index_tool_call(tool_id.to_owned(), 0, 0);
+
+        handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                tool_id,
+                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+            ),
+        );
+
+        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(tc.task_metadata.as_ref().and_then(|meta| meta.subagent_retry.as_ref()), None);
     }
 
     #[test]

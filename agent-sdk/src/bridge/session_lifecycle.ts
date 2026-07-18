@@ -271,11 +271,16 @@ function settingsObjectFromLaunchSettings(
 
 function normalizedSettingsFromLaunchSettings(
   launchSettings: SessionLaunchSettings,
-): Record<string, unknown> | undefined {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  if (!settings) {
-    return undefined;
-  }
+): Record<string, unknown> {
+  const settings = settingsObjectFromLaunchSettings(launchSettings) ?? {};
+  // SendFeedback queues a local draft that can only be reviewed, edited, and
+  // discarded through the native /feedback surface. Agent SDK command
+  // snapshots do not expose that command to this host, so enabling drafts
+  // would create content that claude-rs cannot safely let the user approve.
+  const hostSettings = {
+    ...settings,
+    feedbackDrafts: "off" as const,
+  };
 
   const sandbox =
     settings.sandbox && typeof settings.sandbox === "object" && !Array.isArray(settings.sandbox)
@@ -283,7 +288,7 @@ function normalizedSettingsFromLaunchSettings(
       : undefined;
   if (sandbox?.enabled === true && sandbox.failIfUnavailable === undefined) {
     return {
-      ...settings,
+      ...hostSettings,
       sandbox: {
         ...sandbox,
         failIfUnavailable: false,
@@ -291,7 +296,7 @@ function normalizedSettingsFromLaunchSettings(
     };
   }
 
-  return settings;
+  return hostSettings;
 }
 
 export function sessionById(sessionId: string): SessionState | null {
@@ -896,9 +901,13 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     includePartialMessages: true,
     promptSuggestions: true,
     enableFileCheckpointing: true,
+    // ProposeSkills reports only a proposal count and expects a native review
+    // surface. Keep it out of this host until claude-rs can display the actual
+    // proposal input and accept/reject it without losing content.
+    disallowedTools: ["ProposeSkills"],
     executable: "bun" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
-    ...(settings ? { settings } : {}),
+    settings,
     ...modelOption,
     ...permissionModeOptions,
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },

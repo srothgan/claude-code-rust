@@ -291,6 +291,8 @@ pub struct ToolLocation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
+    pub timed_out_after_ms: Option<u64>,
+    pub background_cwd_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -303,6 +305,7 @@ pub struct ToolOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentOutputMetadata {
     pub resolved_model: Option<String>,
+    pub models_used: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -333,6 +336,21 @@ pub struct TaskMetadata {
     pub terminal_status: Option<String>,
     pub blocked: Option<bool>,
     pub parent_agent_id: Option<String>,
+    pub subagent_retry: Option<SubagentRetryUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SubagentRetryUpdate {
+    Waiting {
+        agent_id: Option<String>,
+        attempt: u64,
+        max_retries: u64,
+        retry_delay_ms: u64,
+        error_status: Option<u64>,
+        error_category: Option<String>,
+    },
+    Clear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -959,8 +977,8 @@ mod tests {
     use super::{
         AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerOrgMaxPermission,
         McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, RateLimitStatus,
-        SessionStatus, SessionUpdate, SystemNoticeSeverity, TaskUpdateSource, TerminalReason,
-        TranscriptRetractionReason,
+        SessionStatus, SessionUpdate, SubagentRetryUpdate, SystemNoticeSeverity, TaskMetadata,
+        TaskUpdateSource, TerminalReason, TranscriptRetractionReason,
     };
 
     #[test]
@@ -1269,7 +1287,8 @@ mod tests {
                 "fields": {
                     "output_metadata": {
                         "agent": {
-                            "resolved_model": "claude-sonnet-4-7"
+                            "resolved_model": "claude-sonnet-4-7",
+                            "models_used": ["claude-opus-4-8", "claude-sonnet-4-7"]
                         },
                         "web_fetch": {
                             "artifact_read": {
@@ -1287,14 +1306,50 @@ mod tests {
             panic!("expected tool call update");
         };
         let metadata = tool_call_update.fields.output_metadata.expect("output metadata");
-        let resolved_model = metadata.agent.and_then(|agent| agent.resolved_model);
+        let agent = metadata.agent.expect("agent metadata");
+        let resolved_model = agent.resolved_model;
         assert_eq!(resolved_model.as_deref(), Some("claude-sonnet-4-7"));
+        assert_eq!(
+            agent.models_used,
+            Some(vec!["claude-opus-4-8".to_owned(), "claude-sonnet-4-7".to_owned()])
+        );
         let artifact_read = metadata
             .web_fetch
             .and_then(|web_fetch| web_fetch.artifact_read)
             .expect("artifact read metadata");
         assert_eq!(artifact_read.slug, "dashboard");
         assert_eq!(artifact_read.ver, "v3");
+    }
+
+    #[test]
+    fn task_metadata_deserializes_subagent_retry_waiting_and_clear_updates() {
+        let waiting: TaskMetadata = serde_json::from_value(serde_json::json!({
+            "subagent_retry": {
+                "state": "waiting",
+                "agent_id": "agent-1",
+                "attempt": 2,
+                "max_retries": 4,
+                "retry_delay_ms": 1500,
+                "error_status": 429,
+                "error_category": "rate_limit"
+            }
+        }))
+        .expect("deserialize waiting retry");
+        assert!(matches!(
+            waiting.subagent_retry,
+            Some(SubagentRetryUpdate::Waiting {
+                attempt: 2,
+                max_retries: 4,
+                retry_delay_ms: 1500,
+                ..
+            })
+        ));
+
+        let clear: TaskMetadata = serde_json::from_value(serde_json::json!({
+            "subagent_retry": { "state": "clear" }
+        }))
+        .expect("deserialize retry clear");
+        assert_eq!(clear.subagent_retry, Some(SubagentRetryUpdate::Clear));
     }
 
     #[test]

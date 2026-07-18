@@ -7,6 +7,7 @@ export type KnownApiProvider =
   | "vertex"
   | "foundry"
   | "anthropicAws"
+  | "anthropicGoogleCloud"
   | "mantle"
   | "gateway";
 
@@ -16,6 +17,7 @@ const KNOWN_API_PROVIDERS = new Set<string>([
   "vertex",
   "foundry",
   "anthropicAws",
+  "anthropicGoogleCloud",
   "mantle",
   "gateway",
 ]);

@@ -242,9 +242,27 @@ export async function applySessionEffort(
   query: import("@anthropic-ai/claude-agent-sdk").Query,
   effort: EffortLevel,
 ): Promise<void> {
-  const settings = { effortLevel: effort } as Parameters<typeof query.applyFlagSettings>[0];
-  // applyFlagSettings controls live session settings; SDK Settings typings model persisted effort levels.
-  await query.applyFlagSettings(settings);
+  await query.applyFlagSettings({ effortLevel: effort });
+}
+
+export function buildPromptUserMessage(
+  command: Extract<BridgeCommand, { command: "prompt" }>,
+  sessionId: string,
+): import("@anthropic-ai/claude-agent-sdk").SDKUserMessage | undefined {
+  const content = contentFromPrompt(command);
+  if (content.length === 0) {
+    return undefined;
+  }
+  return {
+    type: "user",
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    origin: { kind: "human" },
+    message: {
+      role: "user",
+      content,
+    },
+  };
 }
 
 export async function applySessionAgent(
@@ -271,7 +289,7 @@ export function emitAgentConfigOptionUpdate(sessionId: string, agent: string | n
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.207";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.214";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
@@ -899,19 +917,10 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
         return;
       }
-      const content = contentFromPrompt(command);
-      if (content.length === 0) {
+      const message = buildPromptUserMessage(command, session.sessionId);
+      if (!message) {
         return;
       }
-      const message: import("@anthropic-ai/claude-agent-sdk").SDKUserMessage = {
-        type: "user",
-        session_id: session.sessionId,
-        parent_tool_use_id: null,
-        message: {
-          role: "user",
-          content,
-        },
-      };
       session.input.enqueue(message);
       return;
     }

@@ -563,9 +563,19 @@ function extractToolOutputMetadata(
   if (toolName === "Bash") {
     for (const candidate of candidates) {
       const hasAssistantAutoBackgrounded = typeof candidate.assistantAutoBackgrounded === "boolean";
-      if (hasAssistantAutoBackgrounded) {
+      const timedOutAfterMs = nonNegativeInteger(candidate.timedOutAfterMs);
+      const backgroundCwdHint = nonEmptyString(candidate.backgroundCwdHint);
+      if (hasAssistantAutoBackgrounded || timedOutAfterMs !== undefined || backgroundCwdHint) {
         const bashMetadata: import("../types.js").BashOutputMetadata = {};
-        bashMetadata.assistant_auto_backgrounded = candidate.assistantAutoBackgrounded as boolean;
+        if (hasAssistantAutoBackgrounded) {
+          bashMetadata.assistant_auto_backgrounded = candidate.assistantAutoBackgrounded as boolean;
+        }
+        if (timedOutAfterMs !== undefined) {
+          bashMetadata.timed_out_after_ms = timedOutAfterMs;
+        }
+        if (backgroundCwdHint) {
+          bashMetadata.background_cwd_hint = backgroundCwdHint;
+        }
         metadata.bash = bashMetadata;
         break;
       }
@@ -575,9 +585,11 @@ function extractToolOutputMetadata(
   if (toolName === "Agent" || toolName === "Task") {
     for (const candidate of candidates) {
       const resolvedModel = nonEmptyString(candidate.resolvedModel);
-      if (resolvedModel) {
+      const modelsUsed = orderedNonEmptyStrings(candidate.modelsUsed);
+      if (resolvedModel || modelsUsed) {
         const agentMetadata: import("../types.js").AgentOutputMetadata = {
-          resolved_model: resolvedModel,
+          ...(resolvedModel ? { resolved_model: resolvedModel } : {}),
+          ...(modelsUsed ? { models_used: modelsUsed } : {}),
         };
         metadata.agent = agentMetadata;
         break;
@@ -861,6 +873,10 @@ function shellBackgroundMessage(record: Record<string, unknown>): string {
   if (!backgroundTaskId) {
     return "";
   }
+  const timedOutAfterMs = nonNegativeInteger(record.timedOutAfterMs);
+  if (timedOutAfterMs !== undefined) {
+    return `Command was auto-backgrounded after ${timedOutAfterMs.toLocaleString("en-US")} ms with ID: ${backgroundTaskId}.`;
+  }
   if (record.assistantAutoBackgrounded === true) {
     return `Command was auto-backgrounded by assistant mode with ID: ${backgroundTaskId}.`;
   }
@@ -947,6 +963,10 @@ function recordNumber(record: Record<string, unknown>, key: string): number | un
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function recordNonNegativeInteger(record: Record<string, unknown>, key: string): number | undefined {
+  return nonNegativeInteger(record[key]);
+}
+
 function recordString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" ? value : undefined;
@@ -1000,8 +1020,15 @@ function globResultText(record: Record<string, unknown>): string | undefined {
 function grepResultText(record: Record<string, unknown>): string | undefined {
   const filenames = searchFilenames(record);
   const content = recordString(record, "content") ?? "";
-  const numFiles = recordNumber(record, "numFiles") ?? filenames.length;
-  const numLines = recordNumber(record, "numLines");
+  const hasVisibleMatches = content.trim().length > 0 || filenames.length > 0;
+  const totalFiles = recordNonNegativeInteger(record, "totalFiles");
+  const legacyNumFiles = recordNonNegativeInteger(record, "numFiles");
+  const numFiles =
+    totalFiles ??
+    (legacyNumFiles !== 0 || !hasVisibleMatches ? legacyNumFiles : undefined) ??
+    (filenames.length > 0 ? filenames.length : undefined);
+  const numLines =
+    recordNonNegativeInteger(record, "totalLines") ?? recordNonNegativeInteger(record, "numLines");
   const numMatches = recordNumber(record, "numMatches");
   const appliedLimit = recordNumber(record, "appliedLimit");
   const appliedOffset = recordNumber(record, "appliedOffset");
@@ -1021,7 +1048,9 @@ function grepResultText(record: Record<string, unknown>): string | undefined {
   }
 
   const summaryParts: string[] = [];
-  summaryParts.push(`${numFiles} ${pluralize(numFiles, "file")}`);
+  if (numFiles !== undefined) {
+    summaryParts.push(`${numFiles} ${pluralize(numFiles, "file")}`);
+  }
   if (numMatches !== undefined) {
     summaryParts.push(`${numMatches} ${pluralize(numMatches, "match", "matches")}`);
   }
@@ -1095,6 +1124,28 @@ function pushBooleanField(lines: string[], label: string, value: unknown): void 
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : undefined;
+}
+
+function orderedNonEmptyStrings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const values: string[] = [];
+  for (const item of value) {
+    const normalized = nonEmptyString(item);
+    if (normalized && !seen.has(normalized)) {
+      seen.add(normalized);
+      values.push(normalized);
+    }
+  }
+  return values.length > 0 ? values : undefined;
 }
 
 const CRON_MONTH_NAMES = [
@@ -2272,4 +2323,3 @@ export function unwrapToolUseResult(rawResult: unknown): { isError: boolean; con
   }
   return { isError: Boolean(isError), content: rawResult };
 }
-

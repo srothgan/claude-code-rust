@@ -180,6 +180,52 @@ fn render_tool_call_title_shows_resolved_model_badge_for_subagents() {
 }
 
 #[test]
+fn render_tool_call_title_shows_ordered_model_route_after_subagent_swap() {
+    let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::Completed);
+    tc.raw_input = Some(serde_json::json!({ "model": "opus" }));
+    tc.output_metadata = Some(
+        model::ToolOutputMetadata::new().agent(Some(
+            model::AgentOutputMetadata::new()
+                .resolved_model(Some("claude-sonnet-4-7".to_owned()))
+                .models_used(Some(vec![
+                    "claude-opus-4-8".to_owned(),
+                    "claude-sonnet-4-7".to_owned(),
+                ])),
+        )),
+    );
+
+    let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 160, 0);
+    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+    assert!(rendered.contains("[models: claude-opus-4-8 -> claude-sonnet-4-7]"));
+    assert!(!rendered.contains("[model:"));
+}
+
+#[test]
+fn render_tool_call_title_shows_transient_subagent_retry() {
+    let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::InProgress);
+    tc.task_metadata = Some(model::TaskMetadata::new().subagent_retry(Some(
+        model::SubagentRetryUpdate::Waiting {
+            agent_id: Some("agent-1".to_owned()),
+            attempt: 2,
+            max_retries: 4,
+            retry_delay_ms: 1_500,
+            error_status: Some(429),
+            error_category: Some("rate_limit".to_owned()),
+        },
+    )));
+
+    let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(rendered.contains("[retry 2/4 in 1.5s]"));
+
+    tc.status = model::ToolCallStatus::Completed;
+    let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(!rendered.contains("[retry"));
+}
+
+#[test]
 fn render_tool_call_title_shows_running_agent_type_and_requested_model_from_input() {
     let mut tc = test_tool_call("Agent: review-worker", "Agent", model::ToolCallStatus::InProgress);
     tc.raw_input = Some(serde_json::json!({
@@ -334,6 +380,19 @@ fn standard_title_uses_generic_icon_for_unknown_tools() {
     let rendered = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
 
     assert_eq!(rendered.spans.get(1).map(|span| span.content.as_ref()), Some("\u{25cb} "));
+}
+
+#[test]
+fn generic_renderer_preserves_refresh_mcp_tools_json_output() {
+    let mut tc =
+        test_tool_call("RefreshMcpTools", "RefreshMcpTools", model::ToolCallStatus::Completed);
+    let payload = r#"[{"server":"docs","status":"refreshed","toolCount":3,"added":["lookup"],"removed":["legacy_lookup"]}]"#;
+    tc.content = vec![model::ToolCallContent::from(payload.to_owned())];
+
+    let body = standard::render_tool_call_body(&tc, 300);
+    let rendered = rendered_line_texts_trimmed(&body).join("\n");
+
+    assert!(rendered.contains(payload));
 }
 
 #[test]
@@ -810,6 +869,23 @@ fn bash_title_renders_assistant_backgrounded_badge() {
     let rendered = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
     let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
     assert!(text.contains("[assistant backgrounded]"));
+}
+
+#[test]
+fn bash_title_distinguishes_timeout_auto_backgrounding() {
+    let mut tc = test_tool_call("tc-bash-timeout", "Bash", model::ToolCallStatus::Completed);
+    tc.output_metadata = Some(
+        model::ToolOutputMetadata::new().bash(Some(
+            model::BashOutputMetadata::new()
+                .assistant_auto_backgrounded(Some(true))
+                .timed_out_after_ms(Some(10_000)),
+        )),
+    );
+
+    let rendered = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(text.contains("[auto-backgrounded after 10,000 ms]"));
+    assert!(!text.contains("[assistant backgrounded]"));
 }
 
 #[test]
