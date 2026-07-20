@@ -12,6 +12,13 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    groups:
+      # Batch non-breaking Rust bumps into one PR. Major bumps stay
+      # ungrouped so each breaking change gets its own reviewable PR.
+      cargo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
@@ -29,9 +36,17 @@ updates:
       # codeql-action/init and codeql-action/analyze must run the same version:
       # analyze rejects a config file written by a different init version. Split
       # across two PRs, each one fails on its own and only passes once both land.
+      # Listed first and matching all update types so the pair always travels
+      # together, even on a major bump that actions-minor-patch would not catch.
       codeql-action:
         patterns:
           - "github/codeql-action*"
+      # Batch non-breaking action bumps. Major bumps stay ungrouped so a
+      # breaking change (e.g. setup-node v6 -> v7) gets its own PR.
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # npm dependencies (root package)
   - package-ecosystem: "npm"

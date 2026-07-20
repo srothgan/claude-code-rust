@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "24"
 
@@ -43,11 +43,12 @@ jobs:
           set -euo pipefail
 
           package='@anthropic-ai/claude-agent-sdk'
+          # Only @anthropic-ai/claude-agent-sdk is a declared direct pin now.
+          # @anthropic-ai/sdk, @modelcontextprotocol/sdk, and zod are pulled in
+          # transitively by the Agent SDK and move with it, so tracking them
+          # here just reported bumps for deps the project no longer pins.
           bridge_stack=(
             '@anthropic-ai/claude-agent-sdk'
-            '@anthropic-ai/sdk'
-            '@modelcontextprotocol/sdk'
-            'zod'
           )
 
           package_version() {
