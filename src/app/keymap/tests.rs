@@ -265,7 +265,28 @@ fn default_keymap_contains_chat_input_readline_bindings() {
             KeyContext::ChatInput,
             KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         ),
+        Some(KeyAction::Input(InputAction::MoveLineStartOrUp))
+    );
+    assert_eq!(
+        keymap.action_for_event(
+            KeyContext::ChatInput,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL),
+        ),
+        Some(KeyAction::Input(InputAction::MoveLineEndOrDown))
+    );
+    assert_eq!(
+        keymap.action_for_event(
+            KeyContext::ChatInput,
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+        ),
         Some(KeyAction::Input(InputAction::MoveLineStart))
+    );
+    assert_eq!(
+        keymap.action_for_event(
+            KeyContext::ChatInput,
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+        ),
+        Some(KeyAction::Input(InputAction::MoveLineEnd))
     );
 }
 

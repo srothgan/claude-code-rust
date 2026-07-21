@@ -30,6 +30,8 @@ pub enum InputAction {
     MoveWordRight,
     MoveLineStart,
     MoveLineEnd,
+    MoveLineStartOrUp,
+    MoveLineEndOrDown,
     MoveUp,
     MoveDown,
     DeleteCharBefore,

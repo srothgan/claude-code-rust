@@ -279,6 +279,21 @@ impl InputState {
         })
     }
 
+    pub fn textarea_move_line_start_or_up(&mut self) -> bool {
+        let (row, col) = self.cursor();
+        let target_row = if col == 0 { row.saturating_sub(1) } else { row };
+        self.set_cursor(target_row, 0)
+    }
+
+    pub fn textarea_move_line_end_or_down(&mut self) -> bool {
+        let (row, col) = self.cursor();
+        let current_line_end = self.lines()[row].chars().count();
+        let target_row =
+            if col == current_line_end && row + 1 < self.lines().len() { row + 1 } else { row };
+        let target_col = self.lines()[target_row].chars().count();
+        self.set_cursor(target_row, target_col)
+    }
+
     pub fn textarea_undo(&mut self) -> bool {
         let changed = self.editor.undo();
         if changed {
@@ -1049,6 +1064,64 @@ mod tests {
         let v = input.version;
         input.move_home(); // col already 0, but still bumps
         assert!(input.version > v);
+    }
+
+    #[test]
+    fn move_line_start_or_up_stops_at_each_logical_line_start() {
+        let mut input = InputState::new();
+        input.set_text("alpha\nbeta\ngamma");
+        let _ = input.set_cursor(1, 2);
+
+        let version = input.version;
+        assert!(input.textarea_move_line_start_or_up());
+        assert_eq!(input.cursor(), (1, 0));
+        assert_eq!(input.version, version + 1);
+
+        assert!(input.textarea_move_line_start_or_up());
+        assert_eq!(input.cursor(), (0, 0));
+
+        let version = input.version;
+        assert!(!input.textarea_move_line_start_or_up());
+        assert_eq!(input.cursor(), (0, 0));
+        assert_eq!(input.version, version);
+    }
+
+    #[test]
+    fn move_line_end_or_down_stops_at_each_logical_line_end() {
+        let mut input = InputState::new();
+        input.set_text("alpha\nbeta\ngamma");
+        let _ = input.set_cursor(1, 2);
+
+        let version = input.version;
+        assert!(input.textarea_move_line_end_or_down());
+        assert_eq!(input.cursor(), (1, 4));
+        assert_eq!(input.version, version + 1);
+
+        assert!(input.textarea_move_line_end_or_down());
+        assert_eq!(input.cursor(), (2, 5));
+
+        let version = input.version;
+        assert!(!input.textarea_move_line_end_or_down());
+        assert_eq!(input.cursor(), (2, 5));
+        assert_eq!(input.version, version);
+    }
+
+    #[test]
+    fn line_boundary_navigation_handles_empty_and_unicode_lines() {
+        let mut input = InputState::new();
+        input.set_text("α\n\n猫犬");
+
+        let _ = input.set_cursor(2, 0);
+        assert!(input.textarea_move_line_start_or_up());
+        assert_eq!(input.cursor(), (1, 0));
+        assert!(input.textarea_move_line_start_or_up());
+        assert_eq!(input.cursor(), (0, 0));
+
+        let _ = input.set_cursor(0, 1);
+        assert!(input.textarea_move_line_end_or_down());
+        assert_eq!(input.cursor(), (1, 0));
+        assert!(input.textarea_move_line_end_or_down());
+        assert_eq!(input.cursor(), (2, 2));
     }
 
     // line_count

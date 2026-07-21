@@ -309,8 +309,10 @@ mod tests {
 
         assert!(has_row(&rows, "Enter", "Send message"));
         assert!(has_row(&rows, "Shift+Enter, Ctrl+Enter", "Insert newline"));
-        assert!(has_row(&rows, "Home, Ctrl+A", "Move line start"));
-        assert!(has_row(&rows, "End, Ctrl+E", "Move line end"));
+        assert!(has_row(&rows, "Home", "Move line start"));
+        assert!(has_row(&rows, "End", "Move line end"));
+        assert!(has_row(&rows, "Ctrl+A", "Move line start, then up"));
+        assert!(has_row(&rows, "Ctrl+E", "Move line end, then down"));
         assert!(has_row(&rows, "Ctrl+Y", "Yank"));
         assert!(!rows.iter().any(|(left, right)| left == "Ctrl+z/y" || right == "Undo/redo"));
     }
