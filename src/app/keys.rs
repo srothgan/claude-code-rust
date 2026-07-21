@@ -293,6 +293,8 @@ fn execute_input_action(app: &mut App, action: InputAction) -> KeyOutcome {
         InputAction::MoveWordRight => app.input.textarea_move_word_right(),
         InputAction::MoveLineStart => app.input.textarea_move_home(),
         InputAction::MoveLineEnd => app.input.textarea_move_end(),
+        InputAction::MoveLineStartOrUp => app.input.textarea_move_line_start_or_up(),
+        InputAction::MoveLineEndOrDown => app.input.textarea_move_line_end_or_down(),
         InputAction::MoveUp => {
             let _ = try_move_input_cursor_up(app);
             true
@@ -956,6 +958,36 @@ mod tests {
 
         assert_eq!(outcome, KeyOutcome::Handled(true));
         assert_eq!(app.input.cursor_col(), 1);
+    }
+
+    #[test]
+    fn ctrl_a_moves_to_line_start_then_previous_line_start() {
+        let mut app = App::test_default();
+        app.input.set_text("alpha\nbeta\ngamma");
+        let _ = app.input.set_cursor(1, 2);
+        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+
+        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
+        assert_eq!(app.input.cursor(), (1, 0));
+        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
+        assert_eq!(app.input.cursor(), (0, 0));
+        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(false));
+        assert_eq!(app.input.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn ctrl_e_moves_to_line_end_then_next_line_end() {
+        let mut app = App::test_default();
+        app.input.set_text("alpha\nbeta\ngamma");
+        let _ = app.input.set_cursor(1, 2);
+        let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
+
+        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
+        assert_eq!(app.input.cursor(), (1, 4));
+        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
+        assert_eq!(app.input.cursor(), (2, 5));
+        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(false));
+        assert_eq!(app.input.cursor(), (2, 5));
     }
 
     #[test]

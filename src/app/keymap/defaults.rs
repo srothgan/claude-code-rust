@@ -121,8 +121,8 @@ fn chat_navigation_default_bindings() -> [KeyBinding; 16] {
 
 fn chat_readline_default_bindings() -> [KeyBinding; 13] {
     [
-        chat_input('a', KeyModifiers::CONTROL, InputAction::MoveLineStart),
-        chat_input('e', KeyModifiers::CONTROL, InputAction::MoveLineEnd),
+        chat_input('a', KeyModifiers::CONTROL, InputAction::MoveLineStartOrUp),
+        chat_input('e', KeyModifiers::CONTROL, InputAction::MoveLineEndOrDown),
         chat_input('b', KeyModifiers::CONTROL, InputAction::MoveCharLeft),
         chat_input('f', KeyModifiers::CONTROL, InputAction::MoveCharRight),
         chat_input('d', KeyModifiers::CONTROL, InputAction::DeleteCharAfter),

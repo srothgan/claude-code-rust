@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Readline line-stepping** (#305, @srothgan): Make `Ctrl+A`/`Ctrl+E` move to the line start/end, then step to the previous/next logical line on repeat.
+
 ## [0.14.1] - 2026-07-18 [Changes][v0.14.1]
 
 ### Documentation

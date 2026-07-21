@@ -115,6 +115,20 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         default_contexts: &[KeyContext::ChatInput],
     },
     KeyActionDescriptor {
+        action: KeyAction::Input(InputAction::MoveLineStartOrUp),
+        id: "input.move_line_start_or_up",
+        label: "Move line start, then up",
+        description: "Move to the current line start, or the previous line start when already there.",
+        default_contexts: &[KeyContext::ChatInput],
+    },
+    KeyActionDescriptor {
+        action: KeyAction::Input(InputAction::MoveLineEndOrDown),
+        id: "input.move_line_end_or_down",
+        label: "Move line end, then down",
+        description: "Move to the current line end, or the next line end when already there.",
+        default_contexts: &[KeyContext::ChatInput],
+    },
+    KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveUp),
         id: "input.move_up",
         label: "Move up",
