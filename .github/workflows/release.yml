@@ -542,14 +542,6 @@ jobs:
               echo "Automated npm platform-package release for claude-code-rust $VERSION."
             } > release-notes.md
           fi
-          {
-            echo
-            echo "Bundled runtime provenance:"
-            echo
-            echo "- npm platform packages include private Bun runtime files."
-            echo "- Bun source asset names, source archive SHA256 checksums, runtime SHA256 checksums, and source URLs are recorded in dist-npm/manifests/*.json."
-            echo "- Install archives, install manifests, and release bundle metadata are recorded in dist-install/manifests/*.json and release-manifest.json."
-          } >> release-notes.md
 
       - name: Create annotated tag
         run: |
