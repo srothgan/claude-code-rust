@@ -59,7 +59,7 @@ pub(super) fn handle_transcript_retraction(
     }
 
     if rebuild_indices {
-        app.rebuild_tool_indices_and_terminal_refs();
+        app.rebuild_tool_indices();
     }
 
     tracing::info!(

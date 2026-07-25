@@ -106,7 +106,6 @@ fn run() -> anyhow::Result<i32> {
         maybe_print_resume_hint(&app, result.is_ok() && post_exit_action.is_none());
 
         // Kill any spawned terminal child processes before exiting
-        claude_code_rust::agent::events::kill_all_terminals(&app.terminals);
 
         if let Some(app_error) = app.exit_error.take() {
             return Err(anyhow::Error::new(app_error));

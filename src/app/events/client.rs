@@ -75,33 +75,49 @@ fn mcp_server_diagnostic_summaries(servers: &[McpServerStatus]) -> Vec<serde_jso
 
 #[allow(clippy::too_many_lines)]
 pub fn handle_client_event(app: &mut App, event: ClientEvent) {
+    if let Some(event_session_id) = event.scoped_session_id()
+        && app.session_runtime.session_id.as_ref().map(crate::agent::model::SessionId::as_str)
+            != Some(event_session_id)
+    {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "stale_client_event_dropped",
+            message = "client event dropped for a stale session",
+            outcome = "dropped",
+            session_id = %event_session_id,
+            active_session_id = app
+                .session_runtime
+                .session_id
+                .as_ref()
+                .map_or("<none>", crate::agent::model::SessionId::as_str),
+        );
+        return;
+    }
+
     app.request_active_surface_repaint();
     match event {
-        ClientEvent::SessionUpdate(update) => super::handle_session_update_event(app, update),
-        ClientEvent::PermissionRequest { request, response_tx } => {
+        ClientEvent::SessionUpdate { session_id: _, update } => {
+            super::handle_session_update_event(app, update);
+        }
+        ClientEvent::PermissionRequest { session_id: _, request, response_tx } => {
             turn::handle_permission_request_event(app, request, response_tx);
         }
-        ClientEvent::QuestionRequest { request, response_tx } => {
+        ClientEvent::QuestionRequest { session_id: _, request, response_tx } => {
             turn::handle_question_request_event(app, request, response_tx);
         }
-        ClientEvent::UserDialogRequest { request, response_tx } => {
+        ClientEvent::UserDialogRequest { session_id: _, request, response_tx } => {
             turn::handle_user_dialog_request_event(app, request, response_tx);
         }
-        ClientEvent::McpElicitationRequest { request } => {
+        ClientEvent::McpElicitationRequest { session_id: _, request } => {
             crate::app::config::present_mcp_elicitation_request(app, request);
         }
-        ClientEvent::McpAuthRedirect { redirect } => {
+        ClientEvent::McpAuthRedirect { session_id: _, redirect } => {
             crate::app::config::present_mcp_auth_redirect(app, redirect);
         }
-        ClientEvent::McpOperationError { error } => {
+        ClientEvent::McpOperationError { session_id: _, error } => {
             crate::app::config::handle_mcp_operation_error(app, &error);
         }
-        ClientEvent::McpSetServersResult { session_id, result } => {
-            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                return;
-            }
+        ClientEvent::McpSetServersResult { session_id: _, result } => {
             crate::app::config::handle_mcp_set_servers_result(app, &result);
         }
         ClientEvent::McpConfigRemoveSucceeded { cwd_raw, server_name, scope, claude_path } => {
@@ -126,17 +142,23 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 &message,
             );
         }
-        ClientEvent::McpElicitationCompleted { elicitation_id, server_name } => {
+        ClientEvent::McpElicitationCompleted { session_id: _, elicitation_id, server_name } => {
             crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
         }
-        ClientEvent::TurnCancelled => turn::handle_turn_cancelled_event(app),
-        ClientEvent::TurnComplete { terminal_reason } => {
+        ClientEvent::TurnCancelled { session_id: _ } => turn::handle_turn_cancelled_event(app),
+        ClientEvent::TurnComplete { session_id: _, terminal_reason } => {
             turn::handle_turn_complete_event(app, terminal_reason);
         }
-        ClientEvent::TurnError { message, api_error_status, terminal_reason } => {
+        ClientEvent::TurnError { session_id: _, message, api_error_status, terminal_reason } => {
             turn::handle_turn_error_event(app, &message, None, api_error_status, terminal_reason);
         }
-        ClientEvent::TurnErrorClassified { message, class, api_error_status, terminal_reason } => {
+        ClientEvent::TurnErrorClassified {
+            session_id: _,
+            message,
+            class,
+            api_error_status,
+            terminal_reason,
+        } => {
             turn::handle_turn_error_event(
                 app,
                 &message,
@@ -175,8 +197,8 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::ConnectionFailed(msg) => {
             session::handle_connection_failed_event(app, &msg);
         }
-        ClientEvent::SlashCommandError(msg) => {
-            session::handle_slash_command_error_event(app, &msg);
+        ClientEvent::SlashCommandError { session_id: _, message } => {
+            session::handle_slash_command_error_event(app, &message);
         }
         ClientEvent::TerminalReleasedToChild { reason } => {
             app.terminal_lifecycle = crate::app::TerminalLifecycleState::ReleasedToChild(reason);
@@ -190,20 +212,10 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             app.chat_render.invalidate_live_anchor();
             app.request_chat_visible_rebuild();
         }
-        ClientEvent::RuntimeReloadCompleted { session_id } => {
-            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                return;
-            }
+        ClientEvent::RuntimeReloadCompleted { session_id: _ } => {
             crate::app::plugins::apply_runtime_reload_success(app);
         }
-        ClientEvent::RuntimeReloadFailed { session_id, message } => {
-            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                return;
-            }
+        ClientEvent::RuntimeReloadFailed { session_id: _, message } => {
             crate::app::plugins::apply_runtime_reload_failure(app, &message);
             if app.mcp.in_flight {
                 app.mcp.in_flight = false;
@@ -249,19 +261,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             session::handle_logout_completed_event(app);
         }
         ClientEvent::StatusSnapshotReceived { session_id, account } => {
-            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_AUTH,
-                    event_name = "status_snapshot_dropped",
-                    message = "status snapshot dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
             let has_email = account.email.as_deref().is_some_and(|email| !email.trim().is_empty());
             let has_organization = account.organization.is_some();
             let subscription_type = account.subscription_type.clone();
@@ -285,36 +284,10 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                 api_provider = ?api_provider,
             );
         }
-        ClientEvent::ContextUsageReceived { session_id, percentage } => {
-            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "context_usage_dropped",
-                    message = "context usage dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
+        ClientEvent::ContextUsageReceived { session_id: _, percentage } => {
             crate::app::session_runtime::apply_context_usage_snapshot(app, percentage);
         }
         ClientEvent::RewindTargetsReceived { session_id, targets } => {
-            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_SESSION,
-                    event_name = "rewind_targets_dropped",
-                    message = "rewind targets dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
             app.sdk_inventory.rewind_targets = targets;
             app.sdk_inventory.rewind_targets_session_id =
                 Some(crate::agent::model::SessionId::new(session_id));
@@ -325,19 +298,6 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             session::handle_rewind_result_event(app, &result);
         }
         ClientEvent::McpSnapshotReceived { session_id, mut servers, source, error } => {
-            if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
-                != Some(session_id.as_str())
-            {
-                tracing::debug!(
-                    target: crate::logging::targets::APP_CONFIG,
-                    event_name = "mcp_snapshot_dropped",
-                    message = "MCP snapshot dropped for a stale session",
-                    outcome = "dropped",
-                    session_id = %session_id,
-                    reason = "stale_session",
-                );
-                return;
-            }
             let pending_dynamic_mcp_removal_confirmation =
                 crate::app::config::pending_dynamic_mcp_removal_confirmation_from_snapshot(
                     app,

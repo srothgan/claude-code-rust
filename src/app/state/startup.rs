@@ -87,16 +87,6 @@ impl StartupState {
         matches!(self.launch, StartupLaunch::SessionPicker)
     }
 
-    #[must_use]
-    pub fn connection_requested(&self) -> bool {
-        matches!(self.phase, StartupPhase::ConnectionRequested | StartupPhase::ConnectionStarted(_))
-    }
-
-    #[must_use]
-    pub fn connection_started(&self) -> bool {
-        matches!(self.phase, StartupPhase::ConnectionStarted(_))
-    }
-
     pub fn request_connection(&mut self) {
         if matches!(self.phase, StartupPhase::AwaitingConnection) {
             self.phase = StartupPhase::ConnectionRequested;
@@ -126,17 +116,6 @@ impl StartupState {
         {
             *recent_sessions_loaded = true;
         }
-    }
-
-    #[must_use]
-    pub fn recent_sessions_loaded(&self) -> bool {
-        matches!(
-            self.phase,
-            StartupPhase::ConnectionStarted(
-                StartupConnectionPhase::PickerPending { recent_sessions_loaded: true }
-                    | StartupConnectionPhase::PickerResolved
-            )
-        )
     }
 
     #[must_use]

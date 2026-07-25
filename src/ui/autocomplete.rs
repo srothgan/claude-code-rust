@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App};
 use crate::app::{file_index, mention, slash, subagent};
 use crate::ui::theme;
@@ -344,7 +343,6 @@ mod tests {
     use super::{composer_hint_height, composer_hint_rows, find_case_insensitive_range, is_active};
     use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App, file_index, mention, slash, subagent};
     use crate::ui::theme;
-    use std::time::SystemTime;
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
@@ -436,16 +434,12 @@ mod tests {
                     rel_path_lower: "src/main.rs".to_owned(),
                     basename_lower: "main.rs".to_owned(),
                     depth: 1,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: false,
                 },
                 file_index::FileCandidate {
                     rel_path: "src/lib.rs".to_owned(),
                     rel_path_lower: "src/lib.rs".to_owned(),
                     basename_lower: "lib.rs".to_owned(),
                     depth: 1,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: false,
                 },
             ],
         ));
@@ -501,8 +495,6 @@ mod tests {
                 rel_path_lower: "src/main.rs".to_owned(),
                 basename_lower: "main.rs".to_owned(),
                 depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
             }],
         ));
 

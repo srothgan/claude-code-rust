@@ -24,15 +24,10 @@ pub struct ToolCallInfo {
     pub terminal_id: Option<String>,
     /// The shell command that was executed (e.g. "echo hello && ls -la").
     pub terminal_command: Option<String>,
-    /// Snapshot of terminal output, updated each frame while `InProgress`.
+    /// Latest terminal output supplied by the bridge.
     pub terminal_output: Option<String>,
-    /// Length of terminal buffer at last snapshot - used to skip O(n) re-snapshots
-    /// when the buffer hasn't grown.
+    /// Cached output length for telemetry and retention accounting.
     pub terminal_output_len: usize,
-    /// Number of terminal output bytes consumed for incremental append updates.
-    pub terminal_bytes_seen: usize,
-    /// Current terminal snapshot ingestion mode.
-    pub terminal_snapshot_mode: TerminalSnapshotMode,
     /// Per-block render cache for this tool call.
     pub cache: BlockCache,
     /// Inline permission prompt - rendered inside this tool call block.
@@ -50,12 +45,6 @@ pub struct SubagentPermissionContext {
     pub parent_tool_title: Option<String>,
     pub parent_model: Option<String>,
     pub parent_raw_input: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalSnapshotMode {
-    AppendOnly,
-    ReplaceSnapshot,
 }
 
 impl ToolCallInfo {

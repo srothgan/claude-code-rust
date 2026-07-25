@@ -2,12 +2,10 @@
 // =====
 // TESTS: 40
 // =====
-
 use super::*;
 use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::events::ClientEvent;
 use crate::agent::events::ServiceStatusSeverity;
-use crate::agent::events::TerminalProcess;
 use crate::app::keymap::{
     KeyAction, KeyBinding, KeyBindingSource, KeyContext, KeySpec, ResolvedKeymap, TerminalAction,
 };
@@ -22,9 +20,24 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
 use std::fmt::Write as _;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::oneshot;
+
+fn session_update(update: model::SessionUpdate) -> ClientEvent {
+    ClientEvent::SessionUpdate { session_id: "test-session".to_owned(), update }
+}
+
+fn turn_cancelled() -> ClientEvent {
+    ClientEvent::TurnCancelled { session_id: model::SessionId::new("test-session") }
+}
+
+fn turn_complete(terminal_reason: Option<crate::agent::types::TerminalReason>) -> ClientEvent {
+    ClientEvent::TurnComplete { session_id: "test-session".to_owned(), terminal_reason }
+}
+
+fn slash_command_error(message: String) -> ClientEvent {
+    ClientEvent::SlashCommandError { session_id: None, message }
+}
 
 // Helper: build a minimal ToolCallInfo with given id + status
 
@@ -46,8 +59,6 @@ fn tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         terminal_command: None,
         terminal_output: None,
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -254,7 +265,7 @@ fn assert_seed_resize_measurements_preserved(app: &App) {
 
 #[test]
 fn transcript_retraction_removes_matching_text_blocks_only() {
-    let mut app = App::test_default();
+    let mut app = make_test_app();
     app.transcript.messages.push(assistant_msg(vec![
         source_text("stale", "old-assistant"),
         source_text("keep", "new-assistant"),
@@ -262,7 +273,7 @@ fn transcript_retraction_removes_matching_text_blocks_only() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(transcript_retraction(
+        session_update(transcript_retraction(
             vec!["old-assistant", "old-assistant", "unknown"],
             model::TranscriptRetractionReason::ModelRefusalFallback,
         )),
@@ -279,7 +290,7 @@ fn transcript_retraction_removes_matching_text_blocks_only() {
 
 #[test]
 fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
-    let mut app = App::test_default();
+    let mut app = make_test_app();
     let mut stale_tool = tool_call("tool-old", model::ToolCallStatus::Completed);
     stale_tool.source_message_uuids = vec!["assistant-tool".to_owned(), "user-result".to_owned()];
     stale_tool.sdk_tool_name = "Bash".to_owned();
@@ -289,18 +300,16 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
         source_text("replacement", "assistant-new"),
     ]));
     app.index_tool_call("tool-old".to_owned(), 0, 0);
-    app.sync_terminal_tool_call("term-old".to_owned(), 0, 0);
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(transcript_retraction(
+        session_update(transcript_retraction(
             vec!["user-result"],
             model::TranscriptRetractionReason::ModelFallback,
         )),
     );
 
     assert!(app.lookup_tool_call("tool-old").is_none());
-    assert!(app.terminal_tool_calls().is_empty());
     assert_eq!(app.transcript.messages.len(), 1);
     assert_eq!(app.transcript.messages[0].blocks.len(), 1);
     let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
@@ -311,19 +320,19 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
 
 #[test]
 fn transcript_retraction_then_replacement_leaves_canonical_assistant_content() {
-    let mut app = App::test_default();
+    let mut app = make_test_app();
     app.transcript.messages.push(assistant_msg(vec![source_text("stale", "assistant-old")]));
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(transcript_retraction(
+        session_update(transcript_retraction(
             vec!["assistant-old"],
             model::TranscriptRetractionReason::AssistantSupersedes,
         )),
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
+        session_update(model::SessionUpdate::AgentMessageChunk(
             model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                 "replacement",
             )))
@@ -403,15 +412,12 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(task_tc)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(task_tc)));
     assert!(app.turn.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
     // User cancels then TurnComplete finalizes the turn
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_cancelled());
+    handle_client_event(&mut app, turn_complete(None));
 
     // Stale task ID must be gone after turn boundary
     assert!(app.turn.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
@@ -421,10 +427,7 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         .kind(model::ToolKind::Search)
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "Glob"}}));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(glob_tc)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(glob_tc)));
     assert_eq!(
         app.tool_call_scope("glob-1"),
         Some(ToolCallScope::MainAgent),
@@ -626,11 +629,9 @@ fn agent_message_chunk_splits_into_frozen_text_blocks() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                "p1\n\np2\n\np3",
-            ))),
-        )),
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("p1\n\np2\n\np3")),
+        ))),
     );
 
     assert_eq!(app.transcript.messages.len(), 1);
@@ -671,9 +672,9 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(&table))),
-        )),
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new(&table)),
+        ))),
     );
 
     assert!(matches!(app.status, AppStatus::Running));
@@ -712,7 +713,9 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
 // has_in_progress_tool_calls
 
 fn make_test_app() -> App {
-    App::test_default()
+    let mut app = App::test_default();
+    app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+    app
 }
 
 fn test_current_model(model_name: &str) -> model::CurrentModel {
@@ -805,16 +808,13 @@ fn execute_tool_update_uses_raw_output_fallback() {
     let tc = model::ToolCall::new("tc-exec", "Terminal")
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress);
-    handle_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let fields = model::ToolCallUpdateFields::new()
         .status(model::ToolCallStatus::Completed)
         .raw_output(serde_json::json!("line 1\nline 2"));
     let update = model::ToolCallUpdate::new("tc-exec", fields);
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let Some((mi, bi)) = app.lookup_tool_call("tc-exec") else {
         panic!("tool call not indexed");
@@ -834,15 +834,12 @@ fn powershell_raw_input_update_does_not_populate_terminal_command() {
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "PowerShell"}}));
-    handle_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let fields = model::ToolCallUpdateFields::new()
         .raw_input(serde_json::json!({ "command": "Get-ChildItem" }));
     let update = model::ToolCallUpdate::new("tc-pwsh", fields);
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let Some((mi, bi)) = app.lookup_tool_call("tc-pwsh") else {
         panic!("tool call not indexed");
@@ -878,10 +875,7 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         "tool-stale",
         model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
     );
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     assert!(app.turn.active_task_ids.is_empty());
 }
@@ -889,15 +883,6 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
 #[test]
 fn repeated_tool_call_updates_existing_execute_snapshot_state() {
     let mut app = make_test_app();
-    app.terminals.borrow_mut().insert(
-        "term-2".to_owned(),
-        TerminalProcess {
-            child: None,
-            output_buffer: Arc::new(Mutex::new(Vec::new())),
-            command: "echo second".to_owned(),
-        },
-    );
-
     let first = model::ToolCall::new("tc-dup", "Terminal")
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress)
@@ -905,10 +890,7 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
             "term-1",
         ))])
         .raw_output(serde_json::json!("first"));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(first)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(first)));
 
     let second = model::ToolCall::new("tc-dup", "Terminal")
         .kind(model::ToolKind::Execute)
@@ -917,10 +899,7 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
             "term-2",
         ))])
         .raw_output(serde_json::json!("second"));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(second)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(second)));
 
     let (mi, bi) = app.lookup_tool_call("tc-dup").expect("tool call not indexed");
     let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] else {
@@ -928,11 +907,7 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
     };
     assert_eq!(tc.terminal_output.as_deref(), Some("second"));
     assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
-    assert_eq!(tc.terminal_command.as_deref(), Some("echo second"));
-    assert!(app.terminal_tool_calls().iter().any(|entry| entry.terminal_id == "term-2"
-        && entry.msg_idx == mi
-        && entry.block_idx == bi));
-    assert!(app.terminal_tool_calls().iter().all(|entry| entry.terminal_id != "term-1"));
+    assert_eq!(tc.terminal_command, None);
 }
 
 #[test]
@@ -949,19 +924,13 @@ fn todowrite_tool_call_does_not_mutate_task_state() {
             "todos": [{"content": "Task A", "status": "in_progress"}]
         }))
         .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(todo_call)));
 
     let update = model::ToolCallUpdate::new(
         "tc-todo-update",
         model::ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
     );
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     assert_eq!(app.sdk_inventory.tasks.len(), 1);
     assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-1");
@@ -1148,7 +1117,7 @@ fn has_in_progress_empty_assistant_blocks() {
 
 #[test]
 fn test_app_defaults() {
-    let app = make_test_app();
+    let app = App::test_default();
     assert!(app.transcript.messages.is_empty());
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
@@ -1300,10 +1269,10 @@ fn resize_during_active_turn_marks_final_purge_replay_needed() {
 fn turn_complete_after_cancel_renders_interrupted_hint() {
     let mut app = make_test_app();
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_client_event(&mut app, turn_cancelled());
     assert!(app.turn.cancelled_pending_hint);
 
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
 
     assert!(!app.turn.cancelled_pending_hint);
     let last = app.transcript.messages.last().expect("expected interruption hint message");
@@ -1520,9 +1489,9 @@ fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcil
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
-        )),
+        session_update(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
+            test_current_model("claude-opus-4-7"),
+        ))),
     );
 
     let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
@@ -1590,9 +1559,9 @@ fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
-        )),
+        session_update(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
+            test_current_model("claude-opus-4-7"),
+        ))),
     );
 
     let Some(first) = app.transcript.messages.first() else {
@@ -1605,9 +1574,9 @@ fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("claude-sonnet-4-5")),
-        )),
+        session_update(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
+            test_current_model("claude-sonnet-4-5"),
+        ))),
     );
 
     let Some(first) = app.transcript.messages.first() else {
@@ -1914,6 +1883,52 @@ fn stale_status_snapshot_for_old_session_is_ignored() {
     );
 
     assert!(app.session_runtime.account_info.is_none());
+}
+
+#[test]
+fn stale_session_update_is_rejected_before_dispatch() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "old-session".to_owned(),
+            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown),
+        },
+    );
+
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
+}
+
+#[test]
+fn matching_session_update_is_dispatched() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "current-session".to_owned(),
+            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown),
+        },
+    );
+
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
+}
+
+#[test]
+fn stale_turn_completion_cannot_finish_current_turn() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
+    app.status = AppStatus::Running;
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::TurnComplete { session_id: "old-session".to_owned(), terminal_reason: None },
+    );
+
+    assert!(matches!(app.status, AppStatus::Running));
 }
 
 #[test]
@@ -2283,7 +2298,7 @@ fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
     app.status = AppStatus::CommandPending;
     app.resuming_session_id = Some("resume-123".into());
 
-    handle_client_event(&mut app, ClientEvent::SlashCommandError("resume failed".into()));
+    handle_client_event(&mut app, slash_command_error("resume failed".into()));
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(app.resuming_session_id.is_none());
@@ -2302,10 +2317,7 @@ fn slash_command_error_clears_rewind_target_loading_state() {
         previous_assistant_uuid: None,
     }];
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to load rewind targets".into()),
-    );
+    handle_client_event(&mut app, slash_command_error("failed to load rewind targets".into()));
 
     assert!(!app.sdk_inventory.rewind_targets_in_flight);
     assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
@@ -2318,7 +2330,7 @@ fn slash_command_error_during_running_turn_does_not_stop_turn_status() {
     app.turn.pending_command_label = Some("Switching mode...".into());
     app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
 
-    handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set mode".into()));
+    handle_client_event(&mut app, slash_command_error("failed to set mode".into()));
 
     assert!(matches!(app.status, AppStatus::Running));
     assert!(app.turn.pending_command_label.is_none());
@@ -2336,10 +2348,7 @@ fn slash_command_error_during_active_turn_inserts_inline_notice() {
     app.turn.pending_command_label = Some("Switching mode...".into());
     app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to set mode to auto".into()),
-    );
+    handle_client_event(&mut app, slash_command_error("failed to set mode to auto".into()));
 
     assert!(matches!(app.status, AppStatus::Running));
     assert!(app.turn.pending_command_label.is_none());
@@ -2364,10 +2373,7 @@ fn slash_command_error_without_active_turn_inserts_standalone_notice() {
     app.turn.pending_command_label = Some("Switching mode...".into());
     app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to set mode to auto".into()),
-    );
+    handle_client_event(&mut app, slash_command_error("failed to set mode to auto".into()));
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(app.turn.pending_command_label.is_none());
@@ -2393,7 +2399,7 @@ fn slash_command_error_during_thinking_turn_does_not_stop_turn_status() {
     app.turn.pending_command_label = Some("Switching model...".into());
     app.turn.pending_command_ack = Some(PendingCommandAck::CurrentModel);
 
-    handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set model".into()));
+    handle_client_event(&mut app, slash_command_error("failed to set model".into()));
 
     assert!(matches!(app.status, AppStatus::Thinking));
     assert!(app.turn.pending_command_label.is_none());
@@ -2493,10 +2499,7 @@ fn slash_command_error_for_pending_session_rename_stays_in_config_feedback() {
             },
         });
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to rename session: boom".into()),
-    );
+    handle_client_event(&mut app, slash_command_error("failed to rename session: boom".into()));
 
     assert!(app.config.pending_session_title_change.is_none());
     assert_eq!(app.config.last_error.as_deref(), Some("failed to rename session: boom"));
@@ -2514,6 +2517,7 @@ fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
     handle_client_event(
         &mut app,
         ClientEvent::McpOperationError {
+            session_id: "test-session".to_owned(),
             error: crate::agent::types::McpOperationError {
                 server_name: Some("claude.ai Google Calendar".into()),
                 operation: "authenticate".into(),
@@ -2580,7 +2584,7 @@ fn startup_picker_waits_for_connected_after_sessions_listed() {
     );
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(app.startup.recent_sessions_loaded());
+    assert!(app.startup.startup_picker_is_ready());
     assert!(!app.startup.session_picker_resolved());
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2670,9 +2674,9 @@ fn current_model_update_updates_state_and_clears_pending_when_expected() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("sonnet")),
-        )),
+        session_update(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
+            test_current_model("sonnet"),
+        ))),
     );
 
     assert!(matches!(app.status, AppStatus::Ready));
@@ -2694,12 +2698,10 @@ fn non_matching_config_option_update_keeps_pending() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
-            model::ConfigOptionUpdate {
-                option_id: "max_thinking_tokens".to_owned(),
-                value: serde_json::json!(2048),
-            },
-        )),
+        session_update(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
+            option_id: "max_thinking_tokens".to_owned(),
+            value: serde_json::json!(2048),
+        })),
     );
 
     assert!(matches!(app.status, AppStatus::CommandPending));
@@ -3054,30 +3056,27 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
 #[test]
 fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
     let mut app = make_test_app();
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
     assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
 fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
     let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("session-x"));
     app.transcript.messages.push(user_msg("/compact"));
     app.transcript
         .messages
         .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Manual,
-                pre_tokens: 123_456,
-            },
-        )),
+        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+            trigger: model::CompactionTrigger::Manual,
+            pre_tokens: 123_456,
+        })),
     );
     assert!(app.turn.pending_compact_clear);
 
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
 
     assert!(!app.turn.pending_compact_clear);
     assert_eq!(app.transcript.messages.len(), 3);
@@ -3092,7 +3091,7 @@ fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary
     assert_eq!(block.text, "Session successfully compacted.");
     assert_eq!(
         app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref(),
-        Some("session-x")
+        Some("test-session")
     );
 }
 
@@ -3103,11 +3102,9 @@ fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                "regular answer",
-            ))),
-        )),
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("regular answer")),
+        ))),
     );
 
     assert!(!app.turn.is_compacting);
@@ -3127,9 +3124,7 @@ fn session_status_idle_does_not_emit_compaction_success_without_boundary() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::SessionStatusUpdate(
-            model::SessionStatus::Idle,
-        )),
+        session_update(model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Idle)),
     );
 
     assert!(!app.turn.is_compacting);
@@ -3146,6 +3141,7 @@ fn turn_error_keeps_history_when_compact_pending() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "adapter failed".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3183,7 +3179,7 @@ fn turn_cancel_keeps_manual_compaction_success_pending_until_exit() {
     app.turn.pending_compact_clear = true;
     app.turn.is_compacting = true;
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_client_event(&mut app, turn_cancelled());
 
     assert!(app.turn.pending_compact_clear);
     assert!(app.turn.is_compacting);
@@ -3196,10 +3192,11 @@ fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
     app.turn.pending_compact_clear = true;
     app.turn.is_compacting = true;
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_client_event(&mut app, turn_cancelled());
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "cancelled".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3228,6 +3225,7 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3254,6 +3252,7 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "turn failed".into(),
             class: TurnErrorClass::PlanLimit,
             api_error_status: None,
@@ -3280,6 +3279,7 @@ fn classified_turn_error_auth_required_sets_exit_error_and_quits() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "auth required".into(),
             class: TurnErrorClass::AuthRequired,
             api_error_status: None,
@@ -3299,6 +3299,7 @@ fn classified_turn_error_model_unavailable_suggests_model_switch() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "model_not_found".into(),
             class: TurnErrorClass::ModelUnavailable,
             api_error_status: Some(404),
@@ -3321,6 +3322,7 @@ fn classified_turn_error_account_access_does_not_quit_for_login() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "oauth_org_not_allowed".into(),
             class: TurnErrorClass::AccountAccess,
             api_error_status: Some(403),
@@ -3343,6 +3345,7 @@ fn classified_turn_error_transient_service_suggests_retry() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "overloaded".into(),
             class: TurnErrorClass::TransientService,
             api_error_status: Some(529),
@@ -3370,6 +3373,7 @@ fn turn_error_clears_tool_scope_tracking() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "boom".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3512,12 +3516,10 @@ fn compaction_boundary_enables_compacting_and_records_boundary() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Manual,
-                pre_tokens: 123_456,
-            },
-        )),
+        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+            trigger: model::CompactionTrigger::Manual,
+            pre_tokens: 123_456,
+        })),
     );
 
     assert!(app.turn.is_compacting);
@@ -3536,12 +3538,10 @@ fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Auto,
-                pre_tokens: 234_567,
-            },
-        )),
+        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+            trigger: model::CompactionTrigger::Auto,
+            pre_tokens: 234_567,
+        })),
     );
 
     assert!(app.turn.is_compacting);
@@ -3560,9 +3560,7 @@ fn fast_mode_update_sets_state() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::FastModeUpdate(
-            model::FastModeState::Cooldown,
-        )),
+        session_update(model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown)),
     );
 
     assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
@@ -3589,11 +3587,11 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
+        session_update(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
+        session_update(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
     );
 
     assert_eq!(app.transcript.messages.len(), 1);
@@ -3607,11 +3605,11 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
         model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update.clone())),
+        session_update(model::SessionUpdate::RateLimitUpdate(rejected_update.clone())),
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update)),
+        session_update(model::SessionUpdate::RateLimitUpdate(rejected_update)),
     );
 
     assert_eq!(app.transcript.messages.len(), 1);
@@ -3634,7 +3632,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(1_741_280_000.0),
@@ -3657,6 +3655,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests".to_owned(),
             class: TurnErrorClass::PlanLimit,
             api_error_status: None,
@@ -3701,6 +3700,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests".to_owned(),
             class: TurnErrorClass::PlanLimit,
             api_error_status: None,
@@ -3720,7 +3720,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     app.bind_active_turn_assistant(3);
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::Rejected,
             error_code: None,
             resets_at: Some(1_741_290_000.0),
@@ -3759,7 +3759,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(123.0),
@@ -3776,7 +3776,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
     );
 
     assert_eq!(app.turn.notice_refs.len(), 1);
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
     assert!(app.turn.notice_refs.is_empty());
 
     app.status = AppStatus::Thinking;
@@ -3785,7 +3785,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
     app.bind_active_turn_assistant(app.transcript.messages.len() - 1);
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(456.0),
@@ -3821,12 +3821,13 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
     let mut app = make_test_app();
     app.transcript.messages.push(user_msg("build app"));
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_client_event(&mut app, turn_cancelled());
     assert!(app.turn.cancelled_pending_hint);
 
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "Error: Request was aborted.\n    at stack line".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3855,7 +3856,7 @@ fn turn_cancel_marks_active_tools_failed() {
         MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
     ]));
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_client_event(&mut app, turn_cancelled());
 
     let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");
@@ -3886,7 +3887,7 @@ fn turn_complete_marks_lingering_tools_completed() {
         MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
     ]));
 
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
 
     let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");
@@ -4924,7 +4925,7 @@ fn trusted_view_accept_key_does_not_edit_chat_input() {
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.input.text(), "seed");
     assert!(app.paste.pending_text.is_empty());
-    assert!(app.startup.connection_requested());
+    assert!(app.startup.mark_connection_started());
 }
 
 #[test]
@@ -4982,7 +4983,7 @@ fn api_retry_updates_single_warning_notice() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
+        session_update(model::SessionUpdate::ApiRetryUpdate {
             attempt: 1,
             max_retries: 4,
             retry_delay_ms: 1000.0,
@@ -4992,7 +4993,7 @@ fn api_retry_updates_single_warning_notice() {
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
+        session_update(model::SessionUpdate::ApiRetryUpdate {
             attempt: 2,
             max_retries: 4,
             retry_delay_ms: 1500.0,
@@ -5015,7 +5016,7 @@ fn system_notice_update_uses_notice_lane() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::SystemNoticeUpdate {
+        session_update(model::SessionUpdate::SystemNoticeUpdate {
             severity: model::SystemNoticeSeverity::Warning,
             message: "Plugin install failed.".to_owned(),
         }),
@@ -5034,7 +5035,7 @@ fn available_commands_update_replaces_previous_commands() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+        session_update(model::SessionUpdate::AvailableCommandsUpdate(
             model::AvailableCommandsUpdate::new(vec![model::AvailableCommand::new(
                 "/old",
                 "Old command",
@@ -5043,7 +5044,7 @@ fn available_commands_update_replaces_previous_commands() {
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+        session_update(model::SessionUpdate::AvailableCommandsUpdate(
             model::AvailableCommandsUpdate::new(vec![
                 model::AvailableCommand::new("/new", "New command").input_hint("<arg>"),
             ]),
@@ -5072,7 +5073,7 @@ fn runtime_session_state_updates_status_with_guards() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
             model::RuntimeSessionState::Running,
         )),
     );
@@ -5085,7 +5086,7 @@ fn runtime_session_state_updates_status_with_guards() {
     app.status = AppStatus::Error;
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
             model::RuntimeSessionState::Idle,
         )),
     );
@@ -5097,7 +5098,7 @@ fn settings_parse_error_surfaces_system_error_message() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::SettingsParseError {
+        session_update(model::SessionUpdate::SettingsParseError {
             file: Some("C:/work/.claude/settings.json".to_owned()),
             path: "permissions.allow".to_owned(),
             message: "Expected array".to_owned(),

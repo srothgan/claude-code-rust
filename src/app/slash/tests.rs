@@ -9,6 +9,10 @@ use super::candidates::{
     argument_candidates, detect_slash_at_cursor, supported_command_candidates,
 };
 
+fn session_update(update: model::SessionUpdate) -> crate::agent::events::ClientEvent {
+    crate::agent::events::ClientEvent::SessionUpdate { session_id: "sess-1".to_owned(), update }
+}
+
 #[test]
 fn parse_non_slash_returns_none() {
     assert!(parse("hello world").is_none());
@@ -1382,11 +1386,9 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::CurrentModeUpdate(
-                        crate::agent::model::CurrentModeUpdate::new("plan"),
-                    ),
-                ),
+                session_update(crate::agent::model::SessionUpdate::CurrentModeUpdate(
+                    crate::agent::model::CurrentModeUpdate::new("plan"),
+                )),
             );
             assert!(
                 matches!(app.status, AppStatus::Ready),
@@ -1427,14 +1429,12 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
 
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::CurrentModelUpdate(
-                        crate::agent::model::CurrentModelUpdate::new(
-                            crate::agent::model::CurrentModel::new("sonnet", "sonnet", "sonnet")
-                                .authoritative(true),
-                        ),
+                session_update(crate::agent::model::SessionUpdate::CurrentModelUpdate(
+                    crate::agent::model::CurrentModelUpdate::new(
+                        crate::agent::model::CurrentModel::new("sonnet", "sonnet", "sonnet")
+                            .authoritative(true),
                     ),
-                ),
+                )),
             );
             assert!(
                 matches!(app.status, AppStatus::Ready),
@@ -1487,14 +1487,12 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
 
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::ConfigOptionUpdate(
-                        crate::agent::model::ConfigOptionUpdate {
-                            option_id: "effortLevel".to_owned(),
-                            value: serde_json::json!("xhigh"),
-                        },
-                    ),
-                ),
+                session_update(crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                    crate::agent::model::ConfigOptionUpdate {
+                        option_id: "effortLevel".to_owned(),
+                        value: serde_json::json!("xhigh"),
+                    },
+                )),
             );
             assert!(matches!(app.status, AppStatus::Ready));
             assert_eq!(
@@ -1578,14 +1576,12 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
 
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::ConfigOptionUpdate(
-                        crate::agent::model::ConfigOptionUpdate {
-                            option_id: "agent".to_owned(),
-                            value: serde_json::json!("reviewer"),
-                        },
-                    ),
-                ),
+                session_update(crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                    crate::agent::model::ConfigOptionUpdate {
+                        option_id: "agent".to_owned(),
+                        value: serde_json::json!("reviewer"),
+                    },
+                )),
             );
             assert!(matches!(app.status, AppStatus::Ready));
             assert_eq!(

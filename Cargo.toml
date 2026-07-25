@@ -24,7 +24,6 @@ ansi-to-tui = "8.0.1"
 arboard = { version = "3.6.1", features = ["image-data"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png"] }
-async-trait = "0.1.89"
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 dirs = "6.0.0"
@@ -43,8 +42,15 @@ serde_json = "1.0.150"
 similar = "3.1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 thiserror = "2.0.18"
-tokio = { version = "1.52.3", features = ["full"] }
-tokio-util = { version = "0.7.18", features = ["compat"] }
+tokio = { version = "1.52.3", features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
@@ -114,3 +120,6 @@ exit = "deny"
 shadow_same = "warn"
 shadow_unrelated = "allow"
 str_to_string = "warn"
+
+[lints.rust]
+unsafe_code = "warn"

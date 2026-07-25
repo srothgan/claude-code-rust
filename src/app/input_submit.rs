@@ -110,7 +110,7 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     conn.cancel(session_id.clone()).map_err(|e| e.to_string())?;
     app.turn.pending_cancel_origin = Some(origin);
     app.turn.cancelled_pending_hint = matches!(origin, CancelOrigin::Manual);
-    let _ = app.event_tx.send(ClientEvent::TurnCancelled);
+    let _ = app.event_tx.send(ClientEvent::TurnCancelled { session_id: sid });
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "turn_cancel_requested",
@@ -186,6 +186,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
         }
         Err(e) => {
             let _ = tx.send(ClientEvent::TurnError {
+                session_id,
                 message: e.to_string(),
                 api_error_status: None,
                 terminal_reason: None,

@@ -4,13 +4,14 @@
 // that the pending_interaction_ids queue is maintained, and that responses
 // are sent through the oneshot channel.
 
-use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::agent::model;
 use claude_code_rust::app::{AppStatus, MessageBlock};
 use pretty_assertions::assert_eq;
 use tokio::sync::oneshot;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::{
+    permission_request, send_client_event, session_update, test_app, turn_complete,
+};
 
 /// Helper: create a tool call, send it, then send a permission request for it.
 /// Returns the oneshot receiver so the test can verify the response.
@@ -22,14 +23,14 @@ fn setup_permission(
     // First create the tool call so it exists in the index
     let id = tool_id.to_owned();
     let tc = model::ToolCall::new(id, "Write file").status(model::ToolCallStatus::InProgress);
-    send_client_event(app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let (response_tx, response_rx) = oneshot::channel();
     let tool_call_update =
         model::ToolCallUpdate::new(tool_id.to_owned(), model::ToolCallUpdateFields::new());
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    send_client_event(app, ClientEvent::PermissionRequest { request, response_tx });
+    send_client_event(app, permission_request(request, response_tx));
     response_rx
 }
 
@@ -90,7 +91,7 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     let options = allow_deny_options();
     let request =
         model::RequestPermissionRequest::new("test-session", tool_call_update, options, None);
-    send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
+    send_client_event(&mut app, permission_request(request, response_tx));
 
     // Should NOT be in pending queue
     assert!(app.turn.pending_interaction_ids.is_empty());
@@ -142,7 +143,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
         allow_deny_options(),
         None,
     );
-    send_client_event(&mut app, ClientEvent::PermissionRequest { request, response_tx });
+    send_client_event(&mut app, permission_request(request, response_tx));
 
     assert_eq!(app.turn.pending_interaction_ids, vec!["tc-dup"]);
     assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
@@ -163,7 +164,7 @@ async fn turn_complete_resets_transient_state() {
     app.files_accessed = 5;
     app.spinner_frame = 42;
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    send_client_event(&mut app, turn_complete());
 
     assert!(matches!(app.status, AppStatus::Ready));
     assert_eq!(app.files_accessed, 0, "files_accessed should reset");
@@ -178,13 +179,10 @@ async fn turn_complete_does_not_clear_messages() {
 
     let chunk =
         model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("hello")));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(chunk)),
-    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(chunk)));
     assert_eq!(app.transcript.messages.len(), 1);
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    send_client_event(&mut app, turn_complete());
 
     assert_eq!(app.transcript.messages.len(), 1, "messages should persist across turns");
 }
@@ -195,10 +193,10 @@ async fn turn_complete_does_not_clear_tool_call_index() {
 
     let tc =
         model::ToolCall::new("tc-persist", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
     assert!(app.has_tool_call("tc-persist"));
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    send_client_event(&mut app, turn_complete());
 
     assert!(app.has_tool_call("tc-persist"), "tool_call_index should persist across turns");
 }
@@ -209,7 +207,7 @@ async fn turn_complete_does_not_clear_tasks() {
 
     app.sdk_inventory.tasks.push(task_item("task-1", "Test task", model::TaskStatus::InProgress));
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    send_client_event(&mut app, turn_complete());
 
     assert_eq!(app.sdk_inventory.tasks.len(), 1, "tasks should persist across turns");
 }
@@ -227,7 +225,7 @@ async fn turn_complete_does_not_affect_mode() {
         }],
     });
 
-    send_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    send_client_event(&mut app, turn_complete());
 
     assert!(app.session_runtime.mode.is_some(), "mode should persist across turns");
 }

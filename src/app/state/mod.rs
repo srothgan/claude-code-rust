@@ -43,15 +43,13 @@ pub use messages::{
 };
 pub use paste::PasteState;
 pub use repaint::LayoutInvalidation as InvalidationLevel;
-pub use repaint::{ChatRenderTraceState, LayoutInvalidation};
+pub use repaint::LayoutInvalidation;
 pub use sdk_inventory::SdkInventoryState;
 pub use session_runtime::SessionRuntimeState;
 pub use startup::StartupState;
 pub use tool_call_info::{
-    InlinePermission, InlineQuestion, SubagentPermissionContext, TerminalSnapshotMode,
-    ToolCallInfo, is_execute_tool_name,
+    InlinePermission, InlineQuestion, SubagentPermissionContext, ToolCallInfo, is_execute_tool_name,
 };
-pub use tool_tracking::TerminalToolCallRef;
 pub use transcript::Transcript;
 pub use turn::TurnState;
 pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
@@ -63,34 +61,25 @@ pub use types::{
     UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 
-#[allow(unused_imports)]
 mod prelude {
+    pub(super) use super::CacheMetrics;
     pub(super) use super::app::App;
-    pub(super) use super::autocomplete::AutocompleteKind;
     pub(super) use super::cache_metrics;
     pub(super) use super::chat_render::ChatRenderState;
-    pub(super) use super::messages::{
-        ChatMessage, MessageBlock, MessageRole, NoticeDedupKey, WelcomeBlock,
-    };
+    pub(super) use super::messages::{ChatMessage, MessageBlock, MessageRole, NoticeDedupKey};
     pub(super) use super::paste::PasteState;
-    pub(super) use super::render_budget;
     pub(super) use super::repaint::LayoutInvalidation as InvalidationLevel;
-    pub(super) use super::repaint::{ChatRenderTraceState, LayoutInvalidation};
     pub(super) use super::sdk_inventory::SdkInventoryState;
     pub(super) use super::session_runtime::SessionRuntimeState;
     pub(super) use super::startup::StartupState;
-    pub(super) use super::tool_call_info::ToolCallInfo;
-    pub(super) use super::tool_tracking::TerminalToolCallRef;
     pub(super) use super::transcript::Transcript;
     pub(super) use super::turn::TurnState;
-    pub(super) use super::turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
+    pub(super) use super::turn_notices::TurnNoticeRef;
     pub(super) use super::types::{
-        AppStatus, CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
-        McpState, ModeState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
-        RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState, ToolCallScope,
-        UpdatePromptState, UsageState,
+        AppStatus, CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState,
+        PasteSessionState, PendingCommandAck, RecentSessionInfo, RenderCacheBudget, SelectionPoint,
+        SessionPickerState, ToolCallScope, UpdatePromptState, UsageState,
     };
-    pub(super) use super::{BlockCache, CacheMetrics};
     pub(super) use crate::agent::events::ClientEvent;
     pub(super) use crate::agent::model;
     pub(super) use crate::app::config::ConfigState;
@@ -115,9 +104,8 @@ mod prelude {
     pub(super) use crate::app::{
         ChatPurgeReplayOptions, SurfaceDirtyState, TerminalLifecycleState,
     };
-    pub(super) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+    pub(super) use std::collections::{BTreeSet, HashMap, HashSet};
     pub(super) use std::path::{Path, PathBuf};
-    pub(super) use std::rc::Rc;
     pub(super) use std::sync::mpsc as std_mpsc;
     pub(super) use std::time::Instant;
     pub(super) use tokio::sync::mpsc;

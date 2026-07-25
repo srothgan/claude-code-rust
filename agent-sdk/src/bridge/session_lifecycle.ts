@@ -153,6 +153,8 @@ export type SessionState = {
   supportsBypassPermissionsMode: boolean;
   fastModeState: FastModeState;
   query: Query;
+  initializationTask?: Promise<void>;
+  queryConsumerTask?: Promise<void>;
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
   connectEvent: ConnectEventKind;
@@ -332,6 +334,11 @@ export async function closeSession(session: SessionState): Promise<void> {
     pending.resolve({ action: "cancel" });
   }
   session.pendingElicitations.clear();
+  await Promise.all(
+    [session.initializationTask, session.queryConsumerTask].filter(
+      (task): task is Promise<void> => task !== undefined,
+    ),
+  );
 }
 
 export async function closeSessionWithLogging(
@@ -617,7 +624,7 @@ export async function createSession(params: {
   // In stream-input mode the SDK may defer init until input arrives.
   // Trigger initialization explicitly so the Rust UI can receive `connected`
   // before the first user prompt.
-  void session.query
+  session.initializationTask = session.query
     .initializationResult()
     .then(async (result) => {
       bridgeLogger.info({
@@ -683,7 +690,7 @@ export async function createSession(params: {
       session.connectRequestId = undefined;
     });
 
-  void (async () => {
+  session.queryConsumerTask = (async () => {
     try {
       for await (const message of session.query) {
         // Lazy import to break circular dependency at module-evaluation time.

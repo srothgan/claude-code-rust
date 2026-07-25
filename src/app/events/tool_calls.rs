@@ -104,9 +104,6 @@ fn build_tool_info_from_tool_call(
         model::ToolCallContent::Terminal(term) => Some(term.terminal_id.clone()),
         _ => None,
     });
-    let terminal_command = terminal_id.as_ref().and_then(|terminal_id| {
-        app.terminals.borrow().get(terminal_id).map(|terminal| terminal.command.clone())
-    });
     let is_execute_tool = super::super::is_execute_tool_name(&sdk_tool_name);
     let initial_execute_output = if is_execute_tool {
         tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
@@ -132,11 +129,9 @@ fn build_tool_info_from_tool_call(
         content: tc.content,
         hidden: matches!(scope, ToolCallScope::SubagentChild { .. }),
         terminal_id,
-        terminal_command,
+        terminal_command: None,
         terminal_output: None,
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -145,9 +140,7 @@ fn build_tool_info_from_tool_call(
         tool_info.raw_input.as_ref().map_or(0, ToolCallInfo::estimate_json_value_bytes);
     if let Some(output) = initial_execute_output {
         tool_info.terminal_output_len = output.len();
-        tool_info.terminal_bytes_seen = output.len();
         tool_info.terminal_output = Some(output);
-        tool_info.terminal_snapshot_mode = crate::app::TerminalSnapshotMode::ReplaceSnapshot;
     }
     tool_info
 }
@@ -165,11 +158,9 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
     {
         let block_idx = owner.blocks.len();
         let tc_id = tool_info.id.clone();
-        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
         owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
         app.sync_after_message_blocks_changed(msg_idx);
         app.index_tool_call(tc_id, msg_idx, block_idx);
-        sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         return;
     }
 
@@ -178,16 +169,13 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         if let Some(last) = app.transcript.messages.last_mut() {
             let block_idx = last.blocks.len();
             let tc_id = tool_info.id.clone();
-            let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
             last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
             app.bind_active_turn_assistant(msg_idx);
             app.sync_after_message_blocks_changed(msg_idx);
             app.index_tool_call(tc_id, msg_idx, block_idx);
-            sync_tool_call_terminal_tracking(app, msg_idx, block_idx, terminal_id);
         }
     } else {
         let tc_id = tool_info.id.clone();
-        let terminal_id = App::tracked_terminal_id_for_tool(&tool_info);
         let new_idx = app.transcript.messages.len();
         app.push_message_tracked(ChatMessage::new(
             MessageRole::Assistant,
@@ -196,13 +184,11 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         ));
         app.bind_active_turn_assistant(new_idx);
         app.index_tool_call(tc_id, new_idx, 0);
-        sync_tool_call_terminal_tracking(app, new_idx, 0, terminal_id);
     }
 }
 
 fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &ToolCallInfo) {
     let mut layout_dirty = false;
-    let mut terminal_tracking = None;
     if let Some(MessageBlock::ToolCall(existing)) =
         app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
@@ -230,12 +216,6 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
             changed |= sync_if_changed(&mut existing.terminal_output, &tool_info.terminal_output);
             changed |=
                 sync_if_changed(&mut existing.terminal_output_len, &tool_info.terminal_output_len);
-            changed |=
-                sync_if_changed(&mut existing.terminal_bytes_seen, &tool_info.terminal_bytes_seen);
-            changed |= sync_if_changed(
-                &mut existing.terminal_snapshot_mode,
-                &tool_info.terminal_snapshot_mode,
-            );
         }
         if changed {
             existing.invalidate_render_cache();
@@ -243,26 +223,11 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         } else {
             crate::perf::mark("tool_update_noop_skips");
         }
-        terminal_tracking = Some(App::tracked_terminal_id_for_tool(existing));
     }
-    sync_tool_call_terminal_tracking(app, mi, bi, terminal_tracking.flatten());
     if layout_dirty {
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
-    }
-}
-
-fn sync_tool_call_terminal_tracking(
-    app: &mut App,
-    msg_idx: usize,
-    block_idx: usize,
-    terminal_id: Option<String>,
-) {
-    if let Some(terminal_id) = terminal_id {
-        app.sync_terminal_tool_call(terminal_id, msg_idx, block_idx);
-    } else {
-        app.untrack_terminal_tool_call(msg_idx, block_idx);
     }
 }
 

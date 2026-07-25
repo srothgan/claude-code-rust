@@ -3,7 +3,6 @@ use super::*;
 use crate::app::BlockCache;
 use pretty_assertions::assert_eq;
 use std::fmt::Write as _;
-
 fn test_tool_call(id: &str, sdk_tool_name: &str, status: model::ToolCallStatus) -> ToolCallInfo {
     ToolCallInfo {
         id: id.to_owned(),
@@ -22,8 +21,6 @@ fn test_tool_call(id: &str, sdk_tool_name: &str, status: model::ToolCallStatus) 
         terminal_command: None,
         terminal_output: None,
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -661,8 +658,6 @@ fn bash_title_does_not_wrap_for_long_title() {
         terminal_command: None,
         terminal_output: None,
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -1264,8 +1259,6 @@ fn content_summary_only_extracts_tool_use_error_for_failed_execute() {
         terminal_command: Some("echo done".into()),
         terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -1292,8 +1285,6 @@ fn content_summary_extracts_tool_use_error_for_failed_execute() {
         terminal_command: Some("echo done".into()),
         terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -1332,8 +1323,6 @@ fn content_summary_uses_first_terminal_line_for_failed_execute() {
             "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
         ),
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
@@ -1382,8 +1371,6 @@ fn render_execute_content_keeps_tail_output() {
             (0..30).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n"),
         ),
         terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,

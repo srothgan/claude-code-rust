@@ -62,6 +62,7 @@ import { handleMcpSetServersCommand } from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
   handleUserDialogResponse,
+  closeSession,
   closeSessionsBeforeRegister,
   refreshCurrentModel,
   resolveCurrentModel,
@@ -142,6 +143,29 @@ test("closeSessionsBeforeRegister closes same-key stale session before replaceme
   assert.equal(staleClosed, 2);
   assert.equal(sessions.get("session-1"), replacement);
   sessions.clear();
+});
+
+test("closeSession waits for owned query lifecycle tasks", async () => {
+  const session = makeSessionState();
+  let finishConsumer: (() => void) | undefined;
+  let closeResolved = false;
+  session.query = {
+    close: () => {},
+  } as import("@anthropic-ai/claude-agent-sdk").Query;
+  session.initializationTask = Promise.resolve();
+  session.queryConsumerTask = new Promise<void>((resolve) => {
+    finishConsumer = resolve;
+  });
+
+  const closePromise = closeSession(session).then(() => {
+    closeResolved = true;
+  });
+  await Promise.resolve();
+  assert.equal(closeResolved, false);
+
+  finishConsumer?.();
+  await closePromise;
+  assert.equal(closeResolved, true);
 });
 
 test("availableModesForSession omits conditional modes when unsupported", () => {

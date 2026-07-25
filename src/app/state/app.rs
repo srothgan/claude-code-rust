@@ -6,64 +6,62 @@ use super::prelude::*;
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub surface_mode: SurfaceMode,
-    pub terminal_lifecycle: TerminalLifecycleState,
-    pub surface_dirty: SurfaceDirtyState,
-    pub config: ConfigState,
-    pub global_settings: crate::app::AppSettings,
-    pub global_settings_path: Option<PathBuf>,
-    pub trust: TrustState,
-    pub settings_home_override: Option<PathBuf>,
+    pub(crate) terminal_lifecycle: TerminalLifecycleState,
+    pub(crate) surface_dirty: SurfaceDirtyState,
+    pub(crate) config: ConfigState,
+    pub(crate) global_settings: crate::app::AppSettings,
+    pub(crate) global_settings_path: Option<PathBuf>,
+    pub(crate) trust: TrustState,
+    pub(crate) settings_home_override: Option<PathBuf>,
     pub transcript: Transcript,
     pub session_runtime: SessionRuntimeState,
     pub sdk_inventory: SdkInventoryState,
     pub input: InputState,
     pub status: AppStatus,
     /// Session id currently being resumed via `/resume`.
-    pub resuming_session_id: Option<String>,
+    pub(crate) resuming_session_id: Option<String>,
     /// Whether the synthetic session overview is eligible for chat transcript output.
-    pub show_session_overview: bool,
+    pub(crate) show_session_overview: bool,
     pub should_quit: bool,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
-    pub cwd: String,
+    pub(crate) cwd: String,
     pub cwd_raw: String,
     pub files_accessed: usize,
     /// State scoped to the currently active turn (command spinner, cancel
     /// bookkeeping, inline interactions, turn-local notices).
     pub turn: TurnState,
-    pub event_tx: mpsc::UnboundedSender<ClientEvent>,
-    pub event_rx: mpsc::UnboundedReceiver<ClientEvent>,
-    pub file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
-    pub file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
+    pub(crate) event_tx: mpsc::UnboundedSender<ClientEvent>,
+    pub(crate) event_rx: mpsc::UnboundedReceiver<ClientEvent>,
+    pub(crate) file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
+    pub(crate) file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
-    pub spinner_last_advance_at: Option<Instant>,
+    pub(crate) spinner_last_advance_at: Option<Instant>,
     /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
     /// and explicitly owned subagent child tools.
-    pub tool_call_scopes: HashMap<String, ToolCallScope>,
-    /// Shared terminal process map - used to snapshot output on completion.
-    pub terminals: crate::agent::events::TerminalMap,
+    pub(crate) tool_call_scopes: HashMap<String, ToolCallScope>,
     /// Focus manager for directional/navigation key ownership.
-    pub focus: FocusManager,
+    pub(crate) focus: FocusManager,
     /// Resolved keyboard bindings used by chat-surface dispatch.
-    pub keymap: ResolvedKeymap,
+    pub(crate) keymap: ResolvedKeymap,
     /// Plugin inventory and UI state for the Config > Plugins view.
-    pub plugins: PluginsState,
+    pub(crate) plugins: PluginsState,
     /// Recently persisted session IDs discovered at startup.
-    pub recent_sessions: Vec<RecentSessionInfo>,
+    pub(crate) recent_sessions: Vec<RecentSessionInfo>,
     /// Selection state for the startup session picker screen.
-    pub session_picker: SessionPickerState,
+    pub(crate) session_picker: SessionPickerState,
     /// Deterministic measurement state for the future mutable chat region.
-    pub chat_render: ChatRenderState,
+    pub(crate) chat_render: ChatRenderState,
     /// Active `@` file mention autocomplete state.
-    pub mention: Option<mention::MentionState>,
+    pub(crate) mention: Option<mention::MentionState>,
     /// Visual-only literal `@` mentions committed by the user.
-    pub committed_mentions: Vec<mention::CommittedMentionSpan>,
+    pub(crate) committed_mentions: Vec<mention::CommittedMentionSpan>,
     /// App-owned file index backing `@` file mention autocomplete.
-    pub file_index: file_index::FileIndexState,
+    pub(crate) file_index: file_index::FileIndexState,
     /// Active slash-command autocomplete state.
     pub slash: Option<slash::SlashState>,
     /// Active subagent autocomplete state (`&name`).
-    pub subagent: Option<subagent::SubagentState>,
+    pub(crate) subagent: Option<subagent::SubagentState>,
     /// Deferred plain-Enter submit. Stores the exact input state from before the
     /// Enter key so submission can restore and use the original draft text.
     ///
@@ -75,40 +73,38 @@ pub struct App {
     /// Pending image attachments accumulated via Ctrl+V clipboard reads and
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
-    pub pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    pub(crate) pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
     /// Git repo context used by footer/status rendering and live branch tracking.
     pub(crate) git_context: GitContextState,
     /// Update prompt state for the startup fullscreen surface.
-    pub update_prompt: Option<UpdatePromptState>,
+    pub(crate) update_prompt: Option<UpdatePromptState>,
     /// Work to run after the TUI has restored the user's terminal.
     pub post_exit_action: Option<super::PostExitAction>,
     /// Config > Usage snapshot and refresh lifecycle.
-    pub usage: UsageState,
+    pub(crate) usage: UsageState,
     /// Config > MCP live server snapshot and refresh lifecycle.
-    pub mcp: McpState,
+    pub(crate) mcp: McpState,
 
     /// Central notification manager (bell + desktop toast when unfocused).
-    pub notifications: notify::NotificationManager,
+    pub(crate) notifications: notify::NotificationManager,
     /// Performance logger. Present only when built with `--features perf`.
     /// Taken out (`Option::take`) during render, used, then put back to avoid
     /// borrow conflicts with `&mut App`.
-    pub perf: Option<crate::perf::PerfLogger>,
+    pub(crate) perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block and message caches.
-    pub render_cache_budget: RenderCacheBudget,
+    pub(crate) render_cache_budget: RenderCacheBudget,
     /// Byte budget for source conversation history retained in memory.
-    pub history_retention: HistoryRetentionPolicy,
+    pub(crate) history_retention: HistoryRetentionPolicy,
     /// Last history-retention enforcement statistics.
-    pub history_retention_stats: HistoryRetentionStats,
+    pub(crate) history_retention_stats: HistoryRetentionStats,
     /// Cross-cutting cache metrics accumulator (enforcement counts, watermarks, rate limits).
-    pub cache_metrics: CacheMetrics,
+    pub(crate) cache_metrics: CacheMetrics,
     /// Smoothed frames-per-second (EMA of presented frame cadence).
-    pub fps_ema: Option<f32>,
+    pub(crate) fps_ema: Option<f32>,
     /// Timestamp of the previous presented frame.
-    pub last_frame_at: Option<Instant>,
-    /// Last emitted chat render trace snapshot to suppress identical per-frame summaries.
-    pub last_chat_render_trace_state: Option<ChatRenderTraceState>,
+    pub(crate) last_frame_at: Option<Instant>,
     /// Bootstrap sequencing state resolved from CLI flags at launch.
-    pub startup: StartupState,
+    pub(crate) startup: StartupState,
 }
 
 impl App {
@@ -184,7 +180,6 @@ impl App {
             spinner_frame: 0,
             spinner_last_advance_at: None,
             tool_call_scopes: HashMap::default(),
-            terminals: std::rc::Rc::default(),
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),
             plugins: PluginsState::default(),
@@ -212,7 +207,6 @@ impl App {
             cache_metrics: CacheMetrics::default(),
             fps_ema: None,
             last_frame_at: None,
-            last_chat_render_trace_state: None,
             startup: StartupState::default(),
         }
     }

@@ -76,8 +76,6 @@ pub fn create_app(cli: &Cli) -> App {
 
     let (event_tx, event_rx) = mpsc::unbounded_channel();
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
-    let terminals: crate::agent::events::TerminalMap =
-        Rc::new(std::cell::RefCell::new(HashMap::new()));
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
@@ -187,7 +185,6 @@ pub fn create_app(cli: &Cli) -> App {
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tool_call_scopes: HashMap::new(),
-        terminals,
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),
         plugins: PluginsState::default(),
@@ -215,7 +212,6 @@ pub fn create_app(cli: &Cli) -> App {
         cache_metrics: CacheMetrics::default(),
         fps_ema: None,
         last_frame_at: None,
-        last_chat_render_trace_state: None,
         startup: StartupState::new(
             cli.bridge_script.clone(),
             match &cli.command {

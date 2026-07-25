@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 const SCAN_BATCH_SIZE: usize = 256;
 const EVENT_DRAIN_BUDGET: usize = 64;
@@ -27,8 +27,6 @@ pub struct FileCandidate {
     pub rel_path_lower: String,
     pub basename_lower: String,
     pub depth: usize,
-    pub modified: SystemTime,
-    pub is_dir: bool,
 }
 
 #[derive(Default)]
@@ -1568,15 +1566,10 @@ fn candidate_from_entry(root: &Path, entry: &ignore::DirEntry) -> Option<FileCan
 
     let depth = rel_str.matches('/').count();
     let rel_path = if is_dir { format!("{rel_str}/") } else { rel_str };
-    let modified = entry
-        .metadata()
-        .ok()
-        .and_then(|metadata| metadata.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
     let rel_path_lower = rel_path.to_lowercase();
     let basename_lower = candidate_basename(&rel_path).to_lowercase();
 
-    Some(FileCandidate { rel_path, rel_path_lower, basename_lower, depth, modified, is_dir })
+    Some(FileCandidate { rel_path, rel_path_lower, basename_lower, depth })
 }
 
 fn normalize_relative_path(root: &Path, path: &Path) -> Option<String> {
@@ -1665,8 +1658,6 @@ mod tests {
             rel_path_lower: rel_path.to_lowercase(),
             basename_lower: candidate_basename(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: rel_path.ends_with('/'),
         }
     }
 
@@ -1703,8 +1694,6 @@ mod tests {
                     rel_path_lower: "stale.rs".to_owned(),
                     basename_lower: "stale.rs".to_owned(),
                     depth: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: false,
                 }],
             })
             .expect("send stale scan batch");
@@ -1734,8 +1723,6 @@ mod tests {
                     rel_path_lower: "stale.rs".to_owned(),
                     basename_lower: "stale.rs".to_owned(),
                     depth: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: false,
                 }],
             })
             .expect("send stale scan batch");
@@ -1743,45 +1730,6 @@ mod tests {
         drain_events(&mut app);
 
         assert!(!app.file_index.entries.contains_key("stale.rs"));
-    }
-
-    #[test]
-    fn live_upsert_beats_late_scan_entry_for_same_path() {
-        let mut app = App::test_default();
-        app.file_index.generation = 11;
-        app.file_index.scan_finished = false;
-
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch {
-                generation: 11,
-                changes: vec![FileIndexChange::Upsert(FileCandidate {
-                    rel_path: "fresh.rs".to_owned(),
-                    rel_path_lower: "fresh.rs".to_owned(),
-                    basename_lower: "fresh.rs".to_owned(),
-                    depth: 0,
-                    modified: SystemTime::UNIX_EPOCH + Duration::from_secs(20),
-                    is_dir: false,
-                })],
-            })
-            .expect("send live upsert");
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
-                generation: 11,
-                entries: vec![FileCandidate {
-                    rel_path: "fresh.rs".to_owned(),
-                    rel_path_lower: "fresh.rs".to_owned(),
-                    basename_lower: "fresh.rs".to_owned(),
-                    depth: 0,
-                    modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1),
-                    is_dir: false,
-                }],
-            })
-            .expect("send stale scan batch");
-
-        drain_events(&mut app);
-
-        let candidate = app.file_index.entries.get("fresh.rs").expect("fresh candidate");
-        assert_eq!(candidate.modified, SystemTime::UNIX_EPOCH + Duration::from_secs(20));
     }
 
     #[test]

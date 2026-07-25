@@ -33,7 +33,7 @@ impl super::App {
     }
 
     fn sync_after_message_topology_change(&mut self, start_idx: usize) {
-        self.rebuild_tool_indices_and_terminal_refs();
+        self.rebuild_tool_indices();
         if self.transcript.messages.is_empty() {
             return;
         }
@@ -297,7 +297,7 @@ impl super::App {
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_sub(removed_bytes);
         self.rebuild_render_cache_accounting();
-        self.rebuild_tool_indices_and_terminal_refs();
+        self.rebuild_tool_indices();
         if removed_tail {
             self.invalidate_tail_transition(None, self.transcript.messages.len().checked_sub(1));
         } else if !self.transcript.messages.is_empty() {
@@ -314,7 +314,7 @@ impl super::App {
         self.clear_active_turn_assistant();
         self.clear_turn_notice_refs();
         self.rebuild_render_cache_accounting();
-        self.rebuild_tool_indices_and_terminal_refs();
+        self.rebuild_tool_indices();
         self.request_chat_repaint();
     }
 
@@ -336,27 +336,17 @@ impl super::App {
         *old_bytes = new_bytes;
     }
 
-    pub(crate) fn rebuild_tool_indices_and_terminal_refs(&mut self) {
+    pub(crate) fn rebuild_tool_indices(&mut self) {
         self.transcript.tool_call_index.clear();
-        self.clear_terminal_tool_call_tracking();
         self.turn.active_task_ids.clear();
 
         let mut pending_interaction_ids = Vec::new();
-        let mut terminal_tool_call_membership = HashSet::new();
-        let mut terminal_tool_calls = Vec::new();
         for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 match block {
                     MessageBlock::ToolCall(tc) => {
                         let tc = tc.as_mut();
                         self.transcript.tool_call_index.insert(tc.id.clone(), (msg_idx, block_idx));
-                        if let Some(terminal_id) = Self::tracked_terminal_id_for_tool(tc) {
-                            let entry =
-                                super::TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-                            if terminal_tool_call_membership.insert(entry.clone()) {
-                                terminal_tool_calls.push(entry);
-                            }
-                        }
                         if let Some(permission) = tc.pending_permission.as_mut() {
                             permission.focused = false;
                             pending_interaction_ids.push(tc.id.clone());
@@ -379,8 +369,6 @@ impl super::App {
                 }
             }
         }
-        self.transcript.terminal_tool_calls = terminal_tool_calls;
-        self.transcript.terminal_tool_call_membership = terminal_tool_call_membership;
         self.rebuild_active_task_tracking_from_tool_scopes();
         self.sync_pending_interaction_focus(pending_interaction_ids);
     }
@@ -555,7 +543,7 @@ impl super::App {
 
             if !drop_candidates.is_empty() {
                 self.apply_history_retention_drop(&drop_candidates, active_turn_owner);
-                self.rebuild_tool_indices_and_terminal_refs();
+                self.rebuild_tool_indices();
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(0));
             }
         }

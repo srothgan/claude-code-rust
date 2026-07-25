@@ -69,12 +69,6 @@ impl NotificationManager {
         self.terminal_focused = false;
     }
 
-    /// Whether the terminal window currently has OS focus.
-    #[must_use]
-    pub const fn is_focused(&self) -> bool {
-        self.terminal_focused
-    }
-
     /// Send a notification if the terminal is not focused.
     ///
     /// This is the single entry-point that all event handlers should call.
@@ -234,14 +228,17 @@ mod tests {
     #[test]
     fn defaults_to_focused() {
         let mgr = NotificationManager::new();
-        assert!(mgr.is_focused(), "should default to focused to suppress spurious notifications");
+        assert!(
+            mgr.terminal_focused,
+            "should default to focused to suppress spurious notifications"
+        );
     }
 
     #[test]
     fn focus_lost_sets_unfocused() {
         let mut mgr = NotificationManager::new();
         mgr.on_focus_lost();
-        assert!(!mgr.is_focused());
+        assert!(!mgr.terminal_focused);
     }
 
     #[test]
@@ -249,7 +246,7 @@ mod tests {
         let mut mgr = NotificationManager::new();
         mgr.on_focus_lost();
         mgr.on_focus_gained();
-        assert!(mgr.is_focused());
+        assert!(mgr.terminal_focused);
     }
 
     #[test]

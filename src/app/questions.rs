@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use super::inline_interactions::{
     focus_next_inline_interaction, focused_interaction, focused_interaction_dirty_idx,
     focused_interaction_is_active, get_focused_interaction_tc, invalidate_if_changed,
@@ -524,8 +523,6 @@ mod tests {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use crate::agent::model;
 use crate::app::{
     App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
@@ -1343,7 +1342,7 @@ mod tests {
     use crate::agent::model;
     use crate::app::{
         App, AppStatus, BlockCache, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
-        MessageRole, NoticeBlock, TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo,
+        MessageRole, NoticeBlock, TextBlock, TextBlockSpacing, ToolCallInfo,
     };
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1503,8 +1502,6 @@ mod tests {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,

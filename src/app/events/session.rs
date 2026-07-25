@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
@@ -565,7 +564,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::app::file_index::FileCandidate;
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
 
     fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
         let start = Instant::now();
@@ -586,8 +585,6 @@ mod tests {
             rel_path_lower: rel_path.to_lowercase(),
             basename_lower: rel_path.rsplit('/').next().unwrap_or(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: rel_path.ends_with('/'),
         }
     }
 

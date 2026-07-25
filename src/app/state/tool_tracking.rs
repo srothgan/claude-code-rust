@@ -3,20 +3,6 @@
 
 use super::prelude::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct TerminalToolCallRef {
-    pub terminal_id: String,
-    pub msg_idx: usize,
-    pub block_idx: usize,
-}
-
-impl TerminalToolCallRef {
-    #[must_use]
-    pub fn new(terminal_id: String, msg_idx: usize, block_idx: usize) -> Self {
-        Self { terminal_id, msg_idx, block_idx }
-    }
-}
-
 impl App {
     /// Track a Task/Agent tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
@@ -35,17 +21,6 @@ impl App {
     #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
         self.tool_call_scopes.get(id).cloned()
-    }
-
-    #[must_use]
-    pub(crate) fn tracked_terminal_id_for_tool(tc: &ToolCallInfo) -> Option<String> {
-        (tc.is_execute_tool()
-            && matches!(
-                tc.status,
-                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-            ))
-        .then(|| tc.terminal_id.clone())
-        .flatten()
     }
 
     pub fn clear_tool_scope_tracking(&mut self) {
@@ -69,11 +44,6 @@ impl App {
     }
 
     #[must_use]
-    pub(crate) fn terminal_tool_calls(&self) -> &[TerminalToolCallRef] {
-        &self.transcript.terminal_tool_calls
-    }
-
-    #[must_use]
     pub fn has_tool_call(&self, id: &str) -> bool {
         self.lookup_tool_call(id).is_some()
     }
@@ -81,45 +51,6 @@ impl App {
     #[must_use]
     pub fn tool_call_index_len(&self) -> usize {
         self.transcript.tool_call_index.len()
-    }
-
-    pub(crate) fn sync_terminal_tool_call(
-        &mut self,
-        terminal_id: String,
-        msg_idx: usize,
-        block_idx: usize,
-    ) {
-        let desired = TerminalToolCallRef::new(terminal_id, msg_idx, block_idx);
-        if self.transcript.terminal_tool_call_membership.contains(&desired) {
-            return;
-        }
-        self.untrack_terminal_tool_call(msg_idx, block_idx);
-        self.transcript.terminal_tool_call_membership.insert(desired.clone());
-        self.transcript.terminal_tool_calls.push(desired);
-    }
-
-    pub(crate) fn untrack_terminal_tool_call(&mut self, msg_idx: usize, block_idx: usize) {
-        let removed: Vec<_> = self
-            .transcript
-            .terminal_tool_calls
-            .iter()
-            .filter(|entry| entry.msg_idx == msg_idx && entry.block_idx == block_idx)
-            .cloned()
-            .collect();
-        if removed.is_empty() {
-            return;
-        }
-        self.transcript
-            .terminal_tool_calls
-            .retain(|entry| entry.msg_idx != msg_idx || entry.block_idx != block_idx);
-        for entry in removed {
-            self.transcript.terminal_tool_call_membership.remove(&entry);
-        }
-    }
-
-    pub(crate) fn clear_terminal_tool_call_tracking(&mut self) {
-        self.transcript.terminal_tool_calls.clear();
-        self.transcript.terminal_tool_call_membership.clear();
     }
 
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
@@ -136,7 +67,6 @@ impl App {
         let mut cleared_interaction = false;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
-        let mut detached_terminal = false;
 
         for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
@@ -155,9 +85,6 @@ impl App {
                         if tc.pending_question.take().is_some() {
                             cleared_interaction = true;
                         }
-                        if tc.is_execute_tool() && tc.terminal_id.take().is_some() {
-                            detached_terminal = true;
-                        }
                         if changed_message_indices.last().copied() != Some(msg_idx) {
                             changed_message_indices.push(msg_idx);
                         }
@@ -165,10 +92,6 @@ impl App {
                     }
                 }
             }
-        }
-
-        if detached_terminal {
-            self.rebuild_tool_indices_and_terminal_refs();
         }
 
         for (msg_idx, block_idx) in changed_slots {

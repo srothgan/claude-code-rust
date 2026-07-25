@@ -4,26 +4,6 @@
 use super::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChatRenderTraceState {
-    pub width: u16,
-    pub content_height: usize,
-    pub viewport_height: usize,
-    pub auto_scroll: bool,
-    pub pinned_to_bottom: bool,
-    pub scroll_target: usize,
-    pub scroll_offset: usize,
-    pub max_scroll: usize,
-    pub first_visible: usize,
-    pub render_start: usize,
-    pub local_scroll: usize,
-    pub rendered_msgs: usize,
-    pub last_rendered_idx: Option<usize>,
-    pub rendered_line_count: usize,
-    pub last_message_idx: Option<usize>,
-    pub last_message_height: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutInvalidation {
     MessageChanged(usize),
     MessagesFrom(usize),

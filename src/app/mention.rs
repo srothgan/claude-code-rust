@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use super::{AUTOCOMPLETE_VISIBLE_ROWS, App, FocusTarget, dialog::DialogState, file_index};
 use std::time::{Duration, Instant};
 
@@ -931,7 +930,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use std::path::PathBuf;
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
 
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -962,8 +961,6 @@ mod tests {
                 .unwrap()
                 .to_lowercase(),
             depth: rel_path.matches('/').count(),
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: rel_path.ends_with('/'),
         }
     }
 
@@ -1519,8 +1516,6 @@ mod tests {
                     rel_path_lower: "web_dev_work/".to_owned(),
                     basename_lower: "web_dev_work".to_owned(),
                     depth: 0,
-                    modified: SystemTime::UNIX_EPOCH,
-                    is_dir: true,
                 }],
                 scan_finished: false,
             },
@@ -1546,8 +1541,6 @@ mod tests {
                 rel_path_lower: "docs/guide-rs.txt".to_owned(),
                 basename_lower: "guide-rs.txt".to_owned(),
                 depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
         );
         app.file_index.entries.insert(
@@ -1557,8 +1550,6 @@ mod tests {
                 rel_path_lower: "src/rs-helper.rs".to_owned(),
                 basename_lower: "rs-helper.rs".to_owned(),
                 depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
             },
         );
 

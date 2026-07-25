@@ -18,8 +18,6 @@ pub(super) fn reset_for_new_session(
     preserve_current_welcome_tip: bool,
     render_mode: ChatResetRenderMode,
 ) {
-    crate::agent::events::kill_all_terminals(&app.terminals);
-
     reset_session_identity_state(app, session_id, current_model, mode);
     reset_messages_for_new_session(app, preserve_current_welcome_tip);
     reset_input_state_for_new_session(app);
@@ -101,7 +99,6 @@ fn reset_render_state_for_new_session(app: &mut App) {
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App, render_mode: ChatResetRenderMode) {
-    app.clear_terminal_tool_call_tracking();
     app.mcp = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);

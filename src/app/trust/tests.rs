@@ -21,7 +21,7 @@ fn initialize_routes_untrusted_projects_to_trusted_view() {
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
     assert!(!app.is_project_trusted());
     assert_eq!(app.trust.selection, TrustSelection::Yes);
-    assert!(!app.startup.connection_requested());
+    assert!(!app.startup.mark_connection_started());
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn initialize_allows_trusted_projects_into_chat() {
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.is_project_trusted());
-    assert!(app.startup.connection_requested());
+    assert!(app.startup.mark_connection_started());
 }
 
 #[test]
@@ -63,7 +63,7 @@ fn accept_persists_trust_and_switches_to_chat() {
     assert!(raw.contains("\"hasTrustDialogAccepted\": true"));
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.is_project_trusted());
-    assert!(app.startup.connection_requested());
+    assert!(app.startup.mark_connection_started());
 }
 
 #[test]
@@ -83,7 +83,7 @@ fn initialize_routes_trusted_resume_picker_startup_to_picker_view() {
     initialize(&mut app);
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-    assert!(app.startup.connection_requested());
+    assert!(app.startup.mark_connection_started());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn accept_routes_resume_picker_startup_to_picker_view() {
     accept(&mut app).expect("accept");
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-    assert!(app.startup.connection_requested());
+    assert!(app.startup.mark_connection_started());
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn accept_routes_update_prompt_before_resume_picker() {
     accept(&mut app).expect("accept");
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Update));
-    assert!(app.startup.connection_requested());
+    assert!(app.startup.mark_connection_started());
 }
 
 #[test]
