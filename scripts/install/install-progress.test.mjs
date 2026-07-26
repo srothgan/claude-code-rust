@@ -43,6 +43,20 @@ test("Unix installer keeps successful redirected output completed-step-only", { 
   assert.equal(result.launcherInstalled, true, "successful install did not create the launcher");
 });
 
+test("Unix installer warns when the Claude Code CLI is missing", { skip: skipReason }, () => {
+  const result = runInstallerScenario("success", { claudeCliAvailable: false });
+  assertScenarioResult(result, 0, [
+    "Claude Code CLI ('claude') not found on PATH",
+    "Install it from https://claude.com/claude-code",
+  ]);
+});
+
+test("Unix installer stays silent when the Claude Code CLI is available", { skip: skipReason }, () => {
+  const result = runInstallerScenario("success", { claudeCliAvailable: true });
+  const output = `${result.stdout}${result.stderr}`;
+  assert.doesNotMatch(output, /Claude Code CLI \('claude'\) not found on PATH/);
+});
+
 test("Unix installer preserves checksum-download failures without progress noise", { skip: skipReason }, () => {
   const result = runInstallerScenario("checksum-download-failure");
   assertScenarioResult(result, 1, [
@@ -78,7 +92,7 @@ test("Unix installer keeps NO_COLOR output plain and completed-step-only", { ski
   assertScenarioResult(result, 0, successfulMessages);
 });
 
-function runInstallerScenario(scenario) {
+function runInstallerScenario(scenario, { claudeCliAvailable = true } = {}) {
   const archiveName = installArchiveName(platformPackage, cargoPackage.version);
   const archivePath = path.join(repoRoot, "dist-install", archiveName);
   assert.ok(
@@ -100,7 +114,7 @@ function runInstallerScenario(scenario) {
   const archiveSha256 = crypto.createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
   const expectedSha256 = scenario === "checksum-mismatch" ? "0".repeat(64) : archiveSha256;
   fs.writeFileSync(checksumsPath, `${expectedSha256}  dist-install/${archiveName}\n`, "utf8");
-  writeCommandShims(shimDir);
+  writeCommandShims(shimDir, { claudeCliAvailable });
 
   const env = { ...process.env };
   for (const name of Object.keys(env)) {
@@ -113,7 +127,7 @@ function runInstallerScenario(scenario) {
   Object.assign(env, {
     HOME: homeDir,
     TMPDIR: tempDir,
-    PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ""}`,
+    PATH: `${shimDir}${path.delimiter}${pathWithoutClaude(process.env.PATH ?? "")}`,
     TERM: "xterm",
     MOCK_ARCHIVE_FILE: archivePath,
     MOCK_CHECKSUM_FILE: checksumsPath,
@@ -191,7 +205,7 @@ function assertScenarioResult(result, expectedStatus, expectedMessages) {
   }
 }
 
-function writeCommandShims(shimDir) {
+function writeCommandShims(shimDir, { claudeCliAvailable }) {
   const curlPath = path.join(shimDir, "curl");
   fs.writeFileSync(
     curlPath,
@@ -234,6 +248,19 @@ esac
   const npmPath = path.join(shimDir, "npm");
   fs.writeFileSync(npmPath, "#!/bin/sh\nexit 1\n", "utf8");
   fs.chmodSync(npmPath, 0o755);
+
+  if (claudeCliAvailable) {
+    const claudePath = path.join(shimDir, "claude");
+    fs.writeFileSync(claudePath, "#!/bin/sh\nexit 0\n", "utf8");
+    fs.chmodSync(claudePath, 0o755);
+  }
+}
+
+function pathWithoutClaude(pathValue) {
+  return pathValue
+    .split(path.delimiter)
+    .filter((directory) => directory && !fs.existsSync(path.join(directory, "claude")))
+    .join(path.delimiter);
 }
 
 function unixPlatformPackage() {

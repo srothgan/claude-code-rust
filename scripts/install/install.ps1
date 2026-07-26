@@ -809,6 +809,15 @@ function Invoke-InstallDoctor {
     Complete-InstallerProgress "Runtime diagnostics passed"
 }
 
+function Warn-MissingClaudeCli {
+    # -ErrorAction SilentlyContinue keeps the check silent; resolves claude.cmd/.ps1/.exe via PATHEXT.
+    if (Get-Command "claude" -ErrorAction SilentlyContinue) {
+        return
+    }
+    Write-WarnLine "Claude Code CLI ('claude') not found on PATH"
+    Write-WarnDetail "  Install it from https://claude.com/claude-code"
+}
+
 function Warn-OtherClaudeRsCommands {
     param([string]$ExpectedCommand)
     $commands = @(Get-Command "claude-rs" -All -ErrorAction SilentlyContinue)
@@ -871,6 +880,7 @@ try {
     Write-Host
     Write-Ok "$targetLabel detected"
     Write-Ok "Install location: $InstallDir"
+    Warn-MissingClaudeCli
 
     Start-InstallerProgress "Resolving release"
     $tag = Resolve-ReleaseTag -RequestedRelease $Release -TempDir $tempDir
