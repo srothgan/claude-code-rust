@@ -24,6 +24,8 @@ pub struct SessionRuntimeState {
     pub session_usage: SessionUsageState,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
+    /// Open-set reason reported by the SDK when fast mode cannot activate.
+    pub fast_mode_disabled_reason: Option<String>,
     /// Latest SDK runtime liveness state.
     pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Latest prompt suggestion from the SDK, shown in the input hint band.
@@ -46,6 +48,7 @@ impl Default for SessionRuntimeState {
             login_hint: None,
             session_usage: SessionUsageState::default(),
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             runtime_session_state: None,
             prompt_suggestion: None,
             last_rate_limit_update: None,
@@ -75,6 +78,7 @@ impl SessionRuntimeState {
         self.current_model = None;
         self.mode = None;
         self.fast_mode_state = model::FastModeState::Off;
+        self.fast_mode_disabled_reason = None;
         self.session_usage = SessionUsageState::default();
     }
 }

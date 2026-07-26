@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - **Readline line-stepping** (#305, @srothgan): Make `Ctrl+A`/`Ctrl+E` move to the line start/end, then step to the previous/next logical line on repeat.
+- **Opus 5 and Claude Agent SDK 0.3.220 migration** (#310, @srothgan): Add Opus 5 support, preserve rejected and cancelled tool outcomes, warn on partial rewinds, and surface detached Skills, fast-mode failures, and Artifact live subscriptions.
 
 ### Fixes
 

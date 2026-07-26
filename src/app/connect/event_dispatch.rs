@@ -28,6 +28,7 @@ struct ConnectedEventData {
     available_models: Vec<types::AvailableModel>,
     mode: Option<types::ModeState>,
     fast_mode_state: types::FastModeState,
+    fast_mode_disabled_reason: Option<String>,
     history_updates: Option<Vec<types::SessionUpdate>>,
 }
 
@@ -47,6 +48,7 @@ pub(super) async fn handle_bridge_event(
             available_models,
             mode,
             fast_mode_state,
+            fast_mode_disabled_reason,
             history_updates,
         } => {
             handle_connected_event(
@@ -59,6 +61,7 @@ pub(super) async fn handle_bridge_event(
                     available_models,
                     mode,
                     fast_mode_state,
+                    fast_mode_disabled_reason,
                     history_updates,
                 },
             )
@@ -167,6 +170,7 @@ pub(super) async fn handle_bridge_event(
             available_models,
             mode,
             fast_mode_state,
+            fast_mode_disabled_reason,
             history_updates,
             restored_input,
         } => {
@@ -183,6 +187,7 @@ pub(super) async fn handle_bridge_event(
                     available_models: map_available_models(available_models),
                     mode: mode.map(convert_mode_state),
                     fast_mode_state: convert_fast_mode_state(fast_mode_state),
+                    fast_mode_disabled_reason,
                     history_updates,
                     restored_input,
                 })
@@ -272,6 +277,7 @@ async fn handle_connected_event(
                 available_models: map_available_models(event.available_models),
                 mode,
                 fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
+                fast_mode_disabled_reason: event.fast_mode_disabled_reason,
                 history_updates,
                 restored_input: None,
             })
@@ -286,6 +292,7 @@ async fn handle_connected_event(
                 available_models: map_available_models(event.available_models),
                 mode,
                 fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
+                fast_mode_disabled_reason: event.fast_mode_disabled_reason,
                 history_updates,
             })
             .await;

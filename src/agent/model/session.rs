@@ -58,6 +58,19 @@ pub enum FastModeState {
     On,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FastModeSnapshot {
+    pub state: FastModeState,
+    pub disabled_reason: Option<String>,
+}
+
+impl FastModeSnapshot {
+    #[must_use]
+    pub fn new(state: FastModeState, disabled_reason: Option<String>) -> Self {
+        Self { state, disabled_reason }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitStatus {
@@ -168,7 +181,10 @@ pub enum SessionUpdate {
     CurrentModeUpdate(CurrentModeUpdate),
     CurrentModelUpdate(CurrentModelUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
-    FastModeUpdate(FastModeState),
+    FastModeUpdate {
+        state: FastModeState,
+        disabled_reason: Option<String>,
+    },
     RateLimitUpdate(RateLimitUpdate),
     ApiRetryUpdate {
         attempt: u64,

@@ -121,6 +121,7 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
         },
     );
@@ -154,6 +155,7 @@ fn connected_reconciles_trust_for_new_cwd() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
         },
     );
@@ -477,6 +479,7 @@ fn session_replaced_resets_chat_and_transient_state() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -535,6 +538,7 @@ fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -616,7 +620,10 @@ fn stale_session_update_is_rejected_before_dispatch() {
         &mut app,
         ClientEvent::SessionUpdate {
             session_id: "old-session".to_owned(),
-            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown),
+            update: model::SessionUpdate::FastModeUpdate {
+                state: model::FastModeState::Cooldown,
+                disabled_reason: None,
+            },
         },
     );
 
@@ -632,7 +639,10 @@ fn matching_session_update_is_dispatched() {
         &mut app,
         ClientEvent::SessionUpdate {
             session_id: "current-session".to_owned(),
-            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown),
+            update: model::SessionUpdate::FastModeUpdate {
+                state: model::FastModeState::Cooldown,
+                disabled_reason: None,
+            },
         },
     );
 
@@ -647,7 +657,10 @@ fn connected_snapshot_recovers_fast_mode_dropped_before_authority() {
         &mut app,
         ClientEvent::SessionUpdate {
             session_id: "new-session".to_owned(),
-            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::On),
+            update: model::SessionUpdate::FastModeUpdate {
+                state: model::FastModeState::On,
+                disabled_reason: None,
+            },
         },
     );
     assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
@@ -661,6 +674,7 @@ fn connected_snapshot_recovers_fast_mode_dropped_before_authority() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::On,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
         },
     );
@@ -677,12 +691,16 @@ fn replacement_snapshot_owns_fast_mode_before_and_after_stale_updates() {
     let mut app = make_test_app();
     app.session_runtime.session_id = Some(model::SessionId::new("old-session"));
     app.session_runtime.fast_mode_state = model::FastModeState::On;
+    app.session_runtime.fast_mode_disabled_reason = Some("stale-reason".to_owned());
 
     handle_client_event(
         &mut app,
         ClientEvent::SessionUpdate {
             session_id: "new-session".to_owned(),
-            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown),
+            update: model::SessionUpdate::FastModeUpdate {
+                state: model::FastModeState::Cooldown,
+                disabled_reason: None,
+            },
         },
     );
     assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::On);
@@ -696,6 +714,7 @@ fn replacement_snapshot_owns_fast_mode_before_and_after_stale_updates() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Cooldown,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -705,7 +724,10 @@ fn replacement_snapshot_owns_fast_mode_before_and_after_stale_updates() {
         &mut app,
         ClientEvent::SessionUpdate {
             session_id: "old-session".to_owned(),
-            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Off),
+            update: model::SessionUpdate::FastModeUpdate {
+                state: model::FastModeState::Off,
+                disabled_reason: None,
+            },
         },
     );
 
@@ -714,6 +736,7 @@ fn replacement_snapshot_owns_fast_mode_before_and_after_stale_updates() {
         Some("new-session")
     );
     assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
+    assert!(app.session_runtime.fast_mode_disabled_reason.is_none());
 }
 
 #[test]
@@ -1545,6 +1568,7 @@ fn resume_does_not_add_confirmation_system_message() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -1577,6 +1601,7 @@ fn resume_history_renders_user_message_chunks() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates,
             restored_input: None,
         },
@@ -1634,6 +1659,7 @@ fn session_replaced_restores_input_after_loading_history() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates,
             restored_input: Some("selected prompt".to_owned()),
         },

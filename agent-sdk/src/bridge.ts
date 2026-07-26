@@ -11,14 +11,16 @@ import type {
 import type {
   BridgeCommand,
   BridgeEvent,
-  FastModeState,
   RewindFilesResult,
   RewindRestoreMode,
   RewindTarget,
 } from "./types.js";
 import type { EffortLevel } from "./types.js";
 import { parseCommandEnvelope } from "./bridge/commands.js";
-import { parseFastModeState } from "./bridge/state_parsing.js";
+import {
+  parseFastModeDisabledReason,
+  parseFastModeState,
+} from "./bridge/state_parsing.js";
 import {
   writeEvent,
   failConnection,
@@ -227,7 +229,7 @@ export async function applySessionEffort(
 export async function applySessionFastMode(
   query: import("@anthropic-ai/claude-agent-sdk").Query,
   enabled: boolean,
-): Promise<FastModeState> {
+): Promise<import("./types.js").FastModeSnapshot> {
   try {
     await query.applyFlagSettings({ fastMode: enabled });
   } catch (error) {
@@ -245,10 +247,14 @@ export async function applySessionFastMode(
 
   const state = parseFastModeState(result.fast_mode_state);
   if (state) {
-    return state;
+    const disabledReason = parseFastModeDisabledReason(result.fast_mode_disabled_reason);
+    return {
+      state,
+      ...(disabledReason ? { disabled_reason: disabledReason } : {}),
+    };
   }
   if (!enabled && result.fast_mode_state === undefined) {
-    return "off";
+    return { state: "off" };
   }
   throw new Error("SDK accepted the fast-mode change but did not report its resulting state");
 }
@@ -297,7 +303,7 @@ export function emitAgentConfigOptionUpdate(sessionId: string, agent: string | n
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.214";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.220";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
@@ -436,13 +442,20 @@ export function buildRewindConversationPlan(
   };
 }
 
-function mapRewindFilesResult(result: SdkRewindFilesResult): RewindFilesResult {
+export function mapRewindFilesResult(result: SdkRewindFilesResult): RewindFilesResult {
+  const skippedLinks =
+    Number.isFinite(result.skippedLinks) &&
+    Number.isInteger(result.skippedLinks) &&
+    (result.skippedLinks ?? -1) >= 0
+      ? result.skippedLinks
+      : undefined;
   return {
     can_rewind: result.canRewind,
     ...(result.error ? { error: result.error } : {}),
     files_changed: result.filesChanged ?? [],
     ...(result.insertions !== undefined ? { insertions: result.insertions } : {}),
     ...(result.deletions !== undefined ? { deletions: result.deletions } : {}),
+    ...(skippedLinks !== undefined ? { skipped_links: skippedLinks } : {}),
   };
 }
 

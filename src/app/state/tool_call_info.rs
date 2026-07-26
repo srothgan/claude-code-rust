@@ -108,6 +108,20 @@ impl ToolCallInfo {
     }
 
     #[must_use]
+    pub fn skill_is_backgrounded(&self) -> bool {
+        self.output_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.skill.as_ref())
+            .and_then(|metadata| metadata.background)
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn non_execution_metadata(&self) -> Option<&model::ToolNonExecutionMetadata> {
+        self.output_metadata.as_ref()?.non_execution.as_ref()
+    }
+
+    #[must_use]
     pub fn hidden_unless_focused_interaction(&self) -> bool {
         self.hidden && self.pending_permission.is_none() && self.pending_question.is_none()
     }

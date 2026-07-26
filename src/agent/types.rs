@@ -79,6 +79,7 @@ pub struct RewindFilesResult {
     pub files_changed: Vec<String>,
     pub insertions: Option<u64>,
     pub deletions: Option<u64>,
+    pub skipped_links: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +301,8 @@ pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
+    pub skill: Option<SkillOutputMetadata>,
+    pub non_execution: Option<ToolNonExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -317,6 +320,17 @@ pub struct WebFetchOutputMetadata {
 pub struct WebFetchArtifactReadMetadata {
     pub slug: String,
     pub ver: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SkillOutputMetadata {
+    pub background: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolNonExecutionMetadata {
+    pub kind: String,
+    pub user_feedback: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -472,6 +486,7 @@ pub enum SessionUpdate {
     },
     FastModeUpdate {
         fast_mode_state: FastModeState,
+        fast_mode_disabled_reason: Option<String>,
     },
     RateLimitUpdate {
         status: RateLimitStatus,
@@ -1302,6 +1317,13 @@ mod tests {
                                 "slug": "dashboard",
                                 "ver": "v3"
                             }
+                        },
+                        "skill": {
+                            "background": true
+                        },
+                        "non_execution": {
+                            "kind": "user-rejected",
+                            "user_feedback": "Use a safer command."
                         }
                     }
                 }
@@ -1326,6 +1348,10 @@ mod tests {
             .expect("artifact read metadata");
         assert_eq!(artifact_read.slug, "dashboard");
         assert_eq!(artifact_read.ver, "v3");
+        assert_eq!(metadata.skill.and_then(|skill| skill.background), Some(true));
+        let non_execution = metadata.non_execution.expect("non-execution metadata");
+        assert_eq!(non_execution.kind, "user-rejected");
+        assert_eq!(non_execution.user_feedback.as_deref(), Some("Use a safer command."));
     }
 
     #[test]

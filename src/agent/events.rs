@@ -85,6 +85,7 @@ pub enum ClientEvent {
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
         fast_mode_state: model::FastModeState,
+        fast_mode_disabled_reason: Option<String>,
         history_updates: Vec<model::SessionUpdate>,
     },
     /// Background connection failed.
@@ -109,6 +110,7 @@ pub enum ClientEvent {
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
         fast_mode_state: model::FastModeState,
+        fast_mode_disabled_reason: Option<String>,
         history_updates: Vec<model::SessionUpdate>,
         restored_input: Option<String>,
     },

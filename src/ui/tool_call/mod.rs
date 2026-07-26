@@ -210,7 +210,7 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         }
     }
 
-    if tc.task_is_backgrounded() {
+    if tc.task_is_backgrounded() || tc.skill_is_backgrounded() {
         badges.push(Span::styled(
             "  [backgrounded]",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),

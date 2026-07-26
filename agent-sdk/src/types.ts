@@ -65,6 +65,10 @@ export interface CurrentModel {
 }
 
 export type FastModeState = "off" | "cooldown" | "on";
+export interface FastModeSnapshot {
+  state: FastModeState;
+  disabled_reason?: string;
+}
 export type RateLimitStatus = "allowed" | "allowed_warning" | "rejected";
 export type TerminalReason =
   | "blocking_limit"
@@ -165,10 +169,21 @@ export interface WebFetchOutputMetadata {
   artifact_read?: WebFetchArtifactReadMetadata;
 }
 
+export interface SkillOutputMetadata {
+  background?: boolean;
+}
+
+export interface ToolNonExecutionMetadata {
+  kind: string;
+  user_feedback?: string;
+}
+
 export interface ToolOutputMetadata {
   bash?: BashOutputMetadata;
   agent?: AgentOutputMetadata;
   web_fetch?: WebFetchOutputMetadata;
+  skill?: SkillOutputMetadata;
+  non_execution?: ToolNonExecutionMetadata;
 }
 
 export type SubagentRetryUpdate =
@@ -307,7 +322,11 @@ export type SessionUpdate =
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "current_model_update"; current_model: CurrentModel }
   | { type: "config_option_update"; option_id: string; value: Json }
-  | { type: "fast_mode_update"; fast_mode_state: FastModeState }
+  | {
+      type: "fast_mode_update";
+      fast_mode_state: FastModeState;
+      fast_mode_disabled_reason?: string;
+    }
   | ({ type: "rate_limit_update" } & RateLimitUpdate)
   | {
       type: "api_retry_update";
@@ -606,6 +625,7 @@ export interface RewindFilesResult {
   files_changed: string[];
   insertions?: number;
   deletions?: number;
+  skipped_links?: number;
 }
 
 export interface BridgeCommandEnvelope {
@@ -806,6 +826,7 @@ export type BridgeEvent =
       available_models: AvailableModel[];
       mode: ModeState | null;
       fast_mode_state: FastModeState;
+      fast_mode_disabled_reason?: string;
       history_updates?: SessionUpdate[];
     }
   | { event: "auth_required"; method_name: string; method_description: string }
@@ -841,6 +862,7 @@ export type BridgeEvent =
       available_models: AvailableModel[];
       mode: ModeState | null;
       fast_mode_state: FastModeState;
+      fast_mode_disabled_reason?: string;
       history_updates?: SessionUpdate[];
       restored_input?: string;
     }

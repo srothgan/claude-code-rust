@@ -296,6 +296,7 @@ pub enum BridgeEvent {
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         fast_mode_state: types::FastModeState,
+        fast_mode_disabled_reason: Option<String>,
         history_updates: Option<Vec<types::SessionUpdate>>,
     },
     AuthRequired {
@@ -377,6 +378,7 @@ pub enum BridgeEvent {
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
         fast_mode_state: types::FastModeState,
+        fast_mode_disabled_reason: Option<String>,
         history_updates: Option<Vec<types::SessionUpdate>>,
         restored_input: Option<String>,
     },
@@ -698,7 +700,8 @@ mod tests {
                 "can_rewind": true,
                 "files_changed": ["src/main.rs"],
                 "insertions": 2,
-                "deletions": 1
+                "deletions": 1,
+                "skipped_links": 3
             }
         }))
         .expect("deserialize rewind result");
@@ -715,6 +718,7 @@ mod tests {
                     files_changed: vec!["src/main.rs".to_owned()],
                     insertions: Some(2),
                     deletions: Some(1),
+                    skipped_links: Some(3),
                 }),
                 message: None,
             }
@@ -1058,22 +1062,57 @@ mod tests {
     }
 
     #[test]
-    fn turn_error_deserializes_api_error_status() {
+    fn turn_error_deserializes_target_api_error_status_shapes() {
+        for (raw_status, expected) in [
+            (Some(serde_json::json!(429)), Some(429)),
+            (Some(serde_json::json!(529)), Some(529)),
+            (Some(serde_json::Value::Null), None),
+            (None, None),
+        ] {
+            let mut event = serde_json::json!({
+                "event": "turn_error",
+                "session_id": "session-1",
+                "message": "service overloaded",
+                "error_kind": "transient_service"
+            });
+            if let Some(raw_status) = raw_status {
+                event["api_error_status"] = raw_status;
+            }
+            let decoded: EventEnvelope =
+                serde_json::from_value(event).expect("deserialize turn error");
+
+            let BridgeEvent::TurnError { api_error_status, error_kind, .. } = decoded.event else {
+                panic!("expected turn_error event");
+            };
+
+            assert_eq!(api_error_status, expected);
+            assert_eq!(error_kind.as_deref(), Some("transient_service"));
+        }
+    }
+
+    #[test]
+    fn fast_mode_update_deserializes_open_disabled_reason() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
-            "event": "turn_error",
+            "event": "session_update",
             "session_id": "session-1",
-            "message": "service overloaded",
-            "error_kind": "transient_service",
-            "api_error_status": 529
+            "update": {
+                "type": "fast_mode_update",
+                "fast_mode_state": "off",
+                "fast_mode_disabled_reason": "future-reason"
+            }
         }))
-        .expect("deserialize turn error");
+        .expect("deserialize fast mode update");
 
-        let BridgeEvent::TurnError { api_error_status, error_kind, .. } = decoded.event else {
-            panic!("expected turn_error event");
+        let BridgeEvent::SessionUpdate {
+            update:
+                types::SessionUpdate::FastModeUpdate { fast_mode_state, fast_mode_disabled_reason },
+            ..
+        } = decoded.event
+        else {
+            panic!("expected fast mode update");
         };
-
-        assert_eq!(api_error_status, Some(529));
-        assert_eq!(error_kind.as_deref(), Some("transient_service"));
+        assert_eq!(fast_mode_state, types::FastModeState::Off);
+        assert_eq!(fast_mode_disabled_reason.as_deref(), Some("future-reason"));
     }
 
     #[test]

@@ -2,7 +2,7 @@ import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
   EffortLevel,
-  FastModeState,
+  FastModeSnapshot,
 } from "../types.js";
 import {
   buildModeState,
@@ -45,7 +45,7 @@ export type SessionControlCommandDeps = {
   ) => SDKUserMessage | undefined;
   applySessionEffort: (query: Query, effort: EffortLevel) => Promise<void>;
   applySessionAgent: (query: Query, agent: string | null) => Promise<void>;
-  applySessionFastMode: (query: Query, enabled: boolean) => Promise<FastModeState>;
+  applySessionFastMode: (query: Query, enabled: boolean) => Promise<FastModeSnapshot>;
   emitEffortConfigOptionUpdate: (sessionId: string, effort: EffortLevel) => void;
   emitAgentConfigOptionUpdate: (sessionId: string, agent: string | null) => void;
   handleReloadPluginsCommand: (
@@ -282,8 +282,10 @@ async function setFastMode(
     },
   });
   try {
-    const state = await deps.applySessionFastMode(session.query, command.enabled);
+    const snapshot = await deps.applySessionFastMode(session.query, command.enabled);
+    const state = snapshot.state;
     session.fastModeState = state;
+    session.fastModeDisabledReason = snapshot.disabled_reason;
     emitFastModeUpdate(session);
     const reportedEnabled = state !== "off";
     if (reportedEnabled !== command.enabled) {

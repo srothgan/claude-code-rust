@@ -283,6 +283,7 @@ fn map_rewind_files_result(result: types::RewindFilesResult) -> model::RewindFil
         files_changed: result.files_changed,
         insertions: result.insertions,
         deletions: result.deletions,
+        skipped_links: result.skipped_links,
     }
 }
 
@@ -430,8 +431,11 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 value,
             }))
         }
-        types::SessionUpdate::FastModeUpdate { fast_mode_state } => {
-            Some(model::SessionUpdate::FastModeUpdate(convert_fast_mode_state(fast_mode_state)))
+        types::SessionUpdate::FastModeUpdate { fast_mode_state, fast_mode_disabled_reason } => {
+            Some(model::SessionUpdate::FastModeUpdate {
+                state: convert_fast_mode_state(fast_mode_state),
+                disabled_reason: fast_mode_disabled_reason,
+            })
         }
         types::SessionUpdate::RateLimitUpdate {
             status,
@@ -858,6 +862,15 @@ fn convert_tool_output_metadata(
             model::WebFetchOutputMetadata::new().artifact_read(web_fetch.artifact_read.map(
                 |artifact| model::WebFetchArtifactReadMetadata::new(artifact.slug, artifact.ver),
             ))
+        }))
+        .skill(
+            output_metadata
+                .skill
+                .map(|skill| model::SkillOutputMetadata::new().background(skill.background)),
+        )
+        .non_execution(output_metadata.non_execution.map(|metadata| {
+            model::ToolNonExecutionMetadata::new(metadata.kind)
+                .user_feedback(metadata.user_feedback)
         }))
 }
 
@@ -1471,6 +1484,11 @@ mod tests {
                         ver: "v2".to_owned(),
                     }),
                 }),
+                skill: Some(types::SkillOutputMetadata { background: Some(true) }),
+                non_execution: Some(types::ToolNonExecutionMetadata {
+                    kind: "interrupted".to_owned(),
+                    user_feedback: Some("Stopped intentionally.".to_owned()),
+                }),
             }),
             ..types::ToolCallUpdateFields::default()
         });
@@ -1496,6 +1514,11 @@ mod tests {
                     .web_fetch(Some(model::WebFetchOutputMetadata::new().artifact_read(Some(
                         model::WebFetchArtifactReadMetadata::new("dashboard", "v2"),
                     ))))
+                    .skill(Some(model::SkillOutputMetadata::new().background(Some(true))))
+                    .non_execution(Some(
+                        model::ToolNonExecutionMetadata::new("interrupted")
+                            .user_feedback(Some("Stopped intentionally.".to_owned())),
+                    ))
             )
         );
     }

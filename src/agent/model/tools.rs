@@ -349,6 +349,8 @@ pub struct ToolOutputMetadata {
     pub bash: Option<BashOutputMetadata>,
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
+    pub skill: Option<SkillOutputMetadata>,
+    pub non_execution: Option<ToolNonExecutionMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -366,6 +368,17 @@ pub struct WebFetchOutputMetadata {
 pub struct WebFetchArtifactReadMetadata {
     pub slug: String,
     pub ver: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SkillOutputMetadata {
+    pub background: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolNonExecutionMetadata {
+    pub kind: String,
+    pub user_feedback: Option<String>,
 }
 
 impl ToolOutputMetadata {
@@ -389,6 +402,44 @@ impl ToolOutputMetadata {
     #[must_use]
     pub fn web_fetch(mut self, web_fetch: Option<WebFetchOutputMetadata>) -> Self {
         self.web_fetch = web_fetch;
+        self
+    }
+
+    #[must_use]
+    pub fn skill(mut self, skill: Option<SkillOutputMetadata>) -> Self {
+        self.skill = skill;
+        self
+    }
+
+    #[must_use]
+    pub fn non_execution(mut self, non_execution: Option<ToolNonExecutionMetadata>) -> Self {
+        self.non_execution = non_execution;
+        self
+    }
+}
+
+impl SkillOutputMetadata {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn background(mut self, background: Option<bool>) -> Self {
+        self.background = background;
+        self
+    }
+}
+
+impl ToolNonExecutionMetadata {
+    #[must_use]
+    pub fn new(kind: impl Into<String>) -> Self {
+        Self { kind: kind.into(), user_feedback: None }
+    }
+
+    #[must_use]
+    pub fn user_feedback(mut self, user_feedback: Option<String>) -> Self {
+        self.user_feedback = user_feedback;
         self
     }
 }
