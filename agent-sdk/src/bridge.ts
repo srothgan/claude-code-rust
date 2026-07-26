@@ -75,6 +75,7 @@ import {
 } from "./bridge/mcp.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeCommandReceived } from "./bridge/logger.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
+import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import { emitFastModeUpdate } from "./bridge/error_classification.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
@@ -1538,35 +1539,36 @@ function main(): void {
     input: process.stdin,
     crlfDelay: Number.POSITIVE_INFINITY,
   });
+  const commandScheduler = new BridgeCommandScheduler();
 
   rl.on("line", (line) => {
     if (line.trim().length === 0) {
       return;
     }
-    void (async () => {
-      let parsed: { requestId?: string; command: BridgeCommand };
-      try {
-        parsed = parseCommandEnvelope(line);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const requestId = requestIdFromCommandLine(line);
-        bridgeLogger.error({
-          target: LOG_TARGETS.BRIDGE_PROTOCOL,
-          eventName: "bridge_command_decode_failed",
-          message: "failed to decode bridge command envelope",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          sizeBytes: Buffer.byteLength(line),
-          fields: {
-            preview: line.slice(0, 240),
-            preview_chars: Math.min(line.length, 240),
-            error_message: message,
-          },
-        });
-        failConnection(`invalid command envelope: ${message}`, requestId);
-        return;
-      }
+    let parsed: { requestId?: string; command: BridgeCommand };
+    try {
+      parsed = parseCommandEnvelope(line);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const requestId = requestIdFromCommandLine(line);
+      bridgeLogger.error({
+        target: LOG_TARGETS.BRIDGE_PROTOCOL,
+        eventName: "bridge_command_decode_failed",
+        message: "failed to decode bridge command envelope",
+        outcome: "failure",
+        ...(requestId ? { requestId } : {}),
+        sizeBytes: Buffer.byteLength(line),
+        fields: {
+          preview: line.slice(0, 240),
+          preview_chars: Math.min(line.length, 240),
+          error_message: message,
+        },
+      });
+      failConnection(`invalid command envelope: ${message}`, requestId);
+      return;
+    }
 
+    commandScheduler.schedule(parsed.command, async () => {
       try {
         await handleCommand(parsed.command, parsed.requestId);
       } catch (error) {
@@ -1577,7 +1579,8 @@ function main(): void {
           message: "bridge command handler failed",
           outcome: "failure",
           ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
-          ...(parsed.command.command === "create_session" || parsed.command.command === "new_session"
+          ...(parsed.command.command === "create_session" ||
+          parsed.command.command === "new_session"
             ? {}
             : "session_id" in parsed.command
               ? { sessionId: parsed.command.session_id }
@@ -1592,10 +1595,11 @@ function main(): void {
           parsed.requestId,
         );
       }
-    })();
+    });
   });
 
   rl.on("close", () => {
+    commandScheduler.stopAccepting();
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_LIFECYCLE,
       eventName: "bridge_input_closed",
