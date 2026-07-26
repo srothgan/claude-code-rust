@@ -669,10 +669,6 @@ pub fn parse_paste_placeholder_before_cursor(line: &str, cursor_col: usize) -> O
 
 #[cfg(test)]
 mod tests {
-    // =====
-    // TESTS: 83
-    // =====
-
     use super::*;
     use pretty_assertions::assert_eq;
     use tui_textarea::{AtomicDeleteDirection, AtomicRange};

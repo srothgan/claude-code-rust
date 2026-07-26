@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// =====
-// TESTS: 18
-// =====
-//
 // Tool call lifecycle integration tests.
 // Validates the full create -> update -> complete flow for tool calls.
 

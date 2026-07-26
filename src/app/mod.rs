@@ -35,6 +35,8 @@ pub(crate) mod subagent;
 mod tab_title;
 pub(crate) mod tasks;
 pub(crate) mod terminal_runtime;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod trust;
 pub(crate) mod update_check;
 mod update_prompt;

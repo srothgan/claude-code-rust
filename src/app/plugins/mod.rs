@@ -39,7 +39,6 @@ pub use types::{
     PluginsInventorySnapshot, PluginsState, PluginsViewTab,
 };
 
-#[allow(unused_imports)]
 mod prelude {
     pub(super) use super::cli;
     pub(super) use super::types::{

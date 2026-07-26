@@ -1,7 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// =====
-// TESTS: 26
-// =====
 use super::*;
 use crate::agent::model;
 use crate::app::focus::{FocusOwner, FocusTarget};
@@ -411,29 +408,13 @@ fn push_message_tracked_preserves_user_image_attachment_block() {
 }
 
 fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
+    let mut tool_call = crate::app::test_support::tool_call_info(id, status);
+    tool_call.title = format!("tool {id}");
+    tool_call.terminal_output = Some("x".repeat(1024));
+    tool_call.terminal_output_len = 1024;
     ChatMessage::new(
         MessageRole::Assistant,
-        vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
-            title: format!("tool {id}"),
-            sdk_tool_name: "Read".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: Some("x".repeat(1024)),
-            terminal_output_len: 1024,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        }))],
+        vec![MessageBlock::ToolCall(Box::new(tool_call))],
         None,
     )
 }
@@ -443,69 +424,42 @@ fn assistant_bash_tool_message(
     status: model::ToolCallStatus,
     terminal_id: &str,
 ) -> ChatMessage {
+    let mut tool_call = crate::app::test_support::tool_call_info(id, status);
+    tool_call.title = format!("tool {id}");
+    tool_call.sdk_tool_name = "Bash".to_owned();
+    tool_call.terminal_id = Some(terminal_id.to_owned());
+    tool_call.terminal_command = Some("echo hi".to_owned());
+    tool_call.terminal_output = Some("x".repeat(1024));
+    tool_call.terminal_output_len = 1024;
     ChatMessage::new(
         MessageRole::Assistant,
-        vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
-            title: format!("tool {id}"),
-            sdk_tool_name: "Bash".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: Some(terminal_id.to_owned()),
-            terminal_command: Some("echo hi".to_owned()),
-            terminal_output: Some("x".repeat(1024)),
-            terminal_output_len: 1024,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        }))],
+        vec![MessageBlock::ToolCall(Box::new(tool_call))],
         None,
     )
 }
 
 fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
+    let mut tool_call =
+        crate::app::test_support::tool_call_info(id, model::ToolCallStatus::Completed);
+    tool_call.title = format!("tool {id}");
+    tool_call.terminal_output = Some("x".repeat(1024));
+    tool_call.terminal_output_len = 1024;
+    tool_call.pending_permission = Some(InlinePermission {
+        options: vec![model::PermissionOption::new(
+            "allow-once",
+            "Allow once",
+            model::PermissionOptionKind::AllowOnce,
+        )],
+        display: None,
+        subagent_context: None,
+        response_tx: tx,
+        selected_index: 0,
+        focused: false,
+    });
     ChatMessage::new(
         MessageRole::Assistant,
-        vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
-            title: format!("tool {id}"),
-            sdk_tool_name: "Read".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: Some("x".repeat(1024)),
-            terminal_output_len: 1024,
-            cache: BlockCache::default(),
-            pending_permission: Some(InlinePermission {
-                options: vec![model::PermissionOption::new(
-                    "allow-once",
-                    "Allow once",
-                    model::PermissionOptionKind::AllowOnce,
-                )],
-                display: None,
-                subagent_context: None,
-                response_tx: tx,
-                selected_index: 0,
-                focused: false,
-            }),
-            pending_question: None,
-        }))],
+        vec![MessageBlock::ToolCall(Box::new(tool_call))],
         None,
     )
 }

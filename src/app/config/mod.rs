@@ -14,17 +14,14 @@ mod status;
 pub mod store;
 mod tabs;
 
-#[allow(unused_imports)]
 pub(crate) use controller::{activate_tab, refresh_runtime_tabs_for_session_change};
-#[allow(unused_imports)]
-pub use controller::{close, handle_key, handle_paste, initialize_shared_state, open};
+pub use controller::{handle_key, handle_paste, initialize_shared_state, open};
 pub(crate) use edit::{
     OverlayModelOption, model_overlay_options, supported_effort_levels_for_model,
 };
-#[allow(unused_imports)]
 pub(crate) use mcp::{
-    McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
-    McpElicitationOverlayState, apply_mcp_config_remove_failure, apply_mcp_config_remove_success,
+    McpAuthRedirectOverlayState, McpDetailsOverlayState, McpElicitationOverlayState,
+    apply_mcp_config_remove_failure, apply_mcp_config_remove_success,
     apply_pending_dynamic_mcp_removal_confirmation,
     apply_removed_config_mcp_server_confirmation_failures, available_mcp_actions,
     filter_removed_config_mcp_servers, filter_stale_plugin_mcp_servers,
@@ -35,34 +32,27 @@ pub(crate) use mcp::{
     present_mcp_elicitation_request, reconcile_removed_config_mcp_server_guards,
     reconcile_stale_plugin_mcp_servers, refresh_mcp_snapshot,
 };
+// Used by the binary UI target, but not by the library target in isolation.
+#[allow(unused_imports)]
+pub(crate) use mcp::McpCallbackUrlOverlayState;
 pub use overlays::*;
 pub(crate) use resolve::language_input_validation_message;
-#[allow(unused_imports)]
 pub(crate) use settings::{
-    DEFAULT_MODEL_ALIAS_ID, DEFAULT_MODEL_ALIAS_LABEL, DEFAULT_PERMISSION_OPTIONS,
-    LANGUAGE_MAX_CHARS, LANGUAGE_MIN_CHARS,
+    DEFAULT_MODEL_ALIAS_ID, DEFAULT_PERMISSION_OPTIONS, LANGUAGE_MAX_CHARS, LANGUAGE_MIN_CHARS,
 };
-#[allow(unused_imports)]
 pub use settings::{
-    DefaultPermissionMode, EditorKind, FallbackPolicy, OutputStyle, PreferredNotifChannel,
-    ResolvedChoice, ResolvedSetting, ResolvedSettingValue, RuntimeCatalogKind, SettingFile,
-    SettingId, SettingKind, SettingOption, SettingOptions, SettingSpec, SettingValidation,
-    ValueSource, resolved_setting, setting_detail_options, setting_display_value,
-    setting_invalid_hint, setting_spec, setting_specs,
+    DefaultPermissionMode, OutputStyle, PreferredNotifChannel, ResolvedChoice, ResolvedSetting,
+    ResolvedSettingValue, RuntimeCatalogKind, SettingFile, SettingId, SettingKind, SettingOptions,
+    SettingSpec, SettingValidation, resolved_setting, setting_detail_options,
+    setting_display_value, setting_invalid_hint, setting_spec, setting_specs,
 };
 pub use state::{ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState};
-#[allow(unused_imports)]
-pub use status::request_status_snapshot_if_needed;
 pub use tabs::{ConfigHelpSection, ConfigTab};
 
-#[allow(unused_imports)]
 mod prelude {
     pub(super) use super::overlays::*;
     pub(super) use super::resolve::resolve_setting_document;
     pub(super) use super::settings::*;
-    pub(super) use super::state::{
-        ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
-    };
     pub(super) use super::status::request_status_snapshot_if_needed;
     pub(super) use super::tabs::{ConfigHelpSection, ConfigTab};
     pub(super) use super::{edit, help, mcp, store};

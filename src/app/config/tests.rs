@@ -245,7 +245,7 @@ fn reopen_reload_picks_up_external_settings_changes() {
     open(&mut app).expect("open");
     assert!(!app.config.fast_mode_effective());
 
-    close(&mut app);
+    super::controller::close(&mut app);
     std::fs::write(&path, r#"{"fastMode":true}"#).expect("rewrite");
 
     open(&mut app).expect("reopen");
@@ -259,7 +259,7 @@ fn reopen_clears_stale_transient_feedback() {
     app.config.status_message = Some("stale status".to_owned());
     app.config.last_error = Some("stale error".to_owned());
 
-    close(&mut app);
+    super::controller::close(&mut app);
     open(&mut app).expect("reopen");
 
     assert!(app.config.status_message.is_none());

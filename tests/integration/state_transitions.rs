@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// =====
-// TESTS: 20
-// =====
-//
 // State transition integration tests.
 // Validates multi-event sequences and App state consistency.
 

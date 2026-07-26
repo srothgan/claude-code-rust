@@ -25,45 +25,40 @@ pub(crate) use elicitation::{
 };
 pub(crate) use errors::handle_mcp_operation_error;
 pub(crate) use overlays::{
-    McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
-    McpElicitationOverlayState, open_mcp_server_details,
+    McpAuthRedirectOverlayState, McpDetailsOverlayState, McpElicitationOverlayState,
+    open_mcp_server_details,
 };
+// Used by the binary UI target through the parent config facade.
+#[allow(unused_imports)]
+pub(crate) use overlays::McpCallbackUrlOverlayState;
 pub(crate) use ownership::{mcp_config_removal_scope, mcp_server_owner_summary};
 pub(crate) use removal::{
     apply_mcp_config_remove_failure, apply_mcp_config_remove_success,
     apply_pending_dynamic_mcp_removal_confirmation, handle_mcp_set_servers_result,
     pending_dynamic_mcp_removal_confirmation_from_snapshot, remove_mcp_server_from_config,
 };
-#[allow(unused_imports)]
+#[cfg(test)]
+pub(crate) use snapshot::request_mcp_snapshot;
 pub(crate) use snapshot::{
     apply_removed_config_mcp_server_confirmation_failures, filter_removed_config_mcp_servers,
     filter_stale_plugin_mcp_servers, reconcile_removed_config_mcp_server_guards,
     reconcile_stale_plugin_mcp_servers, refresh_mcp_snapshot, refresh_mcp_snapshot_if_needed,
-    request_mcp_snapshot,
 };
-#[allow(unused_imports)]
-pub(crate) use types::{
-    McpConfigRemoveConfirmationFailure, McpConfigScope, McpServerActionKind, McpServerOwnership,
-    PendingDynamicMcpRemovalConfirmation,
-};
+pub(crate) use types::{McpConfigScope, McpServerActionKind};
 
-#[allow(unused_imports)]
 mod prelude {
     pub(super) use super::super::{ConfigOverlayState, ConfigState, ConfigTab};
-    pub(super) use super::actions::{available_mcp_actions, is_mcp_action_available};
+    pub(super) use super::actions::available_mcp_actions;
     pub(super) use super::auth::open_url_in_browser;
     pub(super) use super::overlays::{
-        McpAuthRedirectOverlayState, McpCallbackUrlOverlayState, McpDetailsOverlayState,
-        McpElicitationOverlayState, open_selected_mcp_server_details,
+        McpAuthRedirectOverlayState, McpElicitationOverlayState, open_selected_mcp_server_details,
     };
     pub(super) use super::ownership::{
         is_mcp_config_removal_available, mcp_config_removal_scope, mcp_server_ownership,
     };
     pub(super) use super::removal::{
-        apply_mcp_config_remove_failure, apply_mcp_config_remove_success_state,
-        is_removed_config_mcp_server_suppressed, mcp_server_matches_removed_key,
-        mcp_server_name_eq, mcp_snapshot_source_label, normalize_mcp_config_scope_key,
-        normalized_removed_config_key,
+        apply_mcp_config_remove_failure, is_removed_config_mcp_server_suppressed,
+        mcp_server_matches_removed_key, mcp_server_name_eq, mcp_snapshot_source_label,
     };
     pub(super) use super::snapshot::refresh_mcp_snapshot;
     pub(super) use super::types::*;
