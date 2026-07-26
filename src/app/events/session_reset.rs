@@ -15,11 +15,11 @@ pub(super) fn reset_for_new_session(
     session_id: model::SessionId,
     current_model: model::CurrentModel,
     mode: Option<super::super::ModeState>,
-    fast_mode_state: model::FastModeState,
+    fast_mode: model::FastModeSnapshot,
     preserve_current_welcome_tip: bool,
     render_mode: ChatResetRenderMode,
 ) {
-    reset_session_identity_state(app, session_id, current_model, mode, fast_mode_state);
+    reset_session_identity_state(app, session_id, current_model, mode, fast_mode);
     reset_messages_for_new_session(app, preserve_current_welcome_tip);
     reset_input_state_for_new_session(app);
     reset_interaction_state_for_new_session(app);
@@ -33,7 +33,7 @@ fn reset_session_identity_state(
     session_id: model::SessionId,
     current_model: model::CurrentModel,
     mode: Option<super::super::ModeState>,
-    fast_mode_state: model::FastModeState,
+    fast_mode: model::FastModeSnapshot,
 ) {
     app.bump_session_scope_epoch();
     app.session_runtime.session_id = Some(session_id);
@@ -50,7 +50,8 @@ fn reset_session_identity_state(
     app.session_runtime.session_usage = super::super::SessionUsageState::default();
     app.sdk_inventory.clear_rewind_targets();
     app.status = super::super::AppStatus::Ready;
-    app.session_runtime.fast_mode_state = fast_mode_state;
+    app.session_runtime.fast_mode_state = fast_mode.state;
+    app.session_runtime.fast_mode_disabled_reason = fast_mode.disabled_reason;
     app.session_runtime.runtime_session_state = None;
     app.session_runtime.prompt_suggestion = None;
     app.session_runtime.last_rate_limit_update = None;
@@ -201,7 +202,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
-            model::FastModeState::Off,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
             false,
             ChatResetRenderMode::DeferTranscriptRender,
         );
@@ -225,7 +226,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
-            model::FastModeState::Off,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
             true,
             ChatResetRenderMode::PreserveInlineViewport,
         );
@@ -251,7 +252,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
-            model::FastModeState::Off,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
             false,
             ChatResetRenderMode::DeferTranscriptRender,
         );
@@ -277,7 +278,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
-            model::FastModeState::Off,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
             false,
             ChatResetRenderMode::DeferTranscriptRender,
         );

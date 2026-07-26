@@ -70,7 +70,7 @@ import {
 import {
   emitAuthRequired,
   emitFastModeUpdate,
-  setFastModeStateIfChanged,
+  setFastModeSnapshotIfChanged,
 } from "./error_classification.js";
 import {
   mapAvailableModels,
@@ -157,6 +157,7 @@ export type SessionState = {
   runtimeUnavailableModeIds: PermissionMode[];
   supportsBypassPermissionsMode: boolean;
   fastModeState: FastModeState;
+  fastModeDisabledReason?: string;
   query: Query;
   initializationTask?: Promise<void>;
   queryConsumerTask?: Promise<void>;
@@ -700,7 +701,11 @@ export async function createSession(params: {
       const currentModelChanged = refreshCurrentModel(session);
       const { buildModeState, refreshSupportedModesForSession } = await import("./commands.js");
       refreshSupportedModesForSession(session);
-      const fastModeChanged = setFastModeStateIfChanged(session, result.fast_mode_state);
+      const fastModeChanged = setFastModeSnapshotIfChanged(
+        session,
+        result.fast_mode_state,
+        result.fast_mode_disabled_reason,
+      );
       if (!session.connected) {
         emitConnectEvent(session);
       } else {

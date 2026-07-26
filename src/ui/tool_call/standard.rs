@@ -107,12 +107,14 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
     if let Some(renderer) = typed::renderer_for(tc) {
         return (renderer.has_structured_body)(tc)
             || tc.pending_permission.is_some()
-            || tc.pending_question.is_some();
+            || tc.pending_question.is_some()
+            || tc.non_execution_metadata().is_some();
     }
 
     !tc.content.is_empty()
         || tc.pending_permission.is_some()
         || tc.pending_question.is_some()
+        || tc.non_execution_metadata().is_some()
         || renders_structured_ask_user_question_result(tc)
         || (tc.is_execute_tool()
             && (tc.terminal_output.is_some()
@@ -132,6 +134,7 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
         if is_execute { EXECUTE_BODY_INDENT_WIDTH } else { STANDARD_BODY_PREFIX_WIDTH };
     let content_width = width.saturating_sub(prefix_width);
     let mut content_lines = render_tool_content(tc, content_width);
+    content_lines.extend(render_non_execution_metadata(tc));
     content_lines = match tool_content_height_policy(tc) {
         ToolContentHeightPolicy::Bounded => {
             let protected_source_lines = protected_content_source_lines(tc, &content_lines);
@@ -170,6 +173,33 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
         spans.extend(truncate_spans_to_width(content_line.spans, usize::from(content_width)));
         lines.push(Line::from(spans));
     }
+}
+
+fn render_non_execution_metadata(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+    let Some(metadata) = tc.non_execution_metadata() else {
+        return Vec::new();
+    };
+    let reason = match metadata.kind.as_str() {
+        "user-rejected" => "rejected by the user".to_owned(),
+        "permission-rule" => "blocked by a permission rule".to_owned(),
+        "automode-unavailable" => "automatic mode was unavailable".to_owned(),
+        "automode-parsing-error" => "automatic mode could not parse the request".to_owned(),
+        "automode-blocked" => "automatic mode blocked the request".to_owned(),
+        "cancelled" => "cancelled".to_owned(),
+        "interrupted" => "interrupted".to_owned(),
+        other => other.to_owned(),
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Not executed: ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(reason),
+    ])];
+    if let Some(feedback) = metadata.user_feedback.as_deref() {
+        lines.push(Line::from(vec![
+            Span::styled("Feedback: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(feedback.to_owned()),
+        ]));
+    }
+    lines
 }
 
 /// One-line summary for tools that should not render expanded content.

@@ -163,6 +163,42 @@ fn render_tool_call_title_shows_backgrounded_badge() {
 }
 
 #[test]
+fn render_skill_title_shows_backgrounded_badge() {
+    let mut tc = test_tool_call("tc-skill-bg", "Skill", model::ToolCallStatus::Completed);
+    tc.output_metadata = Some(
+        model::ToolOutputMetadata::new()
+            .skill(Some(model::SkillOutputMetadata::new().background(Some(true)))),
+    );
+
+    let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+    assert!(rendered.contains("[backgrounded]"));
+}
+
+#[test]
+fn render_tool_call_preserves_non_execution_reason_and_feedback() {
+    let mut tc = test_tool_call("tc-rejected", "Bash", model::ToolCallStatus::Failed);
+    tc.output_metadata = Some(
+        model::ToolOutputMetadata::new().non_execution(Some(
+            model::ToolNonExecutionMetadata::new("user-rejected")
+                .user_feedback(Some("Use a read-only command.".to_owned())),
+        )),
+    );
+
+    let mut rendered = Vec::new();
+    render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 100, 0, &mut rendered);
+    let text = rendered
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(text.contains("Not executed: rejected by the user"));
+    assert!(text.contains("Feedback: Use a read-only command."));
+}
+
+#[test]
 fn render_tool_call_title_shows_resolved_model_badge_for_subagents() {
     let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::Completed);
     tc.output_metadata = Some(model::ToolOutputMetadata::new().agent(Some(

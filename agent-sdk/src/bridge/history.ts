@@ -2,12 +2,14 @@ import type { SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-
 import type { Json, SessionListEntry, SessionUpdate, TaskItem, TaskStatus, ToolCall } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import {
+  applyToolNonExecutionMetadata,
   TOOL_RESULT_TYPES,
   buildToolResultFields,
   createToolCall,
   isToolSearchToolName,
   isToolSearchToolResultType,
   isToolUseBlockType,
+  parseToolNonExecutionMetadata,
 } from "./tooling.js";
 
 function nonEmptyTrimmed(value: unknown): string | undefined {
@@ -256,6 +258,7 @@ function pushResumeToolResult(
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
+  nonExecutionByToolUseId: Map<string, import("../types.js").ToolNonExecutionMetadata>,
   sourceMessageUuid?: string,
 ): void {
   const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
@@ -270,6 +273,7 @@ function pushResumeToolResult(
   const isError = Boolean(block.is_error);
   const base = toolCalls.get(toolUseId);
   const fields = buildToolResultFields(isError, block.content, base, block);
+  applyToolNonExecutionMetadata(fields, nonExecutionByToolUseId.get(toolUseId));
   updates.push({
     type: "tool_call_update",
     tool_call_update: {
@@ -365,6 +369,11 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
             : null;
 
       const content = Array.isArray(message.content) ? message.content : [];
+      const nonExecutionByToolUseId = parseToolNonExecutionMetadata(
+        Object.hasOwn(entry, "tool_result_meta")
+          ? (entry as unknown as Record<string, unknown>).tool_result_meta
+          : message.tool_result_meta,
+      );
       for (const item of content) {
         const block = asRecordOrNull(item);
         if (!block) {
@@ -390,7 +399,14 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
           continue;
         }
         if (TOOL_RESULT_TYPES.has(blockType)) {
-          pushResumeToolResult(updates, toolCalls, hiddenToolUseIds, block, sourceMessageUuid);
+          pushResumeToolResult(
+            updates,
+            toolCalls,
+            hiddenToolUseIds,
+            block,
+            nonExecutionByToolUseId,
+            sourceMessageUuid,
+          );
           continue;
         }
         if (blockType === "image") {

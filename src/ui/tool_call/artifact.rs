@@ -138,6 +138,9 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
     if let Some(updated) = typed::json_bool(object, "updated") {
         artifact_fields.push(ToolField::new("Updated", typed::bool_label(updated)));
     }
+    if let Some(live_subscription) = typed::json_string(object, "liveSubscription") {
+        artifact_fields.push(ToolField::new("Live subscription", live_subscription));
+    }
     if let Some(additional) = additional_json(
         object,
         &[
@@ -154,6 +157,7 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
             "warnings",
             "contract",
             "updated",
+            "liveSubscription",
         ],
     ) {
         artifact_fields.push(ToolField::new("Additional output", additional));
@@ -256,7 +260,7 @@ mod tests {
                 "futureInput": {"enabled": true}
             }),
             Some(
-                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","path":"C:/work/dashboard.html","version":"v3","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","capabilities":{"persist":true}},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"futureOutput":{"revision":4}}"#,
+                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","path":"C:/work/dashboard.html","version":"v3","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","capabilities":{"persist":true}},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
             ),
         );
 
@@ -280,6 +284,7 @@ mod tests {
                 "Warnings: legacy contract",
                 "Contract: artifact-v2",
                 "Updated: yes",
+                "Live subscription: subscription-42",
                 "Additional output: {\"futureOutput\":{\"revision\":4}}",
             ]
         );

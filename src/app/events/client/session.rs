@@ -12,6 +12,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             available_models,
             mode,
             fast_mode_state,
+            fast_mode_disabled_reason,
             history_updates,
         } => {
             session::handle_connected_client_event(
@@ -23,6 +24,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
                     available_models,
                     mode,
                     fast_mode_state,
+                    fast_mode_disabled_reason,
                     history_updates,
                 },
             );
@@ -35,6 +37,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             available_models,
             mode,
             fast_mode_state,
+            fast_mode_disabled_reason,
             history_updates,
             restored_input,
         } => {
@@ -47,6 +50,7 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
                     available_models,
                     mode,
                     fast_mode_state,
+                    fast_mode_disabled_reason,
                     history_updates,
                     restored_input,
                 },

@@ -3,7 +3,7 @@ import { looksLikeAuthRequired } from "./auth.js";
 import { writeEvent } from "./events.js";
 import { emitSessionUpdate } from "./events.js";
 import type { SessionState } from "./session_lifecycle.js";
-import { parseFastModeState } from "./state_parsing.js";
+import { parseFastModeDisabledReason, parseFastModeState } from "./state_parsing.js";
 
 export function emitAuthRequired(session: SessionState, detail?: string): void {
   if (session.authHintSent) {
@@ -77,12 +77,21 @@ export function classifyTurnErrorKind(
   return "other";
 }
 
-export function setFastModeStateIfChanged(session: SessionState, value: unknown): boolean {
-  const next = parseFastModeState(value);
-  if (!next || next === session.fastModeState) {
+export function setFastModeSnapshotIfChanged(
+  session: SessionState,
+  stateValue: unknown,
+  disabledReasonValue: unknown,
+): boolean {
+  const nextState = parseFastModeState(stateValue) ?? session.fastModeState;
+  const nextDisabledReason = parseFastModeDisabledReason(disabledReasonValue);
+  if (
+    nextState === session.fastModeState &&
+    nextDisabledReason === session.fastModeDisabledReason
+  ) {
     return false;
   }
-  session.fastModeState = next;
+  session.fastModeState = nextState;
+  session.fastModeDisabledReason = nextDisabledReason;
   return true;
 }
 
@@ -90,11 +99,18 @@ export function emitFastModeUpdate(session: SessionState): void {
   emitSessionUpdate(session.sessionId, {
     type: "fast_mode_update",
     fast_mode_state: session.fastModeState,
+    ...(session.fastModeDisabledReason
+      ? { fast_mode_disabled_reason: session.fastModeDisabledReason }
+      : {}),
   });
 }
 
-export function emitFastModeUpdateIfChanged(session: SessionState, value: unknown): void {
-  if (setFastModeStateIfChanged(session, value)) {
+export function emitFastModeUpdateIfChanged(
+  session: SessionState,
+  stateValue: unknown,
+  disabledReasonValue: unknown,
+): void {
+  if (setFastModeSnapshotIfChanged(session, stateValue, disabledReasonValue)) {
     emitFastModeUpdate(session);
   }
 }

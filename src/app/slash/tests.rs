@@ -251,7 +251,10 @@ async fn app_fast_shadows_advertised_command_and_toggles_authoritative_state() {
 
                 super::super::events::handle_client_event(
                     &mut app,
-                    session_update(model::SessionUpdate::FastModeUpdate(acknowledged)),
+                    session_update(model::SessionUpdate::FastModeUpdate {
+                        state: acknowledged,
+                        disabled_reason: None,
+                    }),
                 );
                 assert_eq!(app.session_runtime.fast_mode_state, acknowledged);
                 assert!(matches!(app.status, AppStatus::Ready));

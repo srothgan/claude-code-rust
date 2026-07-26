@@ -20,6 +20,7 @@ import {
   isToolSearchToolName,
   isToolSearchToolResultType,
   unwrapToolUseResult,
+  parseToolNonExecutionMetadata,
 } from "./tooling.js";
 import {
   emitToolCall,
@@ -43,7 +44,7 @@ import {
   classifyTurnErrorKind,
   emitFastModeUpdate,
   emitFastModeUpdateIfChanged,
-  setFastModeStateIfChanged,
+  setFastModeSnapshotIfChanged,
 } from "./error_classification.js";
 import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
 import {
@@ -942,6 +943,7 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
     return false;
   }
   const content = Array.isArray(messageObject.content) ? messageObject.content : [];
+  const nonExecutionByToolUseId = parseToolNonExecutionMetadata(message.tool_result_meta);
   let handled = false;
   for (const block of content) {
     if (!block || typeof block !== "object") {
@@ -972,6 +974,7 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
         blockRecord.content,
         messageToolUseResult(message) ?? blockRecord,
         sourceMessageUuid(message),
+        nonExecutionByToolUseId.get(toolUseId),
       );
     }
   }
@@ -979,7 +982,11 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
 }
 
 export function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
-  emitFastModeUpdateIfChanged(session, message.fast_mode_state);
+  emitFastModeUpdateIfChanged(
+    session,
+    message.fast_mode_state,
+    message.fast_mode_disabled_reason,
+  );
   const terminalReason = terminalReasonFromValue(message.terminal_reason);
 
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
@@ -1208,7 +1215,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         session.mode = incomingMode;
       }
       refreshSupportedModesForSession(session);
-      const fastModeChanged = setFastModeStateIfChanged(session, msg.fast_mode_state);
+      const fastModeChanged = setFastModeSnapshotIfChanged(
+        session,
+        msg.fast_mode_state,
+        msg.fast_mode_disabled_reason,
+      );
 
       if (!session.connected) {
         emitConnectEvent(session);
@@ -1285,7 +1296,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       } else if (msg.status === null) {
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "idle" });
       }
-      emitFastModeUpdateIfChanged(session, msg.fast_mode_state);
+      emitFastModeUpdateIfChanged(
+        session,
+        msg.fast_mode_state,
+        msg.fast_mode_disabled_reason,
+      );
       return;
     }
 
@@ -1549,6 +1564,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         parsed.content,
         rawToolUseResult,
         sourceMessageUuid(msg),
+        parseToolNonExecutionMetadata(msg.tool_result_meta).get(toolUseId),
       );
     }
     return;

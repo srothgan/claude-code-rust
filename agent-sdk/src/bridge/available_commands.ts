@@ -85,7 +85,7 @@ function shouldAcceptAvailableCommandsSnapshot(
   if (source === "supportedCommands" && current.commands.length > 0) {
     return {
       accept: false,
-      reason: "supportedCommands is an initialize-time fallback and current snapshot already exists",
+      reason: "supportedCommands bootstrap cannot replace an existing snapshot",
     };
   }
   if (commands.length === 0) {

@@ -22,6 +22,7 @@ import {
   handleSdkMessage,
   isShellToolName,
   mapSdkAccountInfo,
+  mapRewindFilesResult,
   mapAvailableAgents,
   mapAvailableModels,
   mapSessionMessagesToUpdates,
@@ -77,7 +78,7 @@ import {
 } from "./bridge/session_lifecycle.js";
 import {
   classifyTurnErrorKind,
-  setFastModeStateIfChanged,
+  setFastModeSnapshotIfChanged,
 } from "./bridge/error_classification.js";
 import {
   buildConnectBridgeEvent,
@@ -1224,6 +1225,30 @@ test("parseCommandEnvelope validates get_rewind_targets command", () => {
   });
 });
 
+test("mapRewindFilesResult preserves valid skipped link counts", () => {
+  const base = {
+    canRewind: true,
+    filesChanged: ["src/main.rs"],
+  };
+
+  assert.deepEqual(mapRewindFilesResult(base), {
+    can_rewind: true,
+    files_changed: ["src/main.rs"],
+  });
+  assert.equal(mapRewindFilesResult({ ...base, skippedLinks: 0 }).skipped_links, 0);
+  assert.equal(mapRewindFilesResult({ ...base, skippedLinks: 2 }).skipped_links, 2);
+});
+
+test("mapRewindFilesResult drops malformed skipped link counts", () => {
+  const base = {
+    canRewind: true,
+    filesChanged: [],
+  };
+  for (const skippedLinks of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(mapRewindFilesResult({ ...base, skippedLinks }).skipped_links, undefined);
+  }
+});
+
 test("parseCommandEnvelope validates rewind command modes", () => {
   for (const restoreMode of ["both", "conversation", "code"] as const) {
     const parsed = parseCommandEnvelope(
@@ -1964,6 +1989,32 @@ test("buildQueryOptions preserves explicit sandbox failIfUnavailable setting", (
       enabled: true,
       failIfUnavailable: true,
     },
+  });
+});
+
+test("buildQueryOptions preserves target sandbox network and filesystem fields", () => {
+  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: {
+      settings: {
+        sandbox: {
+          network: { strictAllowlist: true },
+          filesystem: { disabled: true },
+        },
+      },
+    },
+    provisionalSessionId: "session-sandbox-target-fields",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-sandbox-target-fields",
+  });
+
+  assert.deepEqual(options.settings?.sandbox, {
+    network: { strictAllowlist: true },
+    filesystem: { disabled: true },
   });
 });
 
@@ -3873,13 +3924,14 @@ test("handleSdkMessage emits MCP snapshot from init status payload", () => {
 
 test("authority snapshots publish fast mode set during initialization", () => {
   const session = makeSessionState();
-  assert.equal(setFastModeStateIfChanged(session, "on"), true);
+  assert.equal(setFastModeSnapshotIfChanged(session, "on", "model_not_allowed"), true);
 
   for (const connectEvent of ["connected", "session_replaced"] as const) {
     session.connectEvent = connectEvent;
     const authorityEvent = buildConnectBridgeEvent(session, connectEvent);
     assert.equal(authorityEvent.event, connectEvent);
     assert.equal(authorityEvent.fast_mode_state, "on");
+    assert.equal(authorityEvent.fast_mode_disabled_reason, "model_not_allowed");
   }
 });
 
@@ -3914,6 +3966,65 @@ test("handleSdkMessage emits fast mode as a delta after authority exists", () =>
       },
     },
   ]);
+});
+
+test("fast mode snapshots deduplicate state and reason together and clear stale reasons", () => {
+  const session = makeSessionState();
+  const reasons = [
+    "free",
+    "preference",
+    "extra_usage_disabled",
+    "network_error",
+    "unknown",
+    "not_first_party",
+    "disabled_by_env",
+    "model_not_allowed",
+    "sdk_opt_in_required",
+    "pending",
+    "future-reason",
+  ];
+
+  const events = captureBridgeEvents(() => {
+    for (const reason of reasons) {
+      handleSdkMessage(session, {
+        type: "system",
+        subtype: "status",
+        fast_mode_state: "off",
+        fast_mode_disabled_reason: reason,
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      handleSdkMessage(session, {
+        type: "system",
+        subtype: "status",
+        fast_mode_state: "off",
+        fast_mode_disabled_reason: reason,
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "status",
+      fast_mode_state: "off",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const updates = events
+    .filter((event) => event.event === "session_update")
+    .map((event) => event.update as import("./types.js").SessionUpdate)
+    .filter(
+      (update): update is Extract<import("./types.js").SessionUpdate, { type: "fast_mode_update" }> =>
+        update.type === "fast_mode_update",
+    );
+  assert.deepEqual(updates, [
+    ...reasons.map((reason) => ({
+      type: "fast_mode_update" as const,
+      fast_mode_state: "off" as const,
+      fast_mode_disabled_reason: reason,
+    })),
+    {
+      type: "fast_mode_update",
+      fast_mode_state: "off",
+    },
+  ]);
+  assert.equal(session.fastModeDisabledReason, undefined);
 });
 
 test("emitToolProgressUpdate does not reopen completed tools", () => {
@@ -4866,6 +4977,46 @@ test("available command registry blocks stale supportedCommands after dynamic up
   );
 });
 
+test("commands_changed wins an actual supportedCommands bootstrap race", async () => {
+  const session = makeSessionState();
+  let resolveSupportedCommands:
+    | ((commands: import("@anthropic-ai/claude-agent-sdk").SlashCommand[]) => void)
+    | undefined;
+  session.query = {
+    supportedCommands: () =>
+      new Promise<import("@anthropic-ai/claude-agent-sdk").SlashCommand[]>((resolve) => {
+        resolveSupportedCommands = resolve;
+      }),
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "init",
+      session_id: "session-1",
+      model: "haiku",
+      slash_commands: ["/bootstrap"],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "commands_changed",
+      session_id: "session-1",
+      commands: [{ name: "/dynamic", description: "Dynamic command" }],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.ok(resolveSupportedCommands);
+  resolveSupportedCommands([
+    { name: "/stale", description: "Stale bootstrap", argumentHint: "" },
+  ]);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(session.availableCommands?.source, "commands_changed");
+  assert.deepEqual(session.availableCommands?.commands, [
+    { name: "/dynamic", description: "Dynamic command", input_hint: undefined },
+  ]);
+});
+
 test("available command registry lets authoritative snapshots remove commands", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -5467,7 +5618,7 @@ test("applySessionEffort uses live flag settings for xhigh and max", async () =>
 test("applySessionFastMode applies live settings and decodes the SDK's sparse off state", async () => {
   const calls: unknown[] = [];
   const responses = [
-    { fast_mode_state: "on" },
+    { fast_mode_state: "on", fast_mode_disabled_reason: "pending" },
     { fast_mode_state: "cooldown" },
     {},
     { fast_mode_state: "off" },
@@ -5481,10 +5632,13 @@ test("applySessionFastMode applies live settings and decodes the SDK's sparse of
     },
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
-  assert.equal(await applySessionFastMode(query, true), "on");
-  assert.equal(await applySessionFastMode(query, true), "cooldown");
-  assert.equal(await applySessionFastMode(query, false), "off");
-  assert.equal(await applySessionFastMode(query, false), "off");
+  assert.deepEqual(await applySessionFastMode(query, true), {
+    state: "on",
+    disabled_reason: "pending",
+  });
+  assert.deepEqual(await applySessionFastMode(query, true), { state: "cooldown" });
+  assert.deepEqual(await applySessionFastMode(query, false), { state: "off" });
+  assert.deepEqual(await applySessionFastMode(query, false), { state: "off" });
   assert.deepEqual(calls, [
     { fastMode: true },
     { fastMode: true },
@@ -5894,7 +6048,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.214");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.220");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -6109,6 +6263,174 @@ test("mapSessionMessagesToUpdates preserves parallel tool results", () => {
     toolUpdates.map((update) => update.tool_call_update.fields.raw_output),
     ["result b", "result a"],
   );
+});
+
+test("handleSdkMessage correlates tool non-execution metadata by tool ID", () => {
+  const session = makeSessionState();
+  const cases = [
+    ["tool-user-rejected", "user-rejected", "failed"],
+    ["tool-permission-rule", "permission-rule", "failed"],
+    ["tool-automode-unavailable", "automode-unavailable", "failed"],
+    ["tool-automode-parsing-error", "automode-parsing-error", "failed"],
+    ["tool-automode-blocked", "automode-blocked", "failed"],
+    ["tool-cancelled", "cancelled", "killed"],
+    ["tool-interrupted", "interrupted", "killed"],
+    ["tool-future", "future-reason", "completed"],
+  ] as const;
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-tools",
+      session_id: "session-1",
+      message: {
+        role: "assistant",
+        content: cases.map(([id]) => ({
+          type: "tool_use",
+          id,
+          name: "Bash",
+          input: { command: `echo ${id}` },
+        })),
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user",
+      uuid: "user-results",
+      session_id: "session-1",
+      message: {
+        role: "user",
+        content: [...cases].reverse().map(([id]) => ({
+          type: "tool_result",
+          tool_use_id: id,
+          content: `raw output for ${id}`,
+          is_error: false,
+        })),
+      },
+      tool_result_meta: [
+        ...cases.map(([id, kind]) => ({
+          id,
+          non_execution_kind: kind,
+          ...(id === "tool-user-rejected" ? { user_feedback: "Please use a safer command." } : {}),
+        })),
+      ].reverse(),
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const updates = events
+    .map((event) => event.update as import("./types.js").SessionUpdate | undefined)
+    .filter(
+      (update): update is Extract<import("./types.js").SessionUpdate, { type: "tool_call_update" }> =>
+        update?.type === "tool_call_update",
+    );
+  assert.equal(updates.length, cases.length);
+  for (const [id, kind, status] of cases) {
+    const fields = updates.find((update) => update.tool_call_update.tool_call_id === id)
+      ?.tool_call_update.fields;
+    assert.equal(fields?.status, status);
+    assert.equal(fields?.raw_output, `raw output for ${id}`);
+    assert.equal(fields?.output_metadata?.non_execution?.kind, kind);
+  }
+  assert.equal(
+    updates.find(
+      (update) => update.tool_call_update.tool_call_id === "tool-user-rejected",
+    )?.tool_call_update.fields.output_metadata?.non_execution?.user_feedback,
+    "Please use a safer command.",
+  );
+});
+
+test("handleSdkMessage ignores malformed and mismatched tool non-execution metadata", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-tool",
+      session_id: "session-1",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool-ok", name: "Bash", input: { command: "echo ok" } }],
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user",
+      uuid: "user-result",
+      session_id: "session-1",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "tool-ok", content: "ok", is_error: false }],
+      },
+      tool_result_meta: [
+        null,
+        {},
+        { id: "", non_execution_kind: "cancelled" },
+        { id: "tool-ok", non_execution_kind: "" },
+        { id: "other-tool", non_execution_kind: "cancelled" },
+      ],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const update = events
+    .map((event) => event.update as import("./types.js").SessionUpdate | undefined)
+    .find((candidate) => candidate?.type === "tool_call_update");
+  assert.equal(update?.type, "tool_call_update");
+  if (update?.type !== "tool_call_update") {
+    throw new Error("expected tool update");
+  }
+  assert.equal(update.tool_call_update.fields.status, "completed");
+  assert.equal(update.tool_call_update.fields.output_metadata, undefined);
+});
+
+test("mapSessionMessagesToUpdates carries tool non-execution metadata from history", () => {
+  const updates = mapSessionMessagesToUpdates([
+    {
+      type: "assistant",
+      uuid: "a1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "echo ok" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "u1",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      tool_result_meta: [
+        {
+          id: "tool-1",
+          non_execution_kind: "interrupted",
+          user_feedback: "Stopped intentionally.",
+        },
+      ],
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "partial output",
+            is_error: false,
+          },
+        ],
+      },
+    },
+  ] as unknown as SessionMessage[]);
+
+  const update = updates.find((candidate) => candidate.type === "tool_call_update");
+  assert.equal(update?.type, "tool_call_update");
+  if (update?.type !== "tool_call_update") {
+    throw new Error("expected tool update");
+  }
+  assert.equal(update.tool_call_update.fields.status, "killed");
+  assert.deepEqual(update.tool_call_update.fields.output_metadata?.non_execution, {
+    kind: "interrupted",
+    user_feedback: "Stopped intentionally.",
+  });
 });
 
 test("mapSessionMessagesToUpdates maps task system records from resume history", () => {
@@ -6492,28 +6814,30 @@ test("handleResultMessage emits typed turn error classifications for SDK assista
   }
 });
 
-test("handleResultMessage preserves result api error status", () => {
-  const session = makeSessionState();
-  session.lastAssistantError = "overloaded";
+test("handleResultMessage preserves target api error status shapes", () => {
+  for (const apiErrorStatus of [429, 529, null, undefined]) {
+    const session = makeSessionState();
+    session.lastAssistantError = "overloaded";
 
-  const events = captureBridgeEvents(() => {
-    handleResultMessage(session, {
-      type: "result",
-      subtype: "error_during_execution",
-      errors: ["service overloaded"],
-      api_error_status: 529,
+    const events = captureBridgeEvents(() => {
+      handleResultMessage(session, {
+        type: "result",
+        subtype: "error_during_execution",
+        errors: ["service overloaded"],
+        ...(apiErrorStatus !== undefined ? { api_error_status: apiErrorStatus } : {}),
+      });
     });
-  });
 
-  assert.deepEqual(events.at(-1), {
-    event: "turn_error",
-    session_id: "session-1",
-    message: "service overloaded",
-    error_kind: "transient_service",
-    sdk_result_subtype: "error_during_execution",
-    assistant_error: "overloaded",
-    api_error_status: 529,
-  });
+    assert.deepEqual(events.at(-1), {
+      event: "turn_error",
+      session_id: "session-1",
+      message: "service overloaded",
+      error_kind: "transient_service",
+      sdk_result_subtype: "error_during_execution",
+      assistant_error: "overloaded",
+      ...(typeof apiErrorStatus === "number" ? { api_error_status: apiErrorStatus } : {}),
+    });
+  }
 });
 
 test("mapSessionMessagesToUpdates ignores unsupported records", () => {

@@ -612,7 +612,67 @@ function extractToolOutputMetadata(
     }
   }
 
-  return metadata.bash || metadata.agent || metadata.web_fetch ? metadata : undefined;
+  if (toolName === "Skill") {
+    for (const candidate of candidates) {
+      if (candidate.background === true) {
+        metadata.skill = { background: true };
+        break;
+      }
+    }
+  }
+
+  return metadata.bash || metadata.agent || metadata.web_fetch || metadata.skill
+    ? metadata
+    : undefined;
+}
+
+export function parseToolNonExecutionMetadata(
+  value: unknown,
+): Map<string, import("../types.js").ToolNonExecutionMetadata> {
+  const byToolUseId = new Map<string, import("../types.js").ToolNonExecutionMetadata>();
+  if (!Array.isArray(value)) {
+    return byToolUseId;
+  }
+  for (const entry of value) {
+    const record = asRecordOrNull(entry);
+    const id = nonEmptyString(record?.id);
+    const kind = nonEmptyString(record?.non_execution_kind);
+    if (!id || !kind || byToolUseId.has(id)) {
+      continue;
+    }
+    const userFeedback = nonEmptyString(record?.user_feedback);
+    byToolUseId.set(id, {
+      kind,
+      ...(userFeedback ? { user_feedback: userFeedback } : {}),
+    });
+  }
+  return byToolUseId;
+}
+
+export function applyToolNonExecutionMetadata(
+  fields: ToolCallUpdateFields,
+  metadata: import("../types.js").ToolNonExecutionMetadata | undefined,
+): void {
+  if (!metadata) {
+    return;
+  }
+  fields.output_metadata = {
+    ...(fields.output_metadata ?? {}),
+    non_execution: metadata,
+  };
+  switch (metadata.kind) {
+    case "user-rejected":
+    case "permission-rule":
+    case "automode-unavailable":
+    case "automode-parsing-error":
+    case "automode-blocked":
+      fields.status = "failed";
+      break;
+    case "cancelled":
+    case "interrupted":
+      fields.status = "killed";
+      break;
+  }
 }
 
 export function extractText(value: unknown): string {

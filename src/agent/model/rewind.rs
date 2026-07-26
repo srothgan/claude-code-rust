@@ -54,6 +54,7 @@ pub struct RewindFilesResult {
     pub files_changed: Vec<String>,
     pub insertions: Option<u64>,
     pub deletions: Option<u64>,
+    pub skipped_links: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

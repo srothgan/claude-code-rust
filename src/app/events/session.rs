@@ -23,6 +23,7 @@ pub(super) struct SessionReplacedEventData {
     pub available_models: Vec<model::AvailableModel>,
     pub mode: Option<super::super::ModeState>,
     pub fast_mode_state: model::FastModeState,
+    pub fast_mode_disabled_reason: Option<String>,
     pub history_updates: Vec<model::SessionUpdate>,
     pub restored_input: Option<String>,
 }
@@ -34,6 +35,7 @@ pub(super) struct ConnectedEventData {
     pub available_models: Vec<model::AvailableModel>,
     pub mode: Option<super::super::ModeState>,
     pub fast_mode_state: model::FastModeState,
+    pub fast_mode_disabled_reason: Option<String>,
     pub history_updates: Vec<model::SessionUpdate>,
 }
 
@@ -45,6 +47,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
         available_models,
         mode,
         fast_mode_state,
+        fast_mode_disabled_reason,
         history_updates,
     } = event;
     let session_id_for_log = session_id.to_string();
@@ -59,7 +62,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
         session_id,
         current_model,
         mode,
-        fast_mode_state,
+        model::FastModeSnapshot::new(fast_mode_state, fast_mode_disabled_reason),
         true,
         ChatResetRenderMode::PreserveInlineViewport,
     );
@@ -68,6 +71,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
     if !history_updates.is_empty() {
         load_resume_history(app, &history_updates);
     }
+    maybe_emit_fast_mode_disabled_notice(app, None);
     clear_pending_command(app);
     app.resuming_session_id = None;
     crate::app::file_index::restart(app);
@@ -311,6 +315,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         available_models,
         mode,
         fast_mode_state,
+        fast_mode_disabled_reason,
         history_updates,
         restored_input,
     } = event;
@@ -325,7 +330,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         session_id,
         current_model,
         mode,
-        fast_mode_state,
+        model::FastModeSnapshot::new(fast_mode_state, fast_mode_disabled_reason),
         false,
         ChatResetRenderMode::DeferTranscriptRender,
     );
@@ -333,6 +338,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     if !history_updates.is_empty() {
         load_resume_history(app, &history_updates);
     }
+    maybe_emit_fast_mode_disabled_notice(app, None);
     clear_pending_command(app);
     if let Some(restored_input) = restored_input.as_deref() {
         app.input.set_text(restored_input);
@@ -357,6 +363,45 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     );
 }
 
+pub(super) fn maybe_emit_fast_mode_disabled_notice(app: &mut App, previous_reason: Option<&str>) {
+    if !app.config.fast_mode_effective()
+        || !matches!(app.session_runtime.fast_mode_state, model::FastModeState::Off)
+    {
+        return;
+    }
+    let Some(reason) = app.session_runtime.fast_mode_disabled_reason.as_deref() else {
+        return;
+    };
+    if previous_reason == Some(reason) {
+        return;
+    }
+
+    let message = fast_mode_disabled_message(reason);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "fast_mode_disabled_reason_observed",
+        message = "fast mode disabled reason observed",
+        outcome = "unavailable",
+        reason,
+    );
+    super::notices::emit_system_notice(app, SystemSeverity::Warning, message);
+}
+
+fn fast_mode_disabled_message(reason: &str) -> &'static str {
+    match reason {
+        "free" => "Fast mode is unavailable on the free plan.",
+        "preference" => "Fast mode is disabled by an account preference.",
+        "extra_usage_disabled" => "Fast mode requires extra usage to be enabled.",
+        "network_error" => "Fast mode is unavailable because its availability check failed.",
+        "not_first_party" => "Fast mode is unavailable through the current API provider.",
+        "disabled_by_env" => "Fast mode is disabled by the runtime environment.",
+        "model_not_allowed" => "Fast mode is unavailable for the current model.",
+        "sdk_opt_in_required" => "Fast mode requires SDK opt-in before it can activate.",
+        "pending" => "Fast mode availability is still being determined.",
+        _ => "Fast mode is currently unavailable.",
+    }
+}
+
 pub(super) fn handle_rewind_result_event(app: &mut App, result: &model::RewindResult) {
     if app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref()
         != Some(result.session_id.as_str())
@@ -372,7 +417,12 @@ pub(super) fn handle_rewind_result_event(app: &mut App, result: &model::RewindRe
         return;
     }
 
+    let skipped_links =
+        result.file_result.as_ref().and_then(|file_result| file_result.skipped_links);
     let severity = match result.status {
+        model::RewindResultStatus::Success if skipped_links.is_some_and(|count| count > 0) => {
+            SystemSeverity::Warning
+        }
         model::RewindResultStatus::Success => SystemSeverity::Info,
         model::RewindResultStatus::Failure | model::RewindResultStatus::PartialFailure => {
             SystemSeverity::Error
@@ -402,6 +452,15 @@ fn rewind_result_message(result: &model::RewindResult) -> String {
     let deletions = file_result.deletions.unwrap_or(0);
     let file_word = if file_count == 1 { "file" } else { "files" };
     match result.status {
+        model::RewindResultStatus::Success
+            if file_result.skipped_links.is_some_and(|count| count > 0) =>
+        {
+            let skipped_links = file_result.skipped_links.unwrap_or_default();
+            let path_word = if skipped_links == 1 { "path was" } else { "paths were" };
+            format!(
+                "Restored tracked code for {file_count} {file_word} ({insertions} insertions, {deletions} deletions), but {skipped_links} unsafe linked {path_word} skipped."
+            )
+        }
         model::RewindResultStatus::Success => format!(
             "Restored code for {file_count} {file_word} ({insertions} insertions, {deletions} deletions)."
         ),
@@ -577,8 +636,8 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::App;
     use crate::app::file_index::FileCandidate;
+    use crate::app::{App, MessageRole};
     use std::time::{Duration, Instant};
 
     fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
@@ -603,6 +662,69 @@ mod tests {
         }
     }
 
+    fn successful_rewind(skipped_links: Option<u64>) -> model::RewindResult {
+        model::RewindResult {
+            session_id: "session-1".to_owned(),
+            restore_mode: model::RewindRestoreMode::Code,
+            status: model::RewindResultStatus::Success,
+            file_result: Some(model::RewindFilesResult {
+                can_rewind: true,
+                error: None,
+                files_changed: vec!["src/main.rs".to_owned()],
+                insertions: Some(2),
+                deletions: Some(1),
+                skipped_links,
+            }),
+            message: None,
+        }
+    }
+
+    #[test]
+    fn successful_rewind_reports_skipped_unsafe_paths_without_inflating_file_count() {
+        assert_eq!(
+            rewind_result_message(&successful_rewind(None)),
+            "Restored code for 1 file (2 insertions, 1 deletions)."
+        );
+        assert_eq!(
+            rewind_result_message(&successful_rewind(Some(0))),
+            "Restored code for 1 file (2 insertions, 1 deletions)."
+        );
+        assert_eq!(
+            rewind_result_message(&successful_rewind(Some(2))),
+            "Restored tracked code for 1 file (2 insertions, 1 deletions), but 2 unsafe linked paths were skipped."
+        );
+    }
+
+    #[test]
+    fn successful_rewind_with_skips_emits_warning() {
+        let mut app = App::test_default();
+        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
+
+        handle_rewind_result_event(&mut app, &successful_rewind(Some(1)));
+
+        let message = app.transcript.messages.last().expect("rewind notice");
+        assert!(matches!(message.role, MessageRole::System(Some(SystemSeverity::Warning))));
+    }
+
+    #[test]
+    fn fast_mode_disabled_reason_wording_covers_target_values() {
+        for reason in [
+            "free",
+            "preference",
+            "extra_usage_disabled",
+            "network_error",
+            "unknown",
+            "not_first_party",
+            "disabled_by_env",
+            "model_not_allowed",
+            "sdk_opt_in_required",
+            "pending",
+            "future-reason",
+        ] {
+            assert!(!fast_mode_disabled_message(reason).is_empty());
+        }
+    }
+
     #[test]
     fn connected_refreshes_file_index_candidates_for_new_cwd() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -622,6 +744,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
                 history_updates: Vec::new(),
             },
         );
@@ -660,6 +783,7 @@ mod tests {
                 available_models: Vec::new(),
                 mode: None,
                 fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
                 history_updates: Vec::new(),
                 restored_input: None,
             },

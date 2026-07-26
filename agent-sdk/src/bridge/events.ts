@@ -200,6 +200,9 @@ export function buildConnectBridgeEvent(
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
         fast_mode_state: session.fastModeState,
+        ...(session.fastModeDisabledReason
+          ? { fast_mode_disabled_reason: session.fastModeDisabledReason }
+          : {}),
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         ...(session.restoredInput !== undefined ? { restored_input: session.restoredInput } : {}),
       }
@@ -211,6 +214,9 @@ export function buildConnectBridgeEvent(
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
         fast_mode_state: session.fastModeState,
+        ...(session.fastModeDisabledReason
+          ? { fast_mode_disabled_reason: session.fastModeDisabledReason }
+          : {}),
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
       };
 }

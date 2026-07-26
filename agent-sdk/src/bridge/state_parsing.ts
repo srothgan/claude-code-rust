@@ -69,6 +69,14 @@ export function parseFastModeState(value: unknown): FastModeState | null {
   return null;
 }
 
+export function parseFastModeDisabledReason(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const reason = value.trim();
+  return reason.length > 0 ? reason : undefined;
+}
+
 export function parseRateLimitStatus(value: unknown): RateLimitStatus | null {
   if (value === "allowed" || value === "allowed_warning" || value === "rejected") {
     return value;

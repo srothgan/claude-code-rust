@@ -394,8 +394,11 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ConfigOptionUpdate(config) => {
             handle_config_option_update(app, config);
         }
-        model::SessionUpdate::FastModeUpdate(state) => {
+        model::SessionUpdate::FastModeUpdate { state, disabled_reason } => {
+            let previous_reason = app.session_runtime.fast_mode_disabled_reason.clone();
             app.session_runtime.fast_mode_state = state;
+            app.session_runtime.fast_mode_disabled_reason.clone_from(&disabled_reason);
+            session::maybe_emit_fast_mode_disabled_notice(app, previous_reason.as_deref());
             if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::FastMode)) {
                 session::clear_pending_command(app);
             }

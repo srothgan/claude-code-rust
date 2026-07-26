@@ -1033,6 +1033,34 @@ test("buildToolResultFields preserves WebFetch artifactRead only as metadata", (
   });
 });
 
+test("buildToolResultFields marks only structured Skill background launches", () => {
+  const skill = createToolCall("tc-skill-background", "Skill", {
+    skill: "review",
+  });
+  assert.deepEqual(
+    buildToolResultFields(false, "launched", skill, { background: true }).output_metadata,
+    {
+      skill: { background: true },
+    },
+  );
+  assert.equal(
+    buildToolResultFields(false, "complete", skill, { background: false }).output_metadata,
+    undefined,
+  );
+  assert.equal(
+    buildToolResultFields(false, "complete", skill, { background: "true" }).output_metadata,
+    undefined,
+  );
+
+  const bash = createToolCall("tc-bash-coincidental-background", "Bash", {
+    command: "echo ok",
+  });
+  assert.equal(
+    buildToolResultFields(false, "ok", bash, { background: true }).output_metadata,
+    undefined,
+  );
+});
+
 test("buildToolResultFields preserves Agent resolvedModel metadata", () => {
   const base = createToolCall("tc-agent-model", "Agent", {
     description: "review changes",
@@ -1886,4 +1914,3 @@ test("buildToolResultFields ignores removed TodoWrite verification metadata", ()
 
   assert.equal(fields.output_metadata, undefined);
 });
-

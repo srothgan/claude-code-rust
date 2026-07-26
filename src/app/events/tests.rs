@@ -736,6 +736,7 @@ fn connected_event(model_name: &str) -> ClientEvent {
         available_models: Vec::new(),
         mode: None,
         fast_mode_state: model::FastModeState::Off,
+        fast_mode_disabled_reason: None,
         history_updates: Vec::new(),
     }
 }
@@ -1277,6 +1278,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates,
         },
     );
@@ -1329,6 +1331,7 @@ fn startup_resume_history_allows_immediate_prompt_submit() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates,
         },
     );
@@ -1376,6 +1379,7 @@ fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates,
             restored_input: None,
         },
@@ -1421,6 +1425,7 @@ fn resume_history_forces_open_tool_calls_to_failed() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
             restored_input: None,
         },
@@ -1450,6 +1455,7 @@ fn resume_history_clears_active_turn_owner_after_loading() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: vec![model::SessionUpdate::AgentMessageChunk(
                 model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                     "assistant reply",
@@ -1479,6 +1485,7 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
             restored_input: None,
         },
@@ -1995,10 +2002,73 @@ fn fast_mode_update_sets_state() {
 
     handle_client_event(
         &mut app,
-        session_update(model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown)),
+        session_update(model::SessionUpdate::FastModeUpdate {
+            state: model::FastModeState::Cooldown,
+            disabled_reason: None,
+        }),
     );
 
     assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
+}
+
+#[test]
+fn fast_mode_disabled_reason_updates_clears_and_notifies_once_when_requested() {
+    let mut app = make_test_app();
+    app.config.committed_settings_document = serde_json::json!({ "fastMode": true });
+
+    let update = model::SessionUpdate::FastModeUpdate {
+        state: model::FastModeState::Off,
+        disabled_reason: Some("model_not_allowed".to_owned()),
+    };
+    handle_client_event(&mut app, session_update(update.clone()));
+
+    assert_eq!(app.session_runtime.fast_mode_disabled_reason.as_deref(), Some("model_not_allowed"));
+    assert_eq!(
+        first_block_text(app.transcript.messages.last().expect("fast mode notice")),
+        "Fast mode is unavailable for the current model."
+    );
+    assert!(matches!(
+        app.transcript.messages.last().map(|message| &message.role),
+        Some(MessageRole::System(Some(SystemSeverity::Warning)))
+    ));
+
+    let notice_count = app.transcript.messages.len();
+    handle_client_event(&mut app, session_update(update));
+    assert_eq!(app.transcript.messages.len(), notice_count);
+
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::FastModeUpdate {
+            state: model::FastModeState::Off,
+            disabled_reason: None,
+        }),
+    );
+    assert!(app.session_runtime.fast_mode_disabled_reason.is_none());
+    assert_eq!(app.transcript.messages.len(), notice_count);
+}
+
+#[test]
+fn fast_mode_disabled_reason_does_not_warn_when_unrequested_or_cooling_down() {
+    let mut unrequested = make_test_app();
+    handle_client_event(
+        &mut unrequested,
+        session_update(model::SessionUpdate::FastModeUpdate {
+            state: model::FastModeState::Off,
+            disabled_reason: Some("free".to_owned()),
+        }),
+    );
+    assert!(unrequested.transcript.messages.is_empty());
+
+    let mut cooling_down = make_test_app();
+    cooling_down.config.committed_settings_document = serde_json::json!({ "fastMode": true });
+    handle_client_event(
+        &mut cooling_down,
+        session_update(model::SessionUpdate::FastModeUpdate {
+            state: model::FastModeState::Cooldown,
+            disabled_reason: Some("network_error".to_owned()),
+        }),
+    );
+    assert!(cooling_down.transcript.messages.is_empty());
 }
 
 #[test]
@@ -2246,6 +2316,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
         },
     );
@@ -2816,6 +2887,7 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
             available_models: Vec::new(),
             mode: None,
             fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
             history_updates: Vec::new(),
             restored_input: None,
         },

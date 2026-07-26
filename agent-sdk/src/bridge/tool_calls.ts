@@ -6,6 +6,7 @@ import { asRecordOrNull } from "./shared.js";
 import { applyTaskToolResult } from "./tasks.js";
 import { activeTaskIdForToolUse, linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import {
+  applyToolNonExecutionMetadata,
   backgroundToolLaunchTaskIdFromResult,
   buildToolResultFields,
   createToolCall,
@@ -436,6 +437,7 @@ export function emitToolResultUpdate(
   rawContent: unknown,
   rawResult: unknown = rawContent,
   sourceMessageUuid?: string,
+  nonExecutionMetadata?: import("../types.js").ToolNonExecutionMetadata,
 ): void {
   const base = session.toolCalls.get(toolUseId);
   const baseToolName = toolNameFromMeta(base?.meta) ?? "";
@@ -446,14 +448,21 @@ export function emitToolResultUpdate(
     rawResult,
     taskTitleContext(session, baseToolName, asRecordOrNull(base?.raw_input) ?? {}),
   );
-  if (!isError) {
+  applyToolNonExecutionMetadata(fields, nonExecutionMetadata);
+  if (!isError && !nonExecutionMetadata) {
     const taskId = backgroundToolLaunchTaskIdFromResult(baseToolName, rawResult, rawContent);
     if (taskId) {
       linkTaskToolUse(session, taskId, toolUseId);
     }
   }
   emitToolCallUpdate(session, toolUseId, fields, "result", sourceMessageUuid);
-  applyTaskToolResult(session, toolUseId, isError, rawContent, rawResult);
+  applyTaskToolResult(
+    session,
+    toolUseId,
+    isError || nonExecutionMetadata !== undefined,
+    rawContent,
+    rawResult,
+  );
   if (baseToolName === "Agent" || baseToolName === "Task") {
     const taskId = activeTaskIdForToolUse(session, toolUseId);
     if (taskId) {
