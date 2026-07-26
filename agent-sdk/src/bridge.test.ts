@@ -59,9 +59,16 @@ import {
   permissionModeFailureLooksUnsupported,
   refreshSupportedModesForSession,
 } from "./bridge/commands.js";
-import { handleMcpAuthenticateCommand, handleMcpSetServersCommand } from "./bridge/mcp.js";
+import {
+  emitMcpSnapshotEvent,
+  emitMcpSnapshotFromStatuses,
+  handleMcpAuthenticateCommand,
+  handleMcpSetServersCommand,
+  startMcpAuthSnapshotMonitor,
+} from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
+  beginSessionClose,
   handleUserDialogResponse,
   closeSession,
   closeSessionsBeforeRegister,
@@ -106,6 +113,7 @@ function makeSessionState(): SessionState {
     query: {} as import("@anthropic-ai/claude-agent-sdk").Query,
     input,
     connected: true,
+    closing: false,
     connectEvent: "connected",
     toolCalls: new Map(),
     tasksById: new Map(),
@@ -117,7 +125,9 @@ function makeSessionState(): SessionState {
     pendingUserDialogs: new Map(),
     pendingElicitations: new Map(),
     informationalDedupKeys: new Set(),
+    knownConnectedMcpServers: new Set(),
     mcpStatusRevalidatedAt: new Map(),
+    mcpAuthMonitors: new Map(),
     hiddenToolUseIds: new Set(),
     authHintSent: false,
   };
@@ -171,6 +181,78 @@ test("closeSession waits for owned query lifecycle tasks", async () => {
   finishConsumer?.();
   await closePromise;
   assert.equal(closeResolved, true);
+});
+
+test("closeSession cancels and awaits one coalesced MCP auth monitor per server", async () => {
+  const session = makeSessionState();
+  let statusCalls = 0;
+  let delayStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    delayStarted = resolve;
+  });
+  session.query = {
+    close: () => {},
+    mcpServerStatus: async () => {
+      statusCalls += 1;
+      return [];
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const timing = {
+    sleep: async (_delayMs: number, signal: AbortSignal) => {
+      delayStarted();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    },
+  };
+  const first = startMcpAuthSnapshotMonitor(session, "docs", timing);
+  const repeated = startMcpAuthSnapshotMonitor(session, "docs", timing);
+
+  assert.equal(repeated, first);
+  assert.equal(session.mcpAuthMonitors.size, 1);
+  await started;
+  await closeSession(session);
+
+  assert.deepEqual(await first, { outcome: "cancelled", attempts: 0 });
+  assert.equal(statusCalls, 0);
+  assert.equal(session.mcpAuthMonitors.size, 0);
+});
+
+test("replacement handoff suppresses an old session's in-flight MCP monitor snapshot", async () => {
+  const session = makeSessionState();
+  type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
+  let resolveStatus!: (statuses: SdkMcpServerStatus[]) => void;
+  let statusStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    statusStarted = resolve;
+  });
+  const pendingStatus = new Promise<SdkMcpServerStatus[]>((resolve) => {
+    resolveStatus = resolve;
+  });
+  session.query = {
+    close: () => {},
+    mcpServerStatus: async () => {
+      statusStarted();
+      return await pendingStatus;
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    const monitor = startMcpAuthSnapshotMonitor(session, "docs", {
+      maxAttempts: 1,
+      sleep: async () => undefined,
+    });
+    await started;
+    beginSessionClose(session);
+    resolveStatus([{ name: "docs", status: "connected" } as SdkMcpServerStatus]);
+    const result = await monitor;
+    assert.equal(result.outcome, "cancelled");
+    assert.equal(session.closing, true);
+    await closeSession(session);
+  });
+
+  assert.deepEqual(events, []);
 });
 
 test("availableModesForSession omits conditional modes when unsupported", () => {
@@ -1353,6 +1435,38 @@ test("staleMcpAuthCandidates respects the revalidation cooldown", () => {
   );
 
   assert.deepEqual(candidates, []);
+});
+
+test("MCP connection history is isolated between sessions with the same server name", async () => {
+  type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
+  const connected = {
+    name: "docs",
+    status: "connected",
+  } as SdkMcpServerStatus;
+  const needsAuth = {
+    name: "docs",
+    status: "needs-auth",
+  } as SdkMcpServerStatus;
+  const first = makeSessionState();
+  first.sessionId = "session-first";
+  const second = makeSessionState();
+  second.sessionId = "session-second";
+  let reconnectCalls = 0;
+  second.query = {
+    mcpServerStatus: async () => [needsAuth],
+    reconnectMcpServer: async () => {
+      reconnectCalls += 1;
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await captureBridgeEventsAsync(async () => {
+    emitMcpSnapshotFromStatuses(first, [connected], "mcp_status");
+    await emitMcpSnapshotEvent(second);
+  });
+
+  assert.deepEqual(first.knownConnectedMcpServers, new Set(["docs"]));
+  assert.deepEqual(second.knownConnectedMcpServers, new Set());
+  assert.equal(reconnectCalls, 0);
 });
 
 test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {

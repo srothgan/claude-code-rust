@@ -78,6 +78,7 @@ import {
   currentModelsEqual,
 } from "./model_metadata.js";
 import { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
+import type { McpAuthMonitorHandle } from "./mcp_monitor.js";
 
 export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
 export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
@@ -161,6 +162,7 @@ export type SessionState = {
   queryConsumerTask?: Promise<void>;
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
+  closing: boolean;
   connectEvent: ConnectEventKind;
   connectRequestId?: string;
   toolCalls: Map<string, ToolCall>;
@@ -174,7 +176,9 @@ export type SessionState = {
   pendingElicitations: Map<string, PendingElicitation>;
   informationalDedupKeys: Set<string>;
   pendingWorkerShutdown?: PendingWorkerShutdown;
+  knownConnectedMcpServers: Set<string>;
   mcpStatusRevalidatedAt: Map<string, number>;
+  mcpAuthMonitors: Map<string, McpAuthMonitorHandle>;
   hiddenToolUseIds: Set<string>;
   authHintSent: boolean;
   lastAvailableAgentsSignature?: string;
@@ -318,7 +322,17 @@ export function updateSessionId(session: SessionState, newSessionId: string): vo
   sessions.set(newSessionId, session);
 }
 
+export function beginSessionClose(session: SessionState): void {
+  session.closing = true;
+  for (const monitor of session.mcpAuthMonitors.values()) {
+    monitor.controller.abort();
+  }
+}
+
 export async function closeSession(session: SessionState): Promise<void> {
+  beginSessionClose(session);
+  const mcpAuthMonitors = Array.from(session.mcpAuthMonitors.values());
+  session.mcpAuthMonitors.clear();
   session.input.close();
   session.query.close();
   for (const pending of session.pendingPermissions.values()) {
@@ -339,9 +353,11 @@ export async function closeSession(session: SessionState): Promise<void> {
   }
   session.pendingElicitations.clear();
   await Promise.all(
-    [session.initializationTask, session.queryConsumerTask].filter(
-      (task): task is Promise<void> => task !== undefined,
-    ),
+    [
+      session.initializationTask,
+      session.queryConsumerTask,
+      ...mcpAuthMonitors.map((monitor) => monitor.task),
+    ].filter((task) => task !== undefined),
   );
 }
 
@@ -566,6 +582,7 @@ export async function createSession(params: {
     query: queryHandle,
     input,
     connected: false,
+    closing: false,
     connectEvent: params.connectEvent,
     connectRequestId: params.requestId,
     toolCalls: new Map<string, ToolCall>(),
@@ -578,7 +595,9 @@ export async function createSession(params: {
     pendingUserDialogs: new Map<string, PendingUserDialog>(),
     pendingElicitations: new Map<string, PendingElicitation>(),
     informationalDedupKeys: new Set<string>(),
+    knownConnectedMcpServers: new Set<string>(),
     mcpStatusRevalidatedAt: new Map<string, number>(),
+    mcpAuthMonitors: new Map<string, McpAuthMonitorHandle>(),
     hiddenToolUseIds: new Set<string>(),
     authHintSent: false,
     ...(params.resumeUpdates && params.resumeUpdates.length > 0

@@ -17,12 +17,17 @@ import {
   detectMcpAuthCapabilities,
   submitMcpOAuthCallbackUrl,
 } from "./mcp_auth_adapter.js";
+import {
+  runMcpAuthMonitor,
+  type McpAuthMonitorHandle,
+  type McpAuthMonitorResult,
+  type McpAuthMonitorTiming,
+} from "./mcp_monitor.js";
 import type { SessionState } from "./session_lifecycle.js";
 
 type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
 
 export const MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS = 30_000;
-const knownConnectedMcpServers = new Set<string>();
 
 function logMcpSuccess(
   eventName: string,
@@ -109,9 +114,10 @@ export async function emitMcpSnapshotEvent(
   requestId?: string,
   source: McpSnapshotSource = "mcp_status",
 ): Promise<McpServerStatus[]> {
-  const servers = await session.query.mcpServerStatus();
-  let mapped = servers.map(mapMcpServerStatus);
-  mapped = await reconcileSuspiciousMcpStatuses(session, mapped);
+  const mapped = await loadReconciledMcpStatuses(session);
+  if (!mapped) {
+    return [];
+  }
   return emitMcpSnapshotFromMappedStatuses(session, mapped, source, requestId);
 }
 
@@ -146,7 +152,7 @@ function emitMcpSnapshotFromMappedStatuses(
   source: McpSnapshotSource,
   requestId?: string,
 ): McpServerStatus[] {
-  rememberKnownConnectedMcpServers(mapped);
+  rememberKnownConnectedMcpServers(session, mapped);
   logMcpSuccess("mcp_snapshot_emitted", "MCP snapshot emitted", session.sessionId, requestId, {
     source,
     server_count: mapped.length,
@@ -186,25 +192,60 @@ export function staleMcpAuthCandidates(
     .map((server) => server.name);
 }
 
-function rememberKnownConnectedMcpServers(servers: readonly McpServerStatus[]): void {
+function rememberKnownConnectedMcpServers(
+  session: SessionState,
+  servers: readonly McpServerStatus[],
+): void {
   for (const server of servers) {
     if (server.status === "connected") {
-      knownConnectedMcpServers.add(server.name);
+      session.knownConnectedMcpServers.add(server.name);
     }
   }
 }
 
-function forgetKnownConnectedMcpServer(serverName: string): void {
-  knownConnectedMcpServers.delete(serverName);
+function forgetKnownConnectedMcpServer(session: SessionState, serverName: string): void {
+  session.knownConnectedMcpServers.delete(serverName);
+}
+
+type McpMonitorActivityCheck = () => boolean;
+
+async function loadReconciledMcpStatuses(session: SessionState): Promise<McpServerStatus[]>;
+async function loadReconciledMcpStatuses(
+  session: SessionState,
+  isActive: McpMonitorActivityCheck,
+): Promise<McpServerStatus[] | undefined>;
+async function loadReconciledMcpStatuses(
+  session: SessionState,
+  isActive: McpMonitorActivityCheck = () => true,
+): Promise<McpServerStatus[] | undefined> {
+  const servers = await session.query.mcpServerStatus();
+  if (!isActive()) {
+    return undefined;
+  }
+  return await reconcileSuspiciousMcpStatuses(
+    session,
+    servers.map(mapMcpServerStatus),
+    isActive,
+  );
 }
 
 async function reconcileSuspiciousMcpStatuses(
   session: SessionState,
   servers: McpServerStatus[],
-): Promise<McpServerStatus[]> {
+): Promise<McpServerStatus[]>;
+async function reconcileSuspiciousMcpStatuses(
+  session: SessionState,
+  servers: McpServerStatus[],
+  isActive: McpMonitorActivityCheck,
+): Promise<McpServerStatus[] | undefined>;
+async function reconcileSuspiciousMcpStatuses(
+  session: SessionState,
+  servers: McpServerStatus[],
+  isActive: McpMonitorActivityCheck = () => true,
+): Promise<McpServerStatus[] | undefined> {
   const candidates = staleMcpAuthCandidates(
     servers,
-    knownConnectedMcpServers,
+    session.knownConnectedMcpServers,
     session.mcpStatusRevalidatedAt,
   );
   if (candidates.length === 0) {
@@ -213,6 +254,9 @@ async function reconcileSuspiciousMcpStatuses(
 
   const now = Date.now();
   for (const serverName of candidates) {
+    if (!isActive()) {
+      return undefined;
+    }
     session.mcpStatusRevalidatedAt.set(serverName, now);
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_MCP,
@@ -229,7 +273,13 @@ async function reconcileSuspiciousMcpStatuses(
     });
     try {
       await session.query.reconnectMcpServer(serverName);
+      if (!isActive()) {
+        return undefined;
+      }
     } catch (error) {
+      if (!isActive()) {
+        return undefined;
+      }
       const message = error instanceof Error ? error.message : String(error);
       bridgeLogger.warn({
         target: LOG_TARGETS.BRIDGE_MCP,
@@ -246,47 +296,80 @@ async function reconcileSuspiciousMcpStatuses(
     }
   }
 
-  return (await session.query.mcpServerStatus()).map(mapMcpServerStatus);
+  const refreshed = await session.query.mcpServerStatus();
+  return isActive() ? refreshed.map(mapMcpServerStatus) : undefined;
 }
 
 function shouldKeepMonitoringMcpAuth(server: McpServerStatus | undefined): boolean {
   return server?.status === "needs-auth" || server?.status === "pending";
 }
 
-function scheduleMcpAuthSnapshotMonitor(
+function logMcpAuthMonitorExhausted(
   session: SessionState,
   serverName: string,
-  attempt = 0,
+  result: Extract<McpAuthMonitorResult, { outcome: "exhausted" }>,
 ): void {
-  const maxAttempts = 180;
-  const delayMs = 1000;
-  setTimeout(() => {
-    void monitorMcpAuthSnapshot(session, serverName, attempt + 1, maxAttempts, delayMs);
-  }, delayMs);
+  bridgeLogger.warn({
+    target: LOG_TARGETS.BRIDGE_MCP,
+    eventName: "mcp_auth_monitor_exhausted",
+    message: "MCP authentication status monitor exhausted",
+    outcome: "failure",
+    sessionId: session.sessionId,
+    count: result.attempts,
+    fields: {
+      server_name: serverName,
+      attempts: result.attempts,
+      reason: result.reason,
+      ...(result.lastError ? { error_message: result.lastError } : {}),
+    },
+  });
 }
 
-async function monitorMcpAuthSnapshot(
+export function startMcpAuthSnapshotMonitor(
   session: SessionState,
   serverName: string,
-  attempt: number,
-  maxAttempts: number,
-  delayMs: number,
-): Promise<void> {
-  try {
-    const servers = await emitMcpSnapshotEvent(session);
-    const server = servers.find((candidate) => candidate.name === serverName);
-    if (attempt < maxAttempts && shouldKeepMonitoringMcpAuth(server)) {
-      setTimeout(() => {
-        void monitorMcpAuthSnapshot(session, serverName, attempt + 1, maxAttempts, delayMs);
-      }, delayMs);
-    }
-  } catch {
-    if (attempt < maxAttempts) {
-      setTimeout(() => {
-        void monitorMcpAuthSnapshot(session, serverName, attempt + 1, maxAttempts, delayMs);
-      }, delayMs);
-    }
+  timing: McpAuthMonitorTiming = {},
+): Promise<McpAuthMonitorResult> {
+  if (session.closing) {
+    return Promise.resolve({ outcome: "cancelled", attempts: 0 });
   }
+  const existing = session.mcpAuthMonitors.get(serverName);
+  if (existing) {
+    return existing.task;
+  }
+
+  const controller = new AbortController();
+  let monitor!: McpAuthMonitorHandle;
+  const isActive = () =>
+    !session.closing &&
+    !controller.signal.aborted &&
+    session.mcpAuthMonitors.get(serverName) === monitor;
+  const task = runMcpAuthMonitor({
+    ...timing,
+    signal: controller.signal,
+    poll: async () => {
+      const servers = await loadReconciledMcpStatuses(session, isActive);
+      if (!isActive() || !servers) {
+        return "complete";
+      }
+      emitMcpSnapshotFromMappedStatuses(session, servers, "mcp_status");
+      const server = servers.find((candidate) => candidate.name === serverName);
+      return shouldKeepMonitoringMcpAuth(server) ? "continue" : "complete";
+    },
+  }).then((result) => {
+    if (result.outcome === "exhausted") {
+      logMcpAuthMonitorExhausted(session, serverName, result);
+    }
+    return result;
+  });
+  monitor = { controller, task };
+  session.mcpAuthMonitors.set(serverName, monitor);
+  void task.then(() => {
+    if (session.mcpAuthMonitors.get(serverName) === monitor) {
+      session.mcpAuthMonitors.delete(serverName);
+    }
+  });
+  return task;
 }
 
 export async function handleMcpStatusCommand(
@@ -458,7 +541,7 @@ export async function handleMcpAuthenticateCommand(
         { server_name: command.server_name },
       );
     }
-    scheduleMcpAuthSnapshotMonitor(session, command.server_name);
+    startMcpAuthSnapshotMonitor(session, command.server_name);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logMcpFailure(
@@ -486,7 +569,7 @@ export async function handleMcpClearAuthCommand(
 ): Promise<void> {
   try {
     await clearMcpServerAuth(session.query, command.server_name);
-    forgetKnownConnectedMcpServer(command.server_name);
+    forgetKnownConnectedMcpServer(session, command.server_name);
     session.mcpStatusRevalidatedAt.delete(command.server_name);
     logMcpSuccess("mcp_clear_auth_completed", "MCP auth cleared", command.session_id, requestId, {
       server_name: command.server_name,

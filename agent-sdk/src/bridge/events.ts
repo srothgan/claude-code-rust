@@ -3,7 +3,11 @@ import type { BridgeEvent, BridgeEventEnvelope, McpOperationError, SessionUpdate
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeEventSent } from "./logger.js";
-import { resolveCurrentModel, type SessionState } from "./session_lifecycle.js";
+import {
+  beginSessionClose,
+  resolveCurrentModel,
+  type SessionState,
+} from "./session_lifecycle.js";
 
 const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
@@ -203,6 +207,14 @@ function logConnectEventEmission(
 }
 
 export function emitConnectEvent(session: SessionState): void {
+  const staleSessions = session.sessionsToCloseAfterConnect;
+  if (staleSessions) {
+    for (const stale of staleSessions) {
+      if (stale !== session) {
+        beginSessionClose(stale);
+      }
+    }
+  }
   const bridgeEvent = buildConnectBridgeEvent(session, session.connectEvent);
   logConnectEventEmission(session, session.connectEvent, session.connectRequestId);
   writeEvent(bridgeEvent, session.connectRequestId);
@@ -219,7 +231,6 @@ export function emitConnectEvent(session: SessionState): void {
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
-  const staleSessions = session.sessionsToCloseAfterConnect;
   session.sessionsToCloseAfterConnect = undefined;
   if (!staleSessions || staleSessions.length === 0) {
     refreshSessionsList();
