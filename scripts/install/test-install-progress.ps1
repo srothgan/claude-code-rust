@@ -43,6 +43,7 @@ $helperNames = @(
     "Clear-DownloadProgress",
     "ConvertTo-CurlConfigValue",
     "Get-DownloadContentLength",
+    "Get-CurlApplication",
     "Invoke-ArchiveDownload",
     "Test-CanPrompt",
     "Confirm-DefaultNo",
@@ -87,6 +88,27 @@ $DownloadRetryCount = 3
 $DownloadConnectTimeoutSeconds = 30
 $DownloadLowSpeedBytesPerSecond = 1024
 $DownloadLowSpeedTimeSeconds = 30
+
+function Get-Command {
+    param(
+        [string]$Name,
+        [object]$CommandType,
+        [object]$ErrorAction
+    )
+
+    if ($Name -eq "curl") {
+        return @(
+            [pscustomobject]@{ Source = "/usr/bin/curl" },
+            [pscustomobject]@{ Source = "/bin/curl" }
+        )
+    }
+}
+try {
+    $resolvedCurl = Get-CurlApplication
+    Assert-Equal "/usr/bin/curl" $resolvedCurl.Source "Curl resolution returned multiple application paths"
+} finally {
+    Remove-Item Function:\Get-Command
+}
 
 Assert-Equal "[>.........]   0% Downloading release archive" `
     (Format-DownloadProgress -DownloadedBytes 0 -TotalBytes 1000 -ElapsedSeconds 0 -IncludeDiagnostics $false) `

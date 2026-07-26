@@ -506,6 +506,16 @@ function Get-DownloadContentLength {
     }
 }
 
+function Get-CurlApplication {
+    $curl = Get-Command "curl.exe" -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $curl) {
+        $curl = Get-Command "curl" -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
+    return $curl
+}
+
 function Invoke-ArchiveDownload {
     param(
         [string]$Uri,
@@ -513,10 +523,7 @@ function Invoke-ArchiveDownload {
     )
 
     Stop-InstallerProgress
-    $curl = Get-Command "curl.exe" -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $curl) {
-        $curl = Get-Command "curl" -CommandType Application -ErrorAction SilentlyContinue
-    }
+    $curl = Get-CurlApplication
     if (-not $curl) {
         Write-WarnLine "curl executable not found; using the slower PowerShell downloader"
         Start-InstallerProgress "Downloading release archive"
