@@ -69,6 +69,7 @@ import {
 import {
   emitCurrentModelUpdate,
   beginSessionClose,
+  closeAllSessions,
   handleUserDialogResponse,
   closeSession,
   closeSessionsBeforeRegister,
@@ -77,6 +78,7 @@ import {
   sessions,
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
+  trackSessionCloseTask,
 } from "./bridge/session_lifecycle.js";
 import {
   classifyTurnErrorKind,
@@ -179,6 +181,26 @@ test("closeSession waits for owned query lifecycle tasks", async () => {
   assert.equal(closeResolved, false);
 
   finishConsumer?.();
+  await closePromise;
+  assert.equal(closeResolved, true);
+});
+
+test("closeAllSessions waits for tracked stale-session cleanup", async () => {
+  sessions.clear();
+  let finishCleanup!: () => void;
+  let closeResolved = false;
+  const cleanup = new Promise<void>((resolve) => {
+    finishCleanup = resolve;
+  });
+  trackSessionCloseTask(cleanup);
+
+  const closePromise = closeAllSessions({ reason: "test_shutdown" }).then(() => {
+    closeResolved = true;
+  });
+  await Promise.resolve();
+  assert.equal(closeResolved, false);
+
+  finishCleanup();
   await closePromise;
   assert.equal(closeResolved, true);
 });

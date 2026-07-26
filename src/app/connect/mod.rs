@@ -32,7 +32,7 @@ use crate::{Cli, Command};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Shorten cwd for display: use `~` for the home directory prefix.
 fn shorten_cwd(cwd: &std::path::Path) -> String {
@@ -220,6 +220,7 @@ pub fn create_app(cli: &Cli) -> App {
             },
             matches!(&cli.command, Some(Command::Resume { session_id: None })),
         ),
+        bridge_task: None,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -262,9 +263,12 @@ pub fn start_connection(app: &mut App) {
         Rc::new(std::cell::RefCell::new(None));
     let conn_slot_writer = Rc::clone(&conn_slot);
 
-    tokio::task::spawn_local(async move {
-        bridge_lifecycle::run_connection_task(params, conn_slot_writer).await;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let join_handle = tokio::task::spawn_local(async move {
+        bridge_lifecycle::run_connection_task(params, conn_slot_writer, shutdown_rx).await;
     });
+    debug_assert!(app.bridge_task.is_none(), "bridge task already owned by app");
+    app.bridge_task = Some(BridgeTask { shutdown_tx, join_handle });
 
     CONN_SLOT.with(|slot| {
         debug_assert!(
@@ -280,6 +284,11 @@ pub struct ConnectionSlot {
     pub conn: Rc<AgentConnection>,
 }
 
+pub(crate) struct BridgeTask {
+    shutdown_tx: oneshot::Sender<()>,
+    join_handle: tokio::task::JoinHandle<()>,
+}
+
 thread_local! {
     pub static CONN_SLOT: std::cell::RefCell<Option<Rc<std::cell::RefCell<Option<ConnectionSlot>>>>> =
         const { std::cell::RefCell::new(None) };
@@ -288,6 +297,28 @@ thread_local! {
 /// Take the connection data from the thread-local slot.
 pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
     CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
+}
+
+pub(super) async fn shutdown_connection(app: &mut App) {
+    app.session_runtime.conn = None;
+    let pending_slot = CONN_SLOT.with(|slot| slot.borrow_mut().take());
+    if let Some(slot) = pending_slot {
+        slot.borrow_mut().take();
+    }
+
+    let Some(BridgeTask { shutdown_tx, join_handle }) = app.bridge_task.take() else {
+        return;
+    };
+    let _ = shutdown_tx.send(());
+    if let Err(err) = join_handle.await {
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_task_join_failed",
+            message = "bridge connection task did not finish cleanly",
+            outcome = "failure",
+            error = %err,
+        );
+    }
 }
 
 #[cfg(test)]

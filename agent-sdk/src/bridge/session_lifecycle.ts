@@ -191,6 +191,7 @@ export type SessionState = {
 };
 
 export const sessions = new Map<string, SessionState>();
+const pendingSessionCloseTasks = new Set<Promise<void>>();
 
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
@@ -329,6 +330,37 @@ export function beginSessionClose(session: SessionState): void {
   }
 }
 
+export function detachSessionForClose(session: SessionState): void {
+  beginSessionClose(session);
+  if (sessions.get(session.sessionId) === session) {
+    sessions.delete(session.sessionId);
+  }
+}
+
+export function trackSessionCloseTask(task: Promise<void>): void {
+  const ownedTask = task.catch((error: unknown) => {
+    bridgeLogger.error({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_close_task_failed",
+      message: "background session cleanup failed",
+      outcome: "failure",
+      fields: {
+        error_message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  });
+  pendingSessionCloseTasks.add(ownedTask);
+  void ownedTask.then(() => {
+    pendingSessionCloseTasks.delete(ownedTask);
+  });
+}
+
+async function waitForPendingSessionCloseTasks(): Promise<void> {
+  while (pendingSessionCloseTasks.size > 0) {
+    await Promise.all(Array.from(pendingSessionCloseTasks));
+  }
+}
+
 export async function closeSession(session: SessionState): Promise<void> {
   beginSessionClose(session);
   const mcpAuthMonitors = Array.from(session.mcpAuthMonitors.values());
@@ -411,6 +443,7 @@ export async function closeAllSessions(options: CloseSessionOptions = {}): Promi
       }),
     ),
   );
+  await waitForPendingSessionCloseTasks();
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
     eventName: "all_sessions_closed",

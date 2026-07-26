@@ -6,6 +6,7 @@ use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope, SessionL
 use crate::error::AppError;
 use anyhow::Context as _;
 use std::fmt;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader, BufWriter};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
@@ -15,6 +16,12 @@ pub struct BridgeClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
     stdout: tokio::io::Lines<BufReader<ChildStdout>>,
+}
+
+#[derive(Debug)]
+pub enum BridgeShutdownOutcome {
+    Graceful(std::process::ExitStatus),
+    Forced(std::process::ExitStatus),
 }
 
 impl BridgeClient {
@@ -169,6 +176,81 @@ impl BridgeClient {
         );
         self.send(CommandEnvelope { request_id: None, command: BridgeCommand::Shutdown }).await?;
         Ok(())
+    }
+
+    pub async fn shutdown_and_wait(
+        mut self,
+        graceful_timeout: Duration,
+    ) -> anyhow::Result<BridgeShutdownOutcome> {
+        let bridge_pid = self.child.id().unwrap_or_default();
+        if let Err(err) = self.shutdown().await {
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "bridge_shutdown_request_failed",
+                message = "failed to request graceful bridge shutdown",
+                outcome = "degraded",
+                bridge_pid,
+                error = %err,
+            );
+            if let Err(close_err) = self.stdin.shutdown().await {
+                tracing::warn!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    event_name = "bridge_stdin_close_failed",
+                    message = "failed to close bridge stdin after shutdown request failure",
+                    outcome = "degraded",
+                    bridge_pid,
+                    error = %close_err,
+                );
+            }
+        }
+
+        if let Ok(status) = tokio::time::timeout(graceful_timeout, self.child.wait()).await {
+            let status = status.context("failed to wait for bridge process")?;
+            tracing::info!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "bridge_shutdown_completed",
+                message = "bridge process exited after graceful shutdown request",
+                outcome = "success",
+                bridge_pid,
+                exit_status = %status,
+                forced = false,
+            );
+            Ok(BridgeShutdownOutcome::Graceful(status))
+        } else {
+            let timeout_ms = u64::try_from(graceful_timeout.as_millis()).unwrap_or(u64::MAX);
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "bridge_shutdown_timed_out",
+                message = "bridge process did not exit before the shutdown deadline",
+                outcome = "timeout",
+                bridge_pid,
+                timeout_ms,
+            );
+            if let Err(err) = self.child.start_kill() {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                    event_name = "bridge_force_kill_failed",
+                    message = "failed to force-kill bridge process",
+                    outcome = "failure",
+                    bridge_pid,
+                    error = %err,
+                );
+            }
+            let status = tokio::time::timeout(graceful_timeout, self.child.wait())
+                .await
+                .context("timed out while reaping bridge process after kill")?
+                .context("failed to reap bridge process after kill")?;
+            tracing::info!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "bridge_shutdown_completed",
+                message = "bridge process was force-killed and reaped",
+                outcome = "success",
+                bridge_pid,
+                exit_status = %status,
+                forced = true,
+            );
+            Ok(BridgeShutdownOutcome::Forced(status))
+        }
     }
 
     pub async fn wait(mut self) -> anyhow::Result<std::process::ExitStatus> {

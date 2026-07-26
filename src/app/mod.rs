@@ -134,6 +134,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let result = run_tui_loop(app, &mut terminal_runtime).await;
 
     finish_run_tui(app, &mut terminal_runtime);
+    connect::shutdown_connection(app).await;
 
     result
 }

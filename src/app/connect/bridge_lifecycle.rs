@@ -17,9 +17,12 @@ use tracing::{Instrument as _, info_span};
 use super::event_dispatch::handle_bridge_event;
 use super::{ConnectionSlot, StartConnectionParams, extract_app_error};
 
+const BRIDGE_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(super) async fn run_connection_task(
     params: StartConnectionParams,
     conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
+    mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
     let request_kind = if params.resume_id.is_some() { "resume" } else { "create" };
     let session_id = params.resume_id.clone().unwrap_or_default();
@@ -50,37 +53,69 @@ pub(super) async fn run_connection_task(
             return;
         };
 
-        let mut connected_once = false;
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<CommandEnvelope>();
-        publish_connection_slot(&conn_slot_writer, &cmd_tx);
-
-        if !send_initialize_command(&params, &mut bridge).await {
-            return;
-        }
-        if let Err(app_error) = wait_for_bridge_initialized(
-            &mut bridge,
-            &params.event_tx,
-            &cmd_tx,
-            &mut connected_once,
-            params.resume_requested,
-        )
-        .await
         {
-            emit_connection_failed(
-                &params.event_tx,
-                "Bridge did not complete initialization".to_owned(),
-                app_error,
+            let connection = drive_bridge_connection(&params, &conn_slot_writer, &mut bridge);
+            tokio::pin!(connection);
+            tokio::select! {
+                () = &mut connection => {}
+                _ = &mut shutdown_rx => {
+                    tracing::info!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        event_name = "bridge_connection_shutdown_signalled",
+                        message = "bridge connection task received its shutdown signal",
+                        outcome = "success",
+                    );
+                }
+            }
+        }
+        conn_slot_writer.borrow_mut().take();
+        if let Err(err) = bridge.shutdown_and_wait(BRIDGE_GRACEFUL_SHUTDOWN_TIMEOUT).await {
+            tracing::error!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "bridge_cleanup_failed",
+                message = "bridge process cleanup did not complete cleanly",
+                outcome = "failure",
+                error = %err,
             );
-            return;
         }
-        if !send_session_command(&params, &mut bridge).await {
-            return;
-        }
-
-        bridge_event_loop(&params, &mut bridge, &cmd_tx, &mut cmd_rx, &mut connected_once).await;
     }
     .instrument(connection_span)
     .await;
+}
+
+async fn drive_bridge_connection(
+    params: &StartConnectionParams,
+    conn_slot_writer: &Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
+    bridge: &mut BridgeClient,
+) {
+    let mut connected_once = false;
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<CommandEnvelope>();
+    publish_connection_slot(conn_slot_writer, &cmd_tx);
+
+    if !send_initialize_command(params, bridge).await {
+        return;
+    }
+    if let Err(app_error) = wait_for_bridge_initialized(
+        bridge,
+        &params.event_tx,
+        &cmd_tx,
+        &mut connected_once,
+        params.resume_requested,
+    )
+    .await
+    {
+        emit_connection_failed(
+            &params.event_tx,
+            "Bridge did not complete initialization".to_owned(),
+            app_error,
+        );
+        return;
+    }
+    if !send_session_command(params, bridge).await {
+        return;
+    }
+
+    bridge_event_loop(params, bridge, &cmd_tx, &mut cmd_rx, &mut connected_once).await;
 }
 
 fn resolve_launcher(params: &StartConnectionParams) -> Option<BridgeLauncher> {
@@ -419,7 +454,7 @@ async fn wait_for_bridge_initialized_with_timeout(
 mod tests {
     use super::wait_for_bridge_initialized_with_timeout;
     use crate::agent::bridge::BridgeLauncher;
-    use crate::agent::client::BridgeClient;
+    use crate::agent::client::{BridgeClient, BridgeShutdownOutcome};
     use crate::agent::events::ClientEvent;
     use crate::agent::wire::{BridgeEvent, CommandEnvelope};
     use crate::error::AppError;
@@ -438,6 +473,31 @@ mod tests {
         assert_eq!(event, None);
         let status = bridge.wait().await.expect("wait for bridge");
         assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn bridge_shutdown_exits_and_reaps_without_force_kill() {
+        let fixture = RuntimeFixture::new(exit_on_shutdown_script()).expect("runtime fixture");
+        let bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+
+        let outcome =
+            bridge.shutdown_and_wait(Duration::from_secs(1)).await.expect("graceful shutdown");
+
+        let BridgeShutdownOutcome::Graceful(status) = outcome else {
+            panic!("bridge should exit without force-kill");
+        };
+        assert!(status.success());
+    }
+
+    #[tokio::test]
+    async fn bridge_shutdown_force_kills_and_reaps_unresponsive_process() {
+        let fixture = RuntimeFixture::new(ignore_shutdown_script()).expect("runtime fixture");
+        let bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+
+        let outcome =
+            bridge.shutdown_and_wait(Duration::from_millis(50)).await.expect("forced shutdown");
+
+        assert!(matches!(outcome, BridgeShutdownOutcome::Forced(_)));
     }
 
     #[tokio::test]
@@ -597,6 +657,26 @@ mod tests {
     #[cfg(not(windows))]
     fn exit_failure_script() -> &'static str {
         "#!/bin/sh\nexit 7\n"
+    }
+
+    #[cfg(windows)]
+    fn exit_on_shutdown_script() -> &'static str {
+        "@echo off\r\nset /p line=\r\nexit /b 0\r\n"
+    }
+
+    #[cfg(not(windows))]
+    fn exit_on_shutdown_script() -> &'static str {
+        "#!/bin/sh\nIFS= read -r line\nexit 0\n"
+    }
+
+    #[cfg(windows)]
+    fn ignore_shutdown_script() -> &'static str {
+        "@echo off\r\n:read\r\nset \"line=\"\r\nset /p line=\r\ngoto read\r\n"
+    }
+
+    #[cfg(not(windows))]
+    fn ignore_shutdown_script() -> &'static str {
+        "#!/bin/sh\nwhile IFS= read -r line; do :; done\n"
     }
 
     #[cfg(windows)]

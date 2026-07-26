@@ -79,6 +79,7 @@ impl BridgeLauncher {
         cmd.env("CLAUDE_RS_BRIDGE_DIAGNOSTICS", if bridge_diagnostics_enabled { "1" } else { "0" });
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
         cmd.stderr(if bridge_diagnostics_enabled {
             std::process::Stdio::piped()
         } else {
@@ -609,6 +610,16 @@ mod tests {
                 fixture.script_path.to_string_lossy()
             )
         );
+    }
+
+    #[test]
+    fn bridge_process_is_killed_if_its_owner_is_dropped() {
+        let launcher = BridgeLauncher {
+            runtime_path: PathBuf::from("bun"),
+            script_path: PathBuf::from("bridge.js"),
+        };
+
+        assert!(launcher.command(false).get_kill_on_drop());
     }
 
     #[tokio::test]

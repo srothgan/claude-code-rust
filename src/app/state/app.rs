@@ -105,6 +105,8 @@ pub struct App {
     pub(crate) last_frame_at: Option<Instant>,
     /// Bootstrap sequencing state resolved from CLI flags at launch.
     pub(crate) startup: StartupState,
+    /// Owned bridge-process task and its explicit shutdown signal.
+    pub(crate) bridge_task: Option<crate::app::connect::BridgeTask>,
 }
 
 impl App {
@@ -208,6 +210,7 @@ impl App {
             fps_ema: None,
             last_frame_at: None,
             startup: StartupState::default(),
+            bridge_task: None,
         }
     }
 

@@ -4,8 +4,9 @@ import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeEventSent } from "./logger.js";
 import {
-  beginSessionClose,
+  detachSessionForClose,
   resolveCurrentModel,
+  trackSessionCloseTask,
   type SessionState,
 } from "./session_lifecycle.js";
 
@@ -211,7 +212,7 @@ export function emitConnectEvent(session: SessionState): void {
   if (staleSessions) {
     for (const stale of staleSessions) {
       if (stale !== session) {
-        beginSessionClose(stale);
+        detachSessionForClose(stale);
       }
     }
   }
@@ -236,20 +237,18 @@ export function emitConnectEvent(session: SessionState): void {
     refreshSessionsList();
     return;
   }
-  void (async () => {
+  const closeTask = (async () => {
     // Lazy import to break circular dependency at module-evaluation time.
-    const { sessions, closeSessionWithLogging } = await import("./session_lifecycle.js");
+    const { closeSessionWithLogging } = await import("./session_lifecycle.js");
     for (const stale of staleSessions) {
       if (stale === session) {
         continue;
-      }
-      if (sessions.get(stale.sessionId) === stale) {
-        sessions.delete(stale.sessionId);
       }
       await closeSessionWithLogging(stale, { reason: "stale_after_connect" });
     }
     refreshSessionsList();
   })();
+  trackSessionCloseTask(closeTask);
 }
 
 export function emitSessionReplacedEvent(session: SessionState, requestId?: string): void {
