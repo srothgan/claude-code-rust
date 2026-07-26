@@ -9,6 +9,12 @@ use super::candidates::{
     argument_candidates, detect_slash_at_cursor, supported_command_candidates,
 };
 
+fn attach_test_connection(app: &mut App) -> crate::agent::client::CommandReceiver {
+    let (connection, receiver) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+    receiver
+}
+
 fn session_update(update: model::SessionUpdate) -> crate::agent::events::ClientEvent {
     crate::agent::events::ClientEvent::SessionUpdate { session_id: "sess-1".to_owned(), update }
 }
@@ -217,9 +223,7 @@ async fn app_fast_shadows_advertised_command_and_toggles_authoritative_state() {
 
             for (initial, expected_enabled, acknowledged) in cases {
                 let mut app = App::test_default();
-                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                app.session_runtime.conn =
-                    Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                let mut rx = attach_test_connection(&mut app);
                 app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
                 app.session_runtime.fast_mode_state = initial;
                 app.sdk_inventory.available_commands = vec![
@@ -263,9 +267,7 @@ fn fast_capability_check_blocks_enable() {
         .supports_fast_mode(Some(false))
         .authoritative(true);
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
     app.session_runtime.current_model = Some(unsupported_model);
 
@@ -282,9 +284,7 @@ async fn fast_capability_check_still_allows_disable() {
                 .supports_fast_mode(Some(false))
                 .authoritative(true);
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
             app.session_runtime.current_model = Some(unsupported_model);
             app.session_runtime.fast_mode_state = model::FastModeState::On;
@@ -305,9 +305,7 @@ async fn fast_capability_check_still_allows_disable() {
 #[test]
 fn fast_rejects_arguments_without_dispatching() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
 
     let consumed = try_handle_submit(&mut app, "/fast on");
@@ -994,9 +992,7 @@ fn rewind_argument_candidates_hide_stale_targets() {
 #[test]
 fn rewind_argument_context_requests_targets_when_cache_is_stale() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
@@ -1015,9 +1011,7 @@ fn rewind_argument_context_requests_targets_when_cache_is_stale() {
 #[test]
 fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
     let mut app = App::test_default();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let _rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
@@ -1437,9 +1431,7 @@ fn rewind_with_cached_target_requires_connection() {
 #[test]
 fn rewind_with_cached_target_sends_bridge_command() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
@@ -1491,9 +1483,7 @@ async fn resume_sets_command_pending_when_connected() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
 
             let consumed = try_handle_submit(&mut app, "/resume abc-123");
             assert!(consumed);
@@ -1511,9 +1501,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let _rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.mode = Some(super::super::ModeState {
                 current_mode_id: "code".to_owned(),
@@ -1555,9 +1543,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let _rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -1605,9 +1591,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
@@ -1662,9 +1646,7 @@ async fn effort_accepts_session_only_max() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
@@ -1697,9 +1679,7 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.sdk_inventory.available_agents =
                 vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
@@ -1747,9 +1727,7 @@ async fn agent_reset_sends_null_agent() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent reset");
@@ -1773,9 +1751,7 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent custom-agent");
@@ -1797,9 +1773,7 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
 #[test]
 fn agent_rejects_unknown_when_available_agents_are_populated() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some("sess-1".into());
     app.sdk_inventory.available_agents =
         vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
@@ -1859,9 +1833,7 @@ fn effort_invalid_arguments_return_usage() {
 #[test]
 fn effort_rejects_models_without_effort_support() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some("sess-1".into());
     app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku").supports_effort(false),
@@ -1885,9 +1857,7 @@ async fn new_session_sets_command_pending() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let _rx = attach_test_connection(&mut app);
 
             let consumed = try_handle_submit(&mut app, "/new-session");
             assert!(consumed);
@@ -1921,9 +1891,7 @@ fn compact_without_connection_is_handled_locally() {
 #[test]
 fn compact_with_active_session_sets_compacting_without_success_pending() {
     let mut app = App::test_default();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let _rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
 
     let consumed = try_handle_submit(&mut app, "/compact");

@@ -500,36 +500,42 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
                 );
                 if status.success() {
                     if !crate::app::auth::has_credentials() {
-                        let _ = tx.send(ClientEvent::SlashCommandError {
-                            session_id: None,
-                            message: "Login exited successfully but no credentials were saved. \
-                                      Try /login again or run `claude auth login` in another terminal."
-                                .to_owned(),
-                        });
+                        let _ = tx
+                            .send(ClientEvent::SlashCommandError {
+                                session_id: None,
+                                message: "Login exited successfully but no credentials were saved. \
+                                          Try /login again or run `claude auth login` in another terminal."
+                                    .to_owned(),
+                            })
+                            .await;
                         return;
                     }
                     if let Some(conn) = conn {
-                        let _ = tx.send(ClientEvent::AuthCompleted { conn });
+                        let _ = tx.send(ClientEvent::AuthCompleted { conn }).await;
                     } else {
-                        let _ = tx.send(ClientEvent::SlashCommandError {
-                            session_id: None,
-                            message:
-                                "Login succeeded but no connection available to start a session."
-                                    .to_owned(),
-                        });
+                        let _ = tx
+                            .send(ClientEvent::SlashCommandError {
+                                session_id: None,
+                                message:
+                                    "Login succeeded but no connection available to start a session."
+                                        .to_owned(),
+                            })
+                            .await;
                     }
                 } else {
-                    let _ = tx.send(ClientEvent::SlashCommandError {
-                        session_id: None,
-                        message: format!(
-                            "/login failed (exit code: {})",
-                            status.code().map_or("unknown".to_owned(), |c| c.to_string())
-                        ),
-                    });
+                    let _ = tx
+                        .send(ClientEvent::SlashCommandError {
+                            session_id: None,
+                            message: format!(
+                                "/login failed (exit code: {})",
+                                status.code().map_or("unknown".to_owned(), |c| c.to_string())
+                            ),
+                        })
+                        .await;
                 }
             }
             Err(message) => {
-                let _ = tx.send(ClientEvent::SlashCommandError { session_id: None, message });
+                let _ = tx.send(ClientEvent::SlashCommandError { session_id: None, message }).await;
             }
         }
     });
@@ -587,27 +593,31 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
                 );
                 if status.success() {
                     if crate::app::auth::has_credentials() {
-                        let _ = tx.send(ClientEvent::SlashCommandError {
-                            session_id: None,
-                            message: "Logout exited successfully but credentials are still present. \
-                                      Try /logout again or run `claude auth logout` in another terminal."
-                                .to_owned(),
-                        });
+                        let _ = tx
+                            .send(ClientEvent::SlashCommandError {
+                                session_id: None,
+                                message: "Logout exited successfully but credentials are still present. \
+                                          Try /logout again or run `claude auth logout` in another terminal."
+                                    .to_owned(),
+                            })
+                            .await;
                         return;
                     }
-                    let _ = tx.send(ClientEvent::LogoutCompleted);
+                    let _ = tx.send(ClientEvent::LogoutCompleted).await;
                 } else {
-                    let _ = tx.send(ClientEvent::SlashCommandError {
-                        session_id: None,
-                        message: format!(
-                            "/logout failed (exit code: {})",
-                            status.code().map_or("unknown".to_owned(), |c| c.to_string())
-                        ),
-                    });
+                    let _ = tx
+                        .send(ClientEvent::SlashCommandError {
+                            session_id: None,
+                            message: format!(
+                                "/logout failed (exit code: {})",
+                                status.code().map_or("unknown".to_owned(), |c| c.to_string())
+                            ),
+                        })
+                        .await;
                 }
             }
             Err(message) => {
-                let _ = tx.send(ClientEvent::SlashCommandError { session_id: None, message });
+                let _ = tx.send(ClientEvent::SlashCommandError { session_id: None, message }).await;
             }
         }
     });
@@ -615,19 +625,21 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 async fn run_auth_child_command(
-    tx: &mpsc::UnboundedSender<ClientEvent>,
+    tx: &mpsc::Sender<ClientEvent>,
     claude_path: &Path,
     subcommand: &'static str,
 ) -> Result<ExitStatus, String> {
-    let _ = tx.send(ClientEvent::TerminalReleasedToChild { reason: ReleaseReason::AuthFlow });
-    let terminal_release = crate::app::terminal_runtime::TerminalReleaseGuard::release(
+    let _ = tx.send(ClientEvent::TerminalReleasedToChild { reason: ReleaseReason::AuthFlow }).await;
+    let terminal_release = match crate::app::terminal_runtime::TerminalReleaseGuard::release(
         ReleaseReason::AuthFlow,
         subcommand,
-    )
-    .map_err(|err| {
-        send_terminal_returned_from_child(tx);
-        format!("Failed to release terminal for claude auth {subcommand}: {err}")
-    })?;
+    ) {
+        Ok(terminal_release) => terminal_release,
+        Err(err) => {
+            send_terminal_returned_from_child(tx).await;
+            return Err(format!("Failed to release terminal for claude auth {subcommand}: {err}"));
+        }
+    };
 
     let result = tokio::process::Command::new(claude_path)
         .args(["auth", subcommand])
@@ -639,7 +651,7 @@ async fn run_auth_child_command(
         .map_err(|err| format!("Failed to run claude auth {subcommand}: {err}"));
 
     let restore_result = terminal_release.restore();
-    send_terminal_returned_from_child(tx);
+    send_terminal_returned_from_child(tx).await;
     restore_result.map_err(|err| {
         format!("Failed to restore terminal after claude auth {subcommand}: {err}")
     })?;
@@ -647,8 +659,9 @@ async fn run_auth_child_command(
     result
 }
 
-fn send_terminal_returned_from_child(tx: &mpsc::UnboundedSender<ClientEvent>) {
-    let _ = tx.send(ClientEvent::TerminalReturnedFromChild { reason: ReleaseReason::AuthFlow });
+async fn send_terminal_returned_from_child(tx: &mpsc::Sender<ClientEvent>) {
+    let _ =
+        tx.send(ClientEvent::TerminalReturnedFromChild { reason: ReleaseReason::AuthFlow }).await;
 }
 
 /// Resolve the `claude` CLI binary from PATH, or push an error message and return `None`.
@@ -710,10 +723,12 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
         match conn.set_mode(session_id.clone(), requested_mode_owned) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_id: Some(session_id),
-                    message: format!("Failed to run /mode: {e}"),
-                });
+                let _ = tx
+                    .send(ClientEvent::SlashCommandError {
+                        session_id: Some(session_id),
+                        message: format!("Failed to run /mode: {e}"),
+                    })
+                    .await;
             }
         }
     });
@@ -759,10 +774,12 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         match conn.set_model(session_id.clone(), model_name) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_id: Some(session_id),
-                    message: format!("Failed to run /model: {e}"),
-                });
+                let _ = tx
+                    .send(ClientEvent::SlashCommandError {
+                        session_id: Some(session_id),
+                        message: format!("Failed to run /model: {e}"),
+                    })
+                    .await;
             }
         }
     });
@@ -805,10 +822,12 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
         match conn.set_effort(session_id.clone(), effort) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_id: Some(session_id),
-                    message: format!("Failed to run /effort: {e}"),
-                });
+                let _ = tx
+                    .send(ClientEvent::SlashCommandError {
+                        session_id: Some(session_id),
+                        message: format!("Failed to run /effort: {e}"),
+                    })
+                    .await;
             }
         }
     });
@@ -848,10 +867,12 @@ fn handle_fast_submit(app: &mut App, args: &[&str]) -> bool {
     let session_id = sid.to_string();
     tokio::task::spawn_local(async move {
         if let Err(e) = conn.set_fast_mode(session_id.clone(), enabled) {
-            let _ = tx.send(ClientEvent::SlashCommandError {
-                session_id: Some(session_id),
-                message: format!("Failed to run /fast: {e}"),
-            });
+            let _ = tx
+                .send(ClientEvent::SlashCommandError {
+                    session_id: Some(session_id),
+                    message: format!("Failed to run /fast: {e}"),
+                })
+                .await;
         }
     });
     true
@@ -904,10 +925,12 @@ fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
         match conn.set_agent(session_id.clone(), agent) {
             Ok(()) => {}
             Err(e) => {
-                let _ = tx.send(ClientEvent::SlashCommandError {
-                    session_id: Some(session_id),
-                    message: format!("Failed to run /agent: {e}"),
-                });
+                let _ = tx
+                    .send(ClientEvent::SlashCommandError {
+                        session_id: Some(session_id),
+                        message: format!("Failed to run /agent: {e}"),
+                    })
+                    .await;
             }
         }
     });
@@ -930,10 +953,10 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, "Starting new session...", None);
 
     if let Err(e) = start_new_session(app, &conn, SessionStartReason::NewSession) {
-        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
-            session_id: None,
-            message: format!("Failed to run /new-session: {e}"),
-        });
+        crate::app::events::handle_local_slash_command_error(
+            app,
+            &format!("Failed to run /new-session: {e}"),
+        );
     }
     true
 }
@@ -957,10 +980,10 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, &format!("Resuming session {session_id}..."), None);
     let session_id = session_id.to_owned();
     if let Err(e) = begin_resume_session(app, &conn, session_id) {
-        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
-            session_id: None,
-            message: format!("Failed to run /resume: {e}"),
-        });
+        crate::app::events::handle_local_slash_command_error(
+            app,
+            &format!("Failed to run /resume: {e}"),
+        );
     }
     true
 }
@@ -1003,10 +1026,10 @@ fn handle_rewind_submit(app: &mut App, args: &[&str]) -> bool {
     set_command_pending(app, pending_label, None);
     let session_id = session_id.to_string();
     if let Err(e) = begin_rewind(app, &conn, session_id.clone(), target_uuid, restore_mode) {
-        let _ = app.event_tx.send(ClientEvent::SlashCommandError {
-            session_id: Some(session_id),
-            message: format!("Failed to run /rewind: {e}"),
-        });
+        crate::app::events::handle_local_slash_command_error(
+            app,
+            &format!("Failed to run /rewind: {e}"),
+        );
     }
     true
 }

@@ -47,12 +47,10 @@ async fn ready_events_are_not_delayed_until_the_next_tick() {
     assert!(event_received);
 }
 
-fn app_with_connection()
--> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+fn app_with_connection() -> (App, crate::agent::client::CommandReceiver) {
     let mut app = App::test_default();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(connection));
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     (app, rx)
 }

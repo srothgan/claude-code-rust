@@ -4,11 +4,12 @@
 //! Bridge event dispatch: routes incoming `BridgeEvent` envelopes to appropriate
 //! `ClientEvent` messages, and handles permission request/response forwarding.
 
+use crate::agent::client::AgentConnection;
 use crate::agent::error_handling::parse_turn_error_class;
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::agent::types;
-use crate::agent::wire::{BridgeCommand, CommandEnvelope, EventEnvelope};
+use crate::agent::wire::EventEnvelope;
 use crate::error::AppError;
 use tokio::sync::mpsc;
 
@@ -31,9 +32,9 @@ struct ConnectedEventData {
 }
 
 #[allow(clippy::too_many_lines)]
-pub(super) fn handle_bridge_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+pub(super) async fn handle_bridge_event(
+    event_tx: &mpsc::Sender<ClientEvent>,
+    connection: &AgentConnection,
     connected_once: &mut bool,
     resume_requested: bool,
     envelope: EventEnvelope,
@@ -60,53 +61,57 @@ pub(super) fn handle_bridge_event(
                     fast_mode_state,
                     history_updates,
                 },
-            );
+            )
+            .await;
         }
         crate::agent::wire::BridgeEvent::AuthRequired { method_name, method_description } => {
-            let _ = event_tx.send(ClientEvent::AuthRequired { method_name, method_description });
+            let _ =
+                event_tx.send(ClientEvent::AuthRequired { method_name, method_description }).await;
         }
         crate::agent::wire::BridgeEvent::ConnectionFailed { message } => {
-            emit_connection_failed(event_tx, message, AppError::BridgeSdkFailure);
+            emit_connection_failed(event_tx, message, AppError::BridgeSdkFailure).await;
         }
         crate::agent::wire::BridgeEvent::SessionUpdate { session_id, update } => {
             if let Some(update) = map_session_update(update) {
-                let _ = event_tx.send(ClientEvent::SessionUpdate { session_id, update });
+                let _ = event_tx.send(ClientEvent::SessionUpdate { session_id, update }).await;
             }
         }
         crate::agent::wire::BridgeEvent::PermissionRequest { session_id, request } => {
-            handle_permission_request_event(event_tx, cmd_tx, session_id, request);
+            handle_permission_request_event(event_tx, connection, session_id, request).await;
         }
         crate::agent::wire::BridgeEvent::QuestionRequest { session_id, request } => {
-            handle_question_request_event(event_tx, cmd_tx, session_id, request);
+            handle_question_request_event(event_tx, connection, session_id, request).await;
         }
         crate::agent::wire::BridgeEvent::UserDialogRequest { session_id, request } => {
-            handle_user_dialog_request_event(event_tx, cmd_tx, session_id, request);
+            handle_user_dialog_request_event(event_tx, connection, session_id, request).await;
         }
         crate::agent::wire::BridgeEvent::ElicitationRequest { session_id, request } => {
-            handle_elicitation_request_event(event_tx, &session_id, request);
+            handle_elicitation_request_event(event_tx, &session_id, request).await;
         }
         crate::agent::wire::BridgeEvent::ElicitationComplete {
             session_id,
             elicitation_id,
             server_name,
         } => {
-            let _ = event_tx.send(ClientEvent::McpElicitationCompleted {
-                session_id,
-                elicitation_id,
-                server_name,
-            });
+            let _ = event_tx
+                .send(ClientEvent::McpElicitationCompleted {
+                    session_id,
+                    elicitation_id,
+                    server_name,
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::McpAuthRedirect { session_id, redirect } => {
-            let _ = event_tx.send(ClientEvent::McpAuthRedirect { session_id, redirect });
+            let _ = event_tx.send(ClientEvent::McpAuthRedirect { session_id, redirect }).await;
         }
         crate::agent::wire::BridgeEvent::McpOperationError { session_id, error } => {
-            let _ = event_tx.send(ClientEvent::McpOperationError { session_id, error });
+            let _ = event_tx.send(ClientEvent::McpOperationError { session_id, error }).await;
         }
         crate::agent::wire::BridgeEvent::McpSetServersResult { session_id, result } => {
-            let _ = event_tx.send(ClientEvent::McpSetServersResult { session_id, result });
+            let _ = event_tx.send(ClientEvent::McpSetServersResult { session_id, result }).await;
         }
         crate::agent::wire::BridgeEvent::TurnComplete { session_id, terminal_reason } => {
-            let _ = event_tx.send(ClientEvent::TurnComplete { session_id, terminal_reason });
+            let _ = event_tx.send(ClientEvent::TurnComplete { session_id, terminal_reason }).await;
         }
         crate::agent::wire::BridgeEvent::TurnError {
             session_id,
@@ -117,20 +122,24 @@ pub(super) fn handle_bridge_event(
             ..
         } => {
             if let Some(class) = error_kind.as_deref().and_then(parse_turn_error_class) {
-                let _ = event_tx.send(ClientEvent::TurnErrorClassified {
-                    session_id,
-                    message,
-                    class,
-                    api_error_status,
-                    terminal_reason,
-                });
+                let _ = event_tx
+                    .send(ClientEvent::TurnErrorClassified {
+                        session_id,
+                        message,
+                        class,
+                        api_error_status,
+                        terminal_reason,
+                    })
+                    .await;
             } else {
-                let _ = event_tx.send(ClientEvent::TurnError {
-                    session_id,
-                    message,
-                    api_error_status,
-                    terminal_reason,
-                });
+                let _ = event_tx
+                    .send(ClientEvent::TurnError {
+                        session_id,
+                        message,
+                        api_error_status,
+                        terminal_reason,
+                    })
+                    .await;
             }
         }
         crate::agent::wire::BridgeEvent::SlashError { session_id, message } => {
@@ -138,17 +147,18 @@ pub(super) fn handle_bridge_event(
                 && !*connected_once
                 && message.to_ascii_lowercase().contains("unknown session")
             {
-                let _ = event_tx.send(ClientEvent::FatalError(AppError::SessionNotFound));
+                let _ = event_tx.send(ClientEvent::FatalError(AppError::SessionNotFound)).await;
                 return;
             }
             let _ = event_tx
-                .send(ClientEvent::SlashCommandError { session_id: Some(session_id), message });
+                .send(ClientEvent::SlashCommandError { session_id: Some(session_id), message })
+                .await;
         }
         crate::agent::wire::BridgeEvent::RuntimeReloadCompleted { session_id } => {
-            let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id });
+            let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id }).await;
         }
         crate::agent::wire::BridgeEvent::RuntimeReloadFailed { session_id, message } => {
-            let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message });
+            let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message }).await;
         }
         crate::agent::wire::BridgeEvent::SessionReplaced {
             session_id,
@@ -165,35 +175,42 @@ pub(super) fn handle_bridge_event(
                 .into_iter()
                 .filter_map(map_session_update)
                 .collect();
-            let _ = event_tx.send(ClientEvent::SessionReplaced {
-                session_id: model::SessionId::new(session_id),
-                cwd,
-                current_model: convert_current_model(current_model),
-                available_models: map_available_models(available_models),
-                mode: mode.map(convert_mode_state),
-                fast_mode_state: convert_fast_mode_state(fast_mode_state),
-                history_updates,
-                restored_input,
-            });
+            let _ = event_tx
+                .send(ClientEvent::SessionReplaced {
+                    session_id: model::SessionId::new(session_id),
+                    cwd,
+                    current_model: convert_current_model(current_model),
+                    available_models: map_available_models(available_models),
+                    mode: mode.map(convert_mode_state),
+                    fast_mode_state: convert_fast_mode_state(fast_mode_state),
+                    history_updates,
+                    restored_input,
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::SessionsListed { sessions } => {
-            let _ = event_tx.send(ClientEvent::SessionsListed { sessions });
+            let _ = event_tx.send(ClientEvent::SessionsListed { sessions }).await;
         }
         crate::agent::wire::BridgeEvent::Initialized { .. } => {}
         crate::agent::wire::BridgeEvent::StatusSnapshot { session_id, account } => {
-            let _ = event_tx.send(ClientEvent::StatusSnapshotReceived {
-                session_id,
-                account: convert_account_info(account),
-            });
+            let _ = event_tx
+                .send(ClientEvent::StatusSnapshotReceived {
+                    session_id,
+                    account: convert_account_info(account),
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::ContextUsage { session_id, percentage } => {
-            let _ = event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage });
+            let _ =
+                event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage }).await;
         }
         crate::agent::wire::BridgeEvent::RewindTargets { session_id, targets } => {
-            let _ = event_tx.send(ClientEvent::RewindTargetsReceived {
-                session_id,
-                targets: map_rewind_targets(targets),
-            });
+            let _ = event_tx
+                .send(ClientEvent::RewindTargetsReceived {
+                    session_id,
+                    targets: map_rewind_targets(targets),
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::RewindResult {
             session_id,
@@ -202,9 +219,17 @@ pub(super) fn handle_bridge_event(
             file_result,
             message,
         } => {
-            let _ = event_tx.send(ClientEvent::RewindResultReceived {
-                result: map_rewind_result(session_id, restore_mode, status, file_result, message),
-            });
+            let _ = event_tx
+                .send(ClientEvent::RewindResultReceived {
+                    result: map_rewind_result(
+                        session_id,
+                        restore_mode,
+                        status,
+                        file_result,
+                        message,
+                    ),
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::McpSnapshot {
             session_id,
@@ -213,19 +238,21 @@ pub(super) fn handle_bridge_event(
             source,
             error,
         } => {
-            let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
-                session_id,
-                servers: servers.into_iter().map(map_mcp_server_status).collect(),
-                auth_capabilities: map_mcp_auth_capabilities(auth_capabilities),
-                source,
-                error,
-            });
+            let _ = event_tx
+                .send(ClientEvent::McpSnapshotReceived {
+                    session_id,
+                    servers: servers.into_iter().map(map_mcp_server_status).collect(),
+                    auth_capabilities: map_mcp_auth_capabilities(auth_capabilities),
+                    source,
+                    error,
+                })
+                .await;
         }
     }
 }
 
-fn handle_connected_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+async fn handle_connected_event(
+    event_tx: &mpsc::Sender<ClientEvent>,
     connected_once: &mut bool,
     event: ConnectedEventData,
 ) {
@@ -237,33 +264,37 @@ fn handle_connected_event(
         .filter_map(map_session_update)
         .collect();
     if *connected_once {
-        let _ = event_tx.send(ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new(event.session_id),
-            cwd: event.cwd,
-            current_model: convert_current_model(event.current_model),
-            available_models: map_available_models(event.available_models),
-            mode,
-            fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
-            history_updates,
-            restored_input: None,
-        });
+        let _ = event_tx
+            .send(ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new(event.session_id),
+                cwd: event.cwd,
+                current_model: convert_current_model(event.current_model),
+                available_models: map_available_models(event.available_models),
+                mode,
+                fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
+                history_updates,
+                restored_input: None,
+            })
+            .await;
     } else {
         *connected_once = true;
-        let _ = event_tx.send(ClientEvent::Connected {
-            session_id: model::SessionId::new(event.session_id),
-            cwd: event.cwd,
-            current_model: convert_current_model(event.current_model),
-            available_models: map_available_models(event.available_models),
-            mode,
-            fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
-            history_updates,
-        });
+        let _ = event_tx
+            .send(ClientEvent::Connected {
+                session_id: model::SessionId::new(event.session_id),
+                cwd: event.cwd,
+                current_model: convert_current_model(event.current_model),
+                available_models: map_available_models(event.available_models),
+                mode,
+                fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
+                history_updates,
+            })
+            .await;
     }
 }
 
-fn handle_permission_request_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+async fn handle_permission_request_event(
+    event_tx: &mpsc::Sender<ClientEvent>,
+    connection: &AgentConnection,
     session_id: String,
     request: types::PermissionRequest,
 ) {
@@ -275,9 +306,15 @@ fn handle_permission_request_event(
             request,
             response_tx,
         })
+        .await
         .is_ok()
     {
-        spawn_permission_response_forwarder(cmd_tx.clone(), response_rx, session_id, tool_call_id);
+        spawn_permission_response_forwarder(
+            connection.clone(),
+            response_rx,
+            session_id,
+            tool_call_id,
+        );
     } else {
         tracing::error!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -290,9 +327,9 @@ fn handle_permission_request_event(
     }
 }
 
-fn handle_question_request_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+async fn handle_question_request_event(
+    event_tx: &mpsc::Sender<ClientEvent>,
+    connection: &AgentConnection,
     session_id: String,
     request: types::QuestionRequest,
 ) {
@@ -300,9 +337,15 @@ fn handle_question_request_event(
     let (response_tx, response_rx) = tokio::sync::oneshot::channel();
     if event_tx
         .send(ClientEvent::QuestionRequest { session_id: session_id.clone(), request, response_tx })
+        .await
         .is_ok()
     {
-        spawn_question_response_forwarder(cmd_tx.clone(), response_rx, session_id, tool_call_id);
+        spawn_question_response_forwarder(
+            connection.clone(),
+            response_rx,
+            session_id,
+            tool_call_id,
+        );
     } else {
         tracing::error!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -315,9 +358,9 @@ fn handle_question_request_event(
     }
 }
 
-fn handle_user_dialog_request_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
-    cmd_tx: &mpsc::UnboundedSender<CommandEnvelope>,
+async fn handle_user_dialog_request_event(
+    event_tx: &mpsc::Sender<ClientEvent>,
+    connection: &AgentConnection,
     session_id: String,
     request: types::UserDialogRequest,
 ) {
@@ -329,9 +372,15 @@ fn handle_user_dialog_request_event(
             request,
             response_tx,
         })
+        .await
         .is_ok()
     {
-        spawn_user_dialog_response_forwarder(cmd_tx.clone(), response_rx, session_id, request_id);
+        spawn_user_dialog_response_forwarder(
+            connection.clone(),
+            response_rx,
+            session_id,
+            request_id,
+        );
     } else {
         tracing::error!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -344,13 +393,14 @@ fn handle_user_dialog_request_event(
     }
 }
 
-fn handle_elicitation_request_event(
-    event_tx: &mpsc::UnboundedSender<ClientEvent>,
+async fn handle_elicitation_request_event(
+    event_tx: &mpsc::Sender<ClientEvent>,
     session_id: &str,
     request: types::ElicitationRequest,
 ) {
     if event_tx
         .send(ClientEvent::McpElicitationRequest { session_id: session_id.to_owned(), request })
+        .await
         .is_err()
     {
         tracing::error!(
@@ -364,7 +414,7 @@ fn handle_elicitation_request_event(
 }
 
 fn spawn_permission_response_forwarder(
-    cmd_tx: mpsc::UnboundedSender<CommandEnvelope>,
+    connection: AgentConnection,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>,
     session_id: String,
     tool_call_id: String,
@@ -393,38 +443,36 @@ fn spawn_permission_response_forwarder(
         };
         let session_id_for_log = session_id.clone();
         let tool_call_id_for_log = tool_call_id.clone();
-        if cmd_tx
-            .send(CommandEnvelope {
-                request_id: None,
-                command: BridgeCommand::PermissionResponse { session_id, tool_call_id, outcome },
-            })
-            .is_ok()
-        {
-            tracing::info!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "permission_response_forwarded",
-                message = "permission response forwarded to bridge",
-                outcome = "success",
-                session_id = %session_id_for_log,
-                tool_call_id = %tool_call_id_for_log,
-                selected_option = %selected_option,
-            );
-        } else {
-            tracing::error!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "permission_response_forward_failed",
-                message = "failed to forward permission response to bridge",
-                outcome = "failure",
-                session_id = %session_id_for_log,
-                tool_call_id = %tool_call_id_for_log,
-                selected_option = %selected_option,
-            );
+        match connection.respond_to_permission(session_id, tool_call_id, outcome).await {
+            Ok(()) => {
+                tracing::info!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "permission_response_forwarded",
+                    message = "permission response forwarded to bridge",
+                    outcome = "success",
+                    session_id = %session_id_for_log,
+                    tool_call_id = %tool_call_id_for_log,
+                    selected_option = %selected_option,
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "permission_response_forward_failed",
+                    message = "failed to forward permission response to bridge",
+                    outcome = "failure",
+                    session_id = %session_id_for_log,
+                    tool_call_id = %tool_call_id_for_log,
+                    selected_option = %selected_option,
+                    error = %err,
+                );
+            }
         }
     });
 }
 
 fn spawn_question_response_forwarder(
-    cmd_tx: mpsc::UnboundedSender<CommandEnvelope>,
+    connection: AgentConnection,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestQuestionResponse>,
     session_id: String,
     tool_call_id: String,
@@ -459,38 +507,36 @@ fn spawn_question_response_forwarder(
         };
         let session_id_for_log = session_id.clone();
         let tool_call_id_for_log = tool_call_id.clone();
-        if cmd_tx
-            .send(CommandEnvelope {
-                request_id: None,
-                command: BridgeCommand::QuestionResponse { session_id, tool_call_id, outcome },
-            })
-            .is_ok()
-        {
-            tracing::info!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "question_response_forwarded",
-                message = "question response forwarded to bridge",
-                outcome = "success",
-                session_id = %session_id_for_log,
-                tool_call_id = %tool_call_id_for_log,
-                selected_option_count,
-            );
-        } else {
-            tracing::error!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "question_response_forward_failed",
-                message = "failed to forward question response to bridge",
-                outcome = "failure",
-                session_id = %session_id_for_log,
-                tool_call_id = %tool_call_id_for_log,
-                selected_option_count,
-            );
+        match connection.respond_to_question(session_id, tool_call_id, outcome).await {
+            Ok(()) => {
+                tracing::info!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "question_response_forwarded",
+                    message = "question response forwarded to bridge",
+                    outcome = "success",
+                    session_id = %session_id_for_log,
+                    tool_call_id = %tool_call_id_for_log,
+                    selected_option_count,
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "question_response_forward_failed",
+                    message = "failed to forward question response to bridge",
+                    outcome = "failure",
+                    session_id = %session_id_for_log,
+                    tool_call_id = %tool_call_id_for_log,
+                    selected_option_count,
+                    error = %err,
+                );
+            }
         }
     });
 }
 
 fn spawn_user_dialog_response_forwarder(
-    cmd_tx: mpsc::UnboundedSender<CommandEnvelope>,
+    connection: AgentConnection,
     response_rx: tokio::sync::oneshot::Receiver<model::RequestUserDialogResponse>,
     session_id: String,
     request_id: String,
@@ -519,32 +565,30 @@ fn spawn_user_dialog_response_forwarder(
         };
         let session_id_for_log = session_id.clone();
         let request_id_for_log = request_id.clone();
-        if cmd_tx
-            .send(CommandEnvelope {
-                request_id: None,
-                command: BridgeCommand::UserDialogResponse { session_id, request_id, outcome },
-            })
-            .is_ok()
-        {
-            tracing::info!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "user_dialog_response_forwarded",
-                message = "user dialog response forwarded to bridge",
-                outcome = "success",
-                session_id = %session_id_for_log,
-                request_id = %request_id_for_log,
-                selected_option = %selected_option,
-            );
-        } else {
-            tracing::error!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "user_dialog_response_forward_failed",
-                message = "failed to forward user dialog response to bridge",
-                outcome = "failure",
-                session_id = %session_id_for_log,
-                request_id = %request_id_for_log,
-                selected_option = %selected_option,
-            );
+        match connection.respond_to_user_dialog(session_id, request_id, outcome).await {
+            Ok(()) => {
+                tracing::info!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "user_dialog_response_forwarded",
+                    message = "user dialog response forwarded to bridge",
+                    outcome = "success",
+                    session_id = %session_id_for_log,
+                    request_id = %request_id_for_log,
+                    selected_option = %selected_option,
+                );
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "user_dialog_response_forward_failed",
+                    message = "failed to forward user dialog response to bridge",
+                    outcome = "failure",
+                    session_id = %session_id_for_log,
+                    request_id = %request_id_for_log,
+                    selected_option = %selected_option,
+                    error = %err,
+                );
+            }
         }
     });
 }

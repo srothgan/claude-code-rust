@@ -9,7 +9,7 @@ pub(crate) fn send_mcp_elicitation_response(
     action: crate::agent::types::ElicitationAction,
     content: Option<serde_json::Value>,
 ) {
-    let Some(conn) = app.session_runtime.conn.as_ref() else {
+    let Some(conn) = app.session_runtime.conn.clone() else {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "elicitation_response_blocked",
@@ -33,34 +33,68 @@ pub(crate) fn send_mcp_elicitation_response(
         );
         return;
     };
-    let session_id_for_log = sid.to_string();
+    let session_id = sid.to_string();
+    let request_id = request_id.to_owned();
     let has_content = content.is_some();
-    if conn.respond_to_elicitation(sid.to_string(), request_id.to_owned(), action, content).is_ok()
-    {
-        app.mcp.pending_elicitation = None;
-        refresh_mcp_snapshot(app);
-        tracing::info!(
-            target: crate::logging::targets::APP_PERMISSION,
-            event_name = "elicitation_response_sent",
-            message = "elicitation response sent to bridge",
-            outcome = "success",
-            session_id = %session_id_for_log,
-            request_id = %request_id,
-            action = ?action,
-            has_content,
-        );
-    } else {
-        tracing::error!(
-            target: crate::logging::targets::APP_PERMISSION,
-            event_name = "elicitation_response_failed",
-            message = "failed to send elicitation response to bridge",
-            outcome = "failure",
-            session_id = %session_id_for_log,
-            request_id = %request_id,
-            action = ?action,
-            has_content,
-        );
+    let event_tx = app.event_tx.clone();
+    tokio::task::spawn_local(async move {
+        match conn
+            .respond_to_elicitation(session_id.clone(), request_id.clone(), action, content)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "elicitation_response_sent",
+                    message = "elicitation response sent to bridge",
+                    outcome = "success",
+                    session_id = %session_id,
+                    request_id = %request_id,
+                    action = ?action,
+                    has_content,
+                );
+                let _ = event_tx
+                    .send(ClientEvent::McpElicitationResponseQueued { session_id, request_id })
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: crate::logging::targets::APP_PERMISSION,
+                    event_name = "elicitation_response_failed",
+                    message = "failed to send elicitation response to bridge",
+                    outcome = "failure",
+                    session_id = %session_id,
+                    request_id = %request_id,
+                    action = ?action,
+                    has_content,
+                    error = %err,
+                );
+                let _ = event_tx
+                    .send(ClientEvent::McpOperationError {
+                        session_id,
+                        error: crate::agent::types::McpOperationError {
+                            server_name: None,
+                            operation: "elicitation-response".to_owned(),
+                            message: err.to_string(),
+                        },
+                    })
+                    .await;
+            }
+        }
+    });
+}
+
+pub(crate) fn handle_mcp_elicitation_response_queued(app: &mut App, request_id: &str) {
+    let matches_pending = app
+        .mcp
+        .pending_elicitation
+        .as_ref()
+        .is_some_and(|request| request.request_id == request_id);
+    if !matches_pending {
+        return;
     }
+    app.mcp.pending_elicitation = None;
+    refresh_mcp_snapshot(app);
 }
 
 pub(crate) fn present_mcp_elicitation_request(

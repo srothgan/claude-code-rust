@@ -50,17 +50,19 @@ pub(crate) fn request_refresh(app: &mut App) {
     let cwd_raw = app.cwd_raw.clone();
 
     tokio::task::spawn_local(async move {
-        let _ = event_tx.send(ClientEvent::UsageRefreshStarted { epoch });
+        let _ = event_tx.send(ClientEvent::UsageRefreshStarted { epoch }).await;
         match refresh_snapshot(source_mode, cwd_raw).await {
             Ok(snapshot) => {
-                let _ = event_tx.send(ClientEvent::UsageSnapshotReceived { epoch, snapshot });
+                let _ = event_tx.send(ClientEvent::UsageSnapshotReceived { epoch, snapshot }).await;
             }
             Err(error) => {
-                let _ = event_tx.send(ClientEvent::UsageRefreshFailed {
-                    epoch,
-                    message: error.message,
-                    source: error.source,
-                });
+                let _ = event_tx
+                    .send(ClientEvent::UsageRefreshFailed {
+                        epoch,
+                        message: error.message,
+                        source: error.source,
+                    })
+                    .await;
             }
         }
     });

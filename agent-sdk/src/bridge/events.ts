@@ -1,4 +1,5 @@
 import { listSessions, type ListSessionsOptions } from "@anthropic-ai/claude-agent-sdk";
+import { writeSync } from "node:fs";
 import type { BridgeEvent, BridgeEventEnvelope, McpOperationError, SessionUpdate } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
@@ -12,6 +13,34 @@ import {
 
 const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
+type ProtocolEventWriter = (line: string) => void;
+
+function writeProtocolEventToStdout(line: string): void {
+  const payload = Buffer.from(line);
+  let offset = 0;
+  while (offset < payload.length) {
+    const written = writeSync(
+      process.stdout.fd,
+      payload,
+      offset,
+      payload.length - offset,
+    );
+    if (written <= 0) {
+      throw new Error("bridge stdout write made no progress");
+    }
+    offset += written;
+  }
+}
+
+let protocolEventWriter: ProtocolEventWriter = writeProtocolEventToStdout;
+
+export function replaceProtocolEventWriter(writer: ProtocolEventWriter): () => void {
+  const previous = protocolEventWriter;
+  protocolEventWriter = writer;
+  return () => {
+    protocolEventWriter = previous;
+  };
+}
 
 export function buildSessionListOptions(
   dir: string | undefined,
@@ -37,7 +66,7 @@ export function writeEvent(event: BridgeEvent, requestId?: string): void {
   };
   const serialized = JSON.stringify(envelope);
   logBridgeEventSent(event, requestId, Buffer.byteLength(serialized) + 1);
-  process.stdout.write(`${serialized}\n`);
+  protocolEventWriter(`${serialized}\n`);
 }
 
 export function failConnection(message: string, requestId?: string): void {

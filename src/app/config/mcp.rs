@@ -20,8 +20,8 @@ pub(crate) use auth::{
     submit_mcp_oauth_callback_url,
 };
 pub(crate) use elicitation::{
-    handle_mcp_elicitation_completed, present_mcp_elicitation_request,
-    send_mcp_elicitation_response,
+    handle_mcp_elicitation_completed, handle_mcp_elicitation_response_queued,
+    present_mcp_elicitation_request, send_mcp_elicitation_response,
 };
 pub(crate) use errors::handle_mcp_operation_error;
 pub(crate) use overlays::{

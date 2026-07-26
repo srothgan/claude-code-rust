@@ -31,8 +31,8 @@ pub struct App {
     /// State scoped to the currently active turn (command spinner, cancel
     /// bookkeeping, inline interactions, turn-local notices).
     pub turn: TurnState,
-    pub(crate) event_tx: mpsc::UnboundedSender<ClientEvent>,
-    pub(crate) event_rx: mpsc::UnboundedReceiver<ClientEvent>,
+    pub(crate) event_tx: mpsc::Sender<ClientEvent>,
+    pub(crate) event_rx: mpsc::Receiver<ClientEvent>,
     pub(crate) file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
     pub(crate) file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
@@ -151,7 +151,7 @@ impl App {
     #[must_use]
     #[allow(clippy::too_many_lines)]
     pub fn test_default() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(crate::app::connect::CLIENT_EVENT_QUEUE_CAPACITY);
         let (file_index_tx, file_index_rx) = std_mpsc::channel();
         Self {
             surface_mode: SurfaceMode::Chat,

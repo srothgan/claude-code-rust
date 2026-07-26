@@ -42,19 +42,21 @@ pub(crate) fn request_inventory_refresh(app: &mut App) {
     tokio::task::spawn_local(async move {
         match cli::refresh_inventory(cwd_raw, cached_claude_path).await {
             Ok((snapshot, claude_path)) => {
-                let _ = event_tx.send(crate::agent::events::ClientEvent::PluginsInventoryUpdated {
-                    cwd_raw: cwd_context,
-                    snapshot,
-                    claude_path,
-                });
+                let _ = event_tx
+                    .send(crate::agent::events::ClientEvent::PluginsInventoryUpdated {
+                        cwd_raw: cwd_context,
+                        snapshot,
+                        claude_path,
+                    })
+                    .await;
             }
             Err(message) => {
-                let _ = event_tx.send(
-                    crate::agent::events::ClientEvent::PluginsInventoryRefreshFailed {
+                let _ = event_tx
+                    .send(crate::agent::events::ClientEvent::PluginsInventoryRefreshFailed {
                         cwd_raw: cwd_context,
                         message,
-                    },
-                );
+                    })
+                    .await;
             }
         }
     });

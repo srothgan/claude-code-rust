@@ -27,10 +27,6 @@ fn session_update(update: model::SessionUpdate) -> ClientEvent {
     ClientEvent::SessionUpdate { session_id: "test-session".to_owned(), update }
 }
 
-fn turn_cancelled() -> ClientEvent {
-    ClientEvent::TurnCancelled { session_id: model::SessionId::new("test-session") }
-}
-
 fn turn_complete(terminal_reason: Option<crate::agent::types::TerminalReason>) -> ClientEvent {
     ClientEvent::TurnComplete { session_id: "test-session".to_owned(), terminal_reason }
 }
@@ -416,7 +412,7 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
     assert!(app.turn.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
     // User cancels then TurnComplete finalizes the turn
-    handle_client_event(&mut app, turn_cancelled());
+    handle_local_cancel_enqueued(&mut app);
     handle_client_event(&mut app, turn_complete(None));
 
     // Stale task ID must be gone after turn boundary
@@ -767,11 +763,10 @@ fn connected_event(model_name: &str) -> ClientEvent {
     }
 }
 
-fn app_with_bridge_connection()
--> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+fn app_with_bridge_connection() -> (App, crate::agent::client::CommandReceiver) {
     let mut app = make_test_app();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(Rc::new(connection));
     (app, rx)
 }
 
@@ -1270,7 +1265,7 @@ fn resize_during_active_turn_marks_final_purge_replay_needed() {
 fn turn_complete_after_cancel_renders_interrupted_hint() {
     let mut app = make_test_app();
 
-    handle_client_event(&mut app, turn_cancelled());
+    handle_local_cancel_enqueued(&mut app);
     assert!(app.turn.cancelled_pending_hint);
 
     handle_client_event(&mut app, turn_complete(None));
@@ -2685,8 +2680,8 @@ fn startup_picker_waits_for_connected_after_sessions_listed() {
     assert!(app.startup.startup_picker_is_ready());
     assert!(!app.startup.session_picker_resolved());
 
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let (connection, _rx) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(Rc::new(connection));
     handle_client_event(&mut app, connected_event("claude-updated"));
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
@@ -2699,8 +2694,8 @@ fn startup_picker_empty_list_stays_in_chat_with_info_message() {
     app.startup = crate::app::state::StartupState::new(None, None, true);
     app.startup.request_connection();
     assert!(app.startup.mark_connection_started());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let (connection, _rx) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(Rc::new(connection));
 
     handle_client_event(&mut app, connected_event("claude-updated"));
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
@@ -3286,7 +3281,7 @@ fn turn_cancel_keeps_manual_compaction_success_pending_until_exit() {
     app.turn.pending_compact_clear = true;
     app.turn.is_compacting = true;
 
-    handle_client_event(&mut app, turn_cancelled());
+    handle_local_cancel_enqueued(&mut app);
 
     assert!(app.turn.pending_compact_clear);
     assert!(app.turn.is_compacting);
@@ -3299,7 +3294,7 @@ fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
     app.turn.pending_compact_clear = true;
     app.turn.is_compacting = true;
 
-    handle_client_event(&mut app, turn_cancelled());
+    handle_local_cancel_enqueued(&mut app);
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
@@ -3929,7 +3924,7 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
     let mut app = make_test_app();
     app.transcript.messages.push(user_msg("build app"));
 
-    handle_client_event(&mut app, turn_cancelled());
+    handle_local_cancel_enqueued(&mut app);
     assert!(app.turn.cancelled_pending_hint);
 
     handle_client_event(
@@ -3964,7 +3959,7 @@ fn turn_cancel_marks_active_tools_failed() {
         MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
     ]));
 
-    handle_client_event(&mut app, turn_cancelled());
+    handle_local_cancel_enqueued(&mut app);
 
     let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");

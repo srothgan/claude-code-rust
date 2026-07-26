@@ -84,7 +84,10 @@ import {
   classifyTurnErrorKind,
   setFastModeStateIfChanged,
 } from "./bridge/error_classification.js";
-import { buildConnectBridgeEvent } from "./bridge/events.js";
+import {
+  buildConnectBridgeEvent,
+  replaceProtocolEventWriter,
+} from "./bridge/events.js";
 import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
 import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
@@ -400,26 +403,14 @@ test("permissionModeFailureLooksUnsupported detects SDK capability rejections", 
 
 function captureBridgeEvents(run: () => void): Array<Record<string, unknown>> {
   const writes: string[] = [];
-  const originalWrite = process.stdout.write;
-  (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
-    chunk: unknown,
-  ): boolean => {
-    const text = Buffer.isBuffer(chunk)
-      ? chunk.toString("utf8")
-      : typeof chunk === "string"
-        ? chunk
-        : String(chunk);
-    if (text.trimStart().startsWith("{")) {
-      writes.push(text);
-      return true;
-    }
-    return originalWrite.call(process.stdout, chunk as never);
-  };
+  const restoreWriter = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
 
   try {
     run();
   } finally {
-    process.stdout.write = originalWrite;
+    restoreWriter();
   }
 
   return writes
@@ -438,26 +429,14 @@ async function captureBridgeEventsAsync(
   run: () => Promise<void>,
 ): Promise<Array<Record<string, unknown>>> {
   const writes: string[] = [];
-  const originalWrite = process.stdout.write;
-  (process.stdout.write as unknown as (...args: unknown[]) => boolean) = (
-    chunk: unknown,
-  ): boolean => {
-    const text = Buffer.isBuffer(chunk)
-      ? chunk.toString("utf8")
-      : typeof chunk === "string"
-        ? chunk
-        : String(chunk);
-    if (text.trimStart().startsWith("{")) {
-      writes.push(text);
-      return true;
-    }
-    return originalWrite.call(process.stdout, chunk as never);
-  };
+  const restoreWriter = replaceProtocolEventWriter((line) => {
+    writes.push(line);
+  });
 
   try {
     await run();
   } finally {
-    process.stdout.write = originalWrite;
+    restoreWriter();
   }
 
   return writes

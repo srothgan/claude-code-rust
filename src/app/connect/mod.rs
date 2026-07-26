@@ -57,7 +57,7 @@ fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
 }
 
 struct StartConnectionParams {
-    event_tx: mpsc::UnboundedSender<ClientEvent>,
+    event_tx: mpsc::Sender<ClientEvent>,
     cwd_raw: String,
     bridge_script: Option<std::path::PathBuf>,
     resume_id: Option<String>,
@@ -69,12 +69,16 @@ pub(crate) use session_start::{
     SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
 };
 
+/// Four full UI drain batches absorb short bridge bursts while keeping retained
+/// event count bounded.
+pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = super::READY_EVENT_DRAIN_ROUNDS * 4;
+
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 #[allow(clippy::too_many_lines)]
 pub fn create_app(cli: &Cli) -> App {
     let cwd = resolve_startup_cwd(cli);
 
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,

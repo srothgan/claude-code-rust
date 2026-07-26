@@ -40,6 +40,8 @@ pub enum ClientEvent {
         elicitation_id: String,
         server_name: Option<String>,
     },
+    /// The app's elicitation response entered the outbound bridge FIFO.
+    McpElicitationResponseQueued { session_id: String, request_id: String },
     /// MCP auth redirect returned directly by the SDK auth call.
     McpAuthRedirect { session_id: String, redirect: crate::agent::types::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
@@ -60,8 +62,6 @@ pub enum ClientEvent {
         session_id: String,
         terminal_reason: Option<crate::agent::types::TerminalReason>,
     },
-    /// `cancel` notification was accepted by the bridge.
-    TurnCancelled { session_id: model::SessionId },
     /// A prompt turn failed with an error.
     TurnError {
         session_id: String,
@@ -174,6 +174,7 @@ impl ClientEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::McpElicitationRequest { session_id, .. }
             | Self::McpElicitationCompleted { session_id, .. }
+            | Self::McpElicitationResponseQueued { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::McpSetServersResult { session_id, .. }
@@ -187,7 +188,6 @@ impl ClientEvent {
             | Self::RewindTargetsReceived { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
-            Self::TurnCancelled { session_id } => Some(session_id.as_str()),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),
             Self::Connected { .. }
             | Self::ConnectionFailed(_)

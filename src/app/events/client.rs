@@ -145,7 +145,9 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::McpElicitationCompleted { session_id: _, elicitation_id, server_name } => {
             crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
         }
-        ClientEvent::TurnCancelled { session_id: _ } => turn::handle_turn_cancelled_event(app),
+        ClientEvent::McpElicitationResponseQueued { session_id: _, request_id } => {
+            crate::app::config::handle_mcp_elicitation_response_queued(app, &request_id);
+        }
         ClientEvent::TurnComplete { session_id: _, terminal_reason } => {
             turn::handle_turn_complete_event(app, terminal_reason);
         }

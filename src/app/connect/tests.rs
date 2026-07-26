@@ -48,6 +48,23 @@ fn create_app_prewarms_file_index_and_routes_untrusted_cwd_to_trust_surface() {
     assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Bootstrapping);
 }
 
+#[test]
+fn app_client_event_queue_has_the_configured_capacity() {
+    let mut app = crate::app::App::test_default();
+    assert_eq!(app.event_tx.max_capacity(), super::CLIENT_EVENT_QUEUE_CAPACITY);
+
+    for _ in 0..super::CLIENT_EVENT_QUEUE_CAPACITY {
+        app.event_tx
+            .try_send(crate::agent::events::ClientEvent::LogoutCompleted)
+            .expect("event should fit within configured capacity");
+    }
+    assert!(matches!(
+        app.event_tx.try_send(crate::agent::events::ClientEvent::LogoutCompleted),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+    ));
+    assert!(app.event_rx.try_recv().is_ok());
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_connection_signals_and_awaits_the_owned_bridge_task() {
     tokio::task::LocalSet::new()
