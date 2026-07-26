@@ -170,6 +170,16 @@ pub(super) fn map_mcp_server_status(status: types::McpServerStatus) -> model::Mc
     }
 }
 
+pub(super) const fn map_mcp_auth_capabilities(
+    capabilities: types::McpAuthCapabilities,
+) -> model::McpAuthCapabilities {
+    model::McpAuthCapabilities {
+        authenticate: capabilities.authenticate,
+        clear_auth: capabilities.clear_auth,
+        submit_oauth_callback_url: capabilities.submit_oauth_callback_url,
+    }
+}
+
 fn map_system_notice_severity(
     severity: types::SystemNoticeSeverity,
 ) -> model::SystemNoticeSeverity {

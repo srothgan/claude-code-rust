@@ -303,7 +303,13 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::RewindResultReceived { result } => {
             session::handle_rewind_result_event(app, &result);
         }
-        ClientEvent::McpSnapshotReceived { session_id, mut servers, source, error } => {
+        ClientEvent::McpSnapshotReceived {
+            session_id,
+            mut servers,
+            auth_capabilities,
+            source,
+            error,
+        } => {
             let pending_dynamic_mcp_removal_confirmation =
                 crate::app::config::pending_dynamic_mcp_removal_confirmation_from_snapshot(
                     app,
@@ -324,6 +330,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             let error_present = error.is_some();
             let server_diagnostics = mcp_server_diagnostic_summaries(&servers);
             app.mcp.servers = servers;
+            app.mcp.auth_capabilities = auth_capabilities;
             app.mcp.in_flight = false;
             app.mcp.last_error = error;
             app.config.mcp_selected_server_index =

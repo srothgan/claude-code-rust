@@ -11,18 +11,14 @@ import {
   mapMcpServerStatus,
   summarizeMcpServersForDiagnostics,
 } from "./mcp_metadata.js";
+import {
+  authenticateMcpServer,
+  clearMcpServerAuth,
+  detectMcpAuthCapabilities,
+  submitMcpOAuthCallbackUrl,
+} from "./mcp_auth_adapter.js";
 import type { SessionState } from "./session_lifecycle.js";
 
-type QueryWithMcpAuth = import("@anthropic-ai/claude-agent-sdk").Query & {
-  mcpAuthenticate?: (serverName: string) => Promise<unknown>;
-  mcpClearAuth?: (serverName: string) => Promise<unknown>;
-  mcpSubmitOAuthCallbackUrl?: (serverName: string, callbackUrl: string) => Promise<unknown>;
-};
-
-type McpAuthMethodName =
-  | "mcpAuthenticate"
-  | "mcpClearAuth"
-  | "mcpSubmitOAuthCallbackUrl";
 type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
 
 export const MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS = 30_000;
@@ -68,10 +64,6 @@ function logMcpFailure(
   });
 }
 
-function queryWithMcpAuth(session: SessionState): QueryWithMcpAuth {
-  return session.query as QueryWithMcpAuth;
-}
-
 function mapMcpSetServersResult(result: unknown): McpSetServersResult {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return { added: [], removed: [], errors: {} };
@@ -92,50 +84,6 @@ function mapMcpSetServersResult(result: unknown): McpSetServersResult {
         )
       : {};
   return { added, removed, errors };
-}
-
-async function callMcpAuthMethod(
-  session: SessionState,
-  methodName: McpAuthMethodName,
-  args: string[],
-): Promise<unknown> {
-  const query = queryWithMcpAuth(session);
-  switch (methodName) {
-    case "mcpAuthenticate":
-      if (typeof query.mcpAuthenticate !== "function") {
-        throw new Error("installed SDK does not support mcpAuthenticate");
-      }
-      return await query.mcpAuthenticate(args[0] ?? "");
-    case "mcpClearAuth":
-      if (typeof query.mcpClearAuth !== "function") {
-        throw new Error("installed SDK does not support mcpClearAuth");
-      }
-      return await query.mcpClearAuth(args[0] ?? "");
-    case "mcpSubmitOAuthCallbackUrl":
-      if (typeof query.mcpSubmitOAuthCallbackUrl !== "function") {
-        throw new Error("installed SDK does not support mcpSubmitOAuthCallbackUrl");
-      }
-      return await query.mcpSubmitOAuthCallbackUrl(args[0] ?? "", args[1] ?? "");
-  }
-}
-
-function extractMcpAuthRedirect(
-  serverName: string,
-  value: unknown,
-): import("../types.js").McpAuthRedirect | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const authUrl = Reflect.get(value, "authUrl");
-  if (typeof authUrl !== "string" || authUrl.trim().length === 0) {
-    return null;
-  }
-  const requiresUserAction = Reflect.get(value, "requiresUserAction");
-  return {
-    server_name: serverName,
-    auth_url: authUrl,
-    requires_user_action: requiresUserAction === true,
-  };
 }
 
 function emitMcpCommandError(
@@ -210,6 +158,7 @@ function emitMcpSnapshotFromMappedStatuses(
       session_id: session.sessionId,
       source,
       servers: mapped,
+      auth_capabilities: detectMcpAuthCapabilities(session.query),
     },
     requestId,
   );
@@ -362,6 +311,7 @@ export async function handleMcpStatusCommand(
         session_id: session.sessionId,
         source,
         servers: [],
+        auth_capabilities: detectMcpAuthCapabilities(session.query),
         error: message,
       },
       requestId,
@@ -482,8 +432,7 @@ export async function handleMcpAuthenticateCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    const result = await callMcpAuthMethod(session, "mcpAuthenticate", [command.server_name]);
-    const redirect = extractMcpAuthRedirect(command.server_name, result);
+    const redirect = await authenticateMcpServer(session.query, command.server_name);
     if (redirect) {
       logMcpSuccess(
         "mcp_auth_redirect_emitted",
@@ -536,7 +485,7 @@ export async function handleMcpClearAuthCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    await callMcpAuthMethod(session, "mcpClearAuth", [command.server_name]);
+    await clearMcpServerAuth(session.query, command.server_name);
     forgetKnownConnectedMcpServer(command.server_name);
     session.mcpStatusRevalidatedAt.delete(command.server_name);
     logMcpSuccess("mcp_clear_auth_completed", "MCP auth cleared", command.session_id, requestId, {
@@ -568,10 +517,7 @@ export async function handleMcpOauthCallbackUrlCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    await callMcpAuthMethod(session, "mcpSubmitOAuthCallbackUrl", [
-      command.server_name,
-      command.callback_url,
-    ]);
+    await submitMcpOAuthCallbackUrl(session.query, command.server_name, command.callback_url);
     logMcpSuccess(
       "mcp_oauth_callback_completed",
       "MCP OAuth callback URL submitted",

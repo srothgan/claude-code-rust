@@ -2098,6 +2098,7 @@ fn stale_mcp_snapshot_for_old_session_is_ignored() {
         &mut app,
         ClientEvent::McpSnapshotReceived {
             session_id: "old-session".into(),
+            auth_capabilities: crate::agent::model::McpAuthCapabilities::default(),
             servers: vec![crate::agent::model::McpServerStatus {
                 name: "stale".into(),
                 status: crate::agent::model::McpServerConnectionStatus::Connected,
@@ -2131,6 +2132,11 @@ fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
         &mut app,
         ClientEvent::McpSnapshotReceived {
             session_id: "current-session".into(),
+            auth_capabilities: crate::agent::model::McpAuthCapabilities {
+                authenticate: true,
+                clear_auth: true,
+                submit_oauth_callback_url: true,
+            },
             servers: vec![
                 crate::agent::model::McpServerStatus {
                     name: "notion".into(),
@@ -2159,6 +2165,14 @@ fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
     assert_eq!(app.mcp.servers.len(), 1);
     assert_eq!(app.mcp.servers[0].name, "fff");
     assert_eq!(app.mcp.removed_config_servers.len(), 1);
+    assert_eq!(
+        app.mcp.auth_capabilities,
+        crate::agent::model::McpAuthCapabilities {
+            authenticate: true,
+            clear_auth: true,
+            submit_oauth_callback_url: true,
+        }
+    );
 }
 
 #[test]
@@ -2176,6 +2190,7 @@ fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence
         &mut app,
         ClientEvent::McpSnapshotReceived {
             session_id: "current-session".into(),
+            auth_capabilities: crate::agent::model::McpAuthCapabilities::default(),
             servers: vec![crate::agent::model::McpServerStatus {
                 name: "fff".into(),
                 status: crate::agent::model::McpServerConnectionStatus::Connected,
@@ -2210,6 +2225,7 @@ fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
         &mut app,
         ClientEvent::McpSnapshotReceived {
             session_id: "current-session".into(),
+            auth_capabilities: crate::agent::model::McpAuthCapabilities::default(),
             servers: vec![crate::agent::model::McpServerStatus {
                 name: "fff".into(),
                 status: crate::agent::model::McpServerConnectionStatus::Connected,

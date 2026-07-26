@@ -59,7 +59,7 @@ import {
   permissionModeFailureLooksUnsupported,
   refreshSupportedModesForSession,
 } from "./bridge/commands.js";
-import { handleMcpSetServersCommand } from "./bridge/mcp.js";
+import { handleMcpAuthenticateCommand, handleMcpSetServersCommand } from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
   handleUserDialogResponse,
@@ -758,6 +758,11 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
       event: "mcp_snapshot",
       session_id: "session-1",
       source: "mcp_set_servers",
+      auth_capabilities: {
+        authenticate: false,
+        clear_auth: false,
+        submit_oauth_callback_url: false,
+      },
       servers: [
         {
           name: "docs",
@@ -775,6 +780,69 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
           ],
         },
       ],
+    },
+  ]);
+});
+
+test("handleMcpAuthenticateCommand emits a structured error when the runtime method is absent", async () => {
+  const session = makeSessionState();
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleMcpAuthenticateCommand(
+      session,
+      {
+        command: "mcp_authenticate",
+        session_id: "session-1",
+        server_name: "docs",
+      },
+      "req-mcp-auth",
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "req-mcp-auth",
+      event: "mcp_operation_error",
+      session_id: "session-1",
+      error: {
+        server_name: "docs",
+        operation: "authenticate",
+        message: "installed SDK does not support mcpAuthenticate",
+      },
+    },
+  ]);
+});
+
+test("handleMcpAuthenticateCommand emits a structured error for an incompatible response", async () => {
+  const session = makeSessionState();
+  session.query = {
+    async mcpAuthenticate() {
+      return { authUrl: 42 };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleMcpAuthenticateCommand(
+      session,
+      {
+        command: "mcp_authenticate",
+        session_id: "session-1",
+        server_name: "docs",
+      },
+      "req-mcp-auth",
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "req-mcp-auth",
+      event: "mcp_operation_error",
+      session_id: "session-1",
+      error: {
+        server_name: "docs",
+        operation: "authenticate",
+        message: "installed SDK returned an invalid mcpAuthenticate authUrl",
+      },
     },
   ]);
 });
@@ -943,6 +1011,11 @@ test("handleReloadPluginsCommand emits MCP snapshot from reload result", async (
         event: "mcp_snapshot",
         session_id: "session-1",
         source: "reload_plugins",
+        auth_capabilities: {
+          authenticate: false,
+          clear_auth: false,
+          submit_oauth_callback_url: false,
+        },
         servers: [
           {
             name: "docs",
@@ -1030,6 +1103,11 @@ test("handleReloadPluginsCommand revalidates stale MCP auth statuses", async () 
         event: "mcp_snapshot",
         session_id: "session-1",
         source: "reload_plugins",
+        auth_capabilities: {
+          authenticate: false,
+          clear_auth: false,
+          submit_oauth_callback_url: false,
+        },
         servers: [connectedServer],
       },
     ],
@@ -3661,6 +3739,11 @@ test("handleSdkMessage emits MCP snapshot from init status payload", () => {
     event: "mcp_snapshot",
     session_id: "session-1",
     source: "init",
+    auth_capabilities: {
+      authenticate: false,
+      clear_auth: false,
+      submit_oauth_callback_url: false,
+    },
     servers: [
       {
         name: "docs",

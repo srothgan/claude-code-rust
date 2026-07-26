@@ -411,6 +411,8 @@ pub enum BridgeEvent {
         session_id: String,
         #[serde(default)]
         servers: Vec<types::McpServerStatus>,
+        #[serde(default)]
+        auth_capabilities: types::McpAuthCapabilities,
         source: Option<types::McpSnapshotSource>,
         error: Option<String>,
     },
@@ -888,9 +890,37 @@ mod tests {
                 event: BridgeEvent::McpSnapshot {
                     session_id: "session-1".to_owned(),
                     servers: Vec::new(),
+                    auth_capabilities: types::McpAuthCapabilities::default(),
                     source: Some(types::McpSnapshotSource::ReloadPlugins),
                     error: None,
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_snapshot_event_deserializes_auth_capabilities() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "mcp_snapshot",
+            "session_id": "session-1",
+            "servers": [],
+            "auth_capabilities": {
+                "authenticate": true,
+                "clear_auth": false,
+                "submit_oauth_callback_url": true
+            }
+        }))
+        .expect("deserialize");
+
+        let BridgeEvent::McpSnapshot { auth_capabilities, .. } = decoded.event else {
+            panic!("expected mcp_snapshot");
+        };
+        assert_eq!(
+            auth_capabilities,
+            types::McpAuthCapabilities {
+                authenticate: true,
+                clear_auth: false,
+                submit_oauth_callback_url: true,
             }
         );
     }

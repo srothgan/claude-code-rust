@@ -15,8 +15,9 @@ use tokio::sync::mpsc;
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
     convert_account_info, convert_current_model, convert_fast_mode_state, convert_mode_state,
-    map_available_models, map_mcp_server_status, map_permission_request, map_question_request,
-    map_rewind_result, map_rewind_targets, map_session_update, map_user_dialog_request,
+    map_available_models, map_mcp_auth_capabilities, map_mcp_server_status, map_permission_request,
+    map_question_request, map_rewind_result, map_rewind_targets, map_session_update,
+    map_user_dialog_request,
 };
 
 struct ConnectedEventData {
@@ -205,10 +206,17 @@ pub(super) fn handle_bridge_event(
                 result: map_rewind_result(session_id, restore_mode, status, file_result, message),
             });
         }
-        crate::agent::wire::BridgeEvent::McpSnapshot { session_id, servers, source, error } => {
+        crate::agent::wire::BridgeEvent::McpSnapshot {
+            session_id,
+            servers,
+            auth_capabilities,
+            source,
+            error,
+        } => {
             let _ = event_tx.send(ClientEvent::McpSnapshotReceived {
                 session_id,
                 servers: servers.into_iter().map(map_mcp_server_status).collect(),
+                auth_capabilities: map_mcp_auth_capabilities(auth_capabilities),
                 source,
                 error,
             });

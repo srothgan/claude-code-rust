@@ -134,6 +134,7 @@ pub enum ClientEvent {
     McpSnapshotReceived {
         session_id: String,
         servers: Vec<model::McpServerStatus>,
+        auth_capabilities: model::McpAuthCapabilities,
         source: Option<crate::agent::types::McpSnapshotSource>,
         error: Option<String>,
     },

@@ -1613,6 +1613,7 @@ fn mcp_details_overlay_enter_closes_overlay() {
 fn mcp_clear_auth_requires_confirmation_and_cancel_restores_details_overlay() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
+    app.mcp.auth_capabilities.clear_auth = true;
     app.mcp.servers = vec![crate::agent::model::McpServerStatus {
         name: "filesystem".to_owned(),
         status: crate::agent::model::McpServerConnectionStatus::Connected,
@@ -2490,7 +2491,12 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 
 #[test]
 fn claudeai_proxy_server_shows_disabled_authenticate_action() {
-    let (_dir, app) = open_settings_test_app();
+    let (_dir, mut app) = open_settings_test_app();
+    app.mcp.auth_capabilities = crate::agent::model::McpAuthCapabilities {
+        authenticate: true,
+        clear_auth: true,
+        submit_oauth_callback_url: true,
+    };
     let server = crate::agent::model::McpServerStatus {
         name: "claude.ai Google Calendar".to_owned(),
         status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
@@ -2516,6 +2522,58 @@ fn claudeai_proxy_server_shows_disabled_authenticate_action() {
         super::mcp::McpServerActionKind::Authenticate
     ));
     assert!(actions.contains(&super::mcp::McpServerActionKind::Reconnect));
+}
+
+#[test]
+fn mcp_auth_actions_follow_bridge_capabilities() {
+    let (_dir, mut app) = open_settings_test_app();
+    let server = crate::agent::model::McpServerStatus {
+        name: "docs".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
+        server_info: None,
+        error: None,
+        config: Some(crate::agent::model::McpServerStatusConfig::Http {
+            url: "https://mcp.example.test".to_owned(),
+            headers: BTreeMap::new(),
+            tools: Vec::new(),
+            timeout: None,
+            request_timeout_ms: None,
+            always_load: None,
+        }),
+        scope: Some("user".to_owned()),
+        tools: Vec::new(),
+    };
+
+    assert!(!super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::Authenticate
+    ));
+    assert!(!super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::ClearAuth
+    ));
+
+    app.mcp.auth_capabilities.authenticate = true;
+    assert!(!super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::Authenticate
+    ));
+
+    app.mcp.auth_capabilities.submit_oauth_callback_url = true;
+    app.mcp.auth_capabilities.clear_auth = true;
+    assert!(super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::Authenticate
+    ));
+    assert!(super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::ClearAuth
+    ));
 }
 
 #[test]

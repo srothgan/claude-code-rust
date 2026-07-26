@@ -38,6 +38,13 @@ impl McpResource {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpAuthCapabilities {
+    pub authenticate: bool,
+    pub clear_auth: bool,
+    pub submit_oauth_callback_url: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum McpServerConnectionStatus {
     Connected,

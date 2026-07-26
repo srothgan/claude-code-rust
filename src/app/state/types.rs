@@ -160,6 +160,7 @@ pub struct SessionUsageState {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct McpState {
     pub servers: Vec<model::McpServerStatus>,
+    pub auth_capabilities: model::McpAuthCapabilities,
     pub in_flight: bool,
     pub last_error: Option<String>,
     pub claude_path: Option<std::path::PathBuf>,
