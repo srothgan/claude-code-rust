@@ -4,14 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-07-26 [Changes][v0.14.2]
+
 ### Features
 
 - **Readline line-stepping** (#305, @srothgan): Make `Ctrl+A`/`Ctrl+E` move to the line start/end, then step to the previous/next logical line on repeat.
+- **Live fast-mode control** (#309, @srothgan): Make `/fast` control the active SDK session with capability checks and synchronized state.
 - **Opus 5 and Claude Agent SDK 0.3.220 migration** (#310, @srothgan): Add Opus 5 support, preserve rejected and cancelled tool outcomes, warn on partial rewinds, and surface detached Skills, fast-mode failures, and Artifact live subscriptions.
 
 ### Fixes
 
-- **Lifecycle and bridge hardening** (#309, @srothgan): Enforce session-authoritative state, make `/fast` control the live SDK session, serialize and bound bridge traffic, and give MCP monitoring and shutdown explicit ownership.
+- **Lifecycle and bridge hardening** (#309, @srothgan): Enforce session-authoritative state, prevent idle event-loop spin, serialize and bound bridge traffic, and give MCP monitoring and shutdown explicit ownership.
+
+### Release and Packaging
+
+- **Claude CLI installer warning** (#311, @srothgan): Warn when `claude` is missing from `PATH` and link to the Claude Code install guide without blocking `claude-rs` installation.
 
 ## [0.14.1] - 2026-07-18 [Changes][v0.14.1]
 
@@ -784,6 +791,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.14.2]: https://github.com/srothgan/claude-code-rust/compare/v0.14.1...v0.14.2
 [v0.14.1]: https://github.com/srothgan/claude-code-rust/compare/v0.14.0...v0.14.1
 [v0.14.0]: https://github.com/srothgan/claude-code-rust/compare/v0.13.4...v0.14.0
 [v0.13.4]: https://github.com/srothgan/claude-code-rust/compare/v0.13.3...v0.13.4
