@@ -110,11 +110,19 @@ use std::time::{Duration, Instant};
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
+const EVENT_LOOP_TICK_INTERVAL: Duration = Duration::from_millis(16);
 /// Maximum number of ready-event rounds handled between frames.
 ///
 /// Each round gives both sources one opportunity, so neither terminal input nor
 /// bridge traffic can monopolize the UI loop.
 const READY_EVENT_DRAIN_ROUNDS: usize = 64;
+
+fn event_loop_interval() -> tokio::time::Interval {
+    let first_tick = tokio::time::Instant::now() + EVENT_LOOP_TICK_INTERVAL;
+    let mut interval = tokio::time::interval_at(first_tick, EVENT_LOOP_TICK_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
+}
 
 // ---------------------------------------------------------------------------
 // TUI event loop
@@ -138,15 +146,13 @@ async fn run_tui_loop(
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
     let mut events = EventStream::new();
-    let tick_duration = Duration::from_millis(16);
-    let mut last_render = Instant::now();
+    let mut event_loop_interval = event_loop_interval();
     let mut service_status_check_started = false;
 
     loop {
         start_connection(app);
 
         // Phase 1: wait for at least one event or the next frame tick
-        let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
             Some(Ok(event)) = events.next() => {
                 let outcome = events::handle_terminal_event(app, event);
@@ -172,7 +178,7 @@ async fn run_tui_loop(
                 }
                 app.should_quit = true;
             }
-            () = tokio::time::sleep(time_to_next) => {}
+            _ = event_loop_interval.tick() => {}
         }
 
         // Phase 2: process a bounded, fair batch of already-ready events.
@@ -280,7 +286,6 @@ async fn run_tui_loop(
                 drop(draw_timer);
                 drop(timer);
             }
-            last_render = Instant::now();
         }
     }
 

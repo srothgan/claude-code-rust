@@ -90,6 +90,7 @@ debug = false
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3.25.0"
+tokio = { version = "1.52.3", features = ["test-util"] }
 
 [lints.clippy]
 # Deny panic-prone operations in production code (tests exempted via clippy.toml)

@@ -5,6 +5,48 @@ use crate::agent::wire::BridgeCommand;
 use crate::app::{MessageBlock, MessageRole};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
+#[tokio::test(start_paused = true)]
+async fn event_loop_interval_waits_between_idle_ticks() {
+    let mut interval = event_loop_interval();
+
+    assert!(interval.tick().now_or_never().is_none());
+
+    for _ in 0..3 {
+        tokio::time::advance(EVENT_LOOP_TICK_INTERVAL).await;
+        assert!(interval.tick().now_or_never().is_some());
+        assert!(interval.tick().now_or_never().is_none());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn event_loop_interval_skips_missed_ticks() {
+    let mut interval = event_loop_interval();
+
+    tokio::time::advance(EVENT_LOOP_TICK_INTERVAL).await;
+    interval.tick().await;
+    tokio::time::advance(EVENT_LOOP_TICK_INTERVAL * 5).await;
+
+    assert!(interval.tick().now_or_never().is_some());
+    assert!(interval.tick().now_or_never().is_none());
+
+    tokio::time::advance(EVENT_LOOP_TICK_INTERVAL).await;
+    assert!(interval.tick().now_or_never().is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn ready_events_are_not_delayed_until_the_next_tick() {
+    let mut interval = event_loop_interval();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    event_tx.send(()).unwrap();
+
+    let event_received = tokio::select! {
+        _ = interval.tick() => false,
+        event = event_rx.recv() => event.is_some(),
+    };
+
+    assert!(event_received);
+}
+
 fn app_with_connection()
 -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
     let mut app = App::test_default();
