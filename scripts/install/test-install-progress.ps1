@@ -36,7 +36,8 @@ $helperNames = @(
     "Write-FailLine",
     "Write-InstallerDiagnostic",
     "Test-CanPrompt",
-    "Confirm-DefaultNo"
+    "Confirm-DefaultNo",
+    "Warn-MissingClaudeCli"
 )
 $helperDefinitions = @($installerAst.FindAll({
     param($node)
@@ -213,6 +214,31 @@ Assert-OutputBoundaryClearsProgress "warning detail" { Write-WarnDetail "warning
 Assert-OutputBoundaryClearsProgress "failure" { Write-FailLine "failure" }
 Assert-OutputBoundaryClearsProgress "prompt" { [void](Confirm-DefaultNo "prompt") }
 Assert-OutputBoundaryClearsProgress "diagnostic" { Write-InstallerDiagnostic "diagnostic" }
+
+$originalPath = $env:PATH
+$originalConsoleError = [Console]::Error
+$warningOutputWriter = New-Object System.IO.StringWriter
+try {
+    $env:PATH = ""
+    [Console]::SetError($warningOutputWriter)
+    Reset-RecordedEvents
+    Warn-MissingClaudeCli
+    $warningText = $warningOutputWriter.ToString()
+    Assert-True $warningText.Contains("Claude Code CLI ('claude') not found on PATH") "Missing Claude CLI warning was not emitted"
+    Assert-True $warningText.Contains("Install it from https://claude.com/claude-code") "Missing Claude CLI install guidance was not emitted"
+
+    $warningOutputWriter.GetStringBuilder().Clear() | Out-Null
+    Set-Item -Path Function:\claude -Value {}
+    Reset-RecordedEvents
+    Warn-MissingClaudeCli
+    Assert-Equal 0 $script:RecordedEvents.Count "Available Claude CLI emitted a missing-CLI warning"
+    Assert-Equal "" $warningOutputWriter.ToString() "Available Claude CLI wrote a missing-CLI warning to stderr"
+} finally {
+    [Console]::SetError($originalConsoleError)
+    $warningOutputWriter.Dispose()
+    Remove-Item -Path Function:\claude -ErrorAction SilentlyContinue
+    $env:PATH = $originalPath
+}
 
 Assert-Equal "SilentlyContinue" $ProgressPreference "Installer helpers changed the script-wide progress preference"
 Write-Output "PowerShell installer inline progress helper tests passed"

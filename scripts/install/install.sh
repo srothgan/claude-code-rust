@@ -294,6 +294,12 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+warn_missing_claude_cli() {
+  command -v claude >/dev/null 2>&1 && return 0
+  warn "Claude Code CLI ('claude') not found on PATH"
+  warn_detail "  Install it from https://claude.com/claude-code"
+}
+
 download() {
   url="$1"
   destination="$2"
@@ -874,6 +880,7 @@ info "Installing claude-rs"
 info ""
 ok "$target_label detected"
 ok "Install location: $install_dir"
+warn_missing_claude_cli
 
 progress_start "Resolving release"
 tag="$(resolve_tag "$release")"
