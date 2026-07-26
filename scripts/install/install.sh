@@ -5,6 +5,10 @@ repo_owner="srothgan"
 repo_name="claude-code-rust"
 repo_slug="$repo_owner/$repo_name"
 root_package="claude-code-rust"
+download_retry_count=3
+download_connect_timeout_seconds=30
+download_low_speed_bytes_per_second=1024
+download_low_speed_time_seconds=30
 
 release="${CLAUDE_RS_RELEASE:-latest}"
 install_dir="${CLAUDE_RS_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-rs}"
@@ -60,7 +64,8 @@ Options:
                             accept safe prompts; optional prompts are skipped.
   --non-interactive         Do not prompt.
   --no-modify-path          Do not update shell profile PATH.
-  --verify                  Run strict runtime diagnostics after install.
+  --verify                  Show download diagnostics and run strict runtime
+                            diagnostics after install.
   --run                     Start claude-rs after a successful install.
   --remove-npm              Remove an existing global npm install when found.
   --keep-npm                Keep an existing global npm install without prompting.
@@ -185,6 +190,7 @@ progress_frames="$(printf '| / - \134')"
 progress_enabled=0
 progress_pid=""
 progress_rendered_file=""
+download_pid=""
 if [ -t 1 ] && [ -z "${CI:-}" ] && [ "${TERM:-}" != "dumb" ] && [ -w /dev/tty ]; then
   progress_enabled=1
 fi
@@ -305,10 +311,20 @@ download() {
   destination="$2"
   if command -v curl >/dev/null 2>&1; then
     if [ "$progress_enabled" -eq 0 ]; then
-      curl -fsSL "$url" -o "$destination"
+      curl -fsSL \
+        --retry "$download_retry_count" \
+        --connect-timeout "$download_connect_timeout_seconds" \
+        --speed-limit "$download_low_speed_bytes_per_second" \
+        --speed-time "$download_low_speed_time_seconds" \
+        "$url" -o "$destination"
       return $?
     fi
-    if curl -fsSL "$url" -o "$destination" 2>"$tmpdir/download.stderr"; then
+    if curl -fsSL \
+      --retry "$download_retry_count" \
+      --connect-timeout "$download_connect_timeout_seconds" \
+      --speed-limit "$download_low_speed_bytes_per_second" \
+      --speed-time "$download_low_speed_time_seconds" \
+      "$url" -o "$destination" 2>"$tmpdir/download.stderr"; then
       return 0
     else
       download_status=$?
@@ -336,6 +352,284 @@ download() {
     return "$download_status"
   fi
   die "required command not found: curl or wget"
+}
+
+format_download_bytes() {
+  awk -v bytes="$1" 'BEGIN {
+    split("B KiB MiB GiB", units, " ")
+    value = bytes + 0
+    unit = 1
+    while (value >= 1024 && unit < 4) {
+      value /= 1024
+      unit++
+    }
+    if (unit == 1) {
+      printf "%.0f %s", value, units[unit]
+    } else {
+      printf "%.1f %s", value, units[unit]
+    }
+  }'
+}
+
+write_download_diagnostic() {
+  download_stats="$1"
+  download_label="$2"
+  [ "$verify" -eq 1 ] || return 0
+
+  download_stats="${download_stats#__CLAUDE_RS_DOWNLOAD_STATS__}"
+  saved_ifs="$IFS"
+  IFS="$(printf '\t')"
+  # shellcheck disable=SC2086 # curl's tab-separated fields are intentionally split.
+  set -- $download_stats
+  IFS="$saved_ifs"
+  [ "$#" -eq 4 ] || return 0
+
+  download_http_code="$1"
+  download_size="$2"
+  download_speed="$3"
+  download_elapsed="$4"
+  download_size_text="$(format_download_bytes "$download_size")"
+  download_speed_text="$(format_download_bytes "$download_speed")"
+  info "  $download_label: $download_size_text in ${download_elapsed}s ($download_speed_text/s, HTTP $download_http_code)"
+}
+
+download_content_length() {
+  headers_path="$1"
+  [ -f "$headers_path" ] || {
+    printf '0\n'
+    return
+  }
+  awk '
+    tolower($1) == "content-length:" {
+      gsub("\r", "", $2)
+      length = $2
+    }
+    END { print length + 0 }
+  ' "$headers_path"
+}
+
+format_download_progress() {
+  downloaded_bytes="$1"
+  total_bytes="$2"
+  elapsed_seconds="$3"
+  include_diagnostics="$4"
+  unknown_position="$5"
+
+  awk \
+    -v downloaded="$downloaded_bytes" \
+    -v total="$total_bytes" \
+    -v elapsed="$elapsed_seconds" \
+    -v diagnostics="$include_diagnostics" \
+    -v unknown_position="$unknown_position" '
+    function repeat(character, count, result) {
+      result = ""
+      while (count-- > 0) {
+        result = result character
+      }
+      return result
+    }
+    function human(bytes, value, unit) {
+      split("B KiB MiB GiB", units, " ")
+      value = bytes + 0
+      unit = 1
+      while (value >= 1024 && unit < 4) {
+        value /= 1024
+        unit++
+      }
+      return unit == 1 ? sprintf("%.0f %s", value, units[unit]) : sprintf("%.1f %s", value, units[unit])
+    }
+    function eta_text(seconds, hours, minutes) {
+      if (seconds < 0) {
+        return "--:--"
+      }
+      seconds = int(seconds + 0.999)
+      hours = int(seconds / 3600)
+      minutes = int((seconds % 3600) / 60)
+      seconds %= 60
+      return hours > 0 ? sprintf("%02d:%02d:%02d", hours, minutes, seconds) : sprintf("%02d:%02d", minutes, seconds)
+    }
+    BEGIN {
+      width = 10
+      if (total > 0) {
+        percent = int((downloaded * 100) / total)
+        if (percent < 0) percent = 0
+        if (percent > 100) percent = 100
+        completed = int((percent * width) / 100)
+        if (percent >= 100) {
+          bar = repeat("=", width)
+        } else {
+          equals = completed < width ? completed : width - 1
+          bar = repeat("=", equals) ">" repeat(".", width - equals - 1)
+        }
+        line = sprintf("[%s] %3d%% Downloading release archive", bar, percent)
+      } else {
+        position = unknown_position % width
+        bar = repeat(".", position) ">" repeat(".", width - position - 1)
+        line = sprintf("[%s]  --%% Downloading release archive", bar)
+      }
+
+      if (diagnostics == 1) {
+        safe_elapsed = elapsed > 0 ? elapsed : 1
+        speed = downloaded / safe_elapsed
+        eta = total > 0 && speed > 0 ? eta_text((total - downloaded) / speed) : "--:--"
+        total_text = total > 0 ? human(total) : "unknown"
+        line = sprintf("%s | %s / %s | %s/s | ETA %s", line, human(downloaded), total_text, human(speed), eta)
+      }
+      print line
+    }
+  '
+}
+
+render_download_progress() {
+  downloaded_bytes="$1"
+  total_bytes="$2"
+  elapsed_seconds="$3"
+  unknown_position="$4"
+  progress_text="$(format_download_progress "$downloaded_bytes" "$total_bytes" "$elapsed_seconds" "$verify" "$unknown_position")"
+  printf '\r\033[2K%s' "$progress_text" > /dev/tty
+}
+
+finish_download_progress() {
+  downloaded_bytes="$1"
+  total_bytes="$2"
+  elapsed_seconds="$3"
+  progress_text="$(format_download_progress "$downloaded_bytes" "$total_bytes" "$elapsed_seconds" "$verify" 0)"
+  printf '\r\033[2K%s\n' "$progress_text" > /dev/tty
+}
+
+clear_download_progress() {
+  [ "$progress_enabled" -eq 1 ] || return 0
+  printf '\r\033[2K' > /dev/tty 2>/dev/null || :
+}
+
+wait_for_download() {
+  destination="$1"
+  headers_path="$2"
+  started_at="$3"
+  total_bytes="$4"
+  unknown_position=0
+
+  if [ "$progress_enabled" -eq 1 ]; then
+    while kill -0 "$download_pid" 2>/dev/null; do
+      [ "$total_bytes" -gt 0 ] || total_bytes="$(download_content_length "$headers_path")"
+      downloaded_bytes=0
+      [ ! -f "$destination" ] || downloaded_bytes="$(wc -c < "$destination")"
+      elapsed_seconds=0
+      [ "$verify" -eq 0 ] || elapsed_seconds="$(($(date +%s) - started_at))"
+      render_download_progress "$downloaded_bytes" "$total_bytes" "$elapsed_seconds" "$unknown_position"
+      unknown_position="$((unknown_position + 1))"
+      sleep 0.2
+    done
+  fi
+
+  if wait "$download_pid"; then
+    download_status=0
+  else
+    download_status=$?
+  fi
+  download_pid=""
+  return "$download_status"
+}
+
+download_archive() {
+  url="$1"
+  destination="$2"
+  progress_stop
+  headers_path="$tmpdir/download.headers"
+  stderr_path="$tmpdir/download.stderr"
+  stats_path="$tmpdir/download.stats"
+  rm -f "$headers_path" "$stderr_path" "$stats_path"
+  download_started_at="$(date +%s)"
+
+  if command -v curl >/dev/null 2>&1; then
+    total_bytes=0
+    if curl --fail --location --head --silent \
+      --retry "$download_retry_count" \
+      --connect-timeout "$download_connect_timeout_seconds" \
+      --dump-header "$headers_path" \
+      --output /dev/null \
+      "$url"; then
+      total_bytes="$(download_content_length "$headers_path")"
+    fi
+
+    curl_stats_format='__CLAUDE_RS_DOWNLOAD_STATS__%{http_code}\t%{size_download}\t%{speed_download}\t%{time_total}'
+    curl --fail --location \
+      --retry "$download_retry_count" \
+      --connect-timeout "$download_connect_timeout_seconds" \
+      --speed-limit "$download_low_speed_bytes_per_second" \
+      --speed-time "$download_low_speed_time_seconds" \
+      --silent --show-error \
+      --dump-header "$headers_path" \
+      --stderr "$stderr_path" \
+      --output "$destination" \
+      --write-out "$curl_stats_format" \
+      "$url" > "$stats_path" &
+    download_pid=$!
+
+    if wait_for_download "$destination" "$headers_path" "$download_started_at" "$total_bytes"; then
+      download_status=0
+    else
+      download_status=$?
+    fi
+    if [ "$download_status" -ne 0 ]; then
+      clear_download_progress
+      while IFS= read -r download_detail || [ -n "$download_detail" ]; do
+        warn_detail "$download_detail"
+      done < "$stderr_path"
+      return "$download_status"
+    fi
+
+    download_finished_at="$(date +%s)"
+    download_elapsed="$((download_finished_at - download_started_at))"
+    downloaded_bytes="$(wc -c < "$destination")"
+    [ "$total_bytes" -gt 0 ] || total_bytes="$downloaded_bytes"
+    [ "$progress_enabled" -eq 0 ] || finish_download_progress "$downloaded_bytes" "$total_bytes" "$download_elapsed"
+    curl_stats="$(cat "$stats_path")"
+    write_download_diagnostic "$curl_stats" "Download"
+    return 0
+  fi
+
+  if command -v wget >/dev/null 2>&1; then
+    wget -q \
+      --timeout="$download_connect_timeout_seconds" \
+      --tries="$((download_retry_count + 1))" \
+      -O "$destination" "$url" 2>"$stderr_path" &
+    download_pid=$!
+
+    if wait_for_download "$destination" "$headers_path" "$download_started_at" 0; then
+      download_status=0
+    else
+      download_status=$?
+    fi
+    if [ "$download_status" -ne 0 ]; then
+      clear_download_progress
+      while IFS= read -r download_detail || [ -n "$download_detail" ]; do
+        warn_detail "$download_detail"
+      done < "$stderr_path"
+      return "$download_status"
+    fi
+
+    download_finished_at="$(date +%s)"
+    download_elapsed="$((download_finished_at - download_started_at))"
+    [ "$download_elapsed" -gt 0 ] || download_elapsed=1
+    downloaded_bytes="$(wc -c < "$destination")"
+    [ "$progress_enabled" -eq 0 ] || finish_download_progress "$downloaded_bytes" "$downloaded_bytes" "$download_elapsed"
+    if [ "$verify" -eq 1 ]; then
+      download_speed="$((downloaded_bytes / download_elapsed))"
+      info "  Download: $(format_download_bytes "$downloaded_bytes") in ${download_elapsed}s ($(format_download_bytes "$download_speed")/s, HTTP unavailable)"
+    fi
+    return 0
+  fi
+
+  die "required command not found: curl or wget"
+}
+
+stop_download_process() {
+  if [ -n "${download_pid:-}" ]; then
+    kill "$download_pid" 2>/dev/null || :
+    wait "$download_pid" 2>/dev/null || :
+    download_pid=""
+  fi
 }
 
 sha256_file() {
@@ -839,10 +1133,14 @@ need_cmd tar
 need_cmd chmod
 need_cmd grep
 need_cmd awk
+need_cmd cat
+need_cmd date
+need_cmd wc
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/claude-rs-install.XXXXXX")"
 same_version_reinstall_approved=0
 cleanup() {
+  stop_download_process
   progress_stop
   [ -z "${lock_dir:-}" ] || rm -rf "$lock_dir"
   rm -rf "$tmpdir"
@@ -896,7 +1194,7 @@ guard_same_version_before_download "$selected_version"
 
 progress_start "Downloading release archive"
 download "$base_url/SHA256SUMS" "$checksum_file" || die "could not download SHA256SUMS for $tag"
-if ! download "$base_url/$archive_name" "$archive_file"; then
+if ! download_archive "$base_url/$archive_name" "$archive_file"; then
   die_unavailable
 fi
 progress_done "Downloaded release archive"

@@ -38,12 +38,10 @@ active release tooling and are validated by PR, release, or nightly workflows.
   for verifying install archive contents and manifests.
 - `install/smoke-install-archive.mjs` is a maintainer and workflow entry point
   for archive extraction and startup smoke tests.
-- `install/install-progress.test.mjs` executes the Unix installer with redirected
-  output and local release fixtures to verify progress suppression and cleanup.
+- `install/install-progress.test.mjs` executes the Unix installer with redirected output and local release fixtures to verify download transport settings, diagnostic summaries, progress suppression, and cleanup.
 - `install/install-version-guard.test.mjs` verifies Unix same-version no-op,
   explicit reinstall, update, exact-version, and `latest` metadata behavior.
-- `install/test-install-progress.ps1` validates the PowerShell progress and
-  output-helper behavior without executing the installer body.
+- `install/test-install-progress.ps1` validates the PowerShell spinner, fixed-width download progress, streaming transfer, and output-helper behavior without executing the installer body.
 - `install/test-install-version-guard.ps1` validates PowerShell version metadata,
   decision precedence, and release-download boundaries under Windows PowerShell.
 - `install/install.sh` and `install/install.ps1` are maintained public installer

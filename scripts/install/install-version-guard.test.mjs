@@ -233,11 +233,15 @@ function writeCommandShims(shimDir) {
     `#!/bin/sh
 url=""
 destination=""
+head_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -o)
+    -o | --output)
       shift
       destination="$1"
+      ;;
+    --head)
+      head_only=1
       ;;
     http://* | https://*)
       url="$1"
@@ -245,6 +249,7 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+[ "$head_only" -eq 0 ] || exit 0
 printf '%s\\n' "$url" >> "$MOCK_DOWNLOAD_LOG"
 case "$url" in
   */releases/latest)

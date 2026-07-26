@@ -41,6 +41,36 @@ test("Unix installer keeps successful redirected output completed-step-only", { 
   assertScenarioResult(result, 0, successfulMessages);
   assert.equal(result.installed, true, "successful install did not create the installed command");
   assert.equal(result.launcherInstalled, true, "successful install did not create the launcher");
+  const archiveInvocation = result.curlInvocations.find(
+    (line) => line.includes(result.archiveName) && line.includes("--write-out"),
+  );
+  assert.ok(archiveInvocation, "archive download did not use the streaming curl path");
+  for (const expectedArgument of [
+    "--retry 3",
+    "--connect-timeout 30",
+    "--speed-limit 1024",
+    "--speed-time 30",
+    "--silent",
+    "--show-error",
+    "--dump-header",
+  ]) {
+    assert.match(
+      archiveInvocation,
+      new RegExp(escapeRegex(expectedArgument)),
+      `archive download omitted ${expectedArgument}`,
+    );
+  }
+  assert.doesNotMatch(archiveInvocation, /--progress-bar/, "archive download delegated rendering to curl");
+});
+
+test("Unix installer verify mode reports archive transfer diagnostics", { skip: skipReason }, () => {
+  const result = runInstallerScenario("success", { verify: true });
+  assertScenarioResult(result, 0, [
+    "Download:",
+    "in 2.000s",
+    "HTTP 200",
+    "Runtime diagnostics passed",
+  ]);
 });
 
 test("Unix installer warns when the Claude Code CLI is missing", { skip: skipReason }, () => {
@@ -92,7 +122,7 @@ test("Unix installer keeps NO_COLOR output plain and completed-step-only", { ski
   assertScenarioResult(result, 0, successfulMessages);
 });
 
-function runInstallerScenario(scenario, { claudeCliAvailable = true } = {}) {
+function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = false } = {}) {
   const archiveName = installArchiveName(platformPackage, cargoPackage.version);
   const archivePath = path.join(repoRoot, "dist-install", archiveName);
   assert.ok(
@@ -107,6 +137,7 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true } = {}) {
   const binDir = path.join(sandbox, "bin");
   const shimDir = path.join(sandbox, "shims");
   const checksumsPath = path.join(sandbox, "SHA256SUMS");
+  const curlLogPath = path.join(sandbox, "curl.log");
   for (const directory of [homeDir, tempDir, binDir, shimDir]) {
     fs.mkdirSync(directory, { recursive: true });
   }
@@ -131,6 +162,7 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true } = {}) {
     TERM: "xterm",
     MOCK_ARCHIVE_FILE: archivePath,
     MOCK_CHECKSUM_FILE: checksumsPath,
+    MOCK_CURL_LOG: curlLogPath,
     MOCK_DOWNLOAD_MODE: scenario,
   });
   if (scenario === "ci") {
@@ -142,21 +174,25 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true } = {}) {
 
   let commandResult;
   try {
+    const installerArgs = [
+      installerPath,
+      "--release",
+      releaseTag,
+      "--install-dir",
+      installDir,
+      "--bin-dir",
+      binDir,
+      "--yes",
+      "--non-interactive",
+      "--no-modify-path",
+      "--keep-npm",
+    ];
+    if (verify) {
+      installerArgs.push("--verify");
+    }
     commandResult = spawnSync(
       "sh",
-      [
-        installerPath,
-        "--release",
-        releaseTag,
-        "--install-dir",
-        installDir,
-        "--bin-dir",
-        binDir,
-        "--yes",
-        "--non-interactive",
-        "--no-modify-path",
-        "--keep-npm",
-      ],
+      installerArgs,
       {
         encoding: "utf8",
         env,
@@ -174,6 +210,9 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true } = {}) {
 
     return {
       archiveName,
+      curlInvocations: fs.existsSync(curlLogPath)
+        ? fs.readFileSync(curlLogPath, "utf8").trim().split(/\r?\n/)
+        : [],
       installed: fs.existsSync(path.join(installDir, platformPackage.binaryName)),
       launcherInstalled: fs.existsSync(path.join(binDir, "claude-rs")),
       status: commandResult.status,
@@ -212,11 +251,31 @@ function writeCommandShims(shimDir, { claudeCliAvailable }) {
     `#!/bin/sh
 url=""
 destination=""
+headers=""
+stderr_destination=""
+write_out=""
+head_only=0
+printf '%s\\n' "$*" >> "$MOCK_CURL_LOG"
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -o)
+    -o | --output)
       shift
       destination="$1"
+      ;;
+    --dump-header)
+      shift
+      headers="$1"
+      ;;
+    --stderr)
+      shift
+      stderr_destination="$1"
+      ;;
+    --write-out)
+      shift
+      write_out="$1"
+      ;;
+    --head)
+      head_only=1
       ;;
     http://* | https://*)
       url="$1"
@@ -224,20 +283,37 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+[ -z "$stderr_destination" ] || : > "$stderr_destination"
+emit_error() {
+  if [ -n "$stderr_destination" ]; then
+    printf '%s\\n' "$1" > "$stderr_destination"
+  else
+    printf '%s\\n' "$1" >&2
+  fi
+}
 case "$url" in
   */SHA256SUMS)
     if [ "$MOCK_DOWNLOAD_MODE" = "checksum-download-failure" ]; then
-      printf '%s\\n' 'mock checksum download failed' >&2
+      emit_error 'mock checksum download failed'
       exit 22
     fi
+    [ -z "$headers" ] || printf 'HTTP/1.1 200 OK\\r\\nContent-Length: %s\\r\\n\\r\\n' "$(wc -c < "$MOCK_CHECKSUM_FILE")" > "$headers"
+    [ "$head_only" -eq 1 ] && exit 0
     cp "$MOCK_CHECKSUM_FILE" "$destination"
     ;;
   *)
     if [ "$MOCK_DOWNLOAD_MODE" = "archive-unavailable" ]; then
-      printf '%s\\n' 'mock archive download failed' >&2
+      emit_error 'mock archive download failed'
       exit 22
     fi
+    archive_size="$(wc -c < "$MOCK_ARCHIVE_FILE")"
+    [ -z "$headers" ] || printf 'HTTP/1.1 200 OK\\r\\nContent-Length: %s\\r\\n\\r\\n' "$archive_size" > "$headers"
+    [ "$head_only" -eq 1 ] && exit 0
     cp "$MOCK_ARCHIVE_FILE" "$destination"
+    if [ -n "$write_out" ]; then
+      archive_speed="$((archive_size / 2))"
+      printf '__CLAUDE_RS_DOWNLOAD_STATS__200\\t%s\\t%s\\t2.000' "$archive_size" "$archive_speed"
+    fi
     ;;
 esac
 `,

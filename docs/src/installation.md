@@ -10,9 +10,9 @@ The recommended script install includes the application and its runtime dependen
 
 Install scripts are available in GitHub Releases starting with `v0.14.0` and are the recommended install path. They install a self-contained release without requiring npm, Node.js, or Bun on the user's machine.
 
-The scripts download a complete release archive from GitHub, verify the release archive integrity, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run a quiet `claude-rs --version` check. Strict runtime diagnostics are available with the opt-in verify flag.
+The scripts download a complete release archive from GitHub, verify the release archive integrity, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run a quiet `claude-rs --version` check. Download diagnostics and strict runtime diagnostics are available with the opt-in verify flag.
 
-Interactive terminals display live progress for longer installation steps. Redirected output and CI remain plain and log-friendly, and `NO_COLOR` disables colored status output.
+Interactive terminals display a fixed-width 10-cell progress bar while downloading the release archive and a spinner for other longer installation steps. The verify flag adds transferred size, total size, average speed, and ETA to the live download bar, followed by the final transfer size, elapsed time, average speed, and HTTP status. Redirected output and CI remain plain and log-friendly, and `NO_COLOR` disables colored status output.
 
 **macOS/Linux:**
 
