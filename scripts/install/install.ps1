@@ -513,9 +513,12 @@ function Invoke-ArchiveDownload {
     )
 
     Stop-InstallerProgress
-    $curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    $curl = Get-Command "curl.exe" -CommandType Application -ErrorAction SilentlyContinue
     if (-not $curl) {
-        Write-WarnLine "curl.exe not found; using the slower PowerShell downloader"
+        $curl = Get-Command "curl" -CommandType Application -ErrorAction SilentlyContinue
+    }
+    if (-not $curl) {
+        Write-WarnLine "curl executable not found; using the slower PowerShell downloader"
         Start-InstallerProgress "Downloading release archive"
         $stopwatch = [Diagnostics.Stopwatch]::StartNew()
         Invoke-WebRequest -Uri $Uri -OutFile $Destination
@@ -541,7 +544,7 @@ function Invoke-ArchiveDownload {
         "--retry" "$DownloadRetryCount" `
         "--connect-timeout" "$DownloadConnectTimeoutSeconds" `
         "--dump-header" $headersPath `
-        "--output" "NUL" `
+        "--output" "-" `
         $Uri 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         $totalBytes = Get-DownloadContentLength -HeadersPath $headersPath
@@ -577,7 +580,7 @@ function Invoke-ArchiveDownload {
         $startInfo.RedirectStandardOutput = $true
         $process = [Diagnostics.Process]::Start($startInfo)
         if (-not $process) {
-            throw "could not start curl.exe"
+            throw "could not start curl executable"
         }
 
         while (-not $process.WaitForExit(200)) {
@@ -604,7 +607,7 @@ function Invoke-ArchiveDownload {
                     }
                 }
             }
-            throw "curl.exe failed with exit code $($process.ExitCode)"
+            throw "curl executable failed with exit code $($process.ExitCode)"
         }
 
         if ($script:InstallerProgressSupported) {
