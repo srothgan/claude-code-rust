@@ -35,6 +35,15 @@ $helperNames = @(
     "Write-WarnDetail",
     "Write-FailLine",
     "Write-InstallerDiagnostic",
+    "Format-DownloadBytes",
+    "Write-DownloadDiagnostic",
+    "Format-DownloadEta",
+    "Format-DownloadProgress",
+    "Write-DownloadProgress",
+    "Clear-DownloadProgress",
+    "ConvertTo-CurlConfigValue",
+    "Get-DownloadContentLength",
+    "Invoke-ArchiveDownload",
     "Test-CanPrompt",
     "Confirm-DefaultNo",
     "Warn-MissingClaudeCli"
@@ -72,11 +81,70 @@ $NonInteractive = $true
 $script:InstallerProgressSupported = $true
 $script:InstallerProgressActive = $false
 $script:InstallerProgressWorker = $null
+$script:DownloadProgressWidth = 0
+$Verify = $false
+$DownloadRetryCount = 3
+$DownloadConnectTimeoutSeconds = 30
+$DownloadLowSpeedBytesPerSecond = 1024
+$DownloadLowSpeedTimeSeconds = 30
+
+Assert-Equal "[>.........]   0% Downloading release archive" `
+    (Format-DownloadProgress -DownloadedBytes 0 -TotalBytes 1000 -ElapsedSeconds 0 -IncludeDiagnostics $false) `
+    "Download progress did not render the empty fixed-width bar"
+Assert-Equal "[=====>....]  50% Downloading release archive" `
+    (Format-DownloadProgress -DownloadedBytes 500 -TotalBytes 1000 -ElapsedSeconds 2 -IncludeDiagnostics $false) `
+    "Download progress did not render the half-filled fixed-width bar"
+Assert-Equal "[==========] 100% Downloading release archive" `
+    (Format-DownloadProgress -DownloadedBytes 1000 -TotalBytes 1000 -ElapsedSeconds 4 -IncludeDiagnostics $false) `
+    "Download progress did not render the completed fixed-width bar"
+Assert-Equal "[...>......]  --% Downloading release archive" `
+    (Format-DownloadProgress -DownloadedBytes 0 -TotalBytes 0 -ElapsedSeconds 0 -IncludeDiagnostics $false -UnknownPosition 3) `
+    "Download progress did not render the fixed-width unknown-length bar"
+Assert-Equal "[=====>....]  50% Downloading release archive | 512.0 KiB / 1.0 MiB | 256.0 KiB/s | ETA 00:02" `
+    (Format-DownloadProgress -DownloadedBytes 524288 -TotalBytes 1048576 -ElapsedSeconds 2 -IncludeDiagnostics $true) `
+    "Download diagnostics did not include fixed-width transfer details"
+
+$downloadOutputWriter = New-Object System.IO.StringWriter
+$originalConsoleOut = [Console]::Out
+[Console]::SetOut($downloadOutputWriter)
+try {
+    Write-DownloadProgress -Text "[=====>....]  50% Downloading release archive"
+    Write-DownloadProgress -Text "[==========] 100% Downloading release archive" -Complete
+} finally {
+    [Console]::SetOut($originalConsoleOut)
+    $downloadOutput = $downloadOutputWriter.ToString()
+    $downloadOutputWriter.Dispose()
+}
+Assert-True $downloadOutput.Contains("`r[=====>....]  50% Downloading release archive") "Download progress did not update in place"
+Assert-True $downloadOutput.Contains("`r[==========] 100% Downloading release archive") "Download progress did not render completion"
+Assert-Equal 0 $script:DownloadProgressWidth "Download progress retained width after completion"
+
+$downloadSandbox = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-download-test-$PID"
+$downloadSource = Join-Path $downloadSandbox "source.bin"
+$downloadDestination = Join-Path $downloadSandbox "destination.bin"
+New-Item -ItemType Directory -Path $downloadSandbox -Force | Out-Null
+try {
+    $sourceBytes = New-Object byte[] 65536
+    (New-Object Random 42).NextBytes($sourceBytes)
+    [IO.File]::WriteAllBytes($downloadSource, $sourceBytes)
+    $downloadUri = (New-Object Uri($downloadSource)).AbsoluteUri
+    $script:InstallerProgressSupported = $false
+    Invoke-ArchiveDownload -Uri $downloadUri -Destination $downloadDestination
+    Assert-Equal `
+        (Get-FileHash -LiteralPath $downloadSource -Algorithm SHA256).Hash `
+        (Get-FileHash -LiteralPath $downloadDestination -Algorithm SHA256).Hash `
+        "Streaming downloader changed the downloaded bytes"
+    foreach ($suffix in @(".headers", ".stderr", ".curlrc")) {
+        Assert-True (-not (Test-Path -LiteralPath "$downloadDestination$suffix")) "Streaming downloader left $suffix state behind"
+    }
+} finally {
+    Remove-Item -LiteralPath $downloadSandbox -Recurse -Force -ErrorAction SilentlyContinue
+}
+$script:InstallerProgressSupported = $true
 
 # Exercise the real background runspace with Console.Out captured. This verifies
 # that the renderer emits an inline animated line and that stopping it erases
 # the line without relying on the host-native progress area.
-$originalConsoleOut = [Console]::Out
 $spinnerOutputWriter = New-Object System.IO.StringWriter
 $spinnerOutput = ""
 [Console]::SetOut($spinnerOutputWriter)

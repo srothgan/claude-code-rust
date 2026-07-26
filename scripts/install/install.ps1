@@ -21,6 +21,10 @@ $RepoOwner = "srothgan"
 $RepoName = "claude-code-rust"
 $RepoSlug = "$RepoOwner/$RepoName"
 $RootPackage = "claude-code-rust"
+$DownloadRetryCount = 3
+$DownloadConnectTimeoutSeconds = 30
+$DownloadLowSpeedBytesPerSecond = 1024
+$DownloadLowSpeedTimeSeconds = 30
 
 function Show-Usage {
     @"
@@ -32,7 +36,8 @@ Options:
   -Yes                   Reinstall the selected version when already installed;
                          skip optional installer prompts.
   -NoModifyPath          Do not update the user PATH.
-  -Verify                Run strict runtime diagnostics after install.
+  -Verify                Show download diagnostics and run strict runtime
+                         diagnostics after install.
   -Run                   Start claude-rs after a successful install.
   -RemoveNpm             Remove an existing global npm install when found.
   -KeepNpm               Keep an existing global npm install without prompting.
@@ -130,6 +135,7 @@ $FailMark = [char]0x2717
 $script:InstallerProgressSupported = $false
 $script:InstallerProgressActive = $false
 $script:InstallerProgressWorker = $null
+$script:DownloadProgressWidth = 0
 
 if (-not $env:CI -and $env:TERM -ne "dumb") {
     try {
@@ -338,6 +344,295 @@ function Write-InstallerDiagnostic {
     param([string]$Message)
     Stop-InstallerProgress
     Write-Host $Message
+}
+
+function Format-DownloadBytes {
+    param([double]$Bytes)
+
+    $units = @("B", "KiB", "MiB", "GiB")
+    $value = $Bytes
+    $unitIndex = 0
+    while ($value -ge 1024 -and $unitIndex -lt ($units.Count - 1)) {
+        $value /= 1024
+        $unitIndex++
+    }
+
+    if ($unitIndex -eq 0) {
+        return [string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "{0:0} {1}",
+            $value,
+            $units[$unitIndex]
+        )
+    }
+    return [string]::Format(
+        [Globalization.CultureInfo]::InvariantCulture,
+        "{0:0.0} {1}",
+        $value,
+        $units[$unitIndex]
+    )
+}
+
+function Write-DownloadDiagnostic {
+    param(
+        [string]$StatsLine,
+        [string]$Label
+    )
+
+    if (-not $Verify -or [string]::IsNullOrWhiteSpace($StatsLine)) {
+        return
+    }
+
+    $prefix = "__CLAUDE_RS_DOWNLOAD_STATS__"
+    if (-not $StatsLine.StartsWith($prefix, [StringComparison]::Ordinal)) {
+        return
+    }
+
+    $parts = $StatsLine.Substring($prefix.Length).Split([char]9)
+    if ($parts.Count -ne 4) {
+        return
+    }
+
+    $culture = [Globalization.CultureInfo]::InvariantCulture
+    $size = [double]::Parse($parts[1], $culture)
+    $speed = [double]::Parse($parts[2], $culture)
+    $elapsed = [double]::Parse($parts[3], $culture)
+    $elapsedText = $elapsed.ToString("0.000", $culture)
+    Write-InstallerDiagnostic "  ${Label}: $(Format-DownloadBytes $size) in ${elapsedText}s ($(Format-DownloadBytes $speed)/s, HTTP $($parts[0]))"
+}
+
+function Format-DownloadEta {
+    param([double]$Seconds)
+
+    if ([double]::IsNaN($Seconds) -or [double]::IsInfinity($Seconds) -or $Seconds -lt 0) {
+        return "--:--"
+    }
+
+    $rounded = [Math]::Ceiling($Seconds)
+    $span = [TimeSpan]::FromSeconds($rounded)
+    if ($span.TotalHours -ge 1) {
+        return "{0:00}:{1:00}:{2:00}" -f [Math]::Floor($span.TotalHours), $span.Minutes, $span.Seconds
+    }
+    return "{0:00}:{1:00}" -f $span.Minutes, $span.Seconds
+}
+
+function Format-DownloadProgress {
+    param(
+        [long]$DownloadedBytes,
+        [long]$TotalBytes,
+        [double]$ElapsedSeconds,
+        [bool]$IncludeDiagnostics,
+        [int]$UnknownPosition = 0
+    )
+
+    $barWidth = 10
+    if ($TotalBytes -gt 0) {
+        $percent = [Math]::Min(100, [Math]::Max(0, [Math]::Floor(($DownloadedBytes * 100.0) / $TotalBytes)))
+        $completedCells = [int][Math]::Floor(($percent * $barWidth) / 100)
+        if ($percent -ge 100) {
+            $bar = "=" * $barWidth
+        } else {
+            $equalsCount = [Math]::Min($completedCells, $barWidth - 1)
+            $bar = ("=" * $equalsCount) + ">" + ("." * ($barWidth - $equalsCount - 1))
+        }
+        $line = "[{0}] {1,3}% Downloading release archive" -f $bar, $percent
+    } else {
+        $position = $UnknownPosition % $barWidth
+        $bar = ("." * $position) + ">" + ("." * ($barWidth - $position - 1))
+        $line = "[$bar]  --% Downloading release archive"
+    }
+
+    if ($IncludeDiagnostics) {
+        $elapsed = [Math]::Max($ElapsedSeconds, 0.001)
+        $speed = $DownloadedBytes / $elapsed
+        $eta = if ($TotalBytes -gt 0 -and $speed -gt 0) {
+            Format-DownloadEta (($TotalBytes - $DownloadedBytes) / $speed)
+        } else {
+            "--:--"
+        }
+        $totalText = if ($TotalBytes -gt 0) { Format-DownloadBytes $TotalBytes } else { "unknown" }
+        $line += " | $(Format-DownloadBytes $DownloadedBytes) / $totalText | $(Format-DownloadBytes $speed)/s | ETA $eta"
+    }
+
+    return $line
+}
+
+function Write-DownloadProgress {
+    param(
+        [string]$Text,
+        [switch]$Complete
+    )
+
+    $previousWidth = $script:DownloadProgressWidth
+    $width = [Math]::Max($previousWidth, $Text.Length)
+    [Console]::Write("`r" + $Text.PadRight($width))
+    $script:DownloadProgressWidth = $Text.Length
+    if ($Complete) {
+        [Console]::WriteLine()
+        $script:DownloadProgressWidth = 0
+    }
+}
+
+function Clear-DownloadProgress {
+    if ($script:DownloadProgressWidth -gt 0) {
+        [Console]::Write("`r" + (" " * $script:DownloadProgressWidth) + "`r")
+        $script:DownloadProgressWidth = 0
+    }
+}
+
+function ConvertTo-CurlConfigValue {
+    param([string]$Value)
+
+    return '"' + $Value.Replace("\", "\\").Replace('"', '\"').Replace("`r", "\r").Replace("`n", "\n") + '"'
+}
+
+function Get-DownloadContentLength {
+    param([string]$HeadersPath)
+
+    if (-not (Test-Path -LiteralPath $HeadersPath -PathType Leaf)) {
+        return 0
+    }
+
+    try {
+        $contentLength = 0
+        foreach ($line in [IO.File]::ReadAllLines($HeadersPath)) {
+            if ($line -match "^[Cc]ontent-[Ll]ength:\s*(\d+)\s*$") {
+                $contentLength = [long]$Matches[1]
+            }
+        }
+        return $contentLength
+    } catch {
+        return 0
+    }
+}
+
+function Invoke-ArchiveDownload {
+    param(
+        [string]$Uri,
+        [string]$Destination
+    )
+
+    Stop-InstallerProgress
+    $curl = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+    if (-not $curl) {
+        Write-WarnLine "curl.exe not found; using the slower PowerShell downloader"
+        Start-InstallerProgress "Downloading release archive"
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        Invoke-WebRequest -Uri $Uri -OutFile $Destination
+        $stopwatch.Stop()
+        if ($Verify) {
+            $downloadedBytes = (Get-Item -LiteralPath $Destination).Length
+            $elapsedSeconds = [Math]::Max($stopwatch.Elapsed.TotalSeconds, 0.001)
+            $elapsedText = $elapsedSeconds.ToString("0.000", [Globalization.CultureInfo]::InvariantCulture)
+            Write-InstallerDiagnostic "  Download: $(Format-DownloadBytes $downloadedBytes) in ${elapsedText}s ($(Format-DownloadBytes ($downloadedBytes / $elapsedSeconds))/s, HTTP unavailable)"
+        }
+        return
+    }
+
+    $headersPath = "$Destination.headers"
+    $stderrPath = "$Destination.stderr"
+    $configPath = "$Destination.curlrc"
+    $totalBytes = 0
+    & $curl.Source `
+        "--fail" `
+        "--location" `
+        "--head" `
+        "--silent" `
+        "--retry" "$DownloadRetryCount" `
+        "--connect-timeout" "$DownloadConnectTimeoutSeconds" `
+        "--dump-header" $headersPath `
+        "--output" "NUL" `
+        $Uri 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        $totalBytes = Get-DownloadContentLength -HeadersPath $headersPath
+    }
+
+    $statsFormat = "__CLAUDE_RS_DOWNLOAD_STATS__%{http_code}\t%{size_download}\t%{speed_download}\t%{time_total}"
+    $configLines = @(
+        "fail",
+        "location",
+        "retry = $DownloadRetryCount",
+        "connect-timeout = $DownloadConnectTimeoutSeconds",
+        "speed-limit = $DownloadLowSpeedBytesPerSecond",
+        "speed-time = $DownloadLowSpeedTimeSeconds",
+        "silent",
+        "show-error",
+        "dump-header = $(ConvertTo-CurlConfigValue $headersPath)",
+        "stderr = $(ConvertTo-CurlConfigValue $stderrPath)",
+        "output = $(ConvertTo-CurlConfigValue $Destination)",
+        "write-out = $(ConvertTo-CurlConfigValue $statsFormat)",
+        "url = $(ConvertTo-CurlConfigValue $Uri)"
+    )
+    [IO.File]::WriteAllLines($configPath, $configLines, (New-Object Text.UTF8Encoding($false)))
+
+    $process = $null
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $unknownPosition = 0
+    try {
+        $startInfo = New-Object Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $curl.Source
+        $startInfo.Arguments = "--config `"$configPath`""
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if (-not $process) {
+            throw "could not start curl.exe"
+        }
+
+        while (-not $process.WaitForExit(200)) {
+            if ($script:InstallerProgressSupported) {
+                $downloadedBytes = if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+                    (Get-Item -LiteralPath $Destination).Length
+                } else {
+                    0
+                }
+                $progressText = Format-DownloadProgress -DownloadedBytes $downloadedBytes -TotalBytes $totalBytes -ElapsedSeconds $stopwatch.Elapsed.TotalSeconds -IncludeDiagnostics $Verify -UnknownPosition $unknownPosition
+                Write-DownloadProgress -Text $progressText
+                $unknownPosition++
+            }
+        }
+
+        $curlOutput = $process.StandardOutput.ReadToEnd()
+        $stopwatch.Stop()
+        if ($process.ExitCode -ne 0) {
+            Clear-DownloadProgress
+            if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+                foreach ($line in Get-Content -LiteralPath $stderrPath) {
+                    if (-not [string]::IsNullOrWhiteSpace($line)) {
+                        [Console]::Error.WriteLine($line)
+                    }
+                }
+            }
+            throw "curl.exe failed with exit code $($process.ExitCode)"
+        }
+
+        if ($script:InstallerProgressSupported) {
+            $downloadedBytes = (Get-Item -LiteralPath $Destination).Length
+            if ($totalBytes -le 0) {
+                $totalBytes = $downloadedBytes
+            }
+            $progressText = Format-DownloadProgress -DownloadedBytes $downloadedBytes -TotalBytes $totalBytes -ElapsedSeconds $stopwatch.Elapsed.TotalSeconds -IncludeDiagnostics $Verify
+            Write-DownloadProgress -Text $progressText -Complete
+        }
+
+        $statsLine = @($curlOutput -split "\r?\n" | Where-Object {
+            $_.StartsWith("__CLAUDE_RS_DOWNLOAD_STATS__", [StringComparison]::Ordinal)
+        } | Select-Object -Last 1)
+        if ($statsLine.Count -gt 0) {
+            Write-DownloadDiagnostic -StatsLine "$($statsLine[0])" -Label "Download"
+        }
+    } finally {
+        if ($process) {
+            if (-not $process.HasExited) {
+                $process.Kill()
+                $process.WaitForExit()
+            }
+            $process.Dispose()
+        }
+        Clear-DownloadProgress
+        Remove-Item -LiteralPath $headersPath, $stderrPath, $configPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Test-CanPrompt {
@@ -910,8 +1205,9 @@ try {
     Start-InstallerProgress "Downloading release archive"
     Invoke-WebRequest -Uri "$baseUrl/SHA256SUMS" -OutFile $checksumsPath
     try {
-        Invoke-WebRequest -Uri "$baseUrl/$archiveName" -OutFile $archivePath
+        Invoke-ArchiveDownload -Uri "$baseUrl/$archiveName" -Destination $archivePath
     } catch {
+        Write-WarnDetail "  Download failed: $($_.Exception.GetBaseException().Message)"
         Fail-Unavailable
     }
     Complete-InstallerProgress "Downloaded release archive"
