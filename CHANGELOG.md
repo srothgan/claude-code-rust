@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - **Readline line-stepping** (#305, @srothgan): Make `Ctrl+A`/`Ctrl+E` move to the line start/end, then step to the previous/next logical line on repeat.
 
+### Fixes
+
+- **Lifecycle and bridge hardening** (#309, @srothgan): Enforce session-authoritative state, make `/fast` control the live SDK session, serialize and bound bridge traffic, and give MCP monitoring and shutdown explicit ownership.
+
 ## [0.14.1] - 2026-07-18 [Changes][v0.14.1]
 
 ### Documentation
