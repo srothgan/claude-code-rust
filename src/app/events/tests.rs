@@ -1,57 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
-// =====
-// TESTS: 40
-// =====
-
 use super::*;
 use crate::agent::error_handling::TurnErrorClass;
 use crate::agent::events::ClientEvent;
 use crate::agent::events::ServiceStatusSeverity;
-use crate::agent::events::TerminalProcess;
 use crate::app::keymap::{
     KeyAction, KeyBinding, KeyBindingSource, KeyContext, KeySpec, ResolvedKeymap, TerminalAction,
 };
 use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
 use crate::app::{
-    BlockCache, CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget,
-    FullscreenView, InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason,
-    SurfaceMode, TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope,
-    UsageSnapshot, UsageSourceKind, UsageWindow, mention,
+    CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget, FullscreenView,
+    InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason, SurfaceMode,
+    TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot,
+    UsageSourceKind, UsageWindow, mention,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
 use std::fmt::Write as _;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::oneshot;
 
-// Helper: build a minimal ToolCallInfo with given id + status
+mod client_events;
+
+fn session_update(update: model::SessionUpdate) -> ClientEvent {
+    ClientEvent::SessionUpdate { session_id: "test-session".to_owned(), update }
+}
+
+fn turn_complete(terminal_reason: Option<crate::agent::types::TerminalReason>) -> ClientEvent {
+    ClientEvent::TurnComplete { session_id: "test-session".to_owned(), terminal_reason }
+}
+
+fn slash_command_error(message: String) -> ClientEvent {
+    ClientEvent::SlashCommandError { session_id: None, message }
+}
 
 fn tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
-    ToolCallInfo {
-        id: id.into(),
-        source_message_uuids: Vec::new(),
-        title: id.into(),
-        sdk_tool_name: "Read".into(),
-        raw_input: None,
-        raw_input_bytes: 0,
-        locations: Vec::new(),
-        output_metadata: None,
-        task_metadata: None,
-        status,
-        content: vec![],
-        hidden: false,
-        terminal_id: None,
-        terminal_command: None,
-        terminal_output: None,
-        terminal_output_len: 0,
-        terminal_bytes_seen: 0,
-        terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
-    }
+    crate::app::test_support::tool_call_info(id, status)
 }
 
 fn installed_plugin_entry(id: &str) -> crate::app::plugins::InstalledPluginEntry {
@@ -254,7 +238,7 @@ fn assert_seed_resize_measurements_preserved(app: &App) {
 
 #[test]
 fn transcript_retraction_removes_matching_text_blocks_only() {
-    let mut app = App::test_default();
+    let mut app = make_test_app();
     app.transcript.messages.push(assistant_msg(vec![
         source_text("stale", "old-assistant"),
         source_text("keep", "new-assistant"),
@@ -262,7 +246,7 @@ fn transcript_retraction_removes_matching_text_blocks_only() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(transcript_retraction(
+        session_update(transcript_retraction(
             vec!["old-assistant", "old-assistant", "unknown"],
             model::TranscriptRetractionReason::ModelRefusalFallback,
         )),
@@ -279,7 +263,7 @@ fn transcript_retraction_removes_matching_text_blocks_only() {
 
 #[test]
 fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
-    let mut app = App::test_default();
+    let mut app = make_test_app();
     let mut stale_tool = tool_call("tool-old", model::ToolCallStatus::Completed);
     stale_tool.source_message_uuids = vec!["assistant-tool".to_owned(), "user-result".to_owned()];
     stale_tool.sdk_tool_name = "Bash".to_owned();
@@ -289,18 +273,16 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
         source_text("replacement", "assistant-new"),
     ]));
     app.index_tool_call("tool-old".to_owned(), 0, 0);
-    app.sync_terminal_tool_call("term-old".to_owned(), 0, 0);
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(transcript_retraction(
+        session_update(transcript_retraction(
             vec!["user-result"],
             model::TranscriptRetractionReason::ModelFallback,
         )),
     );
 
     assert!(app.lookup_tool_call("tool-old").is_none());
-    assert!(app.terminal_tool_calls().is_empty());
     assert_eq!(app.transcript.messages.len(), 1);
     assert_eq!(app.transcript.messages[0].blocks.len(), 1);
     let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
@@ -311,19 +293,19 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
 
 #[test]
 fn transcript_retraction_then_replacement_leaves_canonical_assistant_content() {
-    let mut app = App::test_default();
+    let mut app = make_test_app();
     app.transcript.messages.push(assistant_msg(vec![source_text("stale", "assistant-old")]));
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(transcript_retraction(
+        session_update(transcript_retraction(
             vec!["assistant-old"],
             model::TranscriptRetractionReason::AssistantSupersedes,
         )),
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
+        session_update(model::SessionUpdate::AgentMessageChunk(
             model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                 "replacement",
             )))
@@ -403,15 +385,12 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(task_tc)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(task_tc)));
     assert!(app.turn.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
     // User cancels then TurnComplete finalizes the turn
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_local_cancel_enqueued(&mut app);
+    handle_client_event(&mut app, turn_complete(None));
 
     // Stale task ID must be gone after turn boundary
     assert!(app.turn.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
@@ -421,10 +400,7 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         .kind(model::ToolKind::Search)
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "Glob"}}));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(glob_tc)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(glob_tc)));
     assert_eq!(
         app.tool_call_scope("glob-1"),
         Some(ToolCallScope::MainAgent),
@@ -626,11 +602,9 @@ fn agent_message_chunk_splits_into_frozen_text_blocks() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                "p1\n\np2\n\np3",
-            ))),
-        )),
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("p1\n\np2\n\np3")),
+        ))),
     );
 
     assert_eq!(app.transcript.messages.len(), 1);
@@ -671,9 +645,9 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(&table))),
-        )),
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new(&table)),
+        ))),
     );
 
     assert!(matches!(app.status, AppStatus::Running));
@@ -712,7 +686,9 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
 // has_in_progress_tool_calls
 
 fn make_test_app() -> App {
-    App::test_default()
+    let mut app = App::test_default();
+    app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+    app
 }
 
 fn test_current_model(model_name: &str) -> model::CurrentModel {
@@ -759,15 +735,15 @@ fn connected_event(model_name: &str) -> ClientEvent {
         current_model: test_current_model(model_name),
         available_models: Vec::new(),
         mode: None,
+        fast_mode_state: model::FastModeState::Off,
         history_updates: Vec::new(),
     }
 }
 
-fn app_with_bridge_connection()
--> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+fn app_with_bridge_connection() -> (App, crate::agent::client::CommandReceiver) {
     let mut app = make_test_app();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(Rc::new(connection));
     (app, rx)
 }
 
@@ -805,16 +781,13 @@ fn execute_tool_update_uses_raw_output_fallback() {
     let tc = model::ToolCall::new("tc-exec", "Terminal")
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress);
-    handle_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let fields = model::ToolCallUpdateFields::new()
         .status(model::ToolCallStatus::Completed)
         .raw_output(serde_json::json!("line 1\nline 2"));
     let update = model::ToolCallUpdate::new("tc-exec", fields);
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let Some((mi, bi)) = app.lookup_tool_call("tc-exec") else {
         panic!("tool call not indexed");
@@ -834,15 +807,12 @@ fn powershell_raw_input_update_does_not_populate_terminal_command() {
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "PowerShell"}}));
-    handle_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let fields = model::ToolCallUpdateFields::new()
         .raw_input(serde_json::json!({ "command": "Get-ChildItem" }));
     let update = model::ToolCallUpdate::new("tc-pwsh", fields);
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let Some((mi, bi)) = app.lookup_tool_call("tc-pwsh") else {
         panic!("tool call not indexed");
@@ -878,10 +848,7 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
         "tool-stale",
         model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
     );
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     assert!(app.turn.active_task_ids.is_empty());
 }
@@ -889,15 +856,6 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
 #[test]
 fn repeated_tool_call_updates_existing_execute_snapshot_state() {
     let mut app = make_test_app();
-    app.terminals.borrow_mut().insert(
-        "term-2".to_owned(),
-        TerminalProcess {
-            child: None,
-            output_buffer: Arc::new(Mutex::new(Vec::new())),
-            command: "echo second".to_owned(),
-        },
-    );
-
     let first = model::ToolCall::new("tc-dup", "Terminal")
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress)
@@ -905,10 +863,7 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
             "term-1",
         ))])
         .raw_output(serde_json::json!("first"));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(first)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(first)));
 
     let second = model::ToolCall::new("tc-dup", "Terminal")
         .kind(model::ToolKind::Execute)
@@ -917,10 +872,7 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
             "term-2",
         ))])
         .raw_output(serde_json::json!("second"));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(second)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(second)));
 
     let (mi, bi) = app.lookup_tool_call("tc-dup").expect("tool call not indexed");
     let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] else {
@@ -928,11 +880,7 @@ fn repeated_tool_call_updates_existing_execute_snapshot_state() {
     };
     assert_eq!(tc.terminal_output.as_deref(), Some("second"));
     assert_eq!(tc.terminal_id.as_deref(), Some("term-2"));
-    assert_eq!(tc.terminal_command.as_deref(), Some("echo second"));
-    assert!(app.terminal_tool_calls().iter().any(|entry| entry.terminal_id == "term-2"
-        && entry.msg_idx == mi
-        && entry.block_idx == bi));
-    assert!(app.terminal_tool_calls().iter().all(|entry| entry.terminal_id != "term-1"));
+    assert_eq!(tc.terminal_command, None);
 }
 
 #[test]
@@ -949,19 +897,13 @@ fn todowrite_tool_call_does_not_mutate_task_state() {
             "todos": [{"content": "Task A", "status": "in_progress"}]
         }))
         .meta(serde_json::json!({"claudeCode": {"toolName": "TodoWrite"}}));
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(todo_call)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(todo_call)));
 
     let update = model::ToolCallUpdate::new(
         "tc-todo-update",
         model::ToolCallUpdateFields::new().raw_input(serde_json::json!({})),
     );
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     assert_eq!(app.sdk_inventory.tasks.len(), 1);
     assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-1");
@@ -1148,7 +1090,7 @@ fn has_in_progress_empty_assistant_blocks() {
 
 #[test]
 fn test_app_defaults() {
-    let app = make_test_app();
+    let app = App::test_default();
     assert!(app.transcript.messages.is_empty());
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
@@ -1300,10 +1242,10 @@ fn resize_during_active_turn_marks_final_purge_replay_needed() {
 fn turn_complete_after_cancel_renders_interrupted_hint() {
     let mut app = make_test_app();
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_local_cancel_enqueued(&mut app);
     assert!(app.turn.cancelled_pending_hint);
 
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
 
     assert!(!app.turn.cancelled_pending_hint);
     let last = app.transcript.messages.last().expect("expected interruption hint message");
@@ -1312,1517 +1254,6 @@ fn turn_complete_after_cancel_renders_interrupted_hint() {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
-}
-
-#[test]
-fn connected_updates_welcome_session_id_while_pristine() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "-",
-    ));
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first_mut() else {
-        panic!("expected welcome block");
-    };
-    welcome.tip_seed = 7;
-
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("missing welcome message");
-    };
-    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.session_id, "test-session");
-    assert_eq!(welcome.tip_seed, 7);
-}
-
-#[test]
-fn connected_session_preserves_inline_viewport_for_startup_welcome_transition() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "-",
-    ));
-    app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
-    app.surface_dirty.chat.repaint = false;
-
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(app.surface_dirty.chat.repaint);
-}
-
-#[test]
-fn connected_keeps_subscription_placeholder_until_status_snapshot_arrives() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "old",
-        "/test",
-        "old",
-    ));
-
-    handle_client_event(&mut app, connected_event("opus"));
-
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("missing welcome message");
-    };
-    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.subscription, "-");
-}
-
-#[test]
-fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
-    let (mut app, mut rx) = app_with_bridge_connection();
-    app.config.active_tab = crate::app::config::ConfigTab::Status;
-    app.mcp.servers.push(crate::agent::model::McpServerStatus {
-        name: "supabase".into(),
-        status: crate::agent::model::McpServerConnectionStatus::Connected,
-        server_info: None,
-        error: None,
-        config: None,
-        scope: None,
-        tools: Vec::new(),
-    });
-    app.mcp.removed_config_servers.insert(
-        crate::app::state::types::RemovedMcpServerKey::new(
-            "user".to_owned(),
-            "supabase".to_owned(),
-        ),
-        crate::app::state::types::RemovedMcpServerGuard {
-            expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
-        },
-    );
-
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope.command,
-        crate::agent::wire::BridgeCommand::GetMcpSnapshot { session_id: "test-session".to_owned() }
-    );
-    assert!(app.mcp.in_flight);
-    assert!(app.mcp.servers.is_empty());
-    assert!(app.mcp.removed_config_servers.is_empty());
-}
-
-#[test]
-fn connected_updates_cwd_and_clears_resuming_marker() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "-",
-    ));
-    app.resuming_session_id = Some("resume-123".into());
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::Connected {
-            session_id: model::SessionId::new("session-cwd"),
-            cwd: "/changed".into(),
-            current_model: test_current_model("claude-updated"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: Vec::new(),
-        },
-    );
-
-    assert_eq!(app.cwd_raw, "/changed");
-    assert_eq!(app.cwd, "/changed");
-    assert!(app.resuming_session_id.is_none());
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("missing welcome message");
-    };
-    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.cwd, "/changed");
-}
-
-#[test]
-fn connected_reconciles_trust_for_new_cwd() {
-    let mut app = make_test_app();
-    app.trust.status = crate::app::trust::TrustStatus::Trusted;
-    app.config.committed_preferences_document = serde_json::json!({
-        "projects": {}
-    });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::Connected {
-            session_id: model::SessionId::new("session-trust"),
-            cwd: "/untrusted".into(),
-            current_model: test_current_model("claude-updated"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: Vec::new(),
-        },
-    );
-
-    assert_eq!(app.trust.status, crate::app::trust::TrustStatus::Untrusted);
-    assert_eq!(
-        app.trust.project_key,
-        crate::app::trust::store::normalize_project_key(std::path::Path::new("/untrusted"))
-    );
-}
-
-#[test]
-fn connected_updates_welcome_once_even_after_chat_started() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "-",
-    ));
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first_mut() else {
-        panic!("expected welcome block");
-    };
-    welcome.tip_seed = 11;
-    app.transcript.messages.push(user_msg("hello"));
-
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("missing first message");
-    };
-    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.session_id, "test-session");
-    assert_eq!(welcome.tip_seed, 11);
-}
-
-#[test]
-fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcile() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-    app.session_runtime.current_model = Some(test_current_model("opus"));
-    app.transcript.messages =
-        vec![ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/test", "session-1")];
-    crate::app::config::store::set_model(&mut app.config.committed_settings_document, Some("opus"));
-
-    crate::app::config::store::set_model(
-        &mut app.config.committed_settings_document,
-        Some("haiku"),
-    );
-    app.reconcile_runtime_from_persisted_settings_change();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
-        )),
-    );
-
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.session_id, "session-1");
-    assert_eq!(welcome.subscription, "-");
-}
-
-#[test]
-fn connected_resets_session_scoped_view_data() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(user_msg("hello"));
-    app.status = AppStatus::Running;
-    app.files_accessed = 9;
-    app.usage.snapshot = Some(UsageSnapshot {
-        source: UsageSourceKind::Oauth,
-        fetched_at: std::time::SystemTime::now(),
-        five_hour: None,
-        seven_day: None,
-        seven_day_opus: None,
-        seven_day_sonnet: None,
-        extra_usage: None,
-    });
-    app.session_runtime.account_info = Some(crate::agent::model::AccountInfo {
-        email: Some("old@example.com".into()),
-        organization: None,
-        subscription_type: None,
-        token_source: None,
-        api_key_source: None,
-        api_provider: None,
-    });
-    app.plugins.installed.push(installed_plugin_entry("old-plugin"));
-    app.plugins.last_inventory_refresh_at = Some(Instant::now());
-    app.config.pending_session_title_change =
-        Some(crate::app::config::PendingSessionTitleChangeState {
-            session_id: "old-session".into(),
-            kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
-        });
-
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert_eq!(app.files_accessed, 0);
-    assert!(app.usage.snapshot.is_none());
-    assert!(app.session_runtime.account_info.is_none());
-    assert!(app.plugins.installed.is_empty());
-    assert!(app.plugins.last_inventory_refresh_at.is_none());
-    assert!(app.config.pending_session_title_change.is_none());
-}
-
-#[test]
-fn current_model_update_leaves_existing_welcome_snapshot_unchanged() {
-    let mut app = make_test_app();
-    app.session_runtime.current_model = Some(test_current_model("opus"));
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "-",
-    ));
-    app.transcript.messages.push(user_msg("hello"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("claude-opus-4-7")),
-        )),
-    );
-
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("missing first message");
-    };
-    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.session_id, "-");
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("claude-sonnet-4-5")),
-        )),
-    );
-
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("missing first message");
-    };
-    let Some(MessageBlock::Welcome(welcome)) = first.blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.session_id, "-");
-}
-
-#[test]
-fn auth_required_sets_hint_without_prefilling_login_command() {
-    let mut app = make_test_app();
-    app.input.set_text("keep me");
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::AuthRequired {
-            method_name: "oauth".into(),
-            method_description: "Open browser".into(),
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.input.text(), "keep me");
-    let Some(hint) = &app.session_runtime.login_hint else {
-        panic!("expected login hint");
-    };
-    assert_eq!(hint.method_name, "oauth");
-    assert_eq!(hint.method_description, "Open browser");
-}
-
-#[test]
-fn update_available_records_settings_without_transcript_message() {
-    let mut app = make_test_app();
-    assert!(app.global_settings.updates.last_result.is_none());
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UpdateAvailable {
-            latest_version: "0.3.0".into(),
-            current_version: "0.2.0".into(),
-        },
-    );
-
-    assert!(app.transcript.messages.is_empty());
-    let Some(last_result) = app.global_settings.updates.last_result.as_ref() else {
-        panic!("expected update result");
-    };
-    assert_eq!(last_result.current_version, "0.2.0");
-    assert_eq!(last_result.latest_version, "0.3.0");
-    assert_eq!(
-        last_result.release_url,
-        "https://github.com/srothgan/claude-code-rust/releases/tag/v0.3.0"
-    );
-}
-
-#[test]
-fn service_status_warning_pushes_system_warning_without_locking_input() {
-    let mut app = make_test_app();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::ServiceStatus {
-            severity: ServiceStatusSeverity::Warning,
-            message: "Claude Code status: Partial Outage (indicator: minor).".into(),
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Warning))));
-}
-
-#[test]
-fn service_status_warning_survives_status_snapshot_welcome_update() {
-    const CONNECTIVITY_MESSAGE: &str =
-        "Claude Code could not connect to the internet. Please check your connection.";
-    let mut app = make_test_app();
-
-    handle_client_event(&mut app, connected_event("opus"));
-    handle_client_event(
-        &mut app,
-        ClientEvent::ServiceStatus {
-            severity: ServiceStatusSeverity::Warning,
-            message: CONNECTIVITY_MESSAGE.into(),
-        },
-    );
-    handle_client_event(
-        &mut app,
-        ClientEvent::StatusSnapshotReceived {
-            session_id: "test-session".into(),
-            account: crate::agent::model::AccountInfo {
-                email: None,
-                organization: None,
-                subscription_type: Some("Claude Pro".into()),
-                token_source: None,
-                api_key_source: None,
-                api_provider: None,
-            },
-        },
-    );
-
-    let warning_count = app
-        .transcript
-        .messages
-        .iter()
-        .filter(|message| {
-            matches!(message.role, MessageRole::System(Some(SystemSeverity::Warning)))
-        })
-        .filter(|message| first_block_text(message) == CONNECTIVITY_MESSAGE)
-        .count();
-    assert_eq!(warning_count, 1);
-}
-
-#[test]
-fn service_status_error_pushes_system_error_without_locking_input() {
-    let mut app = make_test_app();
-    app.input.set_text("draft stays");
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::ServiceStatus {
-            severity: ServiceStatusSeverity::Error,
-            message: "Claude Code status: Major Outage (indicator: major).".into(),
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.input.text(), "draft stays");
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
-}
-
-#[test]
-fn session_replaced_resets_chat_and_transient_state() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "-",
-    ));
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first_mut() else {
-        panic!("expected welcome block");
-    };
-    welcome.tip_seed = 5;
-    app.transcript.messages.push(user_msg("hello"));
-    app.transcript
-        .messages
-        .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
-    app.status = AppStatus::Running;
-    app.files_accessed = 9;
-    app.turn.pending_interaction_ids.push("perm-1".into());
-    app.sdk_inventory.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
-    app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-    app.mcp.servers.push(crate::agent::model::McpServerStatus {
-        name: "supabase".into(),
-        status: crate::agent::model::McpServerConnectionStatus::Connected,
-        server_info: None,
-        error: None,
-        config: None,
-        scope: None,
-        tools: Vec::new(),
-    });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new("replacement"),
-            cwd: "/replacement".into(),
-            current_model: test_current_model("new-model"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: Vec::new(),
-            restored_input: None,
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(
-        app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref(),
-        Some("replacement")
-    );
-    assert_eq!(
-        app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
-        Some("new-model")
-    );
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert_eq!(app.files_accessed, 0);
-    assert!(app.turn.pending_interaction_ids.is_empty());
-    assert!(app.sdk_inventory.tasks.is_empty());
-    assert!(app.mention.is_none());
-    assert!(app.mcp.servers.is_empty());
-    assert!(app.mcp.removed_config_servers.is_empty());
-    assert_eq!(app.cwd_raw, "/replacement");
-    assert_eq!(app.cwd, "/replacement");
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.cwd, "/replacement");
-    assert_ne!(welcome.tip_seed, 5);
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::session_replacement())
-    );
-}
-
-#[test]
-fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
-    let (mut app, mut rx) = app_with_bridge_connection();
-    app.config.active_tab = crate::app::config::ConfigTab::Status;
-    app.mcp.servers.push(crate::agent::model::McpServerStatus {
-        name: "supabase".into(),
-        status: crate::agent::model::McpServerConnectionStatus::Connected,
-        server_info: None,
-        error: None,
-        config: None,
-        scope: None,
-        tools: Vec::new(),
-    });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new("replacement"),
-            cwd: "/replacement".into(),
-            current_model: test_current_model("new-model"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: Vec::new(),
-            restored_input: None,
-        },
-    );
-
-    let envelope = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        envelope.command,
-        crate::agent::wire::BridgeCommand::GetMcpSnapshot { session_id: "replacement".to_owned() }
-    );
-    assert!(app.mcp.in_flight);
-    assert!(app.mcp.servers.is_empty());
-}
-
-#[test]
-fn connected_requests_status_snapshot_on_connect() {
-    let (mut app, mut rx) = app_with_bridge_connection();
-
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    let mcp = rx.try_recv().expect("mcp snapshot command");
-    assert_eq!(
-        mcp.command,
-        crate::agent::wire::BridgeCommand::GetMcpSnapshot { session_id: "test-session".to_owned() }
-    );
-    let status = rx.try_recv().expect("status snapshot command");
-    assert_eq!(
-        status.command,
-        crate::agent::wire::BridgeCommand::GetStatusSnapshot {
-            session_id: "test-session".to_owned(),
-        }
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn connected_requests_usage_refresh_when_usage_tab_is_open() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut app = make_test_app();
-            app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-            app.config.active_tab = crate::app::ConfigTab::Usage;
-
-            handle_client_event(&mut app, connected_event("claude-updated"));
-
-            assert!(app.usage.in_flight);
-        })
-        .await;
-}
-
-#[test]
-fn stale_status_snapshot_for_old_session_is_ignored() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::StatusSnapshotReceived {
-            session_id: "old-session".into(),
-            account: crate::agent::model::AccountInfo {
-                email: Some("old@example.com".into()),
-                organization: None,
-                subscription_type: None,
-                token_source: None,
-                api_key_source: None,
-                api_provider: None,
-            },
-        },
-    );
-
-    assert!(app.session_runtime.account_info.is_none());
-}
-
-#[test]
-fn status_snapshot_updates_welcome_subscription() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "session-1",
-    ));
-    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::StatusSnapshotReceived {
-            session_id: "session-1".into(),
-            account: crate::agent::model::AccountInfo {
-                email: None,
-                organization: None,
-                subscription_type: Some("Claude Max".into()),
-                token_source: None,
-                api_key_source: None,
-                api_provider: None,
-            },
-        },
-    );
-
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.subscription, "Claude Max");
-    assert!(session_overview_has_welcome(&app));
-}
-
-#[test]
-fn status_snapshot_does_not_commit_welcome_when_session_overview_is_suppressed() {
-    let mut app = make_test_app();
-    app.show_session_overview = false;
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "session-1",
-    ));
-    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::StatusSnapshotReceived {
-            session_id: "session-1".into(),
-            account: crate::agent::model::AccountInfo {
-                email: None,
-                organization: None,
-                subscription_type: Some("Claude Max".into()),
-                token_source: None,
-                api_key_source: None,
-                api_provider: None,
-            },
-        },
-    );
-
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.subscription, "Claude Max");
-    assert!(!session_overview_has_welcome(&app));
-}
-
-#[test]
-fn stale_mcp_snapshot_for_old_session_is_ignored() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    app.mcp.servers.push(crate::agent::model::McpServerStatus {
-        name: "current".into(),
-        status: crate::agent::model::McpServerConnectionStatus::Connected,
-        server_info: None,
-        error: None,
-        config: None,
-        scope: None,
-        tools: Vec::new(),
-    });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::McpSnapshotReceived {
-            session_id: "old-session".into(),
-            servers: vec![crate::agent::model::McpServerStatus {
-                name: "stale".into(),
-                status: crate::agent::model::McpServerConnectionStatus::Connected,
-                server_info: None,
-                error: None,
-                config: None,
-                scope: None,
-                tools: Vec::new(),
-            }],
-            source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
-            error: None,
-        },
-    );
-
-    assert_eq!(app.mcp.servers.len(), 1);
-    assert_eq!(app.mcp.servers[0].name, "current");
-}
-
-#[test]
-fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    app.mcp.removed_config_servers.insert(
-        crate::app::state::types::RemovedMcpServerKey::new("user".to_owned(), "notion".to_owned()),
-        crate::app::state::types::RemovedMcpServerGuard {
-            expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
-        },
-    );
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::McpSnapshotReceived {
-            session_id: "current-session".into(),
-            servers: vec![
-                crate::agent::model::McpServerStatus {
-                    name: "notion".into(),
-                    status: crate::agent::model::McpServerConnectionStatus::Connected,
-                    server_info: None,
-                    error: None,
-                    config: None,
-                    scope: Some("user".into()),
-                    tools: Vec::new(),
-                },
-                crate::agent::model::McpServerStatus {
-                    name: "fff".into(),
-                    status: crate::agent::model::McpServerConnectionStatus::Connected,
-                    server_info: None,
-                    error: None,
-                    config: None,
-                    scope: Some("user".into()),
-                    tools: Vec::new(),
-                },
-            ],
-            source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
-            error: None,
-        },
-    );
-
-    assert_eq!(app.mcp.servers.len(), 1);
-    assert_eq!(app.mcp.servers[0].name, "fff");
-    assert_eq!(app.mcp.removed_config_servers.len(), 1);
-}
-
-#[test]
-fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    app.mcp.removed_config_servers.insert(
-        crate::app::state::types::RemovedMcpServerKey::new("user".to_owned(), "notion".to_owned()),
-        crate::app::state::types::RemovedMcpServerGuard {
-            expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
-        },
-    );
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::McpSnapshotReceived {
-            session_id: "current-session".into(),
-            servers: vec![crate::agent::model::McpServerStatus {
-                name: "fff".into(),
-                status: crate::agent::model::McpServerConnectionStatus::Connected,
-                server_info: None,
-                error: None,
-                config: None,
-                scope: Some("user".into()),
-                tools: Vec::new(),
-            }],
-            source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
-            error: None,
-        },
-    );
-
-    assert_eq!(app.mcp.servers.len(), 1);
-    assert_eq!(app.mcp.servers[0].name, "fff");
-    assert!(app.mcp.removed_config_servers.is_empty());
-}
-
-#[test]
-fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    app.mcp.removed_config_servers.insert(
-        crate::app::state::types::RemovedMcpServerKey::new("user".to_owned(), "notion".to_owned()),
-        crate::app::state::types::RemovedMcpServerGuard {
-            expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
-        },
-    );
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::McpSnapshotReceived {
-            session_id: "current-session".into(),
-            servers: vec![crate::agent::model::McpServerStatus {
-                name: "fff".into(),
-                status: crate::agent::model::McpServerConnectionStatus::Connected,
-                server_info: None,
-                error: None,
-                config: None,
-                scope: Some("user".into()),
-                tools: Vec::new(),
-            }],
-            source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
-            error: Some("reload failed".to_owned()),
-        },
-    );
-
-    assert_eq!(app.mcp.servers.len(), 1);
-    assert_eq!(app.mcp.servers[0].name, "fff");
-    assert_eq!(app.mcp.removed_config_servers.len(), 1);
-}
-
-#[test]
-fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
-    let mut app = make_test_app();
-    app.session_runtime.session_scope_epoch = 5;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UsageSnapshotReceived {
-            epoch: 4,
-            snapshot: UsageSnapshot {
-                source: UsageSourceKind::Oauth,
-                fetched_at: std::time::SystemTime::now(),
-                five_hour: None,
-                seven_day: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-            },
-        },
-    );
-
-    assert!(app.usage.snapshot.is_none());
-}
-
-#[test]
-fn pending_limits_response_prints_summary_on_usage_refresh_success() {
-    let mut app = make_test_app();
-    app.session_runtime.session_scope_epoch = 5;
-    app.usage.pending_limits_response = true;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UsageSnapshotReceived {
-            epoch: 5,
-            snapshot: UsageSnapshot {
-                source: UsageSourceKind::Oauth,
-                fetched_at: SystemTime::now(),
-                five_hour: Some(UsageWindow {
-                    label: "5-hour",
-                    utilization: 47.0,
-                    resets_at: None,
-                    reset_description: Some("resets in 2h 14m".to_owned()),
-                }),
-                seven_day: Some(UsageWindow {
-                    label: "7-day",
-                    utilization: 62.0,
-                    resets_at: None,
-                    reset_description: Some("resets in 4d 11h".to_owned()),
-                }),
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-            },
-        },
-    );
-
-    assert!(!app.usage.pending_limits_response);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected limits summary");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("| 5-hour | 47% | resets in 2h 14m |"));
-    assert!(block.text.contains("| 7-day | 62% | resets in 4d 11h |"));
-}
-
-#[test]
-fn pending_limits_response_prints_error_on_usage_refresh_failure() {
-    let mut app = make_test_app();
-    app.session_runtime.session_scope_epoch = 5;
-    app.usage.pending_limits_response = true;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UsageRefreshFailed {
-            epoch: 5,
-            message: "network timeout".to_owned(),
-            source: UsageSourceKind::Oauth,
-        },
-    );
-
-    assert!(!app.usage.pending_limits_response);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected limits error");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Unable to get recent usage info: network timeout");
-}
-
-#[test]
-fn stale_usage_refresh_result_does_not_print_pending_limits_response() {
-    let mut app = make_test_app();
-    app.session_runtime.session_scope_epoch = 5;
-    app.usage.pending_limits_response = true;
-    let message_count = app.transcript.messages.len();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UsageSnapshotReceived {
-            epoch: 4,
-            snapshot: UsageSnapshot {
-                source: UsageSourceKind::Oauth,
-                fetched_at: SystemTime::now(),
-                five_hour: Some(UsageWindow {
-                    label: "5-hour",
-                    utilization: 47.0,
-                    resets_at: None,
-                    reset_description: Some("resets in 2h 14m".to_owned()),
-                }),
-                seven_day: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                extra_usage: None,
-            },
-        },
-    );
-
-    assert!(app.usage.pending_limits_response);
-    assert_eq!(app.transcript.messages.len(), message_count);
-}
-
-#[test]
-fn stale_plugin_inventory_result_for_old_cwd_is_ignored() {
-    let mut app = make_test_app();
-    app.cwd_raw = "/current".into();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::PluginsInventoryUpdated {
-            cwd_raw: "/old".into(),
-            snapshot: crate::app::plugins::PluginsInventorySnapshot {
-                installed: vec![installed_plugin_entry("stale-plugin")],
-                marketplace: Vec::new(),
-                marketplaces: Vec::new(),
-            },
-            claude_path: std::path::PathBuf::from("claude"),
-        },
-    );
-
-    assert!(app.plugins.installed.is_empty());
-}
-
-#[test]
-fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
-    let mut app = make_test_app();
-    app.status = AppStatus::CommandPending;
-    app.resuming_session_id = Some("resume-123".into());
-
-    handle_client_event(&mut app, ClientEvent::SlashCommandError("resume failed".into()));
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert!(app.resuming_session_id.is_none());
-}
-
-#[test]
-fn slash_command_error_clears_rewind_target_loading_state() {
-    let mut app = make_test_app();
-    app.sdk_inventory.rewind_targets_in_flight = true;
-    app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
-    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
-        uuid: "user-1".into(),
-        first_text: "hello".into(),
-        input_text: "hello".into(),
-        index: 0,
-        previous_assistant_uuid: None,
-    }];
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to load rewind targets".into()),
-    );
-
-    assert!(!app.sdk_inventory.rewind_targets_in_flight);
-    assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
-}
-
-#[test]
-fn slash_command_error_during_running_turn_does_not_stop_turn_status() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Running;
-    app.turn.pending_command_label = Some("Switching mode...".into());
-    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
-
-    handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set mode".into()));
-
-    assert!(matches!(app.status, AppStatus::Running));
-    assert!(app.turn.pending_command_label.is_none());
-    assert!(app.turn.pending_command_ack.is_none());
-}
-
-#[test]
-fn slash_command_error_during_active_turn_inserts_inline_notice() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Running;
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::Text(
-        TextBlock::from_complete("streaming answer"),
-    )]));
-    app.bind_active_turn_assistant(0);
-    app.turn.pending_command_label = Some("Switching mode...".into());
-    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to set mode to auto".into()),
-    );
-
-    assert!(matches!(app.status, AppStatus::Running));
-    assert!(app.turn.pending_command_label.is_none());
-    assert!(app.turn.pending_command_ack.is_none());
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert!(app.turn.notice_refs.is_empty());
-    let [MessageBlock::Text(text), MessageBlock::Notice(notice)] =
-        app.transcript.messages[0].blocks.as_slice()
-    else {
-        panic!("expected assistant text followed by inline notice");
-    };
-    assert_eq!(text.text, "streaming answer");
-    assert_eq!(notice.severity, SystemSeverity::Error);
-    assert_eq!(notice.text.text, "failed to set mode to auto");
-    assert!(notice.dedup_key.is_none());
-}
-
-#[test]
-fn slash_command_error_without_active_turn_inserts_standalone_notice() {
-    let mut app = make_test_app();
-    app.status = AppStatus::CommandPending;
-    app.turn.pending_command_label = Some("Switching mode...".into());
-    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentMode);
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to set mode to auto".into()),
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert!(app.turn.pending_command_label.is_none());
-    assert!(app.turn.pending_command_ack.is_none());
-    let Some(ChatMessage {
-        role: MessageRole::System(Some(SystemSeverity::Error)), blocks, ..
-    }) = app.transcript.messages.last()
-    else {
-        panic!("expected standalone system notice");
-    };
-    let [MessageBlock::Notice(notice)] = blocks.as_slice() else {
-        panic!("expected standalone notice block");
-    };
-    assert_eq!(notice.severity, SystemSeverity::Error);
-    assert_eq!(notice.text.text, "failed to set mode to auto");
-    assert!(notice.dedup_key.is_none());
-}
-
-#[test]
-fn slash_command_error_during_thinking_turn_does_not_stop_turn_status() {
-    let mut app = make_test_app();
-    app.status = AppStatus::Thinking;
-    app.turn.pending_command_label = Some("Switching model...".into());
-    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentModel);
-
-    handle_client_event(&mut app, ClientEvent::SlashCommandError("failed to set model".into()));
-
-    assert!(matches!(app.status, AppStatus::Thinking));
-    assert!(app.turn.pending_command_label.is_none());
-    assert!(app.turn.pending_command_ack.is_none());
-}
-
-#[test]
-fn terminal_release_event_marks_child_process_lifecycle_without_redraw() {
-    let mut app = make_test_app();
-    app.request_chat_repaint();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::TerminalReleasedToChild { reason: ReleaseReason::AuthFlow },
-    );
-
-    assert_eq!(
-        app.terminal_lifecycle,
-        TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow)
-    );
-    assert!(!app.surface_dirty.chat.repaint);
-}
-
-#[test]
-fn terminal_events_are_ignored_while_released_to_child_except_resize() {
-    let mut app = make_test_app();
-    app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "");
-}
-
-#[test]
-fn terminal_return_event_restores_chat_lifecycle_and_rebuilds_chat() {
-    let mut app = make_test_app();
-    app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
-    app.chat_render.live_region.anchor_valid = true;
-    app.surface_dirty.chat.repaint = false;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::TerminalReturnedFromChild { reason: ReleaseReason::AuthFlow },
-    );
-
-    assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat));
-    assert!(app.surface_dirty.terminal_mode);
-    assert!(!app.chat_render.live_region.anchor_valid);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::VisibleScreen);
-    assert!(app.surface_dirty.chat.repaint);
-}
-
-#[test]
-fn sessions_listed_completes_pending_session_rename() {
-    let mut app = make_test_app();
-    app.config.pending_session_title_change =
-        Some(crate::app::config::PendingSessionTitleChangeState {
-            session_id: "session-1".to_owned(),
-            kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                requested_title: Some("Renamed session".to_owned()),
-            },
-        });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionsListed {
-            sessions: vec![crate::agent::types::SessionListEntry {
-                session_id: "session-1".to_owned(),
-                summary: "Renamed session".to_owned(),
-                last_modified_ms: 1,
-                file_size_bytes: 2,
-                cwd: Some("/test".to_owned()),
-                git_branch: None,
-                custom_title: Some("Renamed session".to_owned()),
-                first_prompt: Some("prompt".to_owned()),
-            }],
-        },
-    );
-
-    assert!(app.config.pending_session_title_change.is_none());
-    assert_eq!(app.config.status_message.as_deref(), Some("Renamed session to Renamed session"));
-    assert!(app.config.last_error.is_none());
-    assert_eq!(app.recent_sessions.len(), 1);
-}
-
-#[test]
-fn slash_command_error_for_pending_session_rename_stays_in_config_feedback() {
-    let mut app = make_test_app();
-    app.config.pending_session_title_change =
-        Some(crate::app::config::PendingSessionTitleChangeState {
-            session_id: "session-1".to_owned(),
-            kind: crate::app::config::PendingSessionTitleChangeKind::Rename {
-                requested_title: Some("Renamed session".to_owned()),
-            },
-        });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SlashCommandError("failed to rename session: boom".into()),
-    );
-
-    assert!(app.config.pending_session_title_change.is_none());
-    assert_eq!(app.config.last_error.as_deref(), Some("failed to rename session: boom"));
-    assert!(app.config.status_message.is_none());
-    assert!(app.transcript.messages.is_empty());
-}
-
-#[test]
-fn mcp_operation_error_stays_in_mcp_feedback_and_out_of_chat() {
-    let mut app = make_test_app();
-    app.config.active_tab = crate::app::config::ConfigTab::Mcp;
-    app.config.status_message = Some("Starting MCP auth for claude.ai Google Calendar...".into());
-    app.mcp.in_flight = true;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::McpOperationError {
-            error: crate::agent::types::McpOperationError {
-                server_name: Some("claude.ai Google Calendar".into()),
-                operation: "authenticate".into(),
-                message: "Server type \"claudeai-proxy\" does not support OAuth authentication"
-                    .into(),
-            },
-        },
-    );
-
-    assert_eq!(
-        app.mcp.last_error.as_deref(),
-        Some(
-            "Failed to authenticate MCP server claude.ai Google Calendar: Server type \"claudeai-proxy\" does not support OAuth authentication"
-        )
-    );
-    assert_eq!(app.config.last_error, app.mcp.last_error);
-    assert!(app.config.status_message.is_none());
-    assert!(!app.mcp.in_flight);
-    assert!(app.transcript.messages.is_empty());
-}
-
-#[test]
-fn sessions_listed_completes_pending_session_title_generation() {
-    let mut app = make_test_app();
-    app.config.pending_session_title_change =
-        Some(crate::app::config::PendingSessionTitleChangeState {
-            session_id: "session-1".to_owned(),
-            kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
-        });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionsListed {
-            sessions: vec![crate::agent::types::SessionListEntry {
-                session_id: "session-1".to_owned(),
-                summary: "Generated session".to_owned(),
-                last_modified_ms: 1,
-                file_size_bytes: 2,
-                cwd: Some("/test".to_owned()),
-                git_branch: None,
-                custom_title: Some("Generated session".to_owned()),
-                first_prompt: Some("prompt".to_owned()),
-            }],
-        },
-    );
-
-    assert!(app.config.pending_session_title_change.is_none());
-    assert_eq!(app.config.status_message.as_deref(), Some("Generated session title"));
-    assert!(app.config.last_error.is_none());
-}
-
-#[test]
-fn startup_picker_waits_for_connected_after_sessions_listed() {
-    let mut app = make_test_app();
-    app.startup = crate::app::state::StartupState::new(None, None, true);
-    app.startup.request_connection();
-    assert!(app.startup.mark_connection_started());
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionsListed {
-            sessions: vec![listed_session("session-1", "First Session")],
-        },
-    );
-
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(app.startup.recent_sessions_loaded());
-    assert!(!app.startup.session_picker_resolved());
-
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-    handle_client_event(&mut app, connected_event("claude-updated"));
-
-    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-    assert!(app.startup.session_picker_resolved());
-}
-
-#[test]
-fn startup_picker_empty_list_stays_in_chat_with_info_message() {
-    let mut app = make_test_app();
-    app.startup = crate::app::state::StartupState::new(None, None, true);
-    app.startup.request_connection();
-    assert!(app.startup.mark_connection_started());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
-
-    handle_client_event(&mut app, connected_event("claude-updated"));
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(!app.startup.session_picker_resolved());
-
-    handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: Vec::new() });
-
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(app.startup.session_picker_resolved());
-    let last = app.transcript.messages.last().expect("info message");
-    let text = match last.blocks.first().expect("text block") {
-        MessageBlock::Text(block) => block.text.as_str(),
-        _ => panic!("expected text block"),
-    };
-    assert!(text.contains("No recent sessions found for this directory"));
-}
-
-#[test]
-fn sessions_listed_refresh_preserves_picker_selection_by_session_id() {
-    let mut app = make_test_app();
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
-    app.recent_sessions = vec![
-        crate::app::RecentSessionInfo {
-            session_id: "session-1".to_owned(),
-            summary: "First".to_owned(),
-            last_modified_ms: 1,
-            file_size_bytes: 1,
-            cwd: Some("/test".to_owned()),
-            git_branch: Some("main".to_owned()),
-            custom_title: Some("First".to_owned()),
-            first_prompt: Some("prompt one".to_owned()),
-        },
-        crate::app::RecentSessionInfo {
-            session_id: "session-2".to_owned(),
-            summary: "Second".to_owned(),
-            last_modified_ms: 2,
-            file_size_bytes: 1,
-            cwd: Some("/test".to_owned()),
-            git_branch: Some("main".to_owned()),
-            custom_title: Some("Second".to_owned()),
-            first_prompt: Some("prompt two".to_owned()),
-        },
-    ];
-    app.session_picker.selected = 1;
-    app.session_picker.scroll_offset = 1;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionsListed {
-            sessions: vec![
-                listed_session("session-2", "Second"),
-                listed_session("session-3", "Third"),
-            ],
-        },
-    );
-
-    assert_eq!(app.session_picker.selected, 0);
-    assert_eq!(app.recent_sessions[app.session_picker.selected].session_id, "session-2");
-    assert_eq!(app.session_picker.scroll_offset, 0);
-}
-
-#[test]
-fn current_model_update_updates_state_and_clears_pending_when_expected() {
-    let mut app = make_test_app();
-    app.status = AppStatus::CommandPending;
-    app.turn.pending_command_label = Some("Switching model...".into());
-    app.turn.pending_command_ack = Some(PendingCommandAck::CurrentModel);
-    app.session_runtime.current_model = Some(test_current_model("old-model"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CurrentModelUpdate(
-            model::CurrentModelUpdate::new(test_current_model("sonnet")),
-        )),
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(
-        app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
-        Some("sonnet")
-    );
-    assert!(app.turn.pending_command_label.is_none());
-    assert!(app.turn.pending_command_ack.is_none());
-}
-
-#[test]
-fn non_matching_config_option_update_keeps_pending() {
-    let mut app = make_test_app();
-    app.status = AppStatus::CommandPending;
-    app.turn.pending_command_label = Some("Switching model...".into());
-    app.turn.pending_command_ack =
-        Some(PendingCommandAck::ConfigOption { option_id: "model".to_owned() });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ConfigOptionUpdate(
-            model::ConfigOptionUpdate {
-                option_id: "max_thinking_tokens".to_owned(),
-                value: serde_json::json!(2048),
-            },
-        )),
-    );
-
-    assert!(matches!(app.status, AppStatus::CommandPending));
-    assert_eq!(
-        app.session_runtime.config_options.get("max_thinking_tokens"),
-        Some(&serde_json::json!(2048))
-    );
-    assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
-    assert!(matches!(
-        app.turn.pending_command_ack.as_ref(),
-        Some(PendingCommandAck::ConfigOption { option_id }) if option_id == "model"
-    ));
-}
-
-#[test]
-fn resume_does_not_add_confirmation_system_message() {
-    let mut app = make_test_app();
-    app.resuming_session_id = Some("requested-123".into());
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new("active-456"),
-            cwd: "/replacement".into(),
-            current_model: test_current_model("new-model"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates: Vec::new(),
-            restored_input: None,
-        },
-    );
-
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert!(app.resuming_session_id.is_none());
-    assert!(matches!(app.status, AppStatus::Ready));
-}
-
-#[test]
-fn resume_history_renders_user_message_chunks() {
-    let mut app = make_test_app();
-    let history_updates = vec![
-        model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-            model::ContentBlock::Text(model::TextContent::new("first user line")),
-        )),
-        model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-            model::ContentBlock::Text(model::TextContent::new("assistant reply")),
-        )),
-    ];
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new("active-456"),
-            cwd: "/replacement".into(),
-            current_model: test_current_model("new-model"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates,
-            restored_input: None,
-        },
-    );
-
-    assert_eq!(app.transcript.messages.len(), 3);
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert!(matches!(app.transcript.messages[1].role, MessageRole::User));
-    assert!(matches!(app.transcript.messages[2].role, MessageRole::Assistant));
-
-    let Some(MessageBlock::Text(user_text)) = app.transcript.messages[1].blocks.first() else {
-        panic!("expected user text block");
-    };
-    assert_eq!(user_text.text, "first user line");
-    assert!(canonical_messages_contain_text(&app, "first user line"));
-    assert!(canonical_messages_contain_text(&app, "assistant reply"));
-    assert!(!session_overview_has_welcome(&app));
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.turn.pending_cancel_origin, None);
-    assert!(!app.turn.pending_auto_submit_after_cancel);
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::StatusSnapshotReceived {
-            session_id: "active-456".into(),
-            account: crate::agent::model::AccountInfo {
-                email: None,
-                organization: None,
-                subscription_type: Some("Claude Max".into()),
-                token_source: None,
-                api_key_source: None,
-                api_provider: None,
-            },
-        },
-    );
-
-    assert!(!session_overview_has_welcome(&app));
-}
-
-#[test]
-fn session_replaced_restores_input_after_loading_history() {
-    let mut app = make_test_app();
-    app.turn.pending_command_label = Some("Rewinding conversation...".to_owned());
-    app.status = AppStatus::CommandPending;
-    let history_updates = vec![model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-        model::ContentBlock::Text(model::TextContent::new("assistant reply")),
-    ))];
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new("rewound"),
-            cwd: "/replacement".into(),
-            current_model: test_current_model("new-model"),
-            available_models: Vec::new(),
-            mode: None,
-            history_updates,
-            restored_input: Some("selected prompt".to_owned()),
-        },
-    );
-
-    assert_eq!(app.input.text(), "selected prompt");
-    assert!(app.turn.pending_command_label.is_none());
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert!(canonical_messages_contain_text(&app, "assistant reply"));
 }
 
 #[test]
@@ -2845,6 +1276,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
         },
     );
@@ -2896,6 +1328,7 @@ fn startup_resume_history_allows_immediate_prompt_submit() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
         },
     );
@@ -2942,6 +1375,7 @@ fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
             restored_input: None,
         },
@@ -2986,6 +1420,7 @@ fn resume_history_forces_open_tool_calls_to_failed() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
             restored_input: None,
         },
@@ -3014,6 +1449,7 @@ fn resume_history_clears_active_turn_owner_after_loading() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: vec![model::SessionUpdate::AgentMessageChunk(
                 model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                     "assistant reply",
@@ -3042,6 +1478,7 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
             restored_input: None,
         },
@@ -3054,30 +1491,27 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
 #[test]
 fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
     let mut app = make_test_app();
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
     assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
 fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
     let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("session-x"));
     app.transcript.messages.push(user_msg("/compact"));
     app.transcript
         .messages
         .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Manual,
-                pre_tokens: 123_456,
-            },
-        )),
+        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+            trigger: model::CompactionTrigger::Manual,
+            pre_tokens: 123_456,
+        })),
     );
     assert!(app.turn.pending_compact_clear);
 
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
 
     assert!(!app.turn.pending_compact_clear);
     assert_eq!(app.transcript.messages.len(), 3);
@@ -3092,7 +1526,7 @@ fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary
     assert_eq!(block.text, "Session successfully compacted.");
     assert_eq!(
         app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref(),
-        Some("session-x")
+        Some("test-session")
     );
 }
 
@@ -3103,11 +1537,9 @@ fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AgentMessageChunk(
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
-                "regular answer",
-            ))),
-        )),
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("regular answer")),
+        ))),
     );
 
     assert!(!app.turn.is_compacting);
@@ -3127,9 +1559,7 @@ fn session_status_idle_does_not_emit_compaction_success_without_boundary() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::SessionStatusUpdate(
-            model::SessionStatus::Idle,
-        )),
+        session_update(model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Idle)),
     );
 
     assert!(!app.turn.is_compacting);
@@ -3146,6 +1576,7 @@ fn turn_error_keeps_history_when_compact_pending() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "adapter failed".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3183,7 +1614,7 @@ fn turn_cancel_keeps_manual_compaction_success_pending_until_exit() {
     app.turn.pending_compact_clear = true;
     app.turn.is_compacting = true;
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_local_cancel_enqueued(&mut app);
 
     assert!(app.turn.pending_compact_clear);
     assert!(app.turn.is_compacting);
@@ -3196,10 +1627,11 @@ fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
     app.turn.pending_compact_clear = true;
     app.turn.is_compacting = true;
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_local_cancel_enqueued(&mut app);
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "cancelled".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3228,6 +1660,7 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3254,6 +1687,7 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "turn failed".into(),
             class: TurnErrorClass::PlanLimit,
             api_error_status: None,
@@ -3280,6 +1714,7 @@ fn classified_turn_error_auth_required_sets_exit_error_and_quits() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "auth required".into(),
             class: TurnErrorClass::AuthRequired,
             api_error_status: None,
@@ -3299,6 +1734,7 @@ fn classified_turn_error_model_unavailable_suggests_model_switch() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "model_not_found".into(),
             class: TurnErrorClass::ModelUnavailable,
             api_error_status: Some(404),
@@ -3321,6 +1757,7 @@ fn classified_turn_error_account_access_does_not_quit_for_login() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "oauth_org_not_allowed".into(),
             class: TurnErrorClass::AccountAccess,
             api_error_status: Some(403),
@@ -3343,6 +1780,7 @@ fn classified_turn_error_transient_service_suggests_retry() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "overloaded".into(),
             class: TurnErrorClass::TransientService,
             api_error_status: Some(529),
@@ -3370,6 +1808,7 @@ fn turn_error_clears_tool_scope_tracking() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "boom".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3512,12 +1951,10 @@ fn compaction_boundary_enables_compacting_and_records_boundary() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Manual,
-                pre_tokens: 123_456,
-            },
-        )),
+        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+            trigger: model::CompactionTrigger::Manual,
+            pre_tokens: 123_456,
+        })),
     );
 
     assert!(app.turn.is_compacting);
@@ -3536,12 +1973,10 @@ fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::CompactionBoundary(
-            model::CompactionBoundary {
-                trigger: model::CompactionTrigger::Auto,
-                pre_tokens: 234_567,
-            },
-        )),
+        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
+            trigger: model::CompactionTrigger::Auto,
+            pre_tokens: 234_567,
+        })),
     );
 
     assert!(app.turn.is_compacting);
@@ -3560,9 +1995,7 @@ fn fast_mode_update_sets_state() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::FastModeUpdate(
-            model::FastModeState::Cooldown,
-        )),
+        session_update(model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown)),
     );
 
     assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
@@ -3589,11 +2022,11 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
+        session_update(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
+        session_update(model::SessionUpdate::RateLimitUpdate(warning_update.clone())),
     );
 
     assert_eq!(app.transcript.messages.len(), 1);
@@ -3607,11 +2040,11 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
         model::RateLimitUpdate { status: model::RateLimitStatus::Rejected, ..warning_update };
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update.clone())),
+        session_update(model::SessionUpdate::RateLimitUpdate(rejected_update.clone())),
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(rejected_update)),
+        session_update(model::SessionUpdate::RateLimitUpdate(rejected_update)),
     );
 
     assert_eq!(app.transcript.messages.len(), 1);
@@ -3634,7 +2067,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(1_741_280_000.0),
@@ -3657,6 +2090,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests".to_owned(),
             class: TurnErrorClass::PlanLimit,
             api_error_status: None,
@@ -3701,6 +2135,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     handle_client_event(
         &mut app,
         ClientEvent::TurnErrorClassified {
+            session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests".to_owned(),
             class: TurnErrorClass::PlanLimit,
             api_error_status: None,
@@ -3720,7 +2155,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     app.bind_active_turn_assistant(3);
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::Rejected,
             error_code: None,
             resets_at: Some(1_741_290_000.0),
@@ -3759,7 +2194,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(123.0),
@@ -3776,7 +2211,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
     );
 
     assert_eq!(app.turn.notice_refs.len(), 1);
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
     assert!(app.turn.notice_refs.is_empty());
 
     app.status = AppStatus::Thinking;
@@ -3785,7 +2220,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
     app.bind_active_turn_assistant(app.transcript.messages.len() - 1);
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
+        session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
             status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(456.0),
@@ -3810,6 +2245,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             current_model: test_current_model("claude"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
         },
     );
@@ -3821,12 +2257,13 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
     let mut app = make_test_app();
     app.transcript.messages.push(user_msg("build app"));
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_local_cancel_enqueued(&mut app);
     assert!(app.turn.cancelled_pending_hint);
 
     handle_client_event(
         &mut app,
         ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
             message: "Error: Request was aborted.\n    at stack line".into(),
             api_error_status: None,
             terminal_reason: None,
@@ -3855,7 +2292,7 @@ fn turn_cancel_marks_active_tools_failed() {
         MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
     ]));
 
-    handle_client_event(&mut app, ClientEvent::TurnCancelled);
+    handle_local_cancel_enqueued(&mut app);
 
     let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");
@@ -3886,7 +2323,7 @@ fn turn_complete_marks_lingering_tools_completed() {
         MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Pending))),
     ]));
 
-    handle_client_event(&mut app, ClientEvent::TurnComplete { terminal_reason: None });
+    handle_client_event(&mut app, turn_complete(None));
 
     let Some(last) = app.transcript.messages.last() else {
         panic!("missing assistant message");
@@ -4378,6 +2815,7 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -4924,7 +3362,7 @@ fn trusted_view_accept_key_does_not_edit_chat_input() {
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.input.text(), "seed");
     assert!(app.paste.pending_text.is_empty());
-    assert!(app.startup.connection_requested());
+    assert!(app.startup.mark_connection_started());
 }
 
 #[test]
@@ -4982,7 +3420,7 @@ fn api_retry_updates_single_warning_notice() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
+        session_update(model::SessionUpdate::ApiRetryUpdate {
             attempt: 1,
             max_retries: 4,
             retry_delay_ms: 1000.0,
@@ -4992,7 +3430,7 @@ fn api_retry_updates_single_warning_notice() {
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ApiRetryUpdate {
+        session_update(model::SessionUpdate::ApiRetryUpdate {
             attempt: 2,
             max_retries: 4,
             retry_delay_ms: 1500.0,
@@ -5015,7 +3453,7 @@ fn system_notice_update_uses_notice_lane() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::SystemNoticeUpdate {
+        session_update(model::SessionUpdate::SystemNoticeUpdate {
             severity: model::SystemNoticeSeverity::Warning,
             message: "Plugin install failed.".to_owned(),
         }),
@@ -5034,7 +3472,7 @@ fn available_commands_update_replaces_previous_commands() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+        session_update(model::SessionUpdate::AvailableCommandsUpdate(
             model::AvailableCommandsUpdate::new(vec![model::AvailableCommand::new(
                 "/old",
                 "Old command",
@@ -5043,7 +3481,7 @@ fn available_commands_update_replaces_previous_commands() {
     );
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::AvailableCommandsUpdate(
+        session_update(model::SessionUpdate::AvailableCommandsUpdate(
             model::AvailableCommandsUpdate::new(vec![
                 model::AvailableCommand::new("/new", "New command").input_hint("<arg>"),
             ]),
@@ -5072,7 +3510,7 @@ fn runtime_session_state_updates_status_with_guards() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
             model::RuntimeSessionState::Running,
         )),
     );
@@ -5085,7 +3523,7 @@ fn runtime_session_state_updates_status_with_guards() {
     app.status = AppStatus::Error;
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::RuntimeSessionStateUpdate(
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
             model::RuntimeSessionState::Idle,
         )),
     );
@@ -5097,7 +3535,7 @@ fn settings_parse_error_surfaces_system_error_message() {
     let mut app = make_test_app();
     handle_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::SettingsParseError {
+        session_update(model::SessionUpdate::SettingsParseError {
             file: Some("C:/work/.claude/settings.json".to_owned()),
             path: "permissions.allow".to_owned(),
             message: "Expected array".to_owned(),

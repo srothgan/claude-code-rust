@@ -394,6 +394,12 @@ export interface McpAuthRedirect {
   requires_user_action: boolean;
 }
 
+export interface McpAuthCapabilities {
+  authenticate: boolean;
+  clear_auth: boolean;
+  submit_oauth_callback_url: boolean;
+}
+
 export interface McpOperationError {
   server_name?: string;
   operation: string;
@@ -657,6 +663,11 @@ export type BridgeCommand =
       agent: string | null;
     }
   | {
+      command: "set_fast_mode";
+      session_id: string;
+      enabled: boolean;
+    }
+  | {
       command: "generate_session_title";
       session_id: string;
       description: string;
@@ -794,6 +805,7 @@ export type BridgeEvent =
       current_model: CurrentModel;
       available_models: AvailableModel[];
       mode: ModeState | null;
+      fast_mode_state: FastModeState;
       history_updates?: SessionUpdate[];
     }
   | { event: "auth_required"; method_name: string; method_description: string }
@@ -828,6 +840,7 @@ export type BridgeEvent =
       current_model: CurrentModel;
       available_models: AvailableModel[];
       mode: ModeState | null;
+      fast_mode_state: FastModeState;
       history_updates?: SessionUpdate[];
       restored_input?: string;
     }
@@ -856,6 +869,7 @@ export type BridgeEvent =
       event: "mcp_snapshot";
       session_id: string;
       servers: McpServerStatus[];
+      auth_capabilities: McpAuthCapabilities;
       source?: McpSnapshotSource;
       error?: string;
     };

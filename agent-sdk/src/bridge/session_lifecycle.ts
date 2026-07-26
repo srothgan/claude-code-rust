@@ -67,13 +67,18 @@ import {
   updateAvailableCommands,
   type AvailableCommandsSnapshot,
 } from "./available_commands.js";
-import { emitAuthRequired, emitFastModeUpdateIfChanged } from "./error_classification.js";
+import {
+  emitAuthRequired,
+  emitFastModeUpdate,
+  setFastModeStateIfChanged,
+} from "./error_classification.js";
 import {
   mapAvailableModels,
   resolveCurrentModel,
   currentModelsEqual,
 } from "./model_metadata.js";
 import { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
+import type { McpAuthMonitorHandle } from "./mcp_monitor.js";
 
 export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
 export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
@@ -153,8 +158,11 @@ export type SessionState = {
   supportsBypassPermissionsMode: boolean;
   fastModeState: FastModeState;
   query: Query;
+  initializationTask?: Promise<void>;
+  queryConsumerTask?: Promise<void>;
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
+  closing: boolean;
   connectEvent: ConnectEventKind;
   connectRequestId?: string;
   toolCalls: Map<string, ToolCall>;
@@ -168,7 +176,9 @@ export type SessionState = {
   pendingElicitations: Map<string, PendingElicitation>;
   informationalDedupKeys: Set<string>;
   pendingWorkerShutdown?: PendingWorkerShutdown;
+  knownConnectedMcpServers: Set<string>;
   mcpStatusRevalidatedAt: Map<string, number>;
+  mcpAuthMonitors: Map<string, McpAuthMonitorHandle>;
   hiddenToolUseIds: Set<string>;
   authHintSent: boolean;
   lastAvailableAgentsSignature?: string;
@@ -181,6 +191,7 @@ export type SessionState = {
 };
 
 export const sessions = new Map<string, SessionState>();
+const pendingSessionCloseTasks = new Set<Promise<void>>();
 
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
@@ -312,7 +323,48 @@ export function updateSessionId(session: SessionState, newSessionId: string): vo
   sessions.set(newSessionId, session);
 }
 
+export function beginSessionClose(session: SessionState): void {
+  session.closing = true;
+  for (const monitor of session.mcpAuthMonitors.values()) {
+    monitor.controller.abort();
+  }
+}
+
+export function detachSessionForClose(session: SessionState): void {
+  beginSessionClose(session);
+  if (sessions.get(session.sessionId) === session) {
+    sessions.delete(session.sessionId);
+  }
+}
+
+export function trackSessionCloseTask(task: Promise<void>): void {
+  const ownedTask = task.catch((error: unknown) => {
+    bridgeLogger.error({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_close_task_failed",
+      message: "background session cleanup failed",
+      outcome: "failure",
+      fields: {
+        error_message: error instanceof Error ? error.message : String(error),
+      },
+    });
+  });
+  pendingSessionCloseTasks.add(ownedTask);
+  void ownedTask.then(() => {
+    pendingSessionCloseTasks.delete(ownedTask);
+  });
+}
+
+async function waitForPendingSessionCloseTasks(): Promise<void> {
+  while (pendingSessionCloseTasks.size > 0) {
+    await Promise.all(Array.from(pendingSessionCloseTasks));
+  }
+}
+
 export async function closeSession(session: SessionState): Promise<void> {
+  beginSessionClose(session);
+  const mcpAuthMonitors = Array.from(session.mcpAuthMonitors.values());
+  session.mcpAuthMonitors.clear();
   session.input.close();
   session.query.close();
   for (const pending of session.pendingPermissions.values()) {
@@ -332,6 +384,13 @@ export async function closeSession(session: SessionState): Promise<void> {
     pending.resolve({ action: "cancel" });
   }
   session.pendingElicitations.clear();
+  await Promise.all(
+    [
+      session.initializationTask,
+      session.queryConsumerTask,
+      ...mcpAuthMonitors.map((monitor) => monitor.task),
+    ].filter((task) => task !== undefined),
+  );
 }
 
 export async function closeSessionWithLogging(
@@ -384,6 +443,7 @@ export async function closeAllSessions(options: CloseSessionOptions = {}): Promi
       }),
     ),
   );
+  await waitForPendingSessionCloseTasks();
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
     eventName: "all_sessions_closed",
@@ -555,6 +615,7 @@ export async function createSession(params: {
     query: queryHandle,
     input,
     connected: false,
+    closing: false,
     connectEvent: params.connectEvent,
     connectRequestId: params.requestId,
     toolCalls: new Map<string, ToolCall>(),
@@ -567,7 +628,9 @@ export async function createSession(params: {
     pendingUserDialogs: new Map<string, PendingUserDialog>(),
     pendingElicitations: new Map<string, PendingElicitation>(),
     informationalDedupKeys: new Set<string>(),
+    knownConnectedMcpServers: new Set<string>(),
     mcpStatusRevalidatedAt: new Map<string, number>(),
+    mcpAuthMonitors: new Map<string, McpAuthMonitorHandle>(),
     hiddenToolUseIds: new Set<string>(),
     authHintSent: false,
     ...(params.resumeUpdates && params.resumeUpdates.length > 0
@@ -617,7 +680,7 @@ export async function createSession(params: {
   // In stream-input mode the SDK may defer init until input arrives.
   // Trigger initialization explicitly so the Rust UI can receive `connected`
   // before the first user prompt.
-  void session.query
+  session.initializationTask = session.query
     .initializationResult()
     .then(async (result) => {
       bridgeLogger.info({
@@ -637,6 +700,7 @@ export async function createSession(params: {
       const currentModelChanged = refreshCurrentModel(session);
       const { buildModeState, refreshSupportedModesForSession } = await import("./commands.js");
       refreshSupportedModesForSession(session);
+      const fastModeChanged = setFastModeStateIfChanged(session, result.fast_mode_state);
       if (!session.connected) {
         emitConnectEvent(session);
       } else {
@@ -649,14 +713,15 @@ export async function createSession(params: {
             mode: buildModeState(session, session.mode),
           });
         }
+        if (fastModeChanged) {
+          emitFastModeUpdate(session);
+        }
       }
       // Proactively detect missing auth from account info so the UI can
       // show the login hint immediately, without waiting for the first prompt.
       if (shouldEmitStartupAuthRequiredForAccount(result.account)) {
         emitAuthRequired(session);
       }
-      emitFastModeUpdateIfChanged(session, result.fast_mode_state);
-
       updateAvailableCommands(
         session,
         "session_result_commands",
@@ -683,7 +748,7 @@ export async function createSession(params: {
       session.connectRequestId = undefined;
     });
 
-  void (async () => {
+  session.queryConsumerTask = (async () => {
     try {
       for await (const message of session.query) {
         // Lazy import to break circular dependency at module-evaluation time.

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 
 use super::messages::ChatMessage;
 use super::render_budget;
-use super::tool_tracking::TerminalToolCallRef;
 
 #[derive(Default)]
 pub struct Transcript {
@@ -16,11 +15,6 @@ pub struct Transcript {
     pub(super) retained_history_bytes: usize,
     /// O(1) lookup: `tool_call_id` -> `(message_index, block_index)`.
     pub(super) tool_call_index: HashMap<String, (usize, usize)>,
-    /// Indexed terminal tool calls for per-frame terminal snapshot updates.
-    /// Avoids O(n*m) scan of all messages/blocks every frame.
-    pub(super) terminal_tool_calls: Vec<TerminalToolCallRef>,
-    /// Membership index for `terminal_tool_calls`, used to avoid linear duplicate checks.
-    pub(super) terminal_tool_call_membership: HashSet<TerminalToolCallRef>,
     /// Cached render-cache slot metadata parallel to `messages[*].blocks[*]`.
     pub(super) render_cache_slots: Vec<Vec<render_budget::RenderCacheSlotState>>,
     /// Rolling total of cached render bytes across blocks and message-level caches.

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use super::paste_burst::CharAction;
 use super::{App, AppStatus, CancelOrigin, FocusOwner, InvalidationLevel, ModeInfo, ModeState};
 #[cfg(not(test))]
@@ -887,7 +886,7 @@ mod tests {
     use crate::app::FocusTarget;
     use crate::app::keymap::{KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn ctrl_shortcut_accepts_standard_ctrl_v_encoding() {
@@ -1171,8 +1170,6 @@ mod tests {
                 rel_path_lower: "src/lib.rs".to_owned(),
                 basename_lower: "lib.rs".to_owned(),
                 depth: 1,
-                modified: SystemTime::UNIX_EPOCH,
-                is_dir: false,
             }],
         );
         mention.replace_end_col = "@src".chars().count();

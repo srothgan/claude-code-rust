@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// =====
-// TESTS: 18
-// =====
-//
 // Tool call lifecycle integration tests.
 // Validates the full create -> update -> complete flow for tool calls.
 
-use claude_code_rust::agent::events::ClientEvent;
 use claude_code_rust::agent::model;
 use claude_code_rust::app::{App, AppStatus, MessageBlock, ToolCallInfo, ToolCallScope};
 use pretty_assertions::assert_eq;
 use ratatui::text::Line;
 
-use crate::helpers::{send_client_event, test_app};
+use crate::helpers::{send_client_event, session_update, test_app};
 
 fn task_meta() -> serde_json::Map<String, serde_json::Value> {
     claude_meta("Task", None)
@@ -63,28 +58,22 @@ async fn tool_call_updates_apply_terminal_statuses_and_title_fields() {
     let tc = model::ToolCall::new("tc-update", "Read file")
         .kind(model::ToolKind::Read)
         .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let fields = model::ToolCallUpdateFields::new()
         .title("Read src/lib.rs".to_owned())
         .status(model::ToolCallStatus::Completed);
     let update = model::ToolCallUpdate::new("tc-update", fields);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let tc = model::ToolCall::new("tc-fail", "Write file")
         .kind(model::ToolKind::Edit)
         .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
     let update = model::ToolCallUpdate::new("tc-fail", fields);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let updated = tool_call_block(&app, "tc-update");
     assert_eq!(updated.title, "Read src/lib.rs");
@@ -103,26 +92,26 @@ async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_fi
 
     let tc1 = model::ToolCall::new("tc-a", "Read A").status(model::ToolCallStatus::InProgress);
     let tc2 = model::ToolCall::new("tc-b", "Read B").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)));
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc1)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc2)));
 
     assert!(matches!(app.status, AppStatus::Running));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-a", fields),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "tc-a", fields,
+        ))),
     );
     assert!(matches!(app.status, AppStatus::Running), "one still in progress");
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-b", fields),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "tc-b", fields,
+        ))),
     );
     assert!(matches!(app.status, AppStatus::Thinking), "all-complete should resume thinking");
 
@@ -131,28 +120,22 @@ async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_fi
 
     let tc1 = model::ToolCall::new("tc-x", "Op 1").status(model::ToolCallStatus::InProgress);
     let tc2 = model::ToolCall::new("tc-y", "Op 2").status(model::ToolCallStatus::InProgress);
-    send_client_event(
-        &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc1)),
-    );
-    send_client_event(
-        &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc2)),
-    );
+    send_client_event(&mut mixed_app, session_update(model::SessionUpdate::ToolCall(tc1)));
+    send_client_event(&mut mixed_app, session_update(model::SessionUpdate::ToolCall(tc2)));
 
     let f1 = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     let f2 = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
     send_client_event(
         &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-x", f1),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "tc-x", f1,
+        ))),
     );
     send_client_event(
         &mut mixed_app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-y", f2),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "tc-y", f2,
+        ))),
     );
 
     assert!(
@@ -171,24 +154,26 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
         .meta(task_meta());
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
     assert!(app.turn.active_task_ids.contains("task-pend"), "new Task should be tracked");
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Pending);
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-pend", fields),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "task-pend",
+            fields,
+        ))),
     );
     assert!(app.turn.active_task_ids.contains("task-pend"), "Pending should stay active");
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-pend", fields),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "task-pend",
+            fields,
+        ))),
     );
     assert!(!app.turn.active_task_ids.contains("task-pend"), "completed Task should be removed");
 
@@ -196,15 +181,16 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
         .meta(task_meta());
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
     assert!(app.turn.active_task_ids.contains("task-fail"));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("task-fail", fields),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "task-fail",
+            fields,
+        ))),
     );
     assert!(!app.turn.active_task_ids.contains("task-fail"), "failed Task should also be removed");
 }
@@ -217,18 +203,18 @@ async fn subagent_child_tools_use_explicit_parent_linkage_only() {
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
         .meta(task_meta());
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(root)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(root)));
 
     let child = model::ToolCall::new("child-bash", "Run child command")
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress)
         .meta(child_meta("task-root"));
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(child)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(child)));
 
     let main = model::ToolCall::new("main-bash", "Run main command")
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(main)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(main)));
 
     assert_eq!(app.tool_call_scope("task-root"), Some(ToolCallScope::SubagentRoot));
     assert_eq!(
@@ -247,15 +233,12 @@ async fn tool_call_update_parent_linkage_marks_existing_tool_hidden() {
     let tc = model::ToolCall::new("child-late", "Run child command")
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
     assert!(!tool_call_block(&app, "child-late").hidden);
 
     let update = model::ToolCallUpdate::new("child-late", model::ToolCallUpdateFields::new())
         .meta(child_meta("task-root"));
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     assert_eq!(
         app.tool_call_scope("child-late"),
@@ -271,24 +254,24 @@ async fn tool_call_lifecycle_updates_status_without_session_collapse_preference(
     let mut app = test_app();
 
     let tc = model::ToolCall::new("tc-read", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
     assert!(matches!(tool_call_block(&app, "tc-read").status, model::ToolCallStatus::InProgress));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress);
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-read", fields),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "tc-read", fields,
+        ))),
     );
     assert!(matches!(tool_call_block(&app, "tc-read").status, model::ToolCallStatus::InProgress));
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
         &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(
-            model::ToolCallUpdate::new("tc-read", fields),
-        )),
+        session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+            "tc-read", fields,
+        ))),
     );
     assert!(matches!(tool_call_block(&app, "tc-read").status, model::ToolCallStatus::Completed));
 }
@@ -302,7 +285,7 @@ async fn multiple_tool_calls_independently_indexed() {
     for i in 0..5 {
         let tc = model::ToolCall::new(format!("tc-{i}"), format!("Tool {i}"))
             .status(model::ToolCallStatus::InProgress);
-        send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+        send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
     }
 
     assert_eq!(app.tool_call_index_len(), 5);
@@ -319,17 +302,14 @@ async fn tool_call_update_via_meta_sets_sdk_tool_name() {
     let mut app = test_app();
 
     let tc = model::ToolCall::new("tc-meta", "Some tool").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     // Update arrives with meta setting sdk_tool_name
     let mut meta = serde_json::Map::new();
     meta.insert("claudeCode".into(), serde_json::json!({"toolName": "WebSearch"}));
     let fields = model::ToolCallUpdateFields::new();
     let update = model::ToolCallUpdate::new("tc-meta", fields).meta(meta);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let (mi, bi) = app.lookup_tool_call("tc-meta").expect("tc-meta indexed");
     if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] {
@@ -346,7 +326,7 @@ async fn todowrite_update_raw_input_does_not_mutate_task_state() {
     // Create a tool call, initially without TodoWrite meta
     let tc =
         model::ToolCall::new("tc-todo-up", "TodoWrite").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     // Update sets sdk_tool_name + raw_input with legacy todos.
     let mut meta = serde_json::Map::new();
@@ -356,10 +336,7 @@ async fn todowrite_update_raw_input_does_not_mutate_task_state() {
     ]});
     let fields = model::ToolCallUpdateFields::new().raw_input(raw);
     let update = model::ToolCallUpdate::new("tc-todo-up", fields).meta(meta);
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     assert!(app.sdk_inventory.tasks.is_empty(), "TodoWrite must not hydrate SDK task state");
     let tc = tool_call_block(&app, "tc-todo-up");
@@ -373,7 +350,7 @@ async fn title_shortened_relative_to_cwd() {
 
     let tc = model::ToolCall::new("tc-shorten", "Read /home/user/project/src/main.rs")
         .status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let (mi, bi) = app.lookup_tool_call("tc-shorten").expect("tc-shorten indexed");
     if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] {
@@ -392,7 +369,7 @@ async fn initial_tool_call_locations_survive_into_tool_call_info() {
         .status(model::ToolCallStatus::Completed)
         .locations(locations.clone());
 
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let tc = tool_call_block(&app, "tc-located");
     assert_eq!(tc.locations, locations);
@@ -405,7 +382,7 @@ async fn tool_call_update_locations_replace_metadata_and_invalidate_render_cache
         .kind(model::ToolKind::Read)
         .status(model::ToolCallStatus::Completed)
         .content(vec![model::ToolCallContent::from("fn main() {}\n".to_owned())]);
-    send_client_event(&mut app, ClientEvent::SessionUpdate(model::SessionUpdate::ToolCall(tc)));
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
 
     let (message_index, block_index) =
         app.lookup_tool_call("tc-location-update").expect("tc-location-update indexed");
@@ -423,10 +400,7 @@ async fn tool_call_update_locations_replace_metadata_and_invalidate_render_cache
         "tc-location-update",
         model::ToolCallUpdateFields::new().locations(updated_locations.clone()),
     );
-    send_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate(model::SessionUpdate::ToolCallUpdate(update)),
-    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
 
     let tc = tool_call_block(&app, "tc-location-update");
     assert_eq!(tc.locations, updated_locations);

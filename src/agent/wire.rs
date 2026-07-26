@@ -78,6 +78,10 @@ pub enum BridgeCommand {
         session_id: String,
         agent: Option<String>,
     },
+    SetFastMode {
+        session_id: String,
+        enabled: bool,
+    },
     GenerateSessionTitle {
         session_id: String,
         description: String,
@@ -178,6 +182,7 @@ impl BridgeCommand {
             Self::SetMode { .. } => "set_mode",
             Self::SetEffort { .. } => "set_effort",
             Self::SetAgent { .. } => "set_agent",
+            Self::SetFastMode { .. } => "set_fast_mode",
             Self::GenerateSessionTitle { .. } => "generate_session_title",
             Self::RenameSession { .. } => "rename_session",
             Self::NewSession { .. } => "new_session",
@@ -211,6 +216,7 @@ impl BridgeCommand {
             | Self::SetMode { session_id, .. }
             | Self::SetEffort { session_id, .. }
             | Self::SetAgent { session_id, .. }
+            | Self::SetFastMode { session_id, .. }
             | Self::GenerateSessionTitle { session_id, .. }
             | Self::RenameSession { session_id, .. }
             | Self::PermissionResponse { session_id, .. }
@@ -248,6 +254,7 @@ impl BridgeCommand {
             | Self::SetMode { .. }
             | Self::SetEffort { .. }
             | Self::SetAgent { .. }
+            | Self::SetFastMode { .. }
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
             | Self::NewSession { .. }
@@ -288,6 +295,7 @@ pub enum BridgeEvent {
         #[serde(default)]
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
+        fast_mode_state: types::FastModeState,
         history_updates: Option<Vec<types::SessionUpdate>>,
     },
     AuthRequired {
@@ -368,6 +376,7 @@ pub enum BridgeEvent {
         #[serde(default)]
         available_models: Vec<types::AvailableModel>,
         mode: Option<types::ModeState>,
+        fast_mode_state: types::FastModeState,
         history_updates: Option<Vec<types::SessionUpdate>>,
         restored_input: Option<String>,
     },
@@ -402,6 +411,8 @@ pub enum BridgeEvent {
         session_id: String,
         #[serde(default)]
         servers: Vec<types::McpServerStatus>,
+        #[serde(default)]
+        auth_capabilities: types::McpAuthCapabilities,
         source: Option<types::McpSnapshotSource>,
         error: Option<String>,
     },
@@ -585,6 +596,25 @@ mod tests {
                 "command": "set_agent",
                 "session_id": "s1",
                 "agent": null
+            })
+        );
+    }
+
+    #[test]
+    fn set_fast_mode_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetFastMode { session_id: "s1".to_owned(), enabled: true },
+        };
+
+        let json = serde_json::to_value(&env).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "set_fast_mode",
+                "session_id": "s1",
+                "enabled": true
             })
         );
     }
@@ -791,14 +821,17 @@ mod tests {
             },
             "available_models": [],
             "mode": null,
+            "fast_mode_state": "on",
             "history_updates": [],
             "restored_input": "selected prompt"
         }))
         .expect("deserialize session replaced");
 
-        let BridgeEvent::SessionReplaced { restored_input, .. } = decoded.event else {
+        let BridgeEvent::SessionReplaced { fast_mode_state, restored_input, .. } = decoded.event
+        else {
             panic!("expected session_replaced");
         };
+        assert_eq!(fast_mode_state, types::FastModeState::On);
         assert_eq!(restored_input.as_deref(), Some("selected prompt"));
     }
 
@@ -857,9 +890,37 @@ mod tests {
                 event: BridgeEvent::McpSnapshot {
                     session_id: "session-1".to_owned(),
                     servers: Vec::new(),
+                    auth_capabilities: types::McpAuthCapabilities::default(),
                     source: Some(types::McpSnapshotSource::ReloadPlugins),
                     error: None,
                 },
+            }
+        );
+    }
+
+    #[test]
+    fn mcp_snapshot_event_deserializes_auth_capabilities() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "mcp_snapshot",
+            "session_id": "session-1",
+            "servers": [],
+            "auth_capabilities": {
+                "authenticate": true,
+                "clear_auth": false,
+                "submit_oauth_callback_url": true
+            }
+        }))
+        .expect("deserialize");
+
+        let BridgeEvent::McpSnapshot { auth_capabilities, .. } = decoded.event else {
+            panic!("expected mcp_snapshot");
+        };
+        assert_eq!(
+            auth_capabilities,
+            types::McpAuthCapabilities {
+                authenticate: true,
+                clear_auth: false,
+                submit_oauth_callback_url: true,
             }
         );
     }

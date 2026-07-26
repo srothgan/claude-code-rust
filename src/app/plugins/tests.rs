@@ -7,12 +7,10 @@ use crate::app::App;
 use crate::app::config::{InstalledPluginActionKind, PluginInstallActionKind};
 use std::time::Instant;
 
-fn app_with_connection()
--> (crate::app::App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+fn app_with_connection() -> (crate::app::App, crate::agent::client::CommandReceiver) {
     let mut app = crate::app::App::test_default();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(connection));
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     (app, rx)
 }

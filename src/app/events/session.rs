@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
@@ -23,19 +22,31 @@ pub(super) struct SessionReplacedEventData {
     pub current_model: model::CurrentModel,
     pub available_models: Vec<model::AvailableModel>,
     pub mode: Option<super::super::ModeState>,
+    pub fast_mode_state: model::FastModeState,
     pub history_updates: Vec<model::SessionUpdate>,
     pub restored_input: Option<String>,
 }
 
-pub(super) fn handle_connected_client_event(
-    app: &mut App,
-    session_id: model::SessionId,
-    cwd: String,
-    current_model: model::CurrentModel,
-    available_models: Vec<model::AvailableModel>,
-    mode: Option<super::super::ModeState>,
-    history_updates: &[model::SessionUpdate],
-) {
+pub(super) struct ConnectedEventData {
+    pub session_id: model::SessionId,
+    pub cwd: String,
+    pub current_model: model::CurrentModel,
+    pub available_models: Vec<model::AvailableModel>,
+    pub mode: Option<super::super::ModeState>,
+    pub fast_mode_state: model::FastModeState,
+    pub history_updates: Vec<model::SessionUpdate>,
+}
+
+pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEventData) {
+    let ConnectedEventData {
+        session_id,
+        cwd,
+        current_model,
+        available_models,
+        mode,
+        fast_mode_state,
+        history_updates,
+    } = event;
     let session_id_for_log = session_id.to_string();
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
@@ -48,13 +59,14 @@ pub(super) fn handle_connected_client_event(
         session_id,
         current_model,
         mode,
+        fast_mode_state,
         true,
         ChatResetRenderMode::PreserveInlineViewport,
     );
     app.sdk_inventory.available_models = available_models;
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
-        load_resume_history(app, history_updates);
+        load_resume_history(app, &history_updates);
     }
     clear_pending_command(app);
     app.resuming_session_id = None;
@@ -298,6 +310,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         current_model,
         available_models,
         mode,
+        fast_mode_state,
         history_updates,
         restored_input,
     } = event;
@@ -312,6 +325,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         session_id,
         current_model,
         mode,
+        fast_mode_state,
         false,
         ChatResetRenderMode::DeferTranscriptRender,
     );
@@ -565,7 +579,7 @@ mod tests {
     use super::*;
     use crate::app::App;
     use crate::app::file_index::FileCandidate;
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
 
     fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
         let start = Instant::now();
@@ -586,8 +600,6 @@ mod tests {
             rel_path_lower: rel_path.to_lowercase(),
             basename_lower: rel_path.rsplit('/').next().unwrap_or(rel_path).to_lowercase(),
             depth: rel_path.matches('/').count(),
-            modified: SystemTime::UNIX_EPOCH,
-            is_dir: rel_path.ends_with('/'),
         }
     }
 
@@ -602,12 +614,16 @@ mod tests {
 
         handle_connected_client_event(
             &mut app,
-            model::SessionId::new("session-1"),
-            dir.path().to_string_lossy().into_owned(),
-            model::CurrentModel::new("model", "model", "model").authoritative(true),
-            Vec::new(),
-            None,
-            &[],
+            ConnectedEventData {
+                session_id: model::SessionId::new("session-1"),
+                cwd: dir.path().to_string_lossy().into_owned(),
+                current_model: model::CurrentModel::new("model", "model", "model")
+                    .authoritative(true),
+                available_models: Vec::new(),
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                history_updates: Vec::new(),
+            },
         );
 
         assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
@@ -643,6 +659,7 @@ mod tests {
                     .authoritative(true),
                 available_models: Vec::new(),
                 mode: None,
+                fast_mode_state: model::FastModeState::Off,
                 history_updates: Vec::new(),
                 restored_input: None,
             },

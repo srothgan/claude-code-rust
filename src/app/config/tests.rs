@@ -14,6 +14,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use tempfile::TempDir;
 
+fn attach_test_connection(app: &mut App) -> crate::agent::client::CommandReceiver {
+    let (connection, receiver) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(Rc::new(connection));
+    receiver
+}
+
 fn open_settings_app_in_dir(dir: &TempDir) -> App {
     std::fs::write(
         dir.path().join(".claude.json"),
@@ -41,11 +47,9 @@ fn select_setting(app: &mut App, setting_id: SettingId) {
         setting_specs().iter().position(|spec| spec.id == setting_id).expect("setting row");
 }
 
-fn app_with_status_connection()
--> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+fn app_with_status_connection() -> (App, crate::agent::client::CommandReceiver) {
     let mut app = App::test_default();
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
     app.recent_sessions = vec![crate::app::RecentSessionInfo {
@@ -241,7 +245,7 @@ fn reopen_reload_picks_up_external_settings_changes() {
     open(&mut app).expect("open");
     assert!(!app.config.fast_mode_effective());
 
-    close(&mut app);
+    super::controller::close(&mut app);
     std::fs::write(&path, r#"{"fastMode":true}"#).expect("rewrite");
 
     open(&mut app).expect("reopen");
@@ -255,7 +259,7 @@ fn reopen_clears_stale_transient_feedback() {
     app.config.status_message = Some("stale status".to_owned());
     app.config.last_error = Some("stale error".to_owned());
 
-    close(&mut app);
+    super::controller::close(&mut app);
     open(&mut app).expect("reopen");
 
     assert!(app.config.status_message.is_none());
@@ -1613,6 +1617,7 @@ fn mcp_details_overlay_enter_closes_overlay() {
 fn mcp_clear_auth_requires_confirmation_and_cancel_restores_details_overlay() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Mcp;
+    app.mcp.auth_capabilities.clear_auth = true;
     app.mcp.servers = vec![crate::agent::model::McpServerStatus {
         name: "filesystem".to_owned(),
         status: crate::agent::model::McpServerConnectionStatus::Connected,
@@ -1755,8 +1760,7 @@ fn mcp_manage_plugin_action_opens_installed_plugin_actions_overlay() {
 #[test]
 fn unknown_plugin_owned_mcp_server_does_not_call_set_servers_for_dynamic_remove() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![dynamic_http_mcp_server_status(
         "plugin:Unknown:unknown",
@@ -1894,8 +1898,7 @@ fn non_config_mcp_server_does_not_offer_remove_action() {
 #[test]
 fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![
         crate::agent::model::McpServerStatus {
@@ -1957,8 +1960,7 @@ fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
 #[test]
 fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_servers() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     let mut keep_headers = BTreeMap::new();
     keep_headers.insert("Authorization".to_owned(), "Bearer token".to_owned());
@@ -2063,8 +2065,7 @@ fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_se
 #[test]
 fn dynamic_mcp_config_remove_waits_for_snapshot_when_sdk_result_does_not_name_server() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![connected_mcp_server_status(
         "session-search",
@@ -2264,8 +2265,7 @@ fn removed_config_guard_stops_suppressing_when_confirming_snapshot_still_contain
 #[test]
 fn dynamic_mcp_config_remove_failure_from_sdk_keeps_server_visible() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![connected_mcp_server_status(
         "session-search",
@@ -2315,8 +2315,7 @@ fn dynamic_mcp_config_remove_failure_from_sdk_keeps_server_visible() {
 #[test]
 fn dynamic_mcp_config_remove_refuses_to_drop_unrepresentable_dynamic_servers() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers = vec![
         connected_mcp_server_status(
@@ -2399,8 +2398,7 @@ fn empty_mcp_callback_url_sets_overlay_error_and_keeps_overlay_open() {
 #[test]
 fn mcp_tab_refresh_key_requests_snapshot() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Mcp;
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
@@ -2432,8 +2430,7 @@ fn mcp_tab_refresh_key_requests_snapshot() {
 #[test]
 fn request_mcp_snapshot_sends_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
@@ -2450,8 +2447,7 @@ fn request_mcp_snapshot_sends_outside_mcp_tab() {
 #[test]
 fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
         name: "stale".to_owned(),
@@ -2477,8 +2473,7 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
 #[test]
 fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
     let (_dir, mut app) = open_settings_test_app();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn = Some(Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
     app.config.active_tab = ConfigTab::Status;
 
@@ -2490,7 +2485,12 @@ fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
 
 #[test]
 fn claudeai_proxy_server_shows_disabled_authenticate_action() {
-    let (_dir, app) = open_settings_test_app();
+    let (_dir, mut app) = open_settings_test_app();
+    app.mcp.auth_capabilities = crate::agent::model::McpAuthCapabilities {
+        authenticate: true,
+        clear_auth: true,
+        submit_oauth_callback_url: true,
+    };
     let server = crate::agent::model::McpServerStatus {
         name: "claude.ai Google Calendar".to_owned(),
         status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
@@ -2516,6 +2516,58 @@ fn claudeai_proxy_server_shows_disabled_authenticate_action() {
         super::mcp::McpServerActionKind::Authenticate
     ));
     assert!(actions.contains(&super::mcp::McpServerActionKind::Reconnect));
+}
+
+#[test]
+fn mcp_auth_actions_follow_bridge_capabilities() {
+    let (_dir, mut app) = open_settings_test_app();
+    let server = crate::agent::model::McpServerStatus {
+        name: "docs".to_owned(),
+        status: crate::agent::model::McpServerConnectionStatus::NeedsAuth,
+        server_info: None,
+        error: None,
+        config: Some(crate::agent::model::McpServerStatusConfig::Http {
+            url: "https://mcp.example.test".to_owned(),
+            headers: BTreeMap::new(),
+            tools: Vec::new(),
+            timeout: None,
+            request_timeout_ms: None,
+            always_load: None,
+        }),
+        scope: Some("user".to_owned()),
+        tools: Vec::new(),
+    };
+
+    assert!(!super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::Authenticate
+    ));
+    assert!(!super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::ClearAuth
+    ));
+
+    app.mcp.auth_capabilities.authenticate = true;
+    assert!(!super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::Authenticate
+    ));
+
+    app.mcp.auth_capabilities.submit_oauth_callback_url = true;
+    app.mcp.auth_capabilities.clear_auth = true;
+    assert!(super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::Authenticate
+    ));
+    assert!(super::mcp::is_mcp_action_available(
+        &app,
+        &server,
+        super::mcp::McpServerActionKind::ClearAuth
+    ));
 }
 
 #[test]
@@ -2546,4 +2598,56 @@ fn save_failure_keeps_previous_value_and_surfaces_error() {
     assert!(!app.config.fast_mode_effective());
     assert!(app.config.last_error.is_some());
     assert!(app.config.status_message.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+            app.mcp.pending_elicitation = Some(crate::agent::types::ElicitationRequest {
+                request_id: "request-1".to_owned(),
+                server_name: "server-1".to_owned(),
+                message: "Continue?".to_owned(),
+                mode: crate::agent::types::ElicitationMode::Form,
+                url: None,
+                elicitation_id: None,
+                requested_schema: None,
+            });
+
+            super::mcp::send_mcp_elicitation_response(
+                &mut app,
+                "request-1",
+                crate::agent::types::ElicitationAction::Decline,
+                None,
+            );
+
+            assert!(app.mcp.pending_elicitation.is_some());
+            let response = commands.recv_envelope().await.expect("elicitation response");
+            assert!(matches!(
+                response.command,
+                BridgeCommand::ElicitationResponse {
+                    elicitation_request_id,
+                    action: crate::agent::types::ElicitationAction::Decline,
+                    ..
+                } if elicitation_request_id == "request-1"
+            ));
+
+            let queued = app.event_rx.recv().await.expect("response admission event");
+            assert!(matches!(
+                queued,
+                crate::agent::events::ClientEvent::McpElicitationResponseQueued {
+                    ref request_id,
+                    ..
+                } if request_id == "request-1"
+            ));
+            crate::app::events::handle_client_event(&mut app, queued);
+
+            assert!(app.mcp.pending_elicitation.is_none());
+            let snapshot = commands.recv_envelope().await.expect("follow-up snapshot");
+            assert!(matches!(snapshot.command, BridgeCommand::GetMcpSnapshot { .. }));
+        })
+        .await;
 }

@@ -34,8 +34,9 @@ mod state;
 pub(crate) mod subagent;
 mod tab_title;
 pub(crate) mod tasks;
-mod terminal;
 pub(crate) mod terminal_runtime;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod trust;
 pub(crate) mod update_check;
 mod update_prompt;
@@ -67,17 +68,16 @@ pub use settings::{AppSettings, UpdatePrompt};
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
     App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, CancelOrigin, ChatMessage,
-    ChatMessageId, ChatRenderState, ChatRenderTraceState, ComposerRenderState, ExtraUsage,
-    HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion,
-    InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
-    MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
-    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, PostExitAction,
-    RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
-    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange,
-    TerminalSnapshotMode, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    ChatMessageId, ChatRenderState, ComposerRenderState, ExtraUsage, HistoryOutputId,
+    ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
+    LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
+    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
+    PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
+    SelectionPoint, SessionPickerState, SessionUsageState, SubagentPermissionContext,
+    SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo,
+    ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock,
+    WelcomeBlock, hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
@@ -112,6 +112,19 @@ use std::time::{Duration, Instant};
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
+const EVENT_LOOP_TICK_INTERVAL: Duration = Duration::from_millis(16);
+/// Maximum number of ready-event rounds handled between frames.
+///
+/// Each round gives both sources one opportunity, so neither terminal input nor
+/// bridge traffic can monopolize the UI loop.
+const READY_EVENT_DRAIN_ROUNDS: usize = 64;
+
+fn event_loop_interval() -> tokio::time::Interval {
+    let first_tick = tokio::time::Instant::now() + EVENT_LOOP_TICK_INTERVAL;
+    let mut interval = tokio::time::interval_at(first_tick, EVENT_LOOP_TICK_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    interval
+}
 
 // ---------------------------------------------------------------------------
 // TUI event loop
@@ -123,6 +136,7 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let result = run_tui_loop(app, &mut terminal_runtime).await;
 
     finish_run_tui(app, &mut terminal_runtime);
+    connect::shutdown_connection(app).await;
 
     result
 }
@@ -135,15 +149,13 @@ async fn run_tui_loop(
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
 
     let mut events = EventStream::new();
-    let tick_duration = Duration::from_millis(16);
-    let mut last_render = Instant::now();
+    let mut event_loop_interval = event_loop_interval();
     let mut service_status_check_started = false;
 
     loop {
         start_connection(app);
 
         // Phase 1: wait for at least one event or the next frame tick
-        let time_to_next = tick_duration.saturating_sub(last_render.elapsed());
         tokio::select! {
             Some(Ok(event)) = events.next() => {
                 let outcome = events::handle_terminal_event(app, event);
@@ -169,28 +181,33 @@ async fn run_tui_loop(
                 }
                 app.should_quit = true;
             }
-            () = tokio::time::sleep(time_to_next) => {}
+            _ = event_loop_interval.tick() => {}
         }
 
-        // Phase 2: drain all remaining queued events (non-blocking)
-        loop {
-            // Try terminal events first (keeps typing responsive)
-            if let Some(Some(Ok(event))) = events.next().now_or_never() {
-                let outcome = events::handle_terminal_event(app, event);
-                handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
-                continue;
-            }
-            // Then client events
-            match app.event_rx.try_recv() {
-                Ok(event) => {
-                    handle_runtime_client_event(
-                        app,
-                        terminal_runtime,
-                        event,
-                        &mut service_status_check_started,
-                    );
+        // Phase 2: process a bounded, fair batch of already-ready events.
+        for _ in 0..READY_EVENT_DRAIN_ROUNDS {
+            let mut handled_ready_event = false;
+
+            if let Some(Some(terminal_event)) = events.next().now_or_never() {
+                handled_ready_event = true;
+                if let Ok(event) = terminal_event {
+                    let outcome = events::handle_terminal_event(app, event);
+                    handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
                 }
-                Err(_) => break,
+            }
+
+            if let Ok(event) = app.event_rx.try_recv() {
+                handled_ready_event = true;
+                handle_runtime_client_event(
+                    app,
+                    terminal_runtime,
+                    event,
+                    &mut service_status_check_started,
+                );
+            }
+
+            if !handled_ready_event {
+                break;
             }
         }
 
@@ -252,9 +269,6 @@ async fn run_tui_loop(
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
         }
-        if terminal::update_terminal_outputs(app) {
-            app.request_chat_repaint();
-        }
         if matches!(app.terminal_lifecycle, TerminalLifecycleState::ReleasedToChild(_)) {
             app.surface_dirty.clear_for_child_release();
         } else {
@@ -275,7 +289,6 @@ async fn run_tui_loop(
                 drop(draw_timer);
                 drop(timer);
             }
-            last_render = Instant::now();
         }
     }
 

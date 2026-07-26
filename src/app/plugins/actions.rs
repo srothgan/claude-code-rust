@@ -62,14 +62,17 @@ pub(super) fn execute_installed_plugin_action(
             Ok((snapshot, claude_path)) => {
                 let message =
                     installed_action_success_message(action, &overlay.title, &overlay.scope);
-                let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
+                let _ = event_tx
+                    .send(ClientEvent::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    })
+                    .await;
             }
             Err(message) => {
                 let _ = event_tx
-                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message })
+                    .await;
             }
         }
     });
@@ -122,14 +125,17 @@ pub(super) fn execute_selected_plugin_install_action(app: &mut App) {
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
             Ok((snapshot, claude_path)) => {
                 let message = plugin_install_success_message(action, &overlay.title);
-                let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
+                let _ = event_tx
+                    .send(ClientEvent::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    })
+                    .await;
             }
             Err(message) => {
                 let _ = event_tx
-                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message })
+                    .await;
             }
         }
     });
@@ -187,14 +193,17 @@ pub(super) fn execute_marketplace_action(
         match cli::run_cli_command_and_refresh(cwd_raw, cached_claude_path, args).await {
             Ok((snapshot, claude_path)) => {
                 let message = marketplace_action_success_message(&overlay.title, action);
-                let _ = event_tx.send(ClientEvent::PluginsCliActionSucceeded {
-                    cwd_raw: cwd_context,
-                    result: PluginsCliActionSuccess { snapshot, message, claude_path },
-                });
+                let _ = event_tx
+                    .send(ClientEvent::PluginsCliActionSucceeded {
+                        cwd_raw: cwd_context,
+                        result: PluginsCliActionSuccess { snapshot, message, claude_path },
+                    })
+                    .await;
             }
             Err(message) => {
                 let _ = event_tx
-                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message });
+                    .send(ClientEvent::PluginsCliActionFailed { cwd_raw: cwd_context, message })
+                    .await;
             }
         }
     });

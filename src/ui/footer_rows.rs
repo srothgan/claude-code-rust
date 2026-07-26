@@ -457,7 +457,7 @@ mod tests {
     use crate::agent::model::{McpServerConnectionStatus, McpServerStatus};
     use crate::app::{
         App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
-        ModeState, TerminalSnapshotMode, ToolCallInfo,
+        ModeState, ToolCallInfo,
     };
     use tokio::sync::oneshot;
 
@@ -568,8 +568,6 @@ mod tests {
                 terminal_command: None,
                 terminal_output: None,
                 terminal_output_len: 0,
-                terminal_bytes_seen: 0,
-                terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
                 cache: BlockCache::default(),
                 pending_permission: Some(InlinePermission {
                     options: vec![],

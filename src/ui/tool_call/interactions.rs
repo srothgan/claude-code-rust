@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 //! Inline interaction rendering: permissions, plan approvals, and `AskUserQuestion`.
 
 use crate::agent::model::PermissionOptionKind;
@@ -469,8 +468,6 @@ mod tests {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: crate::app::TerminalSnapshotMode::AppendOnly,
             cache: crate::app::BlockCache::default(),
             pending_permission: None,
             pending_question: None,

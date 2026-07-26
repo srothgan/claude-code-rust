@@ -169,22 +169,19 @@ mod tests {
         request_status_snapshot_refresh, tick_context_usage_refresh,
     };
     use crate::agent::model;
-    use crate::agent::wire::{BridgeCommand, CommandEnvelope};
+    use crate::agent::wire::BridgeCommand;
     use crate::app::{App, AppStatus};
     use std::time::{Duration, Instant};
-    use tokio::sync::mpsc::UnboundedReceiver;
 
-    fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+    fn app_with_connection() -> (App, crate::agent::client::CommandReceiver) {
         let mut app = App::test_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.session_runtime.conn =
-            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
         app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
 
-    fn expect_context_usage_command(rx: &mut UnboundedReceiver<CommandEnvelope>) {
+    fn expect_context_usage_command(rx: &mut crate::agent::client::CommandReceiver) {
         let envelope = rx.try_recv().expect("context usage command");
         assert!(matches!(
             envelope.command,

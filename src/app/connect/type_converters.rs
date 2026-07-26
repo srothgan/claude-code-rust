@@ -170,6 +170,16 @@ pub(super) fn map_mcp_server_status(status: types::McpServerStatus) -> model::Mc
     }
 }
 
+pub(super) const fn map_mcp_auth_capabilities(
+    capabilities: types::McpAuthCapabilities,
+) -> model::McpAuthCapabilities {
+    model::McpAuthCapabilities {
+        authenticate: capabilities.authenticate,
+        clear_auth: capabilities.clear_auth,
+        submit_oauth_callback_url: capabilities.submit_oauth_callback_url,
+    }
+}
+
 fn map_system_notice_severity(
     severity: types::SystemNoticeSeverity,
 ) -> model::SystemNoticeSeverity {
@@ -421,11 +431,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             }))
         }
         types::SessionUpdate::FastModeUpdate { fast_mode_state } => {
-            Some(model::SessionUpdate::FastModeUpdate(match fast_mode_state {
-                types::FastModeState::Off => model::FastModeState::Off,
-                types::FastModeState::Cooldown => model::FastModeState::Cooldown,
-                types::FastModeState::On => model::FastModeState::On,
-            }))
+            Some(model::SessionUpdate::FastModeUpdate(convert_fast_mode_state(fast_mode_state)))
         }
         types::SessionUpdate::RateLimitUpdate {
             status,
@@ -1006,6 +1012,14 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
         current_mode_id: mode.current_mode_id,
         current_mode_name: mode.current_mode_name,
         available_modes,
+    }
+}
+
+pub(super) fn convert_fast_mode_state(state: types::FastModeState) -> model::FastModeState {
+    match state {
+        types::FastModeState::Off => model::FastModeState::Off,
+        types::FastModeState::Cooldown => model::FastModeState::Cooldown,
+        types::FastModeState::On => model::FastModeState::On,
     }
 }
 

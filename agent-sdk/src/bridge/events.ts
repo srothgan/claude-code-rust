@@ -1,12 +1,46 @@
 import { listSessions, type ListSessionsOptions } from "@anthropic-ai/claude-agent-sdk";
+import { writeSync } from "node:fs";
 import type { BridgeEvent, BridgeEventEnvelope, McpOperationError, SessionUpdate } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeEventSent } from "./logger.js";
-import { resolveCurrentModel, type SessionState } from "./session_lifecycle.js";
+import {
+  detachSessionForClose,
+  resolveCurrentModel,
+  trackSessionCloseTask,
+  type SessionState,
+} from "./session_lifecycle.js";
 
 const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
+type ProtocolEventWriter = (line: string) => void;
+
+function writeProtocolEventToStdout(line: string): void {
+  const payload = Buffer.from(line);
+  let offset = 0;
+  while (offset < payload.length) {
+    const written = writeSync(
+      process.stdout.fd,
+      payload,
+      offset,
+      payload.length - offset,
+    );
+    if (written <= 0) {
+      throw new Error("bridge stdout write made no progress");
+    }
+    offset += written;
+  }
+}
+
+let protocolEventWriter: ProtocolEventWriter = writeProtocolEventToStdout;
+
+export function replaceProtocolEventWriter(writer: ProtocolEventWriter): () => void {
+  const previous = protocolEventWriter;
+  protocolEventWriter = writer;
+  return () => {
+    protocolEventWriter = previous;
+  };
+}
 
 export function buildSessionListOptions(
   dir: string | undefined,
@@ -32,7 +66,7 @@ export function writeEvent(event: BridgeEvent, requestId?: string): void {
   };
   const serialized = JSON.stringify(envelope);
   logBridgeEventSent(event, requestId, Buffer.byteLength(serialized) + 1);
-  process.stdout.write(`${serialized}\n`);
+  protocolEventWriter(`${serialized}\n`);
 }
 
 export function failConnection(message: string, requestId?: string): void {
@@ -152,7 +186,7 @@ export function emitElicitationRequestEvent(
   writeEvent({ event: "elicitation_request", session_id: sessionId, request });
 }
 
-function buildConnectBridgeEvent(
+export function buildConnectBridgeEvent(
   session: SessionState,
   eventName: "connected" | "session_replaced",
 ): BridgeEvent {
@@ -165,6 +199,7 @@ function buildConnectBridgeEvent(
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
+        fast_mode_state: session.fastModeState,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         ...(session.restoredInput !== undefined ? { restored_input: session.restoredInput } : {}),
       }
@@ -175,6 +210,7 @@ function buildConnectBridgeEvent(
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
+        fast_mode_state: session.fastModeState,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
       };
 }
@@ -201,6 +237,14 @@ function logConnectEventEmission(
 }
 
 export function emitConnectEvent(session: SessionState): void {
+  const staleSessions = session.sessionsToCloseAfterConnect;
+  if (staleSessions) {
+    for (const stale of staleSessions) {
+      if (stale !== session) {
+        detachSessionForClose(stale);
+      }
+    }
+  }
   const bridgeEvent = buildConnectBridgeEvent(session, session.connectEvent);
   logConnectEventEmission(session, session.connectEvent, session.connectRequestId);
   writeEvent(bridgeEvent, session.connectRequestId);
@@ -217,26 +261,23 @@ export function emitConnectEvent(session: SessionState): void {
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
-  const staleSessions = session.sessionsToCloseAfterConnect;
   session.sessionsToCloseAfterConnect = undefined;
   if (!staleSessions || staleSessions.length === 0) {
     refreshSessionsList();
     return;
   }
-  void (async () => {
+  const closeTask = (async () => {
     // Lazy import to break circular dependency at module-evaluation time.
-    const { sessions, closeSessionWithLogging } = await import("./session_lifecycle.js");
+    const { closeSessionWithLogging } = await import("./session_lifecycle.js");
     for (const stale of staleSessions) {
       if (stale === session) {
         continue;
-      }
-      if (sessions.get(stale.sessionId) === stale) {
-        sessions.delete(stale.sessionId);
       }
       await closeSessionWithLogging(stale, { reason: "stale_after_connect" });
     }
     refreshSessionsList();
   })();
+  trackSessionCloseTask(closeTask);
 }
 
 export function emitSessionReplacedEvent(session: SessionState, requestId?: string): void {

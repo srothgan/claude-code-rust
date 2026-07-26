@@ -95,7 +95,7 @@ fn is_ctrl(key: KeyEvent, ch: char) -> bool {
 mod tests {
     use super::handle_key;
     use crate::agent::client::AgentConnection;
-    use crate::agent::wire::{BridgeCommand, CommandEnvelope};
+    use crate::agent::wire::BridgeCommand;
     use crate::app::{App, AppStatus, FullscreenView, RecentSessionInfo, SurfaceMode};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::rc::Rc;
@@ -161,8 +161,8 @@ mod tests {
     #[test]
     fn enter_triggers_resume() {
         let mut app = picker_app();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CommandEnvelope>();
-        app.session_runtime.conn = Some(Rc::new(AgentConnection::new(tx)));
+        let (connection, mut rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -192,9 +192,9 @@ mod tests {
     #[test]
     fn failed_resume_restores_ready_state_and_surfaces_error() {
         let mut app = picker_app();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<CommandEnvelope>();
+        let (connection, rx) = AgentConnection::test_channel();
         drop(rx);
-        app.session_runtime.conn = Some(Rc::new(AgentConnection::new(tx)));
+        app.session_runtime.conn = Some(Rc::new(connection));
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 

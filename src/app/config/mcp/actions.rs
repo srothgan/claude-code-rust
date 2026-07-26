@@ -210,10 +210,15 @@ pub(crate) fn is_mcp_action_available(
     action: McpServerActionKind,
 ) -> bool {
     match action {
-        McpServerActionKind::Authenticate => !matches!(
-            server.config.as_ref(),
-            Some(crate::agent::model::McpServerStatusConfig::ClaudeaiProxy { .. })
-        ),
+        McpServerActionKind::Authenticate => {
+            app.mcp.auth_capabilities.authenticate
+                && app.mcp.auth_capabilities.submit_oauth_callback_url
+                && !matches!(
+                    server.config.as_ref(),
+                    Some(crate::agent::model::McpServerStatusConfig::ClaudeaiProxy { .. })
+                )
+        }
+        McpServerActionKind::ClearAuth => app.mcp.auth_capabilities.clear_auth,
         McpServerActionKind::RemoveUserConfig
         | McpServerActionKind::RemoveLocalConfig
         | McpServerActionKind::RemoveProjectConfig
@@ -224,7 +229,6 @@ pub(crate) fn is_mcp_action_available(
             matches!(mcp_server_ownership(app, server), McpServerOwnership::PluginOwned(_))
         }
         McpServerActionKind::RefreshSnapshot
-        | McpServerActionKind::ClearAuth
         | McpServerActionKind::Reconnect
         | McpServerActionKind::Enable
         | McpServerActionKind::Disable => true,

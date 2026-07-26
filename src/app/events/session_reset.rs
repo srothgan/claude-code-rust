@@ -15,12 +15,11 @@ pub(super) fn reset_for_new_session(
     session_id: model::SessionId,
     current_model: model::CurrentModel,
     mode: Option<super::super::ModeState>,
+    fast_mode_state: model::FastModeState,
     preserve_current_welcome_tip: bool,
     render_mode: ChatResetRenderMode,
 ) {
-    crate::agent::events::kill_all_terminals(&app.terminals);
-
-    reset_session_identity_state(app, session_id, current_model, mode);
+    reset_session_identity_state(app, session_id, current_model, mode, fast_mode_state);
     reset_messages_for_new_session(app, preserve_current_welcome_tip);
     reset_input_state_for_new_session(app);
     reset_interaction_state_for_new_session(app);
@@ -34,6 +33,7 @@ fn reset_session_identity_state(
     session_id: model::SessionId,
     current_model: model::CurrentModel,
     mode: Option<super::super::ModeState>,
+    fast_mode_state: model::FastModeState,
 ) {
     app.bump_session_scope_epoch();
     app.session_runtime.session_id = Some(session_id);
@@ -50,7 +50,7 @@ fn reset_session_identity_state(
     app.session_runtime.session_usage = super::super::SessionUsageState::default();
     app.sdk_inventory.clear_rewind_targets();
     app.status = super::super::AppStatus::Ready;
-    app.session_runtime.fast_mode_state = model::FastModeState::Off;
+    app.session_runtime.fast_mode_state = fast_mode_state;
     app.session_runtime.runtime_session_state = None;
     app.session_runtime.prompt_suggestion = None;
     app.session_runtime.last_rate_limit_update = None;
@@ -101,7 +101,6 @@ fn reset_render_state_for_new_session(app: &mut App) {
 }
 
 fn reset_cache_and_footer_state_for_new_session(app: &mut App, render_mode: ChatResetRenderMode) {
-    app.clear_terminal_tool_call_tracking();
     app.mcp = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);
@@ -202,6 +201,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
+            model::FastModeState::Off,
             false,
             ChatResetRenderMode::DeferTranscriptRender,
         );
@@ -225,6 +225,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
+            model::FastModeState::Off,
             true,
             ChatResetRenderMode::PreserveInlineViewport,
         );
@@ -250,6 +251,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
+            model::FastModeState::Off,
             false,
             ChatResetRenderMode::DeferTranscriptRender,
         );
@@ -275,6 +277,7 @@ mod tests {
             model::SessionId::new("session-2"),
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
+            model::FastModeState::Off,
             false,
             ChatResetRenderMode::DeferTranscriptRender,
         );

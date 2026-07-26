@@ -241,6 +241,9 @@ test("bridge process reports actionable session initialization failure", async (
       cwd: process.cwd(),
     });
     assertProtocolEvent(await bridge.nextEnvelope(), "initialized");
+    const sessions = await bridge.nextEnvelope();
+    assertProtocolEvent(sessions, "sessions_listed");
+    assert.equal(sessions.request_id, "req-init");
 
     bridge.writeCommand({
       request_id: "req-create",

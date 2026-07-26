@@ -9,6 +9,16 @@ use super::candidates::{
     argument_candidates, detect_slash_at_cursor, supported_command_candidates,
 };
 
+fn attach_test_connection(app: &mut App) -> crate::agent::client::CommandReceiver {
+    let (connection, receiver) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+    receiver
+}
+
+fn session_update(update: model::SessionUpdate) -> crate::agent::events::ClientEvent {
+    crate::agent::events::ClientEvent::SessionUpdate { session_id: "sess-1".to_owned(), update }
+}
+
 #[test]
 fn parse_non_slash_returns_none() {
     assert!(parse("hello world").is_none());
@@ -183,6 +193,131 @@ fn app_config_does_not_enter_advertised_argument_mode() {
     let _ = app.input.set_cursor(0, "/config ".chars().count());
 
     assert!(super::candidates::build_slash_state(&app).is_none());
+}
+
+#[test]
+fn app_fast_candidate_ignores_advertised_fast_metadata() {
+    let mut app = App::test_default();
+    app.sdk_inventory.available_commands =
+        vec![model::AvailableCommand::new("/fast", "SDK fast command").input_hint("<mode>")];
+    app.input.set_text("/fast");
+    let _ = app.input.set_cursor(0, "/fast".chars().count());
+
+    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let fast_candidates: Vec<_> =
+        slash.candidates.iter().filter(|candidate| candidate.primary == "/fast").collect();
+
+    assert_eq!(fast_candidates.len(), 1);
+    assert_eq!(fast_candidates[0].secondary.as_deref(), Some("Toggle session fast mode"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn app_fast_shadows_advertised_command_and_toggles_authoritative_state() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let cases = [
+                (model::FastModeState::Off, true, model::FastModeState::On),
+                (model::FastModeState::On, false, model::FastModeState::Off),
+                (model::FastModeState::Cooldown, false, model::FastModeState::Off),
+            ];
+
+            for (initial, expected_enabled, acknowledged) in cases {
+                let mut app = App::test_default();
+                let mut rx = attach_test_connection(&mut app);
+                app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+                app.session_runtime.fast_mode_state = initial;
+                app.sdk_inventory.available_commands = vec![
+                    model::AvailableCommand::new("/fast", "SDK fast command").input_hint("<mode>"),
+                ];
+
+                let consumed = try_handle_submit(&mut app, "/fast");
+
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::CommandPending));
+                assert!(matches!(
+                    app.turn.pending_command_ack,
+                    Some(super::super::PendingCommandAck::FastMode)
+                ));
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set fast mode command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetFastMode {
+                        session_id: "sess-1".to_owned(),
+                        enabled: expected_enabled,
+                    }
+                );
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    session_update(model::SessionUpdate::FastModeUpdate(acknowledged)),
+                );
+                assert_eq!(app.session_runtime.fast_mode_state, acknowledged);
+                assert!(matches!(app.status, AppStatus::Ready));
+                assert!(app.turn.pending_command_ack.is_none());
+            }
+        })
+        .await;
+}
+
+#[test]
+fn fast_capability_check_blocks_enable() {
+    let unsupported_model = model::CurrentModel::new("model", "Model", "Model")
+        .supports_fast_mode(Some(false))
+        .authoritative(true);
+    let mut app = App::test_default();
+    let mut rx = attach_test_connection(&mut app);
+    app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+    app.session_runtime.current_model = Some(unsupported_model);
+
+    assert!(try_handle_submit(&mut app, "/fast"));
+    assert!(rx.try_recv().is_err());
+    assert!(!matches!(app.status, AppStatus::CommandPending));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fast_capability_check_still_allows_disable() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let unsupported_model = model::CurrentModel::new("model", "Model", "Model")
+                .supports_fast_mode(Some(false))
+                .authoritative(true);
+            let mut app = App::test_default();
+            let mut rx = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+            app.session_runtime.current_model = Some(unsupported_model);
+            app.session_runtime.fast_mode_state = model::FastModeState::On;
+
+            assert!(try_handle_submit(&mut app, "/fast"));
+            tokio::task::yield_now().await;
+            assert_eq!(
+                rx.try_recv().expect("disable fast mode command").command,
+                crate::agent::wire::BridgeCommand::SetFastMode {
+                    session_id: "sess-1".to_owned(),
+                    enabled: false,
+                }
+            );
+        })
+        .await;
+}
+
+#[test]
+fn fast_rejects_arguments_without_dispatching() {
+    let mut app = App::test_default();
+    let mut rx = attach_test_connection(&mut app);
+    app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+
+    let consumed = try_handle_submit(&mut app, "/fast on");
+
+    assert!(consumed);
+    assert!(rx.try_recv().is_err());
+    assert!(!matches!(app.status, AppStatus::CommandPending));
+    let last = app.transcript.messages.last().expect("usage message");
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Usage: /fast");
 }
 
 #[test]
@@ -857,9 +992,7 @@ fn rewind_argument_candidates_hide_stale_targets() {
 #[test]
 fn rewind_argument_context_requests_targets_when_cache_is_stale() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
@@ -878,9 +1011,7 @@ fn rewind_argument_context_requests_targets_when_cache_is_stale() {
 #[test]
 fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
     let mut app = App::test_default();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let _rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
@@ -1078,6 +1209,23 @@ fn docs_commands_do_not_show_advertised_command_shadowed_by_app_command() {
     };
     assert!(block.text.contains("| /config | Open the fullscreen settings tab. |"));
     assert!(!block.text.contains("SDK config command"));
+}
+
+#[test]
+fn docs_commands_show_app_fast_instead_of_advertised_fast() {
+    let mut app = App::test_default();
+    app.sdk_inventory.available_commands =
+        vec![crate::agent::model::AvailableCommand::new("/fast", "SDK fast command")];
+
+    let consumed = try_handle_submit(&mut app, "/docs commands");
+
+    assert!(consumed);
+    let last = app.transcript.messages.last().expect("expected system message");
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert!(block.text.contains("| /fast | Enable or disable fast mode for the active session. |"));
+    assert!(!block.text.contains("SDK fast command"));
 }
 
 #[test]
@@ -1283,9 +1431,7 @@ fn rewind_with_cached_target_requires_connection() {
 #[test]
 fn rewind_with_cached_target_sends_bridge_command() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
     app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
         uuid: "user-1".to_owned(),
@@ -1337,9 +1483,7 @@ async fn resume_sets_command_pending_when_connected() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
 
             let consumed = try_handle_submit(&mut app, "/resume abc-123");
             assert!(consumed);
@@ -1357,9 +1501,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let _rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.mode = Some(super::super::ModeState {
                 current_mode_id: "code".to_owned(),
@@ -1382,11 +1524,9 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::CurrentModeUpdate(
-                        crate::agent::model::CurrentModeUpdate::new("plan"),
-                    ),
-                ),
+                session_update(crate::agent::model::SessionUpdate::CurrentModeUpdate(
+                    crate::agent::model::CurrentModeUpdate::new("plan"),
+                )),
             );
             assert!(
                 matches!(app.status, AppStatus::Ready),
@@ -1403,9 +1543,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let _rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("old-model", "old-model", "old-model")
@@ -1427,14 +1565,12 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
 
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::CurrentModelUpdate(
-                        crate::agent::model::CurrentModelUpdate::new(
-                            crate::agent::model::CurrentModel::new("sonnet", "sonnet", "sonnet")
-                                .authoritative(true),
-                        ),
+                session_update(crate::agent::model::SessionUpdate::CurrentModelUpdate(
+                    crate::agent::model::CurrentModelUpdate::new(
+                        crate::agent::model::CurrentModel::new("sonnet", "sonnet", "sonnet")
+                            .authoritative(true),
                     ),
-                ),
+                )),
             );
             assert!(
                 matches!(app.status, AppStatus::Ready),
@@ -1455,9 +1591,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
@@ -1487,14 +1621,12 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
 
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::ConfigOptionUpdate(
-                        crate::agent::model::ConfigOptionUpdate {
-                            option_id: "effortLevel".to_owned(),
-                            value: serde_json::json!("xhigh"),
-                        },
-                    ),
-                ),
+                session_update(crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                    crate::agent::model::ConfigOptionUpdate {
+                        option_id: "effortLevel".to_owned(),
+                        value: serde_json::json!("xhigh"),
+                    },
+                )),
             );
             assert!(matches!(app.status, AppStatus::Ready));
             assert_eq!(
@@ -1514,9 +1646,7 @@ async fn effort_accepts_session_only_max() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.current_model = Some(
                 crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
@@ -1549,9 +1679,7 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.sdk_inventory.available_agents =
                 vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
@@ -1578,14 +1706,12 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
 
             super::super::events::handle_client_event(
                 &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate(
-                    crate::agent::model::SessionUpdate::ConfigOptionUpdate(
-                        crate::agent::model::ConfigOptionUpdate {
-                            option_id: "agent".to_owned(),
-                            value: serde_json::json!("reviewer"),
-                        },
-                    ),
-                ),
+                session_update(crate::agent::model::SessionUpdate::ConfigOptionUpdate(
+                    crate::agent::model::ConfigOptionUpdate {
+                        option_id: "agent".to_owned(),
+                        value: serde_json::json!("reviewer"),
+                    },
+                )),
             );
             assert!(matches!(app.status, AppStatus::Ready));
             assert_eq!(
@@ -1601,9 +1727,7 @@ async fn agent_reset_sends_null_agent() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent reset");
@@ -1627,9 +1751,7 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let mut rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
 
             let consumed = try_handle_submit(&mut app, "/agent custom-agent");
@@ -1651,9 +1773,7 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
 #[test]
 fn agent_rejects_unknown_when_available_agents_are_populated() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some("sess-1".into());
     app.sdk_inventory.available_agents =
         vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
@@ -1713,9 +1833,7 @@ fn effort_invalid_arguments_return_usage() {
 #[test]
 fn effort_rejects_models_without_effort_support() {
     let mut app = App::test_default();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some("sess-1".into());
     app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku").supports_effort(false),
@@ -1739,9 +1857,7 @@ async fn new_session_sets_command_pending() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            app.session_runtime.conn =
-                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            let _rx = attach_test_connection(&mut app);
 
             let consumed = try_handle_submit(&mut app, "/new-session");
             assert!(consumed);
@@ -1775,9 +1891,7 @@ fn compact_without_connection_is_handled_locally() {
 #[test]
 fn compact_with_active_session_sets_compacting_without_success_pending() {
     let mut app = App::test_default();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    app.session_runtime.conn =
-        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    let _rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
 
     let consumed = try_handle_submit(&mut app, "/compact");

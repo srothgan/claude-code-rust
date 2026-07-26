@@ -25,9 +25,8 @@ const MAX_CANDIDATES: usize = 50;
 // Re-export public API
 pub(crate) use catalog::{APP_SLASH_COMMANDS, AppSlashCommand, command_spec};
 pub use executors::try_handle_submit;
-#[allow(unused_imports)]
 pub use navigation::{
-    activate, confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,
+    confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,
 };
 
 #[derive(Debug, Clone)]

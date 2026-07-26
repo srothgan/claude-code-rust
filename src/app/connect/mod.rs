@@ -32,7 +32,7 @@ use crate::{Cli, Command};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 /// Shorten cwd for display: use `~` for the home directory prefix.
 fn shorten_cwd(cwd: &std::path::Path) -> String {
@@ -57,7 +57,7 @@ fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
 }
 
 struct StartConnectionParams {
-    event_tx: mpsc::UnboundedSender<ClientEvent>,
+    event_tx: mpsc::Sender<ClientEvent>,
     cwd_raw: String,
     bridge_script: Option<std::path::PathBuf>,
     resume_id: Option<String>,
@@ -69,15 +69,17 @@ pub(crate) use session_start::{
     SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
 };
 
+/// Four full UI drain batches absorb short bridge bursts while keeping retained
+/// event count bounded.
+pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = super::READY_EVENT_DRAIN_ROUNDS * 4;
+
 /// Create the `App` struct in `Connecting` state and load shared settings state.
 #[allow(clippy::too_many_lines)]
 pub fn create_app(cli: &Cli) -> App {
     let cwd = resolve_startup_cwd(cli);
 
-    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
     let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
-    let terminals: crate::agent::events::TerminalMap =
-        Rc::new(std::cell::RefCell::new(HashMap::new()));
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
@@ -187,7 +189,6 @@ pub fn create_app(cli: &Cli) -> App {
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tool_call_scopes: HashMap::new(),
-        terminals,
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),
         plugins: PluginsState::default(),
@@ -215,7 +216,6 @@ pub fn create_app(cli: &Cli) -> App {
         cache_metrics: CacheMetrics::default(),
         fps_ema: None,
         last_frame_at: None,
-        last_chat_render_trace_state: None,
         startup: StartupState::new(
             cli.bridge_script.clone(),
             match &cli.command {
@@ -224,6 +224,7 @@ pub fn create_app(cli: &Cli) -> App {
             },
             matches!(&cli.command, Some(Command::Resume { session_id: None })),
         ),
+        bridge_task: None,
     };
 
     if let Err(err) = super::config::initialize_shared_state(&mut app) {
@@ -266,9 +267,12 @@ pub fn start_connection(app: &mut App) {
         Rc::new(std::cell::RefCell::new(None));
     let conn_slot_writer = Rc::clone(&conn_slot);
 
-    tokio::task::spawn_local(async move {
-        bridge_lifecycle::run_connection_task(params, conn_slot_writer).await;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let join_handle = tokio::task::spawn_local(async move {
+        bridge_lifecycle::run_connection_task(params, conn_slot_writer, shutdown_rx).await;
     });
+    debug_assert!(app.bridge_task.is_none(), "bridge task already owned by app");
+    app.bridge_task = Some(BridgeTask { shutdown_tx, join_handle });
 
     CONN_SLOT.with(|slot| {
         debug_assert!(
@@ -284,6 +288,11 @@ pub struct ConnectionSlot {
     pub conn: Rc<AgentConnection>,
 }
 
+pub(crate) struct BridgeTask {
+    shutdown_tx: oneshot::Sender<()>,
+    join_handle: tokio::task::JoinHandle<()>,
+}
+
 thread_local! {
     pub static CONN_SLOT: std::cell::RefCell<Option<Rc<std::cell::RefCell<Option<ConnectionSlot>>>>> =
         const { std::cell::RefCell::new(None) };
@@ -292,6 +301,28 @@ thread_local! {
 /// Take the connection data from the thread-local slot.
 pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
     CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
+}
+
+pub(super) async fn shutdown_connection(app: &mut App) {
+    app.session_runtime.conn = None;
+    let pending_slot = CONN_SLOT.with(|slot| slot.borrow_mut().take());
+    if let Some(slot) = pending_slot {
+        slot.borrow_mut().take();
+    }
+
+    let Some(BridgeTask { shutdown_tx, join_handle }) = app.bridge_task.take() else {
+        return;
+    };
+    let _ = shutdown_tx.send(());
+    if let Err(err) = join_handle.await {
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_task_join_failed",
+            message = "bridge connection task did not finish cleanly",
+            outcome = "failure",
+            error = %err,
+        );
+    }
 }
 
 #[cfg(test)]

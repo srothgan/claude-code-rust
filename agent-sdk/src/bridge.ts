@@ -3,11 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
-import {
-  getSessionMessages,
-  listSessions,
-  renameSession,
-} from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import type {
   RewindFilesResult as SdkRewindFilesResult,
   SessionMessage,
@@ -15,19 +11,14 @@ import type {
 import type {
   BridgeCommand,
   BridgeEvent,
+  FastModeState,
   RewindFilesResult,
   RewindRestoreMode,
   RewindTarget,
 } from "./types.js";
 import type { EffortLevel } from "./types.js";
-import {
-  buildModeState,
-  markModeUnavailableForSession,
-  parseCommandEnvelope,
-  permissionModeFailureLooksUnsupported,
-  refreshSupportedModesForSession,
-  toPermissionMode,
-} from "./bridge/commands.js";
+import { parseCommandEnvelope } from "./bridge/commands.js";
+import { parseFastModeState } from "./bridge/state_parsing.js";
 import {
   writeEvent,
   failConnection,
@@ -35,8 +26,6 @@ import {
   emitRuntimeReloadCompleted,
   emitRuntimeReloadFailed,
   emitSessionUpdate,
-  emitSessionsList,
-  currentSessionListOptions,
   setSessionListingDir,
 } from "./bridge/events.js";
 import { contentFromPrompt } from "./bridge/message_handlers.js";
@@ -45,34 +34,24 @@ import {
   sessionById,
   createSession,
   closeAllSessions,
-  handleElicitationResponse,
-  handlePermissionResponse,
-  handleQuestionResponse,
-  handleUserDialogResponse,
-  emitCurrentModelUpdate,
-  refreshCurrentModel,
-  shouldInvalidateResolvedRuntimeModel,
   type PendingRewindResult,
   type SessionState,
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
 import { emitAvailableAgentsIfChanged, mapAvailableAgents } from "./bridge/agents.js";
 import { mapSdkSlashCommands, updateAvailableCommands } from "./bridge/available_commands.js";
-import { mapSdkAccountInfo } from "./bridge/account_metadata.js";
 import {
   MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
   emitReconciledMcpSnapshotFromStatuses,
-  handleMcpAuthenticateCommand,
-  handleMcpClearAuthCommand,
-  handleMcpOauthCallbackUrlCommand,
-  handleMcpReconnectCommand,
-  handleMcpSetServersCommand,
-  handleMcpStatusCommand,
-  handleMcpToggleCommand,
   staleMcpAuthCandidates,
 } from "./bridge/mcp.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeCommandReceived } from "./bridge/logger.js";
-import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
+import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
+import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
+import { handleInteractionCommand } from "./bridge/command_interactions.js";
+import { handleMcpCommand } from "./bridge/command_mcp.js";
+import { handleSessionControlCommand } from "./bridge/command_session_control.js";
+import { handleSessionDataCommand } from "./bridge/command_session_data.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
@@ -243,6 +222,35 @@ export async function applySessionEffort(
   effort: EffortLevel,
 ): Promise<void> {
   await query.applyFlagSettings({ effortLevel: effort });
+}
+
+export async function applySessionFastMode(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+  enabled: boolean,
+): Promise<FastModeState> {
+  try {
+    await query.applyFlagSettings({ fastMode: enabled });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`SDK rejected the fast-mode change: ${message}`);
+  }
+
+  let result: import("@anthropic-ai/claude-agent-sdk").SDKControlInitializeResponse;
+  try {
+    result = await query.reinitialize();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`SDK accepted the fast-mode change but state verification failed: ${message}`);
+  }
+
+  const state = parseFastModeState(result.fast_mode_state);
+  if (state) {
+    return state;
+  }
+  if (!enabled && result.fast_mode_state === undefined) {
+    return "off";
+  }
+  throw new Error("SDK accepted the fast-mode change but did not report its resulting state");
 }
 
 export function buildPromptUserMessage(
@@ -759,646 +767,58 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
 
   switch (command.command) {
     case "initialize":
-      if (sdkVersionError) {
-        bridgeLogger.error({
-          target: LOG_TARGETS.BRIDGE_LIFECYCLE,
-          eventName: "bridge_initialize_failed",
-          message: "bridge initialization failed due to unsupported SDK version",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          fields: { error_message: sdkVersionError },
-        });
-        failConnection(sdkVersionError, requestId);
-        return;
-      }
-      setSessionListingDir(command.cwd);
-      writeEvent(
-        {
-          event: "initialized",
-          result: {
-            agent_name: "claude-rs-agent-bridge",
-            agent_version: "0.1.0",
-            auth_methods: [
-              {
-                id: "claude-login",
-                name: "Log in with Claude",
-                description: "Run `claude /login` in a terminal",
-              },
-            ],
-            capabilities: {
-              prompt_image: true,
-              prompt_embedded_context: true,
-              supports_session_listing: true,
-              supports_resume_session: true,
-            },
-          },
-        },
-        requestId,
-      );
-      await emitSessionsList(requestId);
-      return;
-
     case "create_session":
-      bridgeLogger.info({
-        target: LOG_TARGETS.APP_SESSION,
-        eventName: "session_create_requested",
-        message: "session creation requested",
-        outcome: "start",
-        ...(requestId ? { requestId } : {}),
-        fields: {
-          cwd: command.cwd,
-          resume_requested: command.resume !== undefined,
-        },
-      });
-      setSessionListingDir(command.cwd);
-      await createSession({
-        cwd: command.cwd,
-        resume: command.resume,
-        launchSettings: command.launch_settings,
-        connectEvent: "connected",
-        requestId,
-      });
-      return;
-
-    case "resume_session": {
-      bridgeLogger.info({
-        target: LOG_TARGETS.APP_SESSION,
-        eventName: "session_resume_requested",
-        message: "session resume requested",
-        outcome: "start",
-        ...(requestId ? { requestId } : {}),
-        sessionId: command.session_id,
-      });
-      try {
-        const sdkSessions = await listSessions(currentSessionListOptions());
-        const matched = sdkSessions.find((entry) => entry.sessionId === command.session_id);
-        if (!matched) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.APP_SESSION,
-            eventName: "session_resume_lookup_failed",
-            message: "session resume requested for an unknown session",
-            outcome: "failure",
-            ...(requestId ? { requestId } : {}),
-            sessionId: command.session_id,
-            fields: { reason: "unknown_session" },
-          });
-          slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-          return;
-        }
-        setSessionListingDir(matched.cwd ?? process.cwd());
-        const historyMessages = await getSessionMessages(
-          command.session_id,
-          matched.cwd
-            ? { dir: matched.cwd, includeSystemMessages: true }
-            : { includeSystemMessages: true },
-        );
-        const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
-        const staleSessions = Array.from(sessions.values());
-        const hadActiveSession = staleSessions.length > 0;
-        bridgeLogger.info({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "session_resume_history_loaded",
-          message: "session resume history loaded",
-          outcome: "success",
-          ...(requestId ? { requestId } : {}),
-          sessionId: command.session_id,
-          fields: {
-            history_update_count: resumeUpdates.length,
-            stale_session_count: staleSessions.length,
-          },
-        });
-        await createSession({
-          cwd: matched.cwd ?? process.cwd(),
-          resume: command.session_id,
-          launchSettings: command.launch_settings,
-          ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
-          connectEvent: hadActiveSession ? "session_replaced" : "connected",
-          requestId,
-          ...(hadActiveSession ? { sessionsToCloseAfterConnect: staleSessions } : {}),
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.error({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "session_resume_failed",
-          message: "session resume failed",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          sessionId: command.session_id,
-          fields: { error_message: message },
-        });
-        slashError(command.session_id, `failed to resume session: ${message}`, requestId);
-      }
-      return;
-    }
-
+    case "resume_session":
     case "new_session":
-      bridgeLogger.info({
-        target: LOG_TARGETS.APP_SESSION,
-        eventName: "session_new_requested",
-        message: "replacement session requested",
-        outcome: "start",
-        ...(requestId ? { requestId } : {}),
-        fields: { cwd: command.cwd },
-      });
-      await closeAllSessions({ reason: "new_session_requested", requestId });
-      setSessionListingDir(command.cwd);
-      await createSession({
-        cwd: command.cwd,
-        launchSettings: command.launch_settings,
-        connectEvent: "session_replaced",
-        requestId,
-      });
-      return;
-
-    case "prompt": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      const message = buildPromptUserMessage(command, session.sessionId);
-      if (!message) {
-        return;
-      }
-      session.input.enqueue(message);
-      return;
-    }
-
-    case "cancel_turn": {
-      await dispatchCancelTurnCommand(command, { requestId, sessionById, slashError });
-      return;
-    }
-
-    case "set_model": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      bridgeLogger.info({
-        target: LOG_TARGETS.APP_SESSION,
-        eventName: "set_model_started",
-        message: "set model started",
-        outcome: "start",
-        sessionId: session.sessionId,
-        requestId,
-        fields: {
-          requested_model: command.model,
-          previous_requested_model: session.requestedModelId,
-          previous_session_model: session.model,
-          previous_resolved_runtime_model: session.resolvedRuntimeModelId,
-          previous_current_model: session.currentModel?.resolved_id,
-        },
-      });
-      try {
-        const previousRequestedModel = session.requestedModelId;
-        const previousSessionModel = session.model;
-        await session.query.setModel(command.model);
-        session.requestedModelId = command.model;
-        session.model = command.model;
-        const invalidatedResolvedRuntimeModel = shouldInvalidateResolvedRuntimeModel(
-          previousRequestedModel,
-          previousSessionModel,
-          command.model,
-        );
-        if (invalidatedResolvedRuntimeModel) {
-          session.resolvedRuntimeModelId = undefined;
-        }
-        const changed = refreshCurrentModel(session, true);
-        const forcedCurrentModelUpdate = !changed && emitCurrentModelUpdate(session);
-        bridgeLogger.info({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "set_model_succeeded",
-          message: "set model completed",
-          outcome: "success",
-          sessionId: session.sessionId,
-          requestId,
-          fields: {
-            requested_model: command.model,
-            session_model_after: session.model,
-            resolved_runtime_model_after: session.resolvedRuntimeModelId,
-            current_model_after: session.currentModel?.resolved_id,
-            current_model_display_short: session.currentModel?.display_name_short,
-            current_model_display_long: session.currentModel?.display_name_long,
-            current_model_update_emitted: changed || forcedCurrentModelUpdate,
-            current_model_update_forced: forcedCurrentModelUpdate,
-            resolved_runtime_model_invalidated: invalidatedResolvedRuntimeModel,
-          },
-        });
-        refreshSupportedModesForSession(session);
-        if (session.mode) {
-          emitSessionUpdate(session.sessionId, {
-            type: "mode_state_update",
-            mode: buildModeState(session, session.mode),
-          });
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.warn({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "set_model_failed",
-          message: "set model failed",
-          outcome: "failure",
-          sessionId: session.sessionId,
-          requestId,
-          fields: {
-            requested_model: command.model,
-            error_message: message,
-            previous_requested_model: session.requestedModelId,
-            previous_session_model: session.model,
-            previous_resolved_runtime_model: session.resolvedRuntimeModelId,
-            previous_current_model: session.currentModel?.resolved_id,
-          },
-        });
-        slashError(command.session_id, `failed to set model: ${message}`, requestId);
-      }
-      return;
-    }
-
-    case "set_mode": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      const mode = toPermissionMode(command.mode);
-      if (!mode) {
-        slashError(command.session_id, `unsupported mode: ${command.mode}`, requestId);
-        return;
-      }
-      try {
-        await session.query.setPermissionMode(mode);
-        session.mode = mode;
-        refreshSupportedModesForSession(session);
-        emitSessionUpdate(session.sessionId, {
-          type: "current_mode_update",
-          current_mode_id: mode,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (permissionModeFailureLooksUnsupported(mode, message)) {
-          const changed = markModeUnavailableForSession(session, mode);
-          if (changed && session.mode) {
-            emitSessionUpdate(session.sessionId, {
-              type: "mode_state_update",
-              mode: buildModeState(session, session.mode),
-            });
-          }
-        }
-        slashError(command.session_id, `failed to set mode to ${mode}: ${message}`, requestId);
-      }
-      return;
-    }
-
-    case "set_effort": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      try {
-        await applySessionEffort(session.query, command.effort);
-        emitEffortConfigOptionUpdate(session.sessionId, command.effort);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        slashError(command.session_id, `failed to set effort: ${message}`, requestId);
-      }
-      return;
-    }
-
-    case "set_agent": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      try {
-        await applySessionAgent(session.query, command.agent);
-        emitAgentConfigOptionUpdate(session.sessionId, command.agent);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        slashError(command.session_id, `failed to set agent: ${message}`, requestId);
-      }
-      return;
-    }
-
-    case "generate_session_title": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      try {
-        await generatePersistedSessionTitle(session.query, command.description);
-        setSessionListingDir(session.cwd);
-        await emitSessionsList(requestId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        slashError(command.session_id, `failed to generate session title: ${message}`, requestId);
-      }
-      return;
-    }
-
-    case "rename_session": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      try {
-        await renameSession(
-          command.session_id,
-          command.title,
-          buildSessionMutationOptions(session.cwd),
-        );
-        setSessionListingDir(session.cwd);
-        await emitSessionsList(requestId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        slashError(command.session_id, `failed to rename session: ${message}`, requestId);
-      }
-      return;
-    }
-
-    case "get_status_snapshot": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      try {
-        const account = await session.query.accountInfo();
-        bridgeLogger.info({
-          target: LOG_TARGETS.APP_AUTH,
-          eventName: "status_snapshot_emitted",
-          message: "status snapshot emitted",
-          outcome: "success",
-          ...(requestId ? { requestId } : {}),
-          sessionId: session.sessionId,
-          fields: {
-            has_email: typeof account.email === "string" && account.email.trim().length > 0,
-            has_organization: account.organization !== undefined,
-            subscription_type: account.subscriptionType,
-            token_source: account.tokenSource,
-            api_key_source: account.apiKeySource,
-            api_provider: account.apiProvider,
-          },
-        });
-        writeEvent(
-          {
-            event: "status_snapshot",
-            session_id: session.sessionId,
-            account: mapSdkAccountInfo(account),
-          },
-          requestId,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.warn({
-          target: LOG_TARGETS.APP_AUTH,
-          eventName: "status_snapshot_failed",
-          message: "failed to build status snapshot",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          sessionId: session.sessionId,
-          fields: { error_message: message },
-        });
-        throw error;
-      }
-      return;
-    }
-
-    case "get_context_usage": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      try {
-        const usage = await session.query.getContextUsage();
-        if (typeof usage.model === "string" && usage.model.trim().length > 0) {
-          session.resolvedRuntimeModelId = usage.model.trim();
-          refreshCurrentModel(session, true);
-        }
-        const rawPercentage = typeof usage.percentage === "number" ? usage.percentage : undefined;
-        const normalizedPercentage =
-          rawPercentage === undefined || !Number.isFinite(rawPercentage)
-            ? undefined
-            : Math.max(0, Math.min(100, Math.round(rawPercentage)));
-        bridgeLogger.debug({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "context_usage_succeeded",
-          message: "session context usage received from SDK",
-          outcome: "success",
-          ...(requestId ? { requestId } : {}),
-          sessionId: session.sessionId,
-          fields: {
-            raw_percentage: rawPercentage,
-            normalized_percentage: normalizedPercentage,
-            total_tokens: typeof usage.totalTokens === "number" ? usage.totalTokens : undefined,
-            max_tokens: typeof usage.maxTokens === "number" ? usage.maxTokens : undefined,
-            raw_max_tokens: typeof usage.rawMaxTokens === "number" ? usage.rawMaxTokens : undefined,
-            model: typeof usage.model === "string" ? usage.model : undefined,
-          },
-        });
-        writeEvent(
-          {
-            event: "context_usage",
-            session_id: session.sessionId,
-            ...(normalizedPercentage !== undefined ? { percentage: normalizedPercentage } : {}),
-          },
-          requestId,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.warn({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "context_usage_failed",
-          message: "failed to get session context usage",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          sessionId: session.sessionId,
-          fields: { error_message: message },
-        });
-        writeEvent(
-          {
-            event: "context_usage",
-            session_id: session.sessionId,
-          },
-          requestId,
-        );
-      }
-      return;
-    }
-
-    case "get_rewind_targets": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      try {
-        const historyMessages = await getSessionMessages(command.session_id, {
-          dir: session.cwd,
-          includeSystemMessages: true,
-        });
-        const targets = rewindTargetsFromSessionMessages(historyMessages);
-        bridgeLogger.info({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "rewind_targets_loaded",
-          message: "rewind targets loaded from session history",
-          outcome: "success",
-          ...(requestId ? { requestId } : {}),
-          sessionId: session.sessionId,
-          fields: {
-            history_message_count: historyMessages.length,
-            target_count: targets.length,
-          },
-        });
-        writeEvent(
-          {
-            event: "rewind_targets",
-            session_id: session.sessionId,
-            targets,
-          },
-          requestId,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.warn({
-          target: LOG_TARGETS.APP_SESSION,
-          eventName: "rewind_targets_failed",
-          message: "failed to load rewind targets",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          sessionId: session.sessionId,
-          fields: { error_message: message },
-        });
-        slashError(command.session_id, `failed to load rewind targets: ${message}`, requestId);
-      }
-      return;
-    }
-
-    case "rewind":
-      await handleRewind(command, requestId);
-      return;
-
-    case "reload_plugins": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleReloadPluginsCommand(session, requestId);
-      return;
-    }
-
-    case "mcp_status": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleMcpStatusCommand(session, requestId);
-      return;
-    }
-
-    case "mcp_reconnect": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleMcpReconnectCommand(session, command, requestId);
-      return;
-    }
-
-    case "mcp_toggle": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleMcpToggleCommand(session, command, requestId);
-      return;
-    }
-
-    case "mcp_set_servers": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleMcpSetServersCommand(session, command, requestId);
-      return;
-    }
-
-    case "mcp_authenticate": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleMcpAuthenticateCommand(session, command, requestId);
-      return;
-    }
-
-    case "mcp_clear_auth": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleMcpClearAuthCommand(session, command, requestId);
-      return;
-    }
-
-    case "mcp_oauth_callback_url": {
-      const session = sessionById(command.session_id);
-      if (!session) {
-        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
-        return;
-      }
-      await handleMcpOauthCallbackUrlCommand(session, command, requestId);
-      return;
-    }
-
-    case "permission_response":
-      handlePermissionResponse(command);
-      return;
-
-    case "question_response":
-      handleQuestionResponse(command);
-      return;
-
-    case "user_dialog_response":
-      handleUserDialogResponse(command);
-      return;
-
-    case "elicitation_response":
-      handleElicitationResponse(command);
-      return;
-
     case "shutdown":
-      bridgeLogger.info({
-        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
-        eventName: "bridge_shutdown_requested",
-        message: "bridge shutdown requested",
-        outcome: "start",
-        ...(requestId ? { requestId } : {}),
-      });
-      await closeAllSessions({ reason: "bridge_shutdown_requested", requestId });
-      bridgeLogger.info({
-        target: LOG_TARGETS.BRIDGE_LIFECYCLE,
-        eventName: "bridge_shutdown_completed",
-        message: "bridge shutdown completed",
-        outcome: "success",
-        ...(requestId ? { requestId } : {}),
-      });
-      process.exit(0);
+      await handleLifecycleCommand(command, requestId, sdkVersionError);
       return;
-
+    case "prompt":
+    case "cancel_turn":
+    case "set_model":
+    case "set_mode":
+    case "set_effort":
+    case "set_agent":
+    case "set_fast_mode":
+    case "reload_plugins":
+      await handleSessionControlCommand(command, requestId, {
+        buildPromptUserMessage,
+        applySessionEffort,
+        applySessionAgent,
+        applySessionFastMode,
+        emitEffortConfigOptionUpdate,
+        emitAgentConfigOptionUpdate,
+        handleReloadPluginsCommand,
+      });
+      return;
+    case "generate_session_title":
+    case "rename_session":
+    case "get_status_snapshot":
+    case "get_context_usage":
+    case "get_rewind_targets":
+    case "rewind":
+      await handleSessionDataCommand(command, requestId, {
+        generatePersistedSessionTitle,
+        buildSessionMutationOptions,
+        rewindTargetsFromSessionMessages,
+        handleRewind,
+      });
+      return;
+    case "mcp_status":
+    case "mcp_reconnect":
+    case "mcp_toggle":
+    case "mcp_set_servers":
+    case "mcp_authenticate":
+    case "mcp_clear_auth":
+    case "mcp_oauth_callback_url":
+      await handleMcpCommand(command, requestId);
+      return;
+    case "permission_response":
+    case "question_response":
+    case "user_dialog_response":
+    case "elicitation_response":
+      handleInteractionCommand(command);
+      return;
     default:
       bridgeLogger.error({
         target: LOG_TARGETS.BRIDGE_PROTOCOL,
@@ -1411,7 +831,10 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
           reason: "unsupported_command",
         },
       });
-      failConnection(`unhandled command: ${(command as { command?: string }).command ?? "unknown"}`, requestId);
+      failConnection(
+        `unhandled command: ${(command as { command?: string }).command ?? "unknown"}`,
+        requestId,
+      );
   }
 }
 
@@ -1428,35 +851,36 @@ function main(): void {
     input: process.stdin,
     crlfDelay: Number.POSITIVE_INFINITY,
   });
+  const commandScheduler = new BridgeCommandScheduler();
 
   rl.on("line", (line) => {
     if (line.trim().length === 0) {
       return;
     }
-    void (async () => {
-      let parsed: { requestId?: string; command: BridgeCommand };
-      try {
-        parsed = parseCommandEnvelope(line);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const requestId = requestIdFromCommandLine(line);
-        bridgeLogger.error({
-          target: LOG_TARGETS.BRIDGE_PROTOCOL,
-          eventName: "bridge_command_decode_failed",
-          message: "failed to decode bridge command envelope",
-          outcome: "failure",
-          ...(requestId ? { requestId } : {}),
-          sizeBytes: Buffer.byteLength(line),
-          fields: {
-            preview: line.slice(0, 240),
-            preview_chars: Math.min(line.length, 240),
-            error_message: message,
-          },
-        });
-        failConnection(`invalid command envelope: ${message}`, requestId);
-        return;
-      }
+    let parsed: { requestId?: string; command: BridgeCommand };
+    try {
+      parsed = parseCommandEnvelope(line);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const requestId = requestIdFromCommandLine(line);
+      bridgeLogger.error({
+        target: LOG_TARGETS.BRIDGE_PROTOCOL,
+        eventName: "bridge_command_decode_failed",
+        message: "failed to decode bridge command envelope",
+        outcome: "failure",
+        ...(requestId ? { requestId } : {}),
+        sizeBytes: Buffer.byteLength(line),
+        fields: {
+          preview: line.slice(0, 240),
+          preview_chars: Math.min(line.length, 240),
+          error_message: message,
+        },
+      });
+      failConnection(`invalid command envelope: ${message}`, requestId);
+      return;
+    }
 
+    commandScheduler.schedule(parsed.command, async () => {
       try {
         await handleCommand(parsed.command, parsed.requestId);
       } catch (error) {
@@ -1467,7 +891,8 @@ function main(): void {
           message: "bridge command handler failed",
           outcome: "failure",
           ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
-          ...(parsed.command.command === "create_session" || parsed.command.command === "new_session"
+          ...(parsed.command.command === "create_session" ||
+          parsed.command.command === "new_session"
             ? {}
             : "session_id" in parsed.command
               ? { sessionId: parsed.command.session_id }
@@ -1482,10 +907,11 @@ function main(): void {
           parsed.requestId,
         );
       }
-    })();
+    });
   });
 
   rl.on("close", () => {
+    commandScheduler.stopAccepting();
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_LIFECYCLE,
       eventName: "bridge_input_closed",

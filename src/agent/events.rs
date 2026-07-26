@@ -6,40 +6,46 @@ use crate::agent::model;
 use crate::app::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
 use crate::app::{ReleaseReason, UsageSnapshot, UsageSourceKind};
 use crate::error::AppError;
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
     /// Session update notification (streaming text, tool calls, etc.)
-    SessionUpdate(model::SessionUpdate),
+    SessionUpdate { session_id: String, update: model::SessionUpdate },
     /// Permission request that needs user input.
     PermissionRequest {
+        session_id: String,
         request: model::RequestPermissionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestPermissionResponse>,
     },
     /// Question request from `AskUserQuestion` that needs structured user input.
     QuestionRequest {
+        session_id: String,
         request: model::RequestQuestionRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     },
     /// Turn-level `request_user_dialog` (e.g. `refusal_fallback_prompt`) that
     /// needs a user decision. Not anchored to a tool call.
     UserDialogRequest {
+        session_id: String,
         request: model::RequestUserDialogRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
     },
     /// MCP elicitation request that needs auth or other MCP input.
-    McpElicitationRequest { request: crate::agent::types::ElicitationRequest },
+    McpElicitationRequest { session_id: String, request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
-    McpElicitationCompleted { elicitation_id: String, server_name: Option<String> },
+    McpElicitationCompleted {
+        session_id: String,
+        elicitation_id: String,
+        server_name: Option<String>,
+    },
+    /// The app's elicitation response entered the outbound bridge FIFO.
+    McpElicitationResponseQueued { session_id: String, request_id: String },
     /// MCP auth redirect returned directly by the SDK auth call.
-    McpAuthRedirect { redirect: crate::agent::types::McpAuthRedirect },
+    McpAuthRedirect { session_id: String, redirect: crate::agent::types::McpAuthRedirect },
     /// MCP operation failed and should be surfaced in the MCP config UI.
-    McpOperationError { error: crate::agent::types::McpOperationError },
+    McpOperationError { session_id: String, error: crate::agent::types::McpOperationError },
     /// Dynamic MCP server replacement completed through the SDK.
     McpSetServersResult { session_id: String, result: crate::agent::types::McpSetServersResult },
     /// Claude CLI removed an MCP server from a persisted config scope.
@@ -52,17 +58,20 @@ pub enum ClientEvent {
     /// Claude CLI failed to remove an MCP server from persisted config.
     McpConfigRemoveFailed { cwd_raw: String, server_name: String, scope: String, message: String },
     /// A prompt turn completed successfully.
-    TurnComplete { terminal_reason: Option<crate::agent::types::TerminalReason> },
-    /// `cancel` notification was accepted by the bridge.
-    TurnCancelled,
+    TurnComplete {
+        session_id: String,
+        terminal_reason: Option<crate::agent::types::TerminalReason>,
+    },
     /// A prompt turn failed with an error.
     TurnError {
+        session_id: String,
         message: String,
         api_error_status: Option<u16>,
         terminal_reason: Option<crate::agent::types::TerminalReason>,
     },
     /// A prompt turn failed with bridge-provided classification metadata.
     TurnErrorClassified {
+        session_id: String,
         message: String,
         class: TurnErrorClass,
         api_error_status: Option<u16>,
@@ -75,6 +84,7 @@ pub enum ClientEvent {
         current_model: model::CurrentModel,
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
+        fast_mode_state: model::FastModeState,
         history_updates: Vec<model::SessionUpdate>,
     },
     /// Background connection failed.
@@ -82,7 +92,7 @@ pub enum ClientEvent {
     /// Authentication is required before a session can be created.
     AuthRequired { method_name: String, method_description: String },
     /// Slash-command execution failed with a user-facing error.
-    SlashCommandError(String),
+    SlashCommandError { session_id: Option<String>, message: String },
     /// Terminal ownership was handed to a child process.
     TerminalReleasedToChild { reason: ReleaseReason },
     /// Terminal ownership returned from a child process.
@@ -98,6 +108,7 @@ pub enum ClientEvent {
         current_model: model::CurrentModel,
         available_models: Vec<model::AvailableModel>,
         mode: Option<crate::app::ModeState>,
+        fast_mode_state: model::FastModeState,
         history_updates: Vec<model::SessionUpdate>,
         restored_input: Option<String>,
     },
@@ -123,6 +134,7 @@ pub enum ClientEvent {
     McpSnapshotReceived {
         session_id: String,
         servers: Vec<model::McpServerStatus>,
+        auth_capabilities: model::McpAuthCapabilities,
         source: Option<crate::agent::types::McpSnapshotSource>,
         error: Option<String>,
     },
@@ -148,31 +160,62 @@ pub enum ClientEvent {
     FatalError(AppError),
 }
 
+impl ClientEvent {
+    /// Return the session authority attached to active-session state mutations.
+    ///
+    /// Connection events are deliberately excluded because they establish or
+    /// replace the active authority rather than operate under it.
+    #[must_use]
+    pub(crate) fn scoped_session_id(&self) -> Option<&str> {
+        match self {
+            Self::SessionUpdate { session_id, .. }
+            | Self::PermissionRequest { session_id, .. }
+            | Self::QuestionRequest { session_id, .. }
+            | Self::UserDialogRequest { session_id, .. }
+            | Self::McpElicitationRequest { session_id, .. }
+            | Self::McpElicitationCompleted { session_id, .. }
+            | Self::McpElicitationResponseQueued { session_id, .. }
+            | Self::McpAuthRedirect { session_id, .. }
+            | Self::McpOperationError { session_id, .. }
+            | Self::McpSetServersResult { session_id, .. }
+            | Self::TurnComplete { session_id, .. }
+            | Self::TurnError { session_id, .. }
+            | Self::TurnErrorClassified { session_id, .. }
+            | Self::RuntimeReloadCompleted { session_id }
+            | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::StatusSnapshotReceived { session_id, .. }
+            | Self::ContextUsageReceived { session_id, .. }
+            | Self::RewindTargetsReceived { session_id, .. }
+            | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
+            Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
+            Self::RewindResultReceived { result } => Some(result.session_id.as_str()),
+            Self::Connected { .. }
+            | Self::ConnectionFailed(_)
+            | Self::AuthRequired { .. }
+            | Self::McpConfigRemoveSucceeded { .. }
+            | Self::McpConfigRemoveFailed { .. }
+            | Self::TerminalReleasedToChild { .. }
+            | Self::TerminalReturnedFromChild { .. }
+            | Self::SessionReplaced { .. }
+            | Self::SessionsListed { .. }
+            | Self::UpdateAvailable { .. }
+            | Self::ServiceStatus { .. }
+            | Self::AuthCompleted { .. }
+            | Self::LogoutCompleted
+            | Self::UsageRefreshStarted { .. }
+            | Self::UsageSnapshotReceived { .. }
+            | Self::UsageRefreshFailed { .. }
+            | Self::PluginsInventoryUpdated { .. }
+            | Self::PluginsInventoryRefreshFailed { .. }
+            | Self::PluginsCliActionSucceeded { .. }
+            | Self::PluginsCliActionFailed { .. }
+            | Self::FatalError(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceStatusSeverity {
     Warning,
     Error,
-}
-
-/// Shared handle to all spawned terminal processes.
-pub type TerminalMap = Rc<RefCell<HashMap<String, TerminalProcess>>>;
-
-/// Minimal terminal process state used by UI snapshot rendering.
-pub struct TerminalProcess {
-    pub child: Option<tokio::process::Child>,
-    /// Accumulated stdout+stderr - append-only, never cleared.
-    pub output_buffer: Arc<Mutex<Vec<u8>>>,
-    /// The shell command that was executed.
-    pub command: String,
-}
-
-/// Kill all spawned terminal child processes. Call on app exit.
-pub fn kill_all_terminals(terminals: &TerminalMap) {
-    let mut map = terminals.borrow_mut();
-    for (_, terminal) in map.iter_mut() {
-        if let Some(child) = terminal.child.as_mut() {
-            let _ = child.start_kill();
-        }
-    }
-    map.clear();
 }

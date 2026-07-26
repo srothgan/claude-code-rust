@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 //! Tool-call rendering: entry points, caching, and shared helpers.
 //!
 //! Submodules handle specific rendering concerns:
@@ -346,7 +345,7 @@ fn ask_user_question_display_title(tc: &ToolCallInfo) -> Cow<'static, str> {
 #[cfg(test)]
 pub(super) mod test_support {
     use crate::agent::model;
-    use crate::app::{BlockCache, TerminalSnapshotMode, ToolCallInfo};
+    use crate::app::{BlockCache, ToolCallInfo};
     use ratatui::text::Line;
 
     pub(super) fn tool_call(
@@ -374,8 +373,6 @@ pub(super) mod test_support {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,

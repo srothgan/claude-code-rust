@@ -16,6 +16,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max>` | Change thinking effort for the active session. |
+| `/fast` | `/fast` | Enable or disable fast mode for the active session. |
 | `/help` | `/help` | Open the fullscreen Help tab. |
 | `/mcp` | `/mcp` | Open MCP status and authorization. |
 | `/plugins` | `/plugins` | Open plugin management. |
@@ -41,6 +42,12 @@ Use:
 ```
 
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
+
+## Session Commands
+
+`/fast` changes fast mode only for the active session. It does not rewrite the
+persisted Fast mode setting. Use the settings surface to choose the fast-mode
+preference applied when future sessions start.
 
 ## Project-Local Commands
 

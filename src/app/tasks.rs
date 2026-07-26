@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-
 use super::{App, InvalidationLevel, MessageBlock, ToolCallInfo};
 use crate::agent::model;
 use std::collections::{BTreeSet, HashSet};
@@ -230,9 +229,7 @@ fn sync_string(current: &mut String, next: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        BlockCache, ChatMessage, MessageBlock, MessageRole, TerminalSnapshotMode, ToolCallInfo,
-    };
+    use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
     use serde_json::json;
 
     fn task(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
@@ -269,8 +266,6 @@ mod tests {
             terminal_command: None,
             terminal_output: None,
             terminal_output_len: 0,
-            terminal_bytes_seen: 0,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,

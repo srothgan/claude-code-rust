@@ -73,10 +73,12 @@ pub fn start_service_status_check(app: &App) {
                 outcome = "success",
                 severity = ?issue.severity,
             );
-            let _ = event_tx.send(ClientEvent::ServiceStatus {
-                severity: issue.severity,
-                message: issue.message,
-            });
+            let _ = event_tx
+                .send(ClientEvent::ServiceStatus {
+                    severity: issue.severity,
+                    message: issue.message,
+                })
+                .await;
         }
         .instrument(service_status_span),
     );

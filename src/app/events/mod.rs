@@ -30,6 +30,28 @@ use crossterm::event::{Event, KeyEventKind};
 
 pub use client::handle_client_event;
 
+/// Apply the optimistic UI transition after a cancel command has entered the
+/// bridge command queue. This is local input state, not a bridge event.
+pub(crate) fn handle_local_cancel_enqueued(app: &mut App) {
+    app.request_active_surface_repaint();
+    turn::handle_turn_cancelled_event(app);
+}
+
+/// Roll back a prompt turn that could not enter the bridge command queue.
+/// Queue admission failures originate in the app and must not masquerade as
+/// backend events.
+pub(crate) fn handle_local_prompt_dispatch_error(app: &mut App, message: &str) {
+    app.request_active_surface_repaint();
+    turn::handle_turn_error_event(app, message, None, None, None);
+}
+
+/// Surface a synchronous slash-command dispatch failure without injecting a
+/// synthetic event into the backend event protocol.
+pub(crate) fn handle_local_slash_command_error(app: &mut App, message: &str) {
+    app.request_active_surface_repaint();
+    session::handle_slash_command_error_event(app, message);
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TerminalEventOutcome {
     changed: bool,
@@ -374,6 +396,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::FastModeUpdate(state) => {
             app.session_runtime.fast_mode_state = state;
+            if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::FastMode)) {
+                session::clear_pending_command(app);
+            }
         }
         model::SessionUpdate::RateLimitUpdate(update) => {
             rate_limit::handle_rate_limit_update(app, &update);

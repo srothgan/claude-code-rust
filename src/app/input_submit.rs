@@ -2,7 +2,6 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::{App, AppStatus, CancelOrigin, ChatMessage, MessageBlock, MessageRole, TextBlock};
-use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use crate::app::slash;
 
@@ -110,7 +109,7 @@ pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), 
     conn.cancel(session_id.clone()).map_err(|e| e.to_string())?;
     app.turn.pending_cancel_origin = Some(origin);
     app.turn.cancelled_pending_hint = matches!(origin, CancelOrigin::Manual);
-    let _ = app.event_tx.send(ClientEvent::TurnCancelled);
+    crate::app::events::handle_local_cancel_enqueued(app);
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,
         event_name = "turn_cancel_requested",
@@ -168,7 +167,6 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
 
-    let tx = app.event_tx.clone();
     // The text already contains [Image #N] badges from the textarea,
     // so the model can correlate user references with image attachments.
     match conn.prompt_with_images(sid.to_string(), text, images) {
@@ -185,11 +183,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
             );
         }
         Err(e) => {
-            let _ = tx.send(ClientEvent::TurnError {
-                message: e.to_string(),
-                api_error_status: None,
-                terminal_reason: None,
-            });
+            crate::app::events::handle_local_prompt_dispatch_error(app, &e.to_string());
         }
     }
 }
@@ -200,12 +194,10 @@ mod tests {
     use crate::agent::wire::BridgeCommand;
     use crate::app::{FullscreenView, SurfaceMode};
 
-    fn app_with_connection()
-    -> (App, tokio::sync::mpsc::UnboundedReceiver<crate::agent::wire::CommandEnvelope>) {
+    fn app_with_connection() -> (App, crate::agent::client::CommandReceiver) {
         let mut app = App::test_default();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        app.session_runtime.conn =
-            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
         app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
     }
@@ -479,9 +471,8 @@ mod tests {
     #[test]
     fn dispatch_prompt_turn_without_session_id_leaves_state_unchanged() {
         let mut app = App::test_default();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        app.session_runtime.conn =
-            Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+        let (connection, _rx) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());

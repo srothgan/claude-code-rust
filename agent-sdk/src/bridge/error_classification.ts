@@ -77,11 +77,24 @@ export function classifyTurnErrorKind(
   return "other";
 }
 
-export function emitFastModeUpdateIfChanged(session: SessionState, value: unknown): void {
+export function setFastModeStateIfChanged(session: SessionState, value: unknown): boolean {
   const next = parseFastModeState(value);
   if (!next || next === session.fastModeState) {
-    return;
+    return false;
   }
   session.fastModeState = next;
-  emitSessionUpdate(session.sessionId, { type: "fast_mode_update", fast_mode_state: next });
+  return true;
+}
+
+export function emitFastModeUpdate(session: SessionState): void {
+  emitSessionUpdate(session.sessionId, {
+    type: "fast_mode_update",
+    fast_mode_state: session.fastModeState,
+  });
+}
+
+export function emitFastModeUpdateIfChanged(session: SessionState, value: unknown): void {
+  if (setFastModeStateIfChanged(session, value)) {
+    emitFastModeUpdate(session);
+  }
 }

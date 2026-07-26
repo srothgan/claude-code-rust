@@ -4,6 +4,8 @@ use crate::Cli;
 use crate::agent::model;
 use crate::agent::types;
 use crate::app::{FullscreenView, SurfaceMode, TerminalLifecycleState};
+use std::cell::Cell;
+use std::rc::Rc;
 
 #[test]
 fn map_session_update_preserves_config_option_update() {
@@ -44,4 +46,44 @@ fn create_app_prewarms_file_index_and_routes_untrusted_cwd_to_trust_surface() {
     assert!(app.file_index.watch.is_some());
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
     assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Bootstrapping);
+}
+
+#[test]
+fn app_client_event_queue_has_the_configured_capacity() {
+    let mut app = crate::app::App::test_default();
+    assert_eq!(app.event_tx.max_capacity(), super::CLIENT_EVENT_QUEUE_CAPACITY);
+
+    for _ in 0..super::CLIENT_EVENT_QUEUE_CAPACITY {
+        app.event_tx
+            .try_send(crate::agent::events::ClientEvent::LogoutCompleted)
+            .expect("event should fit within configured capacity");
+    }
+    assert!(matches!(
+        app.event_tx.try_send(crate::agent::events::ClientEvent::LogoutCompleted),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+    ));
+    assert!(app.event_rx.try_recv().is_ok());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_connection_signals_and_awaits_the_owned_bridge_task() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = crate::app::App::test_default();
+            let completed = Rc::new(Cell::new(false));
+            let completed_for_task = Rc::clone(&completed);
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+            let join_handle = tokio::task::spawn_local(async move {
+                let _ = shutdown_rx.await;
+                completed_for_task.set(true);
+            });
+            app.bridge_task = Some(super::BridgeTask { shutdown_tx, join_handle });
+
+            super::shutdown_connection(&mut app).await;
+
+            assert!(completed.get());
+            assert!(app.bridge_task.is_none());
+            assert!(app.session_runtime.conn.is_none());
+        })
+        .await;
 }

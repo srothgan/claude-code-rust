@@ -1,8 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// =====
-// TESTS: 26
-// =====
-
 use super::*;
 use crate::agent::model;
 use crate::app::focus::{FocusOwner, FocusTarget};
@@ -412,31 +408,13 @@ fn push_message_tracked_preserves_user_image_attachment_block() {
 }
 
 fn assistant_tool_message(id: &str, status: model::ToolCallStatus) -> ChatMessage {
+    let mut tool_call = crate::app::test_support::tool_call_info(id, status);
+    tool_call.title = format!("tool {id}");
+    tool_call.terminal_output = Some("x".repeat(1024));
+    tool_call.terminal_output_len = 1024;
     ChatMessage::new(
         MessageRole::Assistant,
-        vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
-            title: format!("tool {id}"),
-            sdk_tool_name: "Read".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: Some("x".repeat(1024)),
-            terminal_output_len: 1024,
-            terminal_bytes_seen: 1024,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        }))],
+        vec![MessageBlock::ToolCall(Box::new(tool_call))],
         None,
     )
 }
@@ -446,73 +424,42 @@ fn assistant_bash_tool_message(
     status: model::ToolCallStatus,
     terminal_id: &str,
 ) -> ChatMessage {
+    let mut tool_call = crate::app::test_support::tool_call_info(id, status);
+    tool_call.title = format!("tool {id}");
+    tool_call.sdk_tool_name = "Bash".to_owned();
+    tool_call.terminal_id = Some(terminal_id.to_owned());
+    tool_call.terminal_command = Some("echo hi".to_owned());
+    tool_call.terminal_output = Some("x".repeat(1024));
+    tool_call.terminal_output_len = 1024;
     ChatMessage::new(
         MessageRole::Assistant,
-        vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
-            title: format!("tool {id}"),
-            sdk_tool_name: "Bash".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: Some(terminal_id.to_owned()),
-            terminal_command: Some("echo hi".to_owned()),
-            terminal_output: Some("x".repeat(1024)),
-            terminal_output_len: 1024,
-            terminal_bytes_seen: 1024,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-        }))],
+        vec![MessageBlock::ToolCall(Box::new(tool_call))],
         None,
     )
 }
 
 fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
+    let mut tool_call =
+        crate::app::test_support::tool_call_info(id, model::ToolCallStatus::Completed);
+    tool_call.title = format!("tool {id}");
+    tool_call.terminal_output = Some("x".repeat(1024));
+    tool_call.terminal_output_len = 1024;
+    tool_call.pending_permission = Some(InlinePermission {
+        options: vec![model::PermissionOption::new(
+            "allow-once",
+            "Allow once",
+            model::PermissionOptionKind::AllowOnce,
+        )],
+        display: None,
+        subagent_context: None,
+        response_tx: tx,
+        selected_index: 0,
+        focused: false,
+    });
     ChatMessage::new(
         MessageRole::Assistant,
-        vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
-            title: format!("tool {id}"),
-            sdk_tool_name: "Read".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::Completed,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: Some("x".repeat(1024)),
-            terminal_output_len: 1024,
-            terminal_bytes_seen: 1024,
-            terminal_snapshot_mode: TerminalSnapshotMode::AppendOnly,
-            cache: BlockCache::default(),
-            pending_permission: Some(InlinePermission {
-                options: vec![model::PermissionOption::new(
-                    "allow-once",
-                    "Allow once",
-                    model::PermissionOptionKind::AllowOnce,
-                )],
-                display: None,
-                subagent_context: None,
-                response_tx: tx,
-                selected_index: 0,
-                focused: false,
-            }),
-            pending_question: None,
-        }))],
+        vec![MessageBlock::ToolCall(Box::new(tool_call))],
         None,
     )
 }
@@ -891,15 +838,10 @@ fn enforce_history_retention_rebuilds_tool_index_after_prune() {
         assistant_bash_tool_message("tool-idx", model::ToolCallStatus::InProgress, "term-1"),
     ];
     app.index_tool_call("tool-idx".to_owned(), 99, 99);
-    app.sync_terminal_tool_call("stale-term".to_owned(), 99, 99);
     app.history_retention.max_bytes = 1;
 
     let _ = app.enforce_history_retention();
     assert_eq!(app.lookup_tool_call("tool-idx"), Some((2, 0)));
-    assert_eq!(app.terminal_tool_calls().len(), 1);
-    assert_eq!(app.terminal_tool_calls()[0].terminal_id, "term-1");
-    assert_eq!(app.terminal_tool_calls()[0].msg_idx, 2);
-    assert_eq!(app.terminal_tool_calls()[0].block_idx, 0);
 }
 
 #[test]
@@ -1106,7 +1048,7 @@ fn clear_tool_scope_tracking_also_clears_active_task_ids() {
 }
 
 #[test]
-fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
+fn finalize_in_progress_tool_calls_preserves_terminal_metadata() {
     let mut app = make_test_app();
     app.transcript.messages.push(assistant_bash_tool_message(
         "bash-1",
@@ -1114,17 +1056,15 @@ fn finalize_in_progress_tool_calls_detaches_execute_terminal_refs() {
         "term-1",
     ));
     app.index_tool_call("bash-1".to_owned(), 0, 0);
-    app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
     let changed = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Completed);
 
     assert_eq!(changed, 1);
-    assert!(app.terminal_tool_calls().is_empty());
     let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[0] else {
         panic!("expected tool call");
     };
     assert_eq!(tc.status, model::ToolCallStatus::Completed);
-    assert_eq!(tc.terminal_id, None);
+    assert_eq!(tc.terminal_id.as_deref(), Some("term-1"));
 }
 
 #[test]
@@ -1161,7 +1101,7 @@ fn remove_message_tracked_prunes_tool_scope_entries() {
 }
 
 #[test]
-fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
+fn clear_messages_tracked_clears_tool_tracking() {
     let mut app = make_test_app();
     app.transcript.messages.push(assistant_bash_tool_message(
         "bash-1",
@@ -1169,19 +1109,17 @@ fn clear_messages_tracked_clears_tool_and_terminal_tracking() {
         "term-1",
     ));
     app.index_tool_call("bash-1".to_owned(), 0, 0);
-    app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
     app.turn.pending_interaction_ids.push("bash-1".into());
 
     app.clear_messages_tracked();
 
     assert!(app.transcript.messages.is_empty());
     assert!(app.transcript.tool_call_index.is_empty());
-    assert!(app.terminal_tool_calls().is_empty());
     assert!(app.turn.pending_interaction_ids.is_empty());
 }
 
 #[test]
-fn rebuild_tool_indices_skips_completed_terminal_refs() {
+fn rebuild_tool_indices_includes_completed_tools() {
     let mut app = make_test_app();
     app.transcript.messages.push(assistant_bash_tool_message(
         "bash-1",
@@ -1189,11 +1127,10 @@ fn rebuild_tool_indices_skips_completed_terminal_refs() {
         "term-1",
     ));
     app.index_tool_call("bash-1".to_owned(), 0, 0);
-    app.sync_terminal_tool_call("term-1".to_owned(), 0, 0);
 
-    app.rebuild_tool_indices_and_terminal_refs();
+    app.rebuild_tool_indices();
 
-    assert!(app.terminal_tool_calls().is_empty());
+    assert_eq!(app.lookup_tool_call("bash-1"), Some((0, 0)));
 }
 
 // IncrementalMarkdown

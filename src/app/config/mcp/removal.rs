@@ -55,20 +55,24 @@ fn remove_persisted_mcp_server_from_config(
             .await
         {
             Ok(claude_path) => {
-                let _ = event_tx.send(ClientEvent::McpConfigRemoveSucceeded {
-                    cwd_raw,
-                    server_name,
-                    scope: scope_name,
-                    claude_path,
-                });
+                let _ = event_tx
+                    .send(ClientEvent::McpConfigRemoveSucceeded {
+                        cwd_raw,
+                        server_name,
+                        scope: scope_name,
+                        claude_path,
+                    })
+                    .await;
             }
             Err(message) => {
-                let _ = event_tx.send(ClientEvent::McpConfigRemoveFailed {
-                    cwd_raw,
-                    server_name,
-                    scope: scope_name,
-                    message,
-                });
+                let _ = event_tx
+                    .send(ClientEvent::McpConfigRemoveFailed {
+                        cwd_raw,
+                        server_name,
+                        scope: scope_name,
+                        message,
+                    })
+                    .await;
             }
         }
     });
