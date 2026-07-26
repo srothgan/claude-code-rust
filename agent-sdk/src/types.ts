@@ -657,6 +657,11 @@ export type BridgeCommand =
       agent: string | null;
     }
   | {
+      command: "set_fast_mode";
+      session_id: string;
+      enabled: boolean;
+    }
+  | {
       command: "generate_session_title";
       session_id: string;
       description: string;
@@ -794,6 +799,7 @@ export type BridgeEvent =
       current_model: CurrentModel;
       available_models: AvailableModel[];
       mode: ModeState | null;
+      fast_mode_state: FastModeState;
       history_updates?: SessionUpdate[];
     }
   | { event: "auth_required"; method_name: string; method_description: string }
@@ -828,6 +834,7 @@ export type BridgeEvent =
       current_model: CurrentModel;
       available_models: AvailableModel[];
       mode: ModeState | null;
+      fast_mode_state: FastModeState;
       history_updates?: SessionUpdate[];
       restored_input?: string;
     }

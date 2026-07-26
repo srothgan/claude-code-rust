@@ -17,6 +17,7 @@ import {
   createToolCall,
   applySessionAgent,
   applySessionEffort,
+  applySessionFastMode,
   emitAgentConfigOptionUpdate,
   emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
@@ -70,7 +71,11 @@ import {
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
 } from "./bridge/session_lifecycle.js";
-import { classifyTurnErrorKind } from "./bridge/error_classification.js";
+import {
+  classifyTurnErrorKind,
+  setFastModeStateIfChanged,
+} from "./bridge/error_classification.js";
+import { buildConnectBridgeEvent } from "./bridge/events.js";
 import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
 import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
@@ -3673,6 +3678,51 @@ test("handleSdkMessage emits MCP snapshot from init status payload", () => {
   });
 });
 
+test("authority snapshots publish fast mode set during initialization", () => {
+  const session = makeSessionState();
+  assert.equal(setFastModeStateIfChanged(session, "on"), true);
+
+  for (const connectEvent of ["connected", "session_replaced"] as const) {
+    session.connectEvent = connectEvent;
+    const authorityEvent = buildConnectBridgeEvent(session, connectEvent);
+    assert.equal(authorityEvent.event, connectEvent);
+    assert.equal(authorityEvent.fast_mode_state, "on");
+  }
+});
+
+test("handleSdkMessage emits fast mode as a delta after authority exists", () => {
+  const session = makeSessionState();
+  session.query = {
+    supportedCommands: async () => [],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "init",
+      session_id: session.sessionId,
+      model: "sonnet",
+      fast_mode_state: "cooldown",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const fastModeUpdates = events.filter(
+    (event) =>
+      event.event === "session_update" &&
+      (event.update as { type?: unknown } | undefined)?.type === "fast_mode_update",
+  );
+  assert.deepEqual(fastModeUpdates, [
+    {
+      event: "session_update",
+      session_id: "session-1",
+      update: {
+        type: "fast_mode_update",
+        fast_mode_state: "cooldown",
+      },
+    },
+  ]);
+});
+
 test("emitToolProgressUpdate does not reopen completed tools", () => {
   const session = makeSessionState();
   session.toolCalls.set("tool-1", {
@@ -5170,6 +5220,43 @@ test("parseCommandEnvelope rejects invalid set_agent values", () => {
   }
 });
 
+test("parseCommandEnvelope validates set_fast_mode command", () => {
+  for (const enabled of [true, false]) {
+    const parsed = parseCommandEnvelope(
+      JSON.stringify({
+        request_id: "req-fast",
+        command: "set_fast_mode",
+        session_id: "session-1",
+        enabled,
+      }),
+    );
+
+    assert.equal(parsed.requestId, "req-fast");
+    assert.equal(parsed.command.command, "set_fast_mode");
+    if (parsed.command.command !== "set_fast_mode") {
+      throw new Error("unexpected command variant");
+    }
+    assert.equal(parsed.command.session_id, "session-1");
+    assert.equal(parsed.command.enabled, enabled);
+  }
+});
+
+test("parseCommandEnvelope rejects invalid set_fast_mode values", () => {
+  for (const enabled of [undefined, "true", 1, null, {}, []]) {
+    assert.throws(
+      () =>
+        parseCommandEnvelope(
+          JSON.stringify({
+            command: "set_fast_mode",
+            session_id: "session-1",
+            ...(enabled !== undefined ? { enabled } : {}),
+          }),
+        ),
+      /set_fast_mode\.enabled must be a boolean/,
+    );
+  }
+});
+
 test("applySessionEffort uses live flag settings for xhigh and max", async () => {
   const calls: unknown[] = [];
   const query = {
@@ -5182,6 +5269,69 @@ test("applySessionEffort uses live flag settings for xhigh and max", async () =>
   await applySessionEffort(query, "max");
 
   assert.deepEqual(calls, [{ effortLevel: "xhigh" }, { effortLevel: "max" }]);
+});
+
+test("applySessionFastMode applies live settings and decodes the SDK's sparse off state", async () => {
+  const calls: unknown[] = [];
+  const responses = [
+    { fast_mode_state: "on" },
+    { fast_mode_state: "cooldown" },
+    {},
+    { fast_mode_state: "off" },
+  ] as const;
+  const query = {
+    async applyFlagSettings(settings: unknown): Promise<void> {
+      calls.push(settings);
+    },
+    async reinitialize(): Promise<(typeof responses)[number]> {
+      return responses[calls.length - 1];
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  assert.equal(await applySessionFastMode(query, true), "on");
+  assert.equal(await applySessionFastMode(query, true), "cooldown");
+  assert.equal(await applySessionFastMode(query, false), "off");
+  assert.equal(await applySessionFastMode(query, false), "off");
+  assert.deepEqual(calls, [
+    { fastMode: true },
+    { fastMode: true },
+    { fastMode: false },
+    { fastMode: false },
+  ]);
+});
+
+test("applySessionFastMode reports apply, refresh, and missing enabled-state failures", async () => {
+  const rejectedApply = {
+    async applyFlagSettings(): Promise<void> {
+      throw new Error("not entitled");
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  await assert.rejects(
+    applySessionFastMode(rejectedApply, true),
+    /SDK rejected the fast-mode change: not entitled/,
+  );
+
+  const rejectedRefresh = {
+    async applyFlagSettings(): Promise<void> {},
+    async reinitialize(): Promise<never> {
+      throw new Error("transport closed");
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  await assert.rejects(
+    applySessionFastMode(rejectedRefresh, true),
+    /SDK accepted the fast-mode change but state verification failed: transport closed/,
+  );
+
+  const missingEnabledState = {
+    async applyFlagSettings(): Promise<void> {},
+    async reinitialize(): Promise<Record<string, never>> {
+      return {};
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  await assert.rejects(
+    applySessionFastMode(missingEnabledState, true),
+    /SDK accepted the fast-mode change but did not report its resulting state/,
+  );
 });
 
 test("buildPromptUserMessage attributes keyboard text input to a human", () => {

@@ -371,6 +371,12 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           session_id: expectString(raw, "session_id", "set_agent"),
           agent: expectNonEmptyStringOrNull(raw, "agent", "set_agent"),
         };
+      case "set_fast_mode":
+        return {
+          command: "set_fast_mode",
+          session_id: expectString(raw, "session_id", "set_fast_mode"),
+          enabled: expectBoolean(raw, "enabled", "set_fast_mode"),
+        };
       case "generate_session_title":
         return {
           command: "generate_session_title",

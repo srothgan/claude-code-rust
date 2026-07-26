@@ -38,7 +38,13 @@ import {
 } from "./tool_calls.js";
 import { applyBackgroundTasksChanged, applyTaskLifecycleState } from "./tasks.js";
 import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
-import { emitAuthRequired, classifyTurnErrorKind, emitFastModeUpdateIfChanged } from "./error_classification.js";
+import {
+  emitAuthRequired,
+  classifyTurnErrorKind,
+  emitFastModeUpdate,
+  emitFastModeUpdateIfChanged,
+  setFastModeStateIfChanged,
+} from "./error_classification.js";
 import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
 import {
   mapInitSlashCommands,
@@ -1202,7 +1208,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         session.mode = incomingMode;
       }
       refreshSupportedModesForSession(session);
-      emitFastModeUpdateIfChanged(session, msg.fast_mode_state);
+      const fastModeChanged = setFastModeStateIfChanged(session, msg.fast_mode_state);
 
       if (!session.connected) {
         emitConnectEvent(session);
@@ -1217,6 +1223,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
             type: "mode_state_update",
             mode: buildModeState(session, incomingMode),
           });
+        }
+        if (fastModeChanged) {
+          emitFastModeUpdate(session);
         }
       }
 

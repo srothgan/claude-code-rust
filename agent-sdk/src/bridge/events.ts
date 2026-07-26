@@ -152,7 +152,7 @@ export function emitElicitationRequestEvent(
   writeEvent({ event: "elicitation_request", session_id: sessionId, request });
 }
 
-function buildConnectBridgeEvent(
+export function buildConnectBridgeEvent(
   session: SessionState,
   eventName: "connected" | "session_replaced",
 ): BridgeEvent {
@@ -165,6 +165,7 @@ function buildConnectBridgeEvent(
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
+        fast_mode_state: session.fastModeState,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
         ...(session.restoredInput !== undefined ? { restored_input: session.restoredInput } : {}),
       }
@@ -175,6 +176,7 @@ function buildConnectBridgeEvent(
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
+        fast_mode_state: session.fastModeState,
         ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
       };
 }

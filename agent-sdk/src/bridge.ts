@@ -15,6 +15,7 @@ import type {
 import type {
   BridgeCommand,
   BridgeEvent,
+  FastModeState,
   RewindFilesResult,
   RewindRestoreMode,
   RewindTarget,
@@ -28,6 +29,7 @@ import {
   refreshSupportedModesForSession,
   toPermissionMode,
 } from "./bridge/commands.js";
+import { parseFastModeState } from "./bridge/state_parsing.js";
 import {
   writeEvent,
   failConnection,
@@ -73,6 +75,7 @@ import {
 } from "./bridge/mcp.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeCommandReceived } from "./bridge/logger.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
+import { emitFastModeUpdate } from "./bridge/error_classification.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
@@ -243,6 +246,35 @@ export async function applySessionEffort(
   effort: EffortLevel,
 ): Promise<void> {
   await query.applyFlagSettings({ effortLevel: effort });
+}
+
+export async function applySessionFastMode(
+  query: import("@anthropic-ai/claude-agent-sdk").Query,
+  enabled: boolean,
+): Promise<FastModeState> {
+  try {
+    await query.applyFlagSettings({ fastMode: enabled });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`SDK rejected the fast-mode change: ${message}`);
+  }
+
+  let result: import("@anthropic-ai/claude-agent-sdk").SDKControlInitializeResponse;
+  try {
+    result = await query.reinitialize();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`SDK accepted the fast-mode change but state verification failed: ${message}`);
+  }
+
+  const state = parseFastModeState(result.fast_mode_state);
+  if (state) {
+    return state;
+  }
+  if (!enabled && result.fast_mode_state === undefined) {
+    return "off";
+  }
+  throw new Error("SDK accepted the fast-mode change but did not report its resulting state");
 }
 
 export function buildPromptUserMessage(
@@ -1079,6 +1111,84 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         slashError(command.session_id, `failed to set agent: ${message}`, requestId);
+      }
+      return;
+    }
+
+    case "set_fast_mode": {
+      const session = sessionById(command.session_id);
+      if (!session) {
+        slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+        return;
+      }
+      bridgeLogger.info({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "set_fast_mode_started",
+        message: "set fast mode started",
+        outcome: "start",
+        sessionId: session.sessionId,
+        requestId,
+        fields: {
+          requested_enabled: command.enabled,
+          previous_state: session.fastModeState,
+        },
+      });
+      try {
+        const state = await applySessionFastMode(session.query, command.enabled);
+        session.fastModeState = state;
+        emitFastModeUpdate(session);
+
+        const reportedEnabled = state !== "off";
+        if (reportedEnabled !== command.enabled) {
+          bridgeLogger.warn({
+            target: LOG_TARGETS.APP_SESSION,
+            eventName: "set_fast_mode_mismatch",
+            message: "SDK reported a fast-mode state that did not match the request",
+            outcome: "failure",
+            sessionId: session.sessionId,
+            requestId,
+            fields: {
+              requested_enabled: command.enabled,
+              reported_state: state,
+            },
+          });
+          const action = command.enabled ? "enable" : "disable";
+          slashError(
+            command.session_id,
+            `failed to ${action} fast mode: SDK reported state ${state}`,
+            requestId,
+          );
+          return;
+        }
+
+        bridgeLogger.info({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "set_fast_mode_succeeded",
+          message: "set fast mode completed",
+          outcome: "success",
+          sessionId: session.sessionId,
+          requestId,
+          fields: {
+            requested_enabled: command.enabled,
+            reported_state: state,
+          },
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        bridgeLogger.warn({
+          target: LOG_TARGETS.APP_SESSION,
+          eventName: "set_fast_mode_failed",
+          message: "set fast mode failed",
+          outcome: "failure",
+          sessionId: session.sessionId,
+          requestId,
+          fields: {
+            requested_enabled: command.enabled,
+            previous_state: session.fastModeState,
+            error_message: message,
+          },
+        });
+        slashError(command.session_id, `failed to set fast mode: ${message}`, requestId);
       }
       return;
     }

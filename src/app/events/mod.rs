@@ -374,6 +374,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         }
         model::SessionUpdate::FastModeUpdate(state) => {
             app.session_runtime.fast_mode_state = state;
+            if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::FastMode)) {
+                session::clear_pending_command(app);
+            }
         }
         model::SessionUpdate::RateLimitUpdate(update) => {
             rate_limit::handle_rate_limit_update(app, &update);

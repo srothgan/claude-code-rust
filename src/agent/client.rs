@@ -405,6 +405,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn set_fast_mode(&self, session_id: String, enabled: bool) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetFastMode { session_id, enabled },
+        })
+    }
+
     pub fn generate_session_title(
         &self,
         session_id: String,
@@ -702,6 +709,20 @@ mod tests {
         assert_eq!(
             envelope.command,
             BridgeCommand::SetAgent { session_id: "session-1".to_owned(), agent: None }
+        );
+    }
+
+    #[test]
+    fn set_fast_mode_sends_bridge_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = AgentConnection::new(tx);
+
+        conn.set_fast_mode("session-1".to_owned(), true).expect("set fast mode");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::SetFastMode { session_id: "session-1".to_owned(), enabled: true }
         );
     }
 

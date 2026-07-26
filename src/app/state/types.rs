@@ -28,6 +28,7 @@ pub struct LoginHint {
 pub enum PendingCommandAck {
     CurrentMode,
     CurrentModel,
+    FastMode,
     ConfigOption { option_id: String },
 }
 

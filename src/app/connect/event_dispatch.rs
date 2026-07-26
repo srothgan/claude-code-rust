@@ -14,9 +14,9 @@ use tokio::sync::mpsc;
 
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
-    convert_account_info, convert_current_model, convert_mode_state, map_available_models,
-    map_mcp_server_status, map_permission_request, map_question_request, map_rewind_result,
-    map_rewind_targets, map_session_update, map_user_dialog_request,
+    convert_account_info, convert_current_model, convert_fast_mode_state, convert_mode_state,
+    map_available_models, map_mcp_server_status, map_permission_request, map_question_request,
+    map_rewind_result, map_rewind_targets, map_session_update, map_user_dialog_request,
 };
 
 struct ConnectedEventData {
@@ -25,6 +25,7 @@ struct ConnectedEventData {
     current_model: types::CurrentModel,
     available_models: Vec<types::AvailableModel>,
     mode: Option<types::ModeState>,
+    fast_mode_state: types::FastModeState,
     history_updates: Option<Vec<types::SessionUpdate>>,
 }
 
@@ -43,6 +44,7 @@ pub(super) fn handle_bridge_event(
             current_model,
             available_models,
             mode,
+            fast_mode_state,
             history_updates,
         } => {
             handle_connected_event(
@@ -54,6 +56,7 @@ pub(super) fn handle_bridge_event(
                     current_model,
                     available_models,
                     mode,
+                    fast_mode_state,
                     history_updates,
                 },
             );
@@ -152,6 +155,7 @@ pub(super) fn handle_bridge_event(
             current_model,
             available_models,
             mode,
+            fast_mode_state,
             history_updates,
             restored_input,
         } => {
@@ -166,6 +170,7 @@ pub(super) fn handle_bridge_event(
                 current_model: convert_current_model(current_model),
                 available_models: map_available_models(available_models),
                 mode: mode.map(convert_mode_state),
+                fast_mode_state: convert_fast_mode_state(fast_mode_state),
                 history_updates,
                 restored_input,
             });
@@ -230,6 +235,7 @@ fn handle_connected_event(
             current_model: convert_current_model(event.current_model),
             available_models: map_available_models(event.available_models),
             mode,
+            fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
             history_updates,
             restored_input: None,
         });
@@ -241,6 +247,7 @@ fn handle_connected_event(
             current_model: convert_current_model(event.current_model),
             available_models: map_available_models(event.available_models),
             mode,
+            fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
             history_updates,
         });
     }

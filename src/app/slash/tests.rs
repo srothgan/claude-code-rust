@@ -190,6 +190,139 @@ fn app_config_does_not_enter_advertised_argument_mode() {
 }
 
 #[test]
+fn app_fast_candidate_ignores_advertised_fast_metadata() {
+    let mut app = App::test_default();
+    app.sdk_inventory.available_commands =
+        vec![model::AvailableCommand::new("/fast", "SDK fast command").input_hint("<mode>")];
+    app.input.set_text("/fast");
+    let _ = app.input.set_cursor(0, "/fast".chars().count());
+
+    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let fast_candidates: Vec<_> =
+        slash.candidates.iter().filter(|candidate| candidate.primary == "/fast").collect();
+
+    assert_eq!(fast_candidates.len(), 1);
+    assert_eq!(fast_candidates[0].secondary.as_deref(), Some("Toggle session fast mode"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn app_fast_shadows_advertised_command_and_toggles_authoritative_state() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let cases = [
+                (model::FastModeState::Off, true, model::FastModeState::On),
+                (model::FastModeState::On, false, model::FastModeState::Off),
+                (model::FastModeState::Cooldown, false, model::FastModeState::Off),
+            ];
+
+            for (initial, expected_enabled, acknowledged) in cases {
+                let mut app = App::test_default();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                app.session_runtime.conn =
+                    Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+                app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+                app.session_runtime.fast_mode_state = initial;
+                app.sdk_inventory.available_commands = vec![
+                    model::AvailableCommand::new("/fast", "SDK fast command").input_hint("<mode>"),
+                ];
+
+                let consumed = try_handle_submit(&mut app, "/fast");
+
+                assert!(consumed);
+                assert!(matches!(app.status, AppStatus::CommandPending));
+                assert!(matches!(
+                    app.turn.pending_command_ack,
+                    Some(super::super::PendingCommandAck::FastMode)
+                ));
+
+                tokio::task::yield_now().await;
+                let envelope = rx.try_recv().expect("set fast mode command");
+                assert_eq!(
+                    envelope.command,
+                    crate::agent::wire::BridgeCommand::SetFastMode {
+                        session_id: "sess-1".to_owned(),
+                        enabled: expected_enabled,
+                    }
+                );
+
+                super::super::events::handle_client_event(
+                    &mut app,
+                    session_update(model::SessionUpdate::FastModeUpdate(acknowledged)),
+                );
+                assert_eq!(app.session_runtime.fast_mode_state, acknowledged);
+                assert!(matches!(app.status, AppStatus::Ready));
+                assert!(app.turn.pending_command_ack.is_none());
+            }
+        })
+        .await;
+}
+
+#[test]
+fn fast_capability_check_blocks_enable() {
+    let unsupported_model = model::CurrentModel::new("model", "Model", "Model")
+        .supports_fast_mode(Some(false))
+        .authoritative(true);
+    let mut app = App::test_default();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+    app.session_runtime.current_model = Some(unsupported_model);
+
+    assert!(try_handle_submit(&mut app, "/fast"));
+    assert!(rx.try_recv().is_err());
+    assert!(!matches!(app.status, AppStatus::CommandPending));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fast_capability_check_still_allows_disable() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let unsupported_model = model::CurrentModel::new("model", "Model", "Model")
+                .supports_fast_mode(Some(false))
+                .authoritative(true);
+            let mut app = App::test_default();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            app.session_runtime.conn =
+                Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+            app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+            app.session_runtime.current_model = Some(unsupported_model);
+            app.session_runtime.fast_mode_state = model::FastModeState::On;
+
+            assert!(try_handle_submit(&mut app, "/fast"));
+            tokio::task::yield_now().await;
+            assert_eq!(
+                rx.try_recv().expect("disable fast mode command").command,
+                crate::agent::wire::BridgeCommand::SetFastMode {
+                    session_id: "sess-1".to_owned(),
+                    enabled: false,
+                }
+            );
+        })
+        .await;
+}
+
+#[test]
+fn fast_rejects_arguments_without_dispatching() {
+    let mut app = App::test_default();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.session_runtime.conn =
+        Some(std::rc::Rc::new(crate::agent::client::AgentConnection::new(tx)));
+    app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
+
+    let consumed = try_handle_submit(&mut app, "/fast on");
+
+    assert!(consumed);
+    assert!(rx.try_recv().is_err());
+    assert!(!matches!(app.status, AppStatus::CommandPending));
+    let last = app.transcript.messages.last().expect("usage message");
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Usage: /fast");
+}
+
+#[test]
 fn help_without_args_opens_help_tab() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
@@ -1082,6 +1215,23 @@ fn docs_commands_do_not_show_advertised_command_shadowed_by_app_command() {
     };
     assert!(block.text.contains("| /config | Open the fullscreen settings tab. |"));
     assert!(!block.text.contains("SDK config command"));
+}
+
+#[test]
+fn docs_commands_show_app_fast_instead_of_advertised_fast() {
+    let mut app = App::test_default();
+    app.sdk_inventory.available_commands =
+        vec![crate::agent::model::AvailableCommand::new("/fast", "SDK fast command")];
+
+    let consumed = try_handle_submit(&mut app, "/docs commands");
+
+    assert!(consumed);
+    let last = app.transcript.messages.last().expect("expected system message");
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert!(block.text.contains("| /fast | Enable or disable fast mode for the active session. |"));
+    assert!(!block.text.contains("SDK fast command"));
 }
 
 #[test]

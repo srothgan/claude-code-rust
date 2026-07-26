@@ -70,7 +70,7 @@ These commands inspect and export redacted config data without starting the TUI 
 | Always Thinking | `~/.claude/settings.json` | `alwaysThinkingEnabled` | Enables adaptive thinking for new sessions. |
 | Model | `~/.claude/settings.json` | `model` | Uses the model catalog advertised by the active session. |
 | Default permission mode | `~/.claude/settings.json` | `permissions.defaultMode` | Uses permission modes advertised by the active session. |
-| Fast mode | `~/.claude/settings.json` | `fastMode` | Persists the fast-mode preference for future sessions. |
+| Fast mode | `~/.claude/settings.json` | `fastMode` | Persists the fast-mode preference for future sessions. Use `/fast` to toggle only the active session. |
 | Language | `~/.claude/settings.json` | `language` | Free-text instruction, 2 to 30 characters. Does not localize the UI. |
 | Notifications | `~/.claude.json` | `preferredNotifChannel` | Controls how attention-needed notifications are delivered. |
 | Output style | `./.claude/settings.local.json` | `outputStyle` | Changes how Claude communicates in sessions. |

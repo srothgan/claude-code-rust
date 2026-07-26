@@ -47,6 +47,7 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
         AppSlashCommand::Docs => handle_docs_submit(app, &parsed.args),
         AppSlashCommand::Agent => handle_agent_submit(app, &parsed.args),
         AppSlashCommand::Effort => handle_effort_submit(app, &parsed.args),
+        AppSlashCommand::Fast => handle_fast_submit(app, &parsed.args),
         AppSlashCommand::Help => handle_help_submit(app, &parsed.args),
         AppSlashCommand::Mcp => handle_mcp_submit(app, &parsed.args),
         AppSlashCommand::Plugins => handle_plugins_submit(app, &parsed.args),
@@ -809,6 +810,48 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
                     message: format!("Failed to run /effort: {e}"),
                 });
             }
+        }
+    });
+    true
+}
+
+fn handle_fast_submit(app: &mut App, args: &[&str]) -> bool {
+    if !args.is_empty() {
+        push_system_message(app, usage(AppSlashCommand::Fast));
+        return true;
+    }
+
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot toggle fast mode: not connected yet.",
+        "Cannot toggle fast mode: no active session.",
+    ) else {
+        return true;
+    };
+
+    let enabled =
+        matches!(app.session_runtime.fast_mode_state, crate::agent::model::FastModeState::Off);
+    if enabled
+        && app
+            .session_runtime
+            .current_model
+            .as_ref()
+            .is_some_and(|model| model.supports_fast_mode == Some(false))
+    {
+        push_system_message(app, "Cannot enable fast mode: current model does not support it.");
+        return true;
+    }
+    let label = if enabled { "Enabling fast mode..." } else { "Disabling fast mode..." };
+    set_command_pending(app, label, Some(crate::app::PendingCommandAck::FastMode));
+
+    let tx = app.event_tx.clone();
+    let session_id = sid.to_string();
+    tokio::task::spawn_local(async move {
+        if let Err(e) = conn.set_fast_mode(session_id.clone(), enabled) {
+            let _ = tx.send(ClientEvent::SlashCommandError {
+                session_id: Some(session_id),
+                message: format!("Failed to run /fast: {e}"),
+            });
         }
     });
     true

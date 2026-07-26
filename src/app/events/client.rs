@@ -173,16 +173,20 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             current_model,
             available_models,
             mode,
+            fast_mode_state,
             history_updates,
         } => {
             session::handle_connected_client_event(
                 app,
-                session_id,
-                cwd,
-                current_model,
-                available_models,
-                mode,
-                &history_updates,
+                session::ConnectedEventData {
+                    session_id,
+                    cwd,
+                    current_model,
+                    available_models,
+                    mode,
+                    fast_mode_state,
+                    history_updates,
+                },
             );
             crate::app::config::refresh_mcp_snapshot(app);
             crate::app::session_runtime::request_status_snapshot_refresh(app);
@@ -229,6 +233,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
             current_model,
             available_models,
             mode,
+            fast_mode_state,
             history_updates,
             restored_input,
         } => {
@@ -240,6 +245,7 @@ pub fn handle_client_event(app: &mut App, event: ClientEvent) {
                     current_model,
                     available_models,
                     mode,
+                    fast_mode_state,
                     history_updates,
                     restored_input,
                 },

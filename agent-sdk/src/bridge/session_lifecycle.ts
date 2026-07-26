@@ -67,7 +67,11 @@ import {
   updateAvailableCommands,
   type AvailableCommandsSnapshot,
 } from "./available_commands.js";
-import { emitAuthRequired, emitFastModeUpdateIfChanged } from "./error_classification.js";
+import {
+  emitAuthRequired,
+  emitFastModeUpdate,
+  setFastModeStateIfChanged,
+} from "./error_classification.js";
 import {
   mapAvailableModels,
   resolveCurrentModel,
@@ -644,6 +648,7 @@ export async function createSession(params: {
       const currentModelChanged = refreshCurrentModel(session);
       const { buildModeState, refreshSupportedModesForSession } = await import("./commands.js");
       refreshSupportedModesForSession(session);
+      const fastModeChanged = setFastModeStateIfChanged(session, result.fast_mode_state);
       if (!session.connected) {
         emitConnectEvent(session);
       } else {
@@ -656,14 +661,15 @@ export async function createSession(params: {
             mode: buildModeState(session, session.mode),
           });
         }
+        if (fastModeChanged) {
+          emitFastModeUpdate(session);
+        }
       }
       // Proactively detect missing auth from account info so the UI can
       // show the login hint immediately, without waiting for the first prompt.
       if (shouldEmitStartupAuthRequiredForAccount(result.account)) {
         emitAuthRequired(session);
       }
-      emitFastModeUpdateIfChanged(session, result.fast_mode_state);
-
       updateAvailableCommands(
         session,
         "session_result_commands",

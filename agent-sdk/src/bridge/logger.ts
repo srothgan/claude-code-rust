@@ -96,6 +96,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "cancel_turn":
     case "set_model":
     case "set_mode":
+    case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
     case "permission_response":
@@ -135,6 +136,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "cancel_turn":
     case "set_model":
     case "set_mode":
+    case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
     case "new_session":

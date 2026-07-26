@@ -762,6 +762,7 @@ fn connected_event(model_name: &str) -> ClientEvent {
         current_model: test_current_model(model_name),
         available_models: Vec::new(),
         mode: None,
+        fast_mode_state: model::FastModeState::Off,
         history_updates: Vec::new(),
     }
 }
@@ -1402,6 +1403,7 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
             current_model: test_current_model("claude-updated"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
         },
     );
@@ -1434,6 +1436,7 @@ fn connected_reconciles_trust_for_new_cwd() {
             current_model: test_current_model("claude-updated"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
         },
     );
@@ -1756,6 +1759,7 @@ fn session_replaced_resets_chat_and_transient_state() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -1813,6 +1817,7 @@ fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -1914,6 +1919,83 @@ fn matching_session_update_is_dispatched() {
         },
     );
 
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
+}
+
+#[test]
+fn connected_snapshot_recovers_fast_mode_dropped_before_authority() {
+    let mut app = make_test_app();
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "new-session".to_owned(),
+            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::On),
+        },
+    );
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::Connected {
+            session_id: model::SessionId::new("new-session"),
+            cwd: "/test".into(),
+            current_model: test_current_model("claude"),
+            available_models: Vec::new(),
+            mode: None,
+            fast_mode_state: model::FastModeState::On,
+            history_updates: Vec::new(),
+        },
+    );
+
+    assert_eq!(
+        app.session_runtime.session_id.as_ref().map(model::SessionId::as_str),
+        Some("new-session")
+    );
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::On);
+}
+
+#[test]
+fn replacement_snapshot_owns_fast_mode_before_and_after_stale_updates() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(model::SessionId::new("old-session"));
+    app.session_runtime.fast_mode_state = model::FastModeState::On;
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "new-session".to_owned(),
+            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Cooldown),
+        },
+    );
+    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::On);
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionReplaced {
+            session_id: model::SessionId::new("new-session"),
+            cwd: "/replacement".into(),
+            current_model: test_current_model("claude"),
+            available_models: Vec::new(),
+            mode: None,
+            fast_mode_state: model::FastModeState::Cooldown,
+            history_updates: Vec::new(),
+            restored_input: None,
+        },
+    );
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "old-session".to_owned(),
+            update: model::SessionUpdate::FastModeUpdate(model::FastModeState::Off),
+        },
+    );
+
+    assert_eq!(
+        app.session_runtime.session_id.as_ref().map(model::SessionId::as_str),
+        Some("new-session")
+    );
     assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
 }
 
@@ -2729,6 +2811,7 @@ fn resume_does_not_add_confirmation_system_message() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
             restored_input: None,
         },
@@ -2760,6 +2843,7 @@ fn resume_history_renders_user_message_chunks() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
             restored_input: None,
         },
@@ -2816,6 +2900,7 @@ fn session_replaced_restores_input_after_loading_history() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
             restored_input: Some("selected prompt".to_owned()),
         },
@@ -2847,6 +2932,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
         },
     );
@@ -2898,6 +2984,7 @@ fn startup_resume_history_allows_immediate_prompt_submit() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
         },
     );
@@ -2944,6 +3031,7 @@ fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates,
             restored_input: None,
         },
@@ -2988,6 +3076,7 @@ fn resume_history_forces_open_tool_calls_to_failed() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
             restored_input: None,
         },
@@ -3016,6 +3105,7 @@ fn resume_history_clears_active_turn_owner_after_loading() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: vec![model::SessionUpdate::AgentMessageChunk(
                 model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                     "assistant reply",
@@ -3044,6 +3134,7 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
             restored_input: None,
         },
@@ -3810,6 +3901,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             current_model: test_current_model("claude"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
         },
     );
@@ -4379,6 +4471,7 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
             current_model: test_current_model("new-model"),
             available_models: Vec::new(),
             mode: None,
+            fast_mode_state: model::FastModeState::Off,
             history_updates: Vec::new(),
             restored_input: None,
         },
