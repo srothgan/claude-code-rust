@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - **Installer download progress** (#312, @srothgan): Stream release archives with curl retries and stall detection, show matching fixed-width bars on PowerShell and Unix, and add opt-in size, speed, and ETA diagnostics while keeping redirected and CI output plain.
 
+### Fixes
+
+- **Runtime and tooling hardening** (#317, @srothgan): Add privacy-minimized baseline diagnostics with bounded retention, preserve resumable session hints through teardown, stop progress heartbeats from creating duplicate tool rows, update base64 to 0.23, and align cargo-deny targets and advisory gating with release packaging.
+
 ## [0.14.2] - 2026-07-26 [Changes][v0.14.2]
 
 ### Features
