@@ -71,7 +71,7 @@ pub struct Cli {
     #[arg(long)]
     pub bridge_script: Option<std::path::PathBuf>,
 
-    /// Enable runtime diagnostics using a timestamped default log file when `--log-file` is omitted.
+    /// Enable detailed info-level diagnostics in addition to the always-on warning/error baseline.
     #[arg(long)]
     pub enable_logs: bool,
 
@@ -82,9 +82,7 @@ pub struct Cli {
 
     /// Write tracing diagnostics to a file.
     ///
-    /// When omitted but logging is otherwise enabled via `--enable-logs`,
-    /// `--diagnostics-preset`, `--log-filter`, or `RUST_LOG`, a timestamped
-    /// default log path is used.
+    /// When omitted, interactive runs use a timestamped default log path.
     #[arg(long, value_name = "PATH")]
     pub log_file: Option<std::path::PathBuf>,
 

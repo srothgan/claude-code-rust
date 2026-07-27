@@ -1,6 +1,6 @@
 # Diagnostics
 
-Diagnostics are off by default. Enable them only when debugging or preparing a useful issue report because verbose logs can grow quickly.
+Interactive TUI runs write a small local diagnostics baseline by default. The baseline records warnings, errors, and minimal application lifecycle metadata using a restricted field set; detailed diagnostics remain opt-in because verbose logs can grow quickly and may contain private context.
 
 ## Doctor
 
@@ -64,7 +64,7 @@ Config output redacts obvious credentials by default. Export refuses to overwrit
 
 ## Logging
 
-Enable runtime diagnostics with a named preset:
+Expand the baseline with a named diagnostics preset:
 
 ```bash
 claude-rs --enable-logs --diagnostics-preset session
@@ -93,7 +93,9 @@ Use an explicit tracing filter for targeted debugging:
 claude-rs --log-filter "info,app.render=trace,bridge.protocol=debug"
 ```
 
-`--log-filter` overrides `--diagnostics-preset`. If `--log-file` is omitted but logging is enabled through `--enable-logs`, `--diagnostics-preset`, `--log-filter`, or `RUST_LOG`, the app writes to a timestamped default diagnostics file.
+`--log-filter` overrides `--diagnostics-preset`. Every interactive run writes to a timestamped default diagnostics file when `--log-file` is omitted. With no logging options, the filter is `warn,app.lifecycle=info` and versioned `claude-rs-baseline/v1` records retain only stable event metadata such as event name, message, outcome, error classification, duration, counts, and logging policy. Session and request identifiers, paths, commands, content, previews, and raw error payloads are omitted from the baseline format.
+
+Baseline logging is best-effort: if the default log cannot be initialized, the app continues without disrupting the TUI. Explicitly requested detailed logging still reports initialization failures as startup errors.
 
 The default diagnostics directory is under the platform local data directory:
 
@@ -107,7 +109,7 @@ Default runtime log files include the UTC start timestamp, process id, and a sho
 claude-rs-20260614T075924Z-p12345-r8f3a2c1.log
 ```
 
-Logs rotate at 10 MB and keep up to five rotated files per run. Default runtime logs are retained up to 256 MB or 30 days, while always preserving at least 10 newest files. Retention only applies to app-managed timestamped files in the default runtime log directory; explicit `--log-file` paths are never cleaned up by the app.
+Logs rotate at 10 MB and keep up to five rotated files per run. Default runtime logs are retained up to 256 MB, 30 days, or 100 managed files, while always preserving at least 10 newest files. Retention only applies to app-managed timestamped files in the default runtime log directory; explicit `--log-file` paths are never cleaned up by the app.
 
 `--log-append` appends to an explicit `--log-file`. When used without `--log-file`, it appends to the legacy shared default file `claude-rs.log` for compatibility; prefer the normal timestamped defaults for new diagnostics.
 
@@ -151,7 +153,7 @@ The bundle includes:
 - `last-crash.json` when the previous run crashed
 - diagnostics paths
 
-The bundle excludes full config files, Claude credentials, environment dumps, and arbitrary project files. Redaction removes obvious credentials, but logs can still contain private conversation text, local file paths, command output, or project-specific context. Review a bundle before sharing it publicly.
+The bundle excludes full config files, Claude credentials, environment dumps, and arbitrary project files. Redaction removes obvious credentials, and baseline logs omit common sensitive diagnostic fields. Detailed logs can still contain private conversation text, local file paths, command output, session identifiers, or project-specific context. Review a bundle before sharing it publicly.
 
 ## Failure Reports
 
@@ -161,7 +163,7 @@ Unexpected Rust panics install a local panic hook. The hook writes a redacted `l
 
 ## Bridge Diagnostics
 
-When runtime logging is active, bridge diagnostics are enabled and bridge stderr is captured into the structured log. This is useful for Agent SDK startup, authentication, MCP, permission, and protocol issues.
+When detailed diagnostics are requested through `--enable-logs`, a preset, `--log-file`, `--log-filter`, `--log-append`, or `RUST_LOG`, bridge diagnostics are enabled and bridge stderr is captured into the structured log. The always-on baseline leaves the high-volume bridge diagnostic stream disabled while retaining native bridge lifecycle warnings and errors.
 
 The bridge script can be overridden with:
 

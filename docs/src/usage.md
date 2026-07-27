@@ -52,7 +52,7 @@ The installed `claude-rs --help` command exposes these options:
 | `--no-update-check` | Disable startup update checks. |
 | `-C, --dir <DIR>` | Run in a specific working directory. |
 | `--bridge-script <PATH>` | Use a specific Agent SDK bridge script. |
-| `--enable-logs` | Enable diagnostics using the default log path when no `--log-file` is set. |
+| `--enable-logs` | Expand the always-on baseline to detailed info-level diagnostics. |
 | `--diagnostics-preset <runtime|session|render|bridge|full>` | Use a named diagnostics filter. |
 | `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
 | `--log-filter <FILTER>` | Use explicit tracing filter directives. |
