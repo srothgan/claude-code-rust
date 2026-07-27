@@ -36,6 +36,7 @@ wildcards = "warn"
 highlight = "all"
 deny = []
 skip = [
+    { name = "base64", version = "0.22.1", reason = "hyper-util, plist, and reqwest still use base64 0.22 while the CLI uses 0.23." },
     { name = "getrandom", version = "0.3.4", reason = "build-time dependencies still use getrandom 0.3 while runtime/dev dependencies have moved to 0.4." },
     { name = "hashbrown", version = "0.16.1", reason = "ratatui-core still uses hashbrown 0.16 while other transitive dependencies use 0.17." },
     { name = "itertools", version = "0.14.0", reason = "ratatui-core still uses itertools 0.14 while tui-markdown uses 0.15." },
