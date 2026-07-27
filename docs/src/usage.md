@@ -24,7 +24,7 @@ Resume by session id:
 claude-rs resume <session_id>
 ```
 
-The app prints a resume hint on clean exit when the active session has an id.
+After the TUI exits, the app prints a resume hint whenever a session was established, using the active or most recently established session id.
 
 ## Support And Diagnostics
 

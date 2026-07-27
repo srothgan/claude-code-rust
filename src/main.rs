@@ -103,7 +103,7 @@ fn run() -> anyhow::Result<i32> {
         claude_code_rust::app::start_update_check(&app, &cli);
         let result = claude_code_rust::app::run_tui(&mut app).await;
         let post_exit_action = app.post_exit_action.take();
-        maybe_print_resume_hint(&app, result.is_ok() && post_exit_action.is_none());
+        maybe_print_resume_hint(&app);
 
         // Kill any spawned terminal child processes before exiting
 
@@ -358,15 +358,9 @@ fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
     err.chain().find_map(|cause| cause.downcast_ref::<AppError>().cloned())
 }
 
-fn maybe_print_resume_hint(app: &claude_code_rust::app::App, success: bool) {
-    if !success {
-        return;
-    }
-    let Some(session_id) = app.session_runtime.session_id.as_ref() else {
-        return;
-    };
+fn maybe_print_resume_hint(app: &claude_code_rust::app::App) {
     let mut stderr = std::io::stderr().lock();
-    if let Err(err) = write_resume_hint(&mut stderr, session_id) {
+    if let Err(err) = write_resume_hint_for_app(&mut stderr, app) {
         tracing::warn!(
             target: claude_code_rust::logging::targets::APP_LIFECYCLE,
             event_name = "resume_hint_write_failed",
@@ -375,6 +369,16 @@ fn maybe_print_resume_hint(app: &claude_code_rust::app::App, success: bool) {
             error_message = %err,
         );
     }
+}
+
+fn write_resume_hint_for_app(
+    mut writer: impl std::io::Write,
+    app: &claude_code_rust::app::App,
+) -> std::io::Result<()> {
+    let Some(session_id) = app.session_runtime.resumable_session_id() else {
+        return Ok(());
+    };
+    write_resume_hint(&mut writer, session_id)
 }
 
 fn write_resume_hint(
@@ -386,7 +390,9 @@ fn write_resume_hint(
 
 #[cfg(test)]
 mod tests {
-    use super::write_resume_hint;
+    use super::{write_resume_hint, write_resume_hint_for_app};
+    use claude_code_rust::agent::model::SessionId;
+    use claude_code_rust::app::App;
 
     #[test]
     fn resume_hint_starts_on_fresh_line_and_ends_with_newline() {
@@ -395,5 +401,26 @@ mod tests {
         assert!(write_resume_hint(&mut output, "abc-123").is_ok());
 
         assert_eq!(output, b"\r\nResume this session: claude-rs resume abc-123\n");
+    }
+
+    #[test]
+    fn app_resume_hint_uses_available_session_id() {
+        let mut app = App::test_default();
+        app.session_runtime.session_id = Some(SessionId::new("session-123"));
+        let mut output = Vec::new();
+
+        assert!(write_resume_hint_for_app(&mut output, &app).is_ok());
+
+        assert_eq!(output, b"\r\nResume this session: claude-rs resume session-123\n");
+    }
+
+    #[test]
+    fn app_resume_hint_is_empty_before_session_establishment() {
+        let app = App::test_default();
+        let mut output = Vec::new();
+
+        assert!(write_resume_hint_for_app(&mut output, &app).is_ok());
+
+        assert!(output.is_empty());
     }
 }
