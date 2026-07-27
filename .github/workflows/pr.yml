@@ -26,6 +26,7 @@ jobs:
     outputs:
       package: ${{ steps.filter.outputs.package }}
       agent_sdk: ${{ steps.filter.outputs.agent_sdk }}
+      cargo_deps: ${{ steps.filter.outputs.cargo_deps }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -48,6 +49,7 @@ jobs:
 
           package=false
           agent_sdk=false
+          cargo_deps=false
           while IFS= read -r path; do
             case "$path" in
               Cargo.toml|Cargo.lock|deny.toml|package.json|package-lock.json|bin/*|agent-sdk/*|scripts/npm/*|scripts/runtime/*|scripts/shared/*|scripts/install/*|scripts/release/*|scripts/README.md|.github/workflows/pr.yml|.github/workflows/_agent-sdk.yml|.github/workflows/_release-build.yml|.github/workflows/release.yml|.github/workflows/nightly.yml)
@@ -59,10 +61,16 @@ jobs:
                 agent_sdk=true
                 ;;
             esac
+            case "$path" in
+              Cargo.toml|Cargo.lock|deny.toml)
+                cargo_deps=true
+                ;;
+            esac
           done < changed-files.txt
 
           echo "package=$package" >> "$GITHUB_OUTPUT"
           echo "agent_sdk=$agent_sdk" >> "$GITHUB_OUTPUT"
+          echo "cargo_deps=$cargo_deps" >> "$GITHUB_OUTPUT"
 
   rustfmt:
     name: Rustfmt
@@ -117,6 +125,22 @@ jobs:
           command: check bans licenses sources
           arguments: --all-features
 
+  # Advisories also run weekly and non-blocking in dependency-monitor.yml so that newly
+  # disclosed vulnerabilities never block unrelated PRs. Here they gate only the PRs that
+  # actually change the dependency graph, which must not introduce a known advisory.
+  cargo-deny-advisories:
+    name: Cargo Deny Advisories
+    needs: [changes]
+    if: needs.changes.outputs.cargo_deps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          rust-version: "1.88.0"
+          command: check advisories
+          arguments: --all-features
+
   agent-sdk-check:
     name: Agent SDK
     needs: [changes]
@@ -154,7 +178,7 @@ jobs:
         run: |
           node scripts/runtime/stage-bun-runtime.mjs --check
           node scripts/shared/verify-third-party-notices.mjs
-          node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs
+          node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/shared/deny-targets.test.mjs
 
       - name: Check public installer syntax
         shell: bash
@@ -288,6 +312,7 @@ jobs:
       - test-ubuntu
       - lockfile
       - cargo-deny-policy
+      - cargo-deny-advisories
       - agent-sdk-check
       - npm-package-layout
       - duplicate-code
@@ -302,6 +327,7 @@ jobs:
           TEST_UBUNTU: ${{ needs.test-ubuntu.result }}
           LOCKFILE: ${{ needs.lockfile.result }}
           CARGO_DENY_POLICY: ${{ needs.cargo-deny-policy.result }}
+          CARGO_DENY_ADVISORIES: ${{ needs.cargo-deny-advisories.result }}
           AGENT_SDK: ${{ needs.agent-sdk-check.result }}
           NPM_PACKAGE_LAYOUT: ${{ needs.npm-package-layout.result }}
           DUPLICATE_CODE: ${{ needs.duplicate-code.result }}
@@ -336,5 +362,6 @@ jobs:
           require_success "duplicate-code" "$DUPLICATE_CODE"
           require_success "codeql" "$CODEQL"
 
+          allow_success_or_skipped "cargo-deny-advisories" "$CARGO_DENY_ADVISORIES"
           allow_success_or_skipped "agent-sdk-check" "$AGENT_SDK"
           allow_success_or_skipped "npm-package-layout" "$NPM_PACKAGE_LAYOUT"
