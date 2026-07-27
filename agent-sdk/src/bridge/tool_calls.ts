@@ -483,21 +483,22 @@ export function finalizeOpenToolCalls(session: SessionState, status: "completed"
   }
 }
 
+/**
+ * Apply advisory progress only to a tool created by an authoritative tool-use event.
+ */
 export function emitToolProgressUpdate(
   session: SessionState,
   toolUseId: string,
-  toolName: string,
   progress: {
     subagentRetry?: import("../types.js").SubagentRetryUpdate;
     subagentType?: string;
   } = {},
 ): void {
-  let existing = session.toolCalls.get(toolUseId);
+  const existing = session.toolCalls.get(toolUseId);
   if (!existing) {
-    emitToolCall(session, toolUseId, toolName, {});
-    existing = session.toolCalls.get(toolUseId);
+    return;
   }
-  if (!existing ||
+  if (
     existing.status === "completed" ||
     existing.status === "failed" ||
     existing.status === "killed"

@@ -36,7 +36,7 @@ fn reset_session_identity_state(
     fast_mode: model::FastModeSnapshot,
 ) {
     app.bump_session_scope_epoch();
-    app.session_runtime.session_id = Some(session_id);
+    app.session_runtime.activate_session(session_id);
     app.session_runtime.current_model = Some(current_model.clone());
     app.session_runtime.mode = mode;
     app.session_runtime.config_options.clear();

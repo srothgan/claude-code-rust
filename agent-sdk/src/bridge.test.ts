@@ -4040,11 +4040,83 @@ test("emitToolProgressUpdate does not reopen completed tools", () => {
   });
 
   const events = captureBridgeEvents(() => {
-    emitToolProgressUpdate(session, "tool-1", "Bash");
+    emitToolProgressUpdate(session, "tool-1");
   });
 
   assert.equal(events.length, 0);
   assert.equal(session.toolCalls.get("tool-1")?.status, "completed");
+});
+
+test("emitToolProgressUpdate does not create tools from progress", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    emitToolProgressUpdate(session, "tool-progress-only");
+  });
+
+  assert.equal(events.length, 0);
+  assert.equal(session.toolCalls.has("tool-progress-only"), false);
+});
+
+test("handleSdkMessage correlates heartbeat progress to its existing parent tool", () => {
+  const session = makeSessionState();
+  const parentToolCall = createToolCall("tool-shell-parent", "PowerShell", {
+    command: "cargo test --all-features",
+  });
+  session.toolCalls.set(parentToolCall.tool_call_id, parentToolCall);
+
+  const events = captureBridgeEvents(() => {
+    for (let heartbeat = 0; heartbeat < 3; heartbeat += 1) {
+      handleSdkMessage(session, {
+        type: "tool_progress",
+        tool_use_id: `tool-shell-parent-heartbeat-${heartbeat}`,
+        tool_name: "PowerShell",
+        parent_tool_use_id: parentToolCall.tool_call_id,
+        elapsed_time_seconds: heartbeat + 1,
+        heartbeat: true,
+        uuid: `message-heartbeat-${heartbeat}`,
+        session_id: "session-1",
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+  });
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0], {
+    event: "session_update",
+    session_id: "session-1",
+    update: {
+      type: "tool_call_update",
+      tool_call_update: {
+        tool_call_id: "tool-shell-parent",
+        fields: { status: "in_progress" },
+      },
+    },
+  });
+  assert.equal(session.toolCalls.size, 1);
+  assert.equal(session.toolCalls.get(parentToolCall.tool_call_id)?.status, "in_progress");
+  for (let heartbeat = 0; heartbeat < 3; heartbeat += 1) {
+    assert.equal(session.toolCalls.has(`tool-shell-parent-heartbeat-${heartbeat}`), false);
+  }
+});
+
+test("handleSdkMessage ignores orphaned tool progress", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "tool_progress",
+      tool_use_id: "tool-orphaned-heartbeat",
+      tool_name: "PowerShell",
+      parent_tool_use_id: "tool-missing-parent",
+      elapsed_time_seconds: 1,
+      heartbeat: true,
+      uuid: "message-orphaned-heartbeat",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.equal(events.length, 0);
+  assert.equal(session.toolCalls.size, 0);
 });
 
 test("handleSdkMessage updates and clears subagent retry progress in place", () => {

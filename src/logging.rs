@@ -5,13 +5,19 @@ use crate::{Cli, DiagnosticsPreset};
 use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::{Map, Value};
+use std::fmt;
 use std::fs::{File, OpenOptions, create_dir_all, metadata, read_dir, remove_file, rename};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
-use time::{OffsetDateTime, macros::format_description};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339, macros::format_description};
+use tracing::field::{Field, Visit};
+use tracing::{Event, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::fmt::FmtContext;
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::registry::LookupSpan;
 
 pub mod targets {
     pub const APP_AUTH: &str = "app.auth";
@@ -37,6 +43,7 @@ pub mod targets {
 }
 
 const BRIDGE_LOG_SCHEMA: &str = "claude-rs-log/v1";
+const BASELINE_LOG_SCHEMA: &str = "claude-rs-baseline/v1";
 const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
 const DEFAULT_LOG_DIR: &str = "claude-code-rust";
 const DEFAULT_LOG_FILE_NAME: &str = "claude-rs.log";
@@ -50,7 +57,9 @@ const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const LOG_ROTATION_MAX_FILES: usize = 5;
 const LOG_RETENTION_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const LOG_RETENTION_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const LOG_RETENTION_MAX_FILES: usize = 100;
 const LOG_RETENTION_MIN_FILES: usize = 10;
+const DEFAULT_BASELINE_FILTER: &str = "warn,app.lifecycle=info";
 static BRIDGE_DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,11 +83,19 @@ pub struct LoggingRuntime {
 
 impl LoggingRuntime {
     pub fn init(cli: &Cli) -> anyhow::Result<Self> {
-        let Some(log_path) = resolve_log_path(cli)? else {
-            BRIDGE_DIAGNOSTICS_ENABLED.store(false, Ordering::Relaxed);
-            return Ok(Self { _guard: None });
-        };
+        let detailed_diagnostics = detailed_diagnostics_requested(cli);
+        match Self::try_init(cli, detailed_diagnostics) {
+            Ok(runtime) => Ok(runtime),
+            Err(_) if !detailed_diagnostics => {
+                BRIDGE_DIAGNOSTICS_ENABLED.store(false, Ordering::Relaxed);
+                Ok(Self { _guard: None })
+            }
+            Err(error) => Err(error),
+        }
+    }
 
+    fn try_init(cli: &Cli, detailed_diagnostics: bool) -> anyhow::Result<Self> {
+        let log_path = resolve_log_path(cli)?.context("runtime log path was not resolved")?;
         let directives = build_filter_directives(cli);
         let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
@@ -90,17 +107,26 @@ impl LoggingRuntime {
         )?;
         let (non_blocking, guard) = tracing_appender::non_blocking(writer);
 
-        tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_env_filter(filter)
-            .with_writer(non_blocking)
-            .with_ansi(false)
-            .with_file(true)
-            .with_line_number(true)
-            .with_target(true)
-            .try_init()
-            .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
+        if detailed_diagnostics {
+            tracing_subscriber::fmt()
+                .json()
+                .flatten_event(true)
+                .with_env_filter(filter)
+                .with_writer(non_blocking)
+                .with_ansi(false)
+                .with_file(true)
+                .with_line_number(true)
+                .with_target(true)
+                .try_init()
+                .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
+        } else {
+            tracing_subscriber::fmt()
+                .event_format(BaselineEventFormatter)
+                .with_env_filter(filter)
+                .with_writer(non_blocking)
+                .try_init()
+                .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
+        }
 
         tracing::info!(
             target: targets::APP_LIFECYCLE,
@@ -114,7 +140,9 @@ impl LoggingRuntime {
             log_rotation_max_files = LOG_ROTATION_MAX_FILES,
             log_retention_max_bytes = LOG_RETENTION_MAX_BYTES,
             log_retention_max_age_seconds = LOG_RETENTION_MAX_AGE.as_secs(),
+            log_retention_max_files = LOG_RETENTION_MAX_FILES,
             log_retention_min_files = LOG_RETENTION_MIN_FILES,
+            detailed_diagnostics,
             version = env!("CARGO_PKG_VERSION"),
         );
         if let Some(retention) = &log_path.retention {
@@ -145,7 +173,7 @@ impl LoggingRuntime {
                 }
             }
         }
-        BRIDGE_DIAGNOSTICS_ENABLED.store(true, Ordering::Relaxed);
+        BRIDGE_DIAGNOSTICS_ENABLED.store(detailed_diagnostics, Ordering::Relaxed);
 
         Ok(Self { _guard: Some(guard) })
     }
@@ -157,6 +185,7 @@ pub fn bridge_diagnostics_enabled() -> bool {
 }
 
 fn build_filter_directives(cli: &Cli) -> String {
+    let detailed_diagnostics = detailed_diagnostics_requested(cli);
     let mut directives = cli
         .log_filter
         .clone()
@@ -167,11 +196,129 @@ fn build_filter_directives(cli: &Cli) -> String {
                 .map(str::to_owned)
         })
         .or_else(|| std::env::var("RUST_LOG").ok())
-        .unwrap_or_else(|| "info".to_owned());
-    if !directives.contains("tui_markdown=") {
+        .unwrap_or_else(|| {
+            if detailed_diagnostics {
+                "info".to_owned()
+            } else {
+                DEFAULT_BASELINE_FILTER.to_owned()
+            }
+        });
+    if detailed_diagnostics && !directives.contains("tui_markdown=") {
         directives.push_str(",tui_markdown=info");
     }
     directives
+}
+
+fn detailed_diagnostics_requested(cli: &Cli) -> bool {
+    cli.enable_logs
+        || cli.diagnostics_preset.is_some()
+        || cli.log_file.is_some()
+        || cli.log_filter.is_some()
+        || cli.log_append
+        || std::env::var_os("RUST_LOG").is_some()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BaselineEventFormatter;
+
+impl<S, N> FormatEvent<S, N> for BaselineEventFormatter
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+    N: for<'writer> FormatFields<'writer> + 'static,
+{
+    fn format_event(
+        &self,
+        _ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> fmt::Result {
+        let metadata = event.metadata();
+        let timestamp = OffsetDateTime::now_utc().format(&Rfc3339).map_err(|_| fmt::Error)?;
+        let mut fields = Map::new();
+        event.record(&mut BaselineFieldVisitor { fields: &mut fields });
+
+        if !fields.contains_key("event_name") {
+            fields.remove("message");
+        }
+
+        let mut record = Map::new();
+        record.insert("schema".to_owned(), Value::String(BASELINE_LOG_SCHEMA.to_owned()));
+        record.insert("timestamp".to_owned(), Value::String(timestamp));
+        record.insert("level".to_owned(), Value::String(metadata.level().as_str().to_owned()));
+        record.extend(fields);
+        record.insert("target".to_owned(), Value::String(metadata.target().to_owned()));
+        if let Some(filename) = metadata.file() {
+            record.insert("filename".to_owned(), Value::String(filename.to_owned()));
+        }
+        if let Some(line_number) = metadata.line() {
+            record.insert("line_number".to_owned(), Value::from(line_number));
+        }
+
+        let line = serde_json::to_string(&record).map_err(|_| fmt::Error)?;
+        writer.write_str(&line)?;
+        writer.write_char('\n')
+    }
+}
+
+struct BaselineFieldVisitor<'a> {
+    fields: &'a mut Map<String, Value>,
+}
+
+impl BaselineFieldVisitor<'_> {
+    fn record(&mut self, field: &Field, value: Value) {
+        if baseline_field_allowed(field.name()) {
+            self.fields.insert(field.name().to_owned(), value);
+        }
+    }
+}
+
+impl Visit for BaselineFieldVisitor<'_> {
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.record(field, Value::from(value));
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.record(field, Value::from(value));
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.record(field, Value::from(value));
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.record(field, Value::String(value.to_owned()));
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        self.record(field, Value::String(format!("{value:?}")));
+    }
+}
+
+fn baseline_field_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "event_name"
+            | "message"
+            | "outcome"
+            | "reason"
+            | "error_kind"
+            | "error_code"
+            | "duration_ms"
+            | "count"
+            | "size_bytes"
+            | "exit_code"
+            | "version"
+            | "log_path_source"
+            | "log_filter"
+            | "log_open_mode"
+            | "log_rotation_max_bytes"
+            | "log_rotation_max_files"
+            | "log_retention_max_bytes"
+            | "log_retention_max_age_seconds"
+            | "log_retention_max_files"
+            | "log_retention_min_files"
+            | "detailed_diagnostics"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +375,7 @@ struct LogRetentionTarget {
 struct LogRetentionPolicy {
     max_total_bytes: u64,
     max_age: Duration,
+    max_files: usize,
     min_files: usize,
 }
 
@@ -236,6 +384,7 @@ impl Default for LogRetentionPolicy {
         Self {
             max_total_bytes: LOG_RETENTION_MAX_BYTES,
             max_age: LOG_RETENTION_MAX_AGE,
+            max_files: LOG_RETENTION_MAX_FILES,
             min_files: LOG_RETENTION_MIN_FILES,
         }
     }
@@ -255,9 +404,6 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
             open_mode: if cli.log_append { LogOpenMode::Append } else { LogOpenMode::Truncate },
             retention: None,
         }));
-    }
-    if !logging_enabled_without_explicit_path(cli) {
-        return Ok(None);
     }
     if cli.log_append {
         return Ok(Some(ResolvedLogPath {
@@ -280,14 +426,6 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
             policy: LogRetentionPolicy::default(),
         }),
     }))
-}
-
-fn logging_enabled_without_explicit_path(cli: &Cli) -> bool {
-    cli.enable_logs
-        || cli.diagnostics_preset.is_some()
-        || cli.log_filter.is_some()
-        || cli.log_append
-        || std::env::var_os("RUST_LOG").is_some()
 }
 
 pub fn default_legacy_log_path() -> anyhow::Result<PathBuf> {
@@ -648,7 +786,8 @@ fn enforce_log_retention_at(
     for candidate in candidates {
         let expired =
             now.duration_since(candidate.modified).is_ok_and(|age| age > target.policy.max_age);
-        if expired && remaining_files > target.policy.min_files {
+        let over_file_limit = remaining_files > target.policy.max_files;
+        if (expired || over_file_limit) && remaining_files > target.policy.min_files {
             remove_retention_candidate(&candidate, &mut report, &mut total_size)?;
             remaining_files = remaining_files.saturating_sub(1);
         } else {
@@ -890,9 +1029,11 @@ impl BridgeDiagnosticRecord {
 #[cfg(test)]
 mod tests {
     use super::{
-        BridgeDiagnosticRecord, LogOpenMode, LogPathSource, LogRetentionPolicy, LogRetentionTarget,
-        RollingFileWriter, clear_rotated_files, enforce_log_retention_at, generated_log_file_name,
-        is_managed_log_file, preview_text, resolve_log_path, resolve_perf_path, rotated_log_path,
+        BaselineEventFormatter, BridgeDiagnosticRecord, LogOpenMode, LogPathSource,
+        LogRetentionPolicy, LogRetentionTarget, RollingFileWriter, baseline_field_allowed,
+        clear_rotated_files, enforce_log_retention_at, generated_log_file_name,
+        is_managed_log_file, list_managed_runtime_logs_in, preview_text, resolve_log_path,
+        resolve_perf_path, rotated_log_path,
     };
     use crate::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -901,6 +1042,30 @@ mod tests {
     use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
     use time::macros::datetime;
+
+    #[derive(Clone)]
+    struct SharedLogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    struct LogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for SharedLogWriter {
+        type Writer = LogWriter;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            LogWriter(std::sync::Arc::clone(&self.0))
+        }
+    }
+
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn parses_structured_bridge_diagnostic() {
@@ -917,6 +1082,99 @@ mod tests {
     fn preview_truncates_with_ellipsis() {
         let preview = preview_text("abcdefgh", 5);
         assert_eq!(preview, "abcde...");
+    }
+
+    #[test]
+    fn baseline_fields_exclude_sensitive_diagnostic_payloads() {
+        for allowed in [
+            "event_name",
+            "message",
+            "outcome",
+            "error_kind",
+            "error_code",
+            "duration_ms",
+            "version",
+        ] {
+            assert!(baseline_field_allowed(allowed), "{allowed} should be retained");
+        }
+        for excluded in [
+            "session_id",
+            "request_id",
+            "tool_call_id",
+            "prompt",
+            "content",
+            "command",
+            "path",
+            "preview",
+            "error",
+            "error_message",
+        ] {
+            assert!(!baseline_field_allowed(excluded), "{excluded} should be excluded");
+        }
+    }
+
+    #[test]
+    fn baseline_formatter_writes_structured_metadata_without_sensitive_fields() {
+        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .event_format(BaselineEventFormatter)
+            .with_writer(SharedLogWriter(std::sync::Arc::clone(&buffer)))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                target: "app.session",
+                event_name = "session_operation_failed",
+                message = "session operation failed",
+                outcome = "failure",
+                error_code = "timeout",
+                duration_ms = 250_u64,
+                session_id = "session-secret",
+                path = "C:/private/project",
+                error_message = "token=secret",
+            );
+        });
+
+        let output =
+            String::from_utf8(buffer.lock().expect("log buffer lock").clone()).expect("utf8 log");
+        let record: serde_json::Value = serde_json::from_str(output.trim()).expect("json log");
+        assert_eq!(record["event_name"], "session_operation_failed");
+        assert_eq!(record["schema"], "claude-rs-baseline/v1");
+        assert_eq!(record["message"], "session operation failed");
+        assert_eq!(record["outcome"], "failure");
+        assert_eq!(record["error_code"], "timeout");
+        assert_eq!(record["duration_ms"], 250);
+        assert_eq!(record["target"], "app.session");
+        assert!(record.get("timestamp").is_some());
+        assert!(record.get("session_id").is_none());
+        assert!(record.get("path").is_none());
+        assert!(record.get("error_message").is_none());
+        assert!(!output.contains("session-secret"));
+        assert!(!output.contains("private/project"));
+        assert!(!output.contains("token=secret"));
+    }
+
+    #[test]
+    fn resolve_log_path_uses_default_for_always_on_baseline() {
+        let cli = Cli {
+            command: None,
+            no_update_check: false,
+            dir: None,
+            bridge_script: None,
+            enable_logs: false,
+            diagnostics_preset: None,
+            log_file: None,
+            log_filter: None,
+            log_append: false,
+            enable_perf: false,
+            perf_log: None,
+            perf_append: false,
+        };
+
+        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
+        assert_eq!(resolved.source, LogPathSource::Default);
+        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
+        assert!(resolved.retention.is_some());
     }
 
     #[test]
@@ -1170,6 +1428,7 @@ mod tests {
             policy: LogRetentionPolicy {
                 max_total_bytes: 1,
                 max_age: Duration::from_secs(60),
+                max_files: 10,
                 min_files: 1,
             },
         };
@@ -1181,5 +1440,32 @@ mod tests {
         assert!(protected.exists());
         assert!(!removable.exists());
         assert!(legacy.exists());
+    }
+
+    #[test]
+    fn retention_caps_managed_log_file_count() {
+        let dir = tempdir().expect("temp dir");
+        for index in 0..5 {
+            let path =
+                dir.path().join(format!("claude-rs-20260614T07000{index}Z-p1-rrun{index}.log"));
+            fs::write(path, "log").expect("write managed log");
+        }
+        let target = LogRetentionTarget {
+            directory: dir.path().to_path_buf(),
+            prefix: "claude-rs",
+            extension: "log",
+            policy: LogRetentionPolicy {
+                max_total_bytes: u64::MAX,
+                max_age: Duration::MAX,
+                max_files: 3,
+                min_files: 1,
+            },
+        };
+
+        let report =
+            enforce_log_retention_at(&target, None, SystemTime::now()).expect("retention succeeds");
+
+        assert_eq!(report.removed_files, 2);
+        assert_eq!(list_managed_runtime_logs_in(dir.path()).expect("list logs").len(), 3);
     }
 }

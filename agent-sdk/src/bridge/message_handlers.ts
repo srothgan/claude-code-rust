@@ -735,6 +735,26 @@ function logContentBlockLinkage(
   });
 }
 
+type ToolProgressCorrelationSource = "task" | "tool" | "parent";
+
+function resolveToolProgressTarget(
+  session: SessionState,
+  taskToolUseId: string,
+  toolUseId: string,
+  parentToolUseId: string,
+): { toolUseId: string; source: ToolProgressCorrelationSource } | null {
+  if (taskToolUseId && session.toolCalls.has(taskToolUseId)) {
+    return { toolUseId: taskToolUseId, source: "task" };
+  }
+  if (toolUseId && session.toolCalls.has(toolUseId)) {
+    return { toolUseId, source: "tool" };
+  }
+  if (parentToolUseId && session.toolCalls.has(parentToolUseId)) {
+    return { toolUseId: parentToolUseId, source: "parent" };
+  }
+  return null;
+}
+
 function hideToolUse(session: SessionState, toolUseId: string): void {
   if (toolUseId) {
     session.hiddenToolUseIds.add(toolUseId);
@@ -1412,26 +1432,34 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "tool_progress") {
     const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
     const toolName = typeof msg.tool_name === "string" ? msg.tool_name : "Tool";
+    const parentToolUseId = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
     const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
     const taskToolUseId = taskId ? session.taskToolUseIds.get(taskId) ?? "" : "";
-    const resolvedToolUseId = taskToolUseId || toolUseId;
-    if (isHiddenToolUse(session, resolvedToolUseId, toolName)) {
+    if (isHiddenToolUse(session, toolUseId, toolName)) {
       return;
     }
+    const progressTarget = resolveToolProgressTarget(
+      session,
+      taskToolUseId,
+      toolUseId,
+      parentToolUseId,
+    );
+    const resolvedToolUseId = progressTarget?.toolUseId ?? "";
     bridgeLogger.debug({
       target: LOG_TARGETS.APP_TOOL,
       eventName: "sdk_tool_progress_linkage_observed",
       message: "SDK tool progress linkage observed",
-      outcome: typeof msg.parent_tool_use_id === "string" ? "child" : "root_or_unknown",
+      outcome: progressTarget?.source ?? "orphaned",
       sessionId: session.sessionId,
-      toolCallId: resolvedToolUseId || undefined,
+      toolCallId: resolvedToolUseId || toolUseId || undefined,
       fields: {
         tool_name: toolName,
         tool_use_id: toolUseId || undefined,
-        parent_tool_use_id:
-          typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : undefined,
+        parent_tool_use_id: parentToolUseId || undefined,
         task_id: taskId || undefined,
         task_resolved_tool_use_id: taskToolUseId || undefined,
+        resolved_tool_use_id: resolvedToolUseId || undefined,
+        correlation_source: progressTarget?.source,
       },
     });
     if (resolvedToolUseId) {
@@ -1451,7 +1479,7 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         typeof msg.subagent_type === "string" && msg.subagent_type.trim()
           ? msg.subagent_type.trim()
           : undefined;
-      emitToolProgressUpdate(session, resolvedToolUseId, toolName, {
+      emitToolProgressUpdate(session, resolvedToolUseId, {
         ...(subagentRetry
           ? { subagentRetry }
           : hasSubagentRetry

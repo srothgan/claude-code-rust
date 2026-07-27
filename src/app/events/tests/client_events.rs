@@ -491,6 +491,10 @@ fn session_replaced_resets_chat_and_transient_state() {
         Some("replacement")
     );
     assert_eq!(
+        app.session_runtime.resumable_session_id().map(model::SessionId::as_str),
+        Some("replacement")
+    );
+    assert_eq!(
         app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
         Some("new-model")
     );
