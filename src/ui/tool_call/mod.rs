@@ -20,6 +20,7 @@ mod push_notification;
 mod remote_trigger;
 mod repl;
 mod schedule_wakeup;
+mod skill;
 mod standard;
 mod tasks;
 mod typed;

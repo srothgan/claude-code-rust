@@ -1,4 +1,4 @@
-﻿import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
+import type { Json, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
 import {
@@ -32,6 +32,19 @@ const WORKFLOW_TOOL_NAME = "Workflow";
 const PROJECTS_TOOL_NAME = "Projects";
 const ARTIFACT_TOOL_NAME = "Artifact";
 const SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME = "ShowOnboardingRolePicker";
+const SKILL_TOOL_NAME = "Skill";
+const SKILL_WORD_OVERRIDES: Readonly<Record<string, string>> = {
+  api: "API",
+  ci: "CI",
+  cli: "CLI",
+  gh: "GH",
+  github: "GitHub",
+  mcp: "MCP",
+  pdf: "PDF",
+  sdk: "SDK",
+  ui: "UI",
+  ux: "UX",
+};
 const READ_MCP_RESOURCE_TOOL_NAME = "ReadMcpResource";
 const READ_MCP_RESOURCE_DIR_TOOL_NAME = "ReadMcpResourceDir";
 const SEARCH_OUTPUT_MODES = new Set(["content", "files_with_matches", "count"]);
@@ -212,6 +225,7 @@ export function normalizeToolKind(name: string): string {
     case "Projects":
     case "Artifact":
     case "ShowOnboardingRolePicker":
+    case SKILL_TOOL_NAME:
       return "other";
     case "Task":
     case "Agent":
@@ -222,6 +236,48 @@ export function normalizeToolKind(name: string): string {
     default:
       return "think";
   }
+}
+
+function skillDisplayName(rawName: string): string {
+  const trimmed = rawName.trim();
+  const segments = trimmed.split(":");
+  if (
+    segments.length > 2 ||
+    segments.some(
+      (segment) =>
+        !segment || !/^[a-zA-Z0-9]+(?:[-_][a-zA-Z0-9]+)*$/.test(segment),
+    )
+  ) {
+    return trimmed;
+  }
+
+  const displaySegments = segments.map((segment) =>
+    segment
+      .split(/[-_]/)
+      .map((word) => skillDisplayWord(word))
+      .join(" "),
+  );
+  if (
+    displaySegments.length === 2 &&
+    displaySegments[0].toLowerCase() === displaySegments[1].toLowerCase()
+  ) {
+    return displaySegments[1];
+  }
+  return displaySegments.join(" / ");
+}
+
+function skillDisplayWord(word: string): string {
+  const override = SKILL_WORD_OVERRIDES[word.toLowerCase()];
+  if (override) {
+    return override;
+  }
+  if (
+    /^[A-Z0-9]+$/.test(word) ||
+    (/[a-z]/.test(word) && /[A-Z]/.test(word) && !/^[A-Z][a-z0-9]*$/.test(word))
+  ) {
+    return word;
+  }
+  return `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`;
 }
 
 export function toolTitle(
@@ -296,6 +352,12 @@ export function toolTitle(
   }
   if (name === SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME) {
     return SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME;
+  }
+  if (name === SKILL_TOOL_NAME) {
+    const skillName = nonEmptyString(input.skill);
+    return skillName
+      ? `${SKILL_TOOL_NAME}: ${skillDisplayName(skillName)}`
+      : SKILL_TOOL_NAME;
   }
   if (name === "EnterWorktree") {
     const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
@@ -1903,6 +1965,78 @@ function collectResultCandidates(rawResult: unknown, rawContent: unknown): Recor
   return candidates;
 }
 
+type InlineSkillResult = {
+  success: boolean;
+  commandName: string;
+  status: "inline";
+};
+
+type ForkedSkillResult = {
+  success: boolean;
+  commandName: string;
+  status: "forked";
+  agentId: string;
+  result: string;
+  background?: boolean;
+};
+
+type SkillResult = InlineSkillResult | ForkedSkillResult;
+
+function parseSkillResult(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): SkillResult | undefined {
+  if (toolName !== SKILL_TOOL_NAME) {
+    return undefined;
+  }
+
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
+    const commandName = nonEmptyString(candidate.commandName);
+    if (!commandName || typeof candidate.success !== "boolean") {
+      continue;
+    }
+
+    if (candidate.status === "forked") {
+      const agentId = nonEmptyString(candidate.agentId);
+      if (!agentId || typeof candidate.result !== "string") {
+        continue;
+      }
+      if (candidate.background !== undefined && typeof candidate.background !== "boolean") {
+        continue;
+      }
+      return {
+        success: candidate.success,
+        commandName,
+        status: "forked",
+        agentId,
+        result: candidate.result,
+        ...(typeof candidate.background === "boolean"
+          ? { background: candidate.background }
+          : {}),
+      };
+    }
+
+    if (candidate.status === undefined || candidate.status === "inline") {
+      const allowedToolsValid =
+        candidate.allowedTools === undefined ||
+        (Array.isArray(candidate.allowedTools) &&
+          candidate.allowedTools.every((tool): tool is string => typeof tool === "string"));
+      const modelValid = candidate.model === undefined || typeof candidate.model === "string";
+      if (!allowedToolsValid || !modelValid) {
+        continue;
+      }
+      return {
+        success: candidate.success,
+        commandName,
+        status: "inline",
+      };
+    }
+  }
+
+  return undefined;
+}
+
 function monitorResultFields(
   toolName: string,
   rawResult: unknown,
@@ -2171,6 +2305,22 @@ export function buildToolResultFields(
   const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
   if (outputMetadata) {
     fields.output_metadata = outputMetadata;
+  }
+  const skillResult = !isError ? parseSkillResult(toolName, rawResult, rawContent) : undefined;
+  if (skillResult) {
+    fields.title = `${SKILL_TOOL_NAME}: ${skillDisplayName(skillResult.commandName)}`;
+    if (!skillResult.success) {
+      fields.status = "failed";
+    } else if (skillResult.status === "inline") {
+      return fields;
+    } else {
+      const output = skillResult.result.trim();
+      if (output) {
+        fields.raw_output = output;
+        fields.content = [{ type: "content", content: { type: "text", text: output } }];
+      }
+      return fields;
+    }
   }
   const fileUnchangedText = !isError && toolName === "Read" ? fileUnchangedResultText(rawResult, rawContent) : "";
   if (fileUnchangedText) {

@@ -62,6 +62,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
         "Projects" => ("\u{25a6}", "Projects"),
         "Artifact" => ("\u{25c8}", "Artifact"),
         "ShowOnboardingRolePicker" => ("\u{2299}", "Role"),
+        "Skill" => ("\u{2726}", "Skill"),
         "EnterWorktree" => ("\u{21c4}", "EnterWorktree"),
         "ExitWorktree" => ("\u{21c4}", "ExitWorktree"),
         _ => ("\u{25cb}", "Tool"),
@@ -71,6 +72,7 @@ pub fn tool_name_label(sdk_tool_name: &str) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::tool_name_label;
+    use unicode_width::UnicodeWidthStr;
 
     #[test]
     fn task_and_agent_share_subagent_label_and_icon() {
@@ -131,6 +133,12 @@ mod tests {
         assert_eq!(tool_name_label("Projects"), ("\u{25a6}", "Projects"));
         assert_eq!(tool_name_label("Artifact"), ("\u{25c8}", "Artifact"));
         assert_eq!(tool_name_label("ShowOnboardingRolePicker"), ("\u{2299}", "Role"));
+    }
+
+    #[test]
+    fn skill_tool_uses_spark_icon() {
+        assert_eq!(tool_name_label("Skill"), ("\u{2726}", "Skill"));
+        assert_eq!(UnicodeWidthStr::width("\u{2726}"), 1);
     }
 
     #[test]

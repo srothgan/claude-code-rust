@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use super::errors::render_failed_tool_text_content;
 use super::{
     artifact, cron, fields, monitor, projects, push_notification, remote_trigger, repl,
-    schedule_wakeup, tasks, workflow, worktree,
+    schedule_wakeup, skill, tasks, workflow, worktree,
 };
 
 pub(super) struct TypedToolRenderer {
@@ -88,6 +88,12 @@ const RENDERERS: &[TypedToolRenderer] = &[
         matches: artifact::is_artifact_tool,
         has_structured_body: artifact::has_structured_body,
         render: artifact::render_tool_content,
+    },
+    TypedToolRenderer {
+        name: "skill",
+        matches: skill::is_skill_tool,
+        has_structured_body: skill::has_structured_body,
+        render: skill::render_tool_content,
     },
 ];
 
