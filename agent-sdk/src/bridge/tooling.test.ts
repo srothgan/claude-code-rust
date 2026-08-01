@@ -219,6 +219,30 @@ test("createToolCall maps Workflow to other kind and name title", () => {
   assert.equal(fallbackWorkflow.title, "Workflow");
 });
 
+test("createToolCall maps Skill to other kind and formats its name for display", () => {
+  const cases = [
+    ["claude-api", "Skill: Claude API"],
+    ["dataviz", "Skill: Dataviz"],
+    [" frontend-design:frontend-design ", "Skill: Frontend Design"],
+    ["keybindings_help", "Skill: Keybindings Help"],
+    ["strava-coach", "Skill: Strava Coach"],
+    ["github:gh-fix-ci", "Skill: GitHub / GH Fix CI"],
+    ["mobile:iOS-debug", "Skill: Mobile / iOS Debug"],
+    ["future-widget", "Skill: Future Widget"],
+    ["future::widget", "Skill: future::widget"],
+    ["future.widget", "Skill: future.widget"],
+  ];
+
+  for (const [skill, expectedTitle] of cases) {
+    const toolCall = createToolCall(`tc-skill-${skill}`, "Skill", { skill });
+    assert.equal(toolCall.kind, "other");
+    assert.equal(toolCall.title, expectedTitle);
+  }
+  const incompleteSkill = createToolCall("tc-skill-incomplete", "Skill", {});
+
+  assert.equal(incompleteSkill.title, "Skill");
+});
+
 test("createToolCall maps project and artifact tools to compact titles", () => {
   const projectInfo = createToolCall("tc-project-info", "Projects", {
     method: "project_info",
@@ -1059,6 +1083,62 @@ test("buildToolResultFields marks only structured Skill background launches", ()
     buildToolResultFields(false, "ok", bash, { background: true }).output_metadata,
     undefined,
   );
+});
+
+test("buildToolResultFields suppresses successful inline Skill launch text", () => {
+  const skill = createToolCall("tc-skill-inline", "Skill", {
+    skill: "frontend-design:frontend-design",
+  });
+  const fields = buildToolResultFields(
+    false,
+    "Launching skill: frontend-design:frontend-design",
+    skill,
+    {
+      success: true,
+      commandName: "frontend-design:frontend-design",
+      allowedTools: ["Read"],
+    },
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.equal(fields.title, "Skill: Frontend Design");
+  assert.equal(fields.raw_output, undefined);
+  assert.equal(fields.content, undefined);
+});
+
+test("buildToolResultFields preserves forked Skill results and background metadata", () => {
+  const skill = createToolCall("tc-skill-forked", "Skill", { skill: "review" });
+  const fields = buildToolResultFields(false, "model-facing launch text", skill, {
+    success: true,
+    commandName: "code-review",
+    status: "forked",
+    agentId: "agent-1",
+    result: "Review worker launched",
+    background: true,
+  });
+
+  assert.equal(fields.title, "Skill: Code Review");
+  assert.equal(fields.raw_output, "Review worker launched");
+  assert.deepEqual(fields.content, [
+    { type: "content", content: { type: "text", text: "Review worker launched" } },
+  ]);
+  assert.deepEqual(fields.output_metadata, { skill: { background: true } });
+});
+
+test("buildToolResultFields falls back losslessly for malformed Skill results", () => {
+  const skill = createToolCall("tc-skill-malformed", "Skill", { skill: "review" });
+  const fields = buildToolResultFields(false, "Launching skill: review", skill, {
+    success: true,
+    commandName: "review",
+    status: "forked",
+    result: "missing agent ID",
+  });
+
+  assert.equal(fields.title, undefined);
+  assert.equal(fields.raw_output, "Launching skill: review");
+  assert.deepEqual(fields.content, [
+    { type: "content", content: { type: "text", text: "Launching skill: review" } },
+  ]);
 });
 
 test("buildToolResultFields preserves Agent resolvedModel metadata", () => {

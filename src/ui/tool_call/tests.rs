@@ -177,6 +177,18 @@ fn render_skill_title_shows_backgrounded_badge() {
 }
 
 #[test]
+fn render_skill_title_uses_dedicated_icon_and_named_title() {
+    let mut tc = test_tool_call("tc-skill", "Skill", model::ToolCallStatus::Completed);
+    tc.title = "Skill: Frontend Design".to_owned();
+
+    let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+    assert!(rendered.contains("\u{2726} Skill: Frontend Design"));
+    assert!(!rendered.contains("\u{25cb}"));
+}
+
+#[test]
 fn render_tool_call_preserves_non_execution_reason_and_feedback() {
     let mut tc = test_tool_call("tc-rejected", "Bash", model::ToolCallStatus::Failed);
     tc.output_metadata = Some(
