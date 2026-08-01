@@ -163,7 +163,7 @@ pub(super) fn handle_auth_required_event(
     app.session_runtime.login_hint = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
-    super::clear_compaction_state(app, false);
+    super::compaction::reset(app);
     app.session_runtime.last_rate_limit_update = None;
     app.turn.clear_cancel_state();
     app.session_runtime.account_info = None;
@@ -184,7 +184,7 @@ pub(super) fn handle_auth_required_event(
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
-    super::clear_compaction_state(app, false);
+    super::compaction::reset(app);
     app.turn.clear_cancel_state();
     app.session_runtime.last_rate_limit_update = None;
     app.session_runtime.account_info = None;
@@ -322,7 +322,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     let session_id_for_log = session_id.to_string();
     let history_update_count = history_updates.len();
     let available_model_count = available_models.len();
-    super::clear_compaction_state(app, false);
+    super::compaction::reset(app);
     apply_session_cwd(app, cwd);
     app.sdk_inventory.available_models = available_models;
     reset_for_new_session(

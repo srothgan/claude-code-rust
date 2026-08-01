@@ -1503,24 +1503,38 @@ fn turn_complete_without_cancel_does_not_render_interrupted_hint() {
 }
 
 #[test]
-fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary() {
+fn explicit_manual_compaction_success_keeps_history_and_emits_once() {
     let mut app = make_test_app();
+    app.turn.compaction.begin_manual();
     app.transcript.messages.push(user_msg("/compact"));
     app.transcript
         .messages
         .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("compacted"))]));
     handle_client_event(
         &mut app,
-        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
-            trigger: model::CompactionTrigger::Manual,
-            pre_tokens: 123_456,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
+            model::CompactionBoundary {
+                trigger: model::CompactionTrigger::Manual,
+                pre_tokens: 123_456,
+                post_tokens: Some(20_000),
+                duration_ms: Some(1_500),
+            },
+        ))),
+    );
+    assert!(app.turn.compaction.is_active());
+
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Finished {
+            result: model::CompactionResult::Success,
+            error_code: None,
+            error: None,
         })),
     );
-    assert!(app.turn.pending_compact_clear);
 
     handle_client_event(&mut app, turn_complete(None));
 
-    assert!(!app.turn.pending_compact_clear);
+    assert!(!app.turn.compaction.is_active());
     assert_eq!(app.transcript.messages.len(), 3);
     let Some(ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), blocks, .. }) =
         app.transcript.messages.last()
@@ -1538,9 +1552,66 @@ fn turn_complete_keeps_history_and_adds_compaction_success_after_manual_boundary
 }
 
 #[test]
+fn late_boundary_after_explicit_success_does_not_reopen_or_duplicate_manual_notice() {
+    let mut app = make_test_app();
+    app.turn.compaction.begin_manual();
+
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Started)),
+    );
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Finished {
+            result: model::CompactionResult::Success,
+            error_code: None,
+            error: None,
+        })),
+    );
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Idle)),
+    );
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
+            model::CompactionBoundary {
+                trigger: model::CompactionTrigger::Manual,
+                pre_tokens: 47_024,
+                post_tokens: Some(8_049),
+                duration_ms: Some(92_408),
+            },
+        ))),
+    );
+
+    assert!(!app.turn.compaction.is_active());
+    assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(47_024));
+    assert_eq!(app.session_runtime.session_usage.last_compaction_post_tokens, Some(8_049));
+    assert_eq!(app.session_runtime.session_usage.last_compaction_duration_ms, Some(92_408));
+
+    handle_client_event(&mut app, turn_complete(None));
+
+    let success_notices = app
+        .transcript
+        .messages
+        .iter()
+        .filter(|message| {
+            matches!(message.role, MessageRole::System(Some(SystemSeverity::Info)))
+                && message.blocks.iter().any(|block| {
+                    matches!(
+                        block,
+                        MessageBlock::Text(text) if text.text == "Session successfully compacted."
+                    )
+                })
+        })
+        .count();
+    assert_eq!(success_notices, 1);
+}
+
+#[test]
 fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
     let mut app = make_test_app();
-    app.turn.is_compacting = true;
+    app.turn.compaction.begin();
 
     handle_client_event(
         &mut app,
@@ -1549,8 +1620,7 @@ fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
         ))),
     );
 
-    assert!(!app.turn.is_compacting);
-    assert!(!app.turn.pending_compact_clear);
+    assert!(!app.turn.compaction.is_active());
     assert!(app.transcript.messages.iter().all(|message| {
         !matches!(
             message,
@@ -1560,24 +1630,23 @@ fn first_agent_chunk_clears_unconfirmed_compacting_without_success_message() {
 }
 
 #[test]
-fn session_status_idle_does_not_emit_compaction_success_without_boundary() {
+fn generic_session_status_does_not_mutate_compaction() {
     let mut app = make_test_app();
-    app.turn.is_compacting = true;
+    app.turn.compaction.begin();
 
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Idle)),
     );
 
-    assert!(!app.turn.is_compacting);
-    assert!(!app.turn.pending_compact_clear);
+    assert!(app.turn.compaction.is_active());
     assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
-fn turn_error_keeps_history_when_compact_pending() {
+fn turn_error_clears_manual_compaction_without_success_message() {
     let mut app = make_test_app();
-    app.turn.pending_compact_clear = true;
+    app.turn.compaction.begin_manual();
     app.transcript.messages.push(user_msg("/compact"));
 
     handle_client_event(
@@ -1590,19 +1659,10 @@ fn turn_error_keeps_history_when_compact_pending() {
         },
     );
 
-    assert!(!app.turn.pending_compact_clear);
+    assert!(!app.turn.compaction.is_active());
     assert!(matches!(app.status, AppStatus::Error));
-    assert_eq!(app.transcript.messages.len(), 3);
+    assert_eq!(app.transcript.messages.len(), 2);
     assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
-    let Some(ChatMessage { role: MessageRole::System(Some(SystemSeverity::Info)), blocks, .. }) =
-        app.transcript.messages.get(1)
-    else {
-        panic!("expected compaction success system message");
-    };
-    let Some(MessageBlock::Text(block)) = blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Session successfully compacted.");
     let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
         app.transcript.messages.last()
     else {
@@ -1616,23 +1676,20 @@ fn turn_error_keeps_history_when_compact_pending() {
 }
 
 #[test]
-fn turn_cancel_keeps_manual_compaction_success_pending_until_exit() {
+fn turn_cancel_keeps_manual_compaction_active_until_exit() {
     let mut app = make_test_app();
-    app.turn.pending_compact_clear = true;
-    app.turn.is_compacting = true;
+    app.turn.compaction.begin_manual();
 
     handle_local_cancel_enqueued(&mut app);
 
-    assert!(app.turn.pending_compact_clear);
-    assert!(app.turn.is_compacting);
+    assert!(app.turn.compaction.is_active());
 }
 
 #[test]
-fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
+fn turn_error_after_cancel_clears_compaction_without_success() {
     let mut app = make_test_app();
     app.transcript.messages.push(user_msg("/compact"));
-    app.turn.pending_compact_clear = true;
-    app.turn.is_compacting = true;
+    app.turn.compaction.begin_manual();
 
     handle_local_cancel_enqueued(&mut app);
     handle_client_event(
@@ -1645,16 +1702,9 @@ fn turn_error_after_cancel_keeps_compaction_success_before_interrupted_hint() {
         },
     );
 
-    assert_eq!(app.transcript.messages.len(), 3);
-    assert!(matches!(
-        app.transcript.messages[1].role,
-        MessageRole::System(Some(SystemSeverity::Info))
-    ));
+    assert!(!app.turn.compaction.is_active());
+    assert_eq!(app.transcript.messages.len(), 2);
     let Some(MessageBlock::Text(block)) = app.transcript.messages[1].blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Session successfully compacted.");
-    let Some(MessageBlock::Text(block)) = app.transcript.messages[2].blocks.first() else {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Conversation interrupted. Tell the model how to proceed.");
@@ -1952,47 +2002,139 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
 }
 
 #[test]
-fn compaction_boundary_enables_compacting_and_records_boundary() {
+fn manual_compaction_boundary_enriches_active_state_and_records_metrics() {
     let mut app = make_test_app();
-    assert!(!app.turn.is_compacting);
+    app.turn.compaction.begin_manual();
 
     handle_client_event(
         &mut app,
-        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
-            trigger: model::CompactionTrigger::Manual,
-            pre_tokens: 123_456,
-        })),
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
+            model::CompactionBoundary {
+                trigger: model::CompactionTrigger::Manual,
+                pre_tokens: 123_456,
+                post_tokens: Some(20_000),
+                duration_ms: Some(1_500),
+            },
+        ))),
     );
 
-    assert!(app.turn.is_compacting);
-    assert!(app.turn.pending_compact_clear);
+    assert!(app.turn.compaction.is_active());
     assert_eq!(
         app.session_runtime.session_usage.last_compaction_trigger,
         Some(model::CompactionTrigger::Manual)
     );
     assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(123_456));
+    assert_eq!(app.session_runtime.session_usage.last_compaction_post_tokens, Some(20_000));
+    assert_eq!(app.session_runtime.session_usage.last_compaction_duration_ms, Some(1_500));
 }
 
 #[test]
-fn auto_compaction_boundary_sets_compacting_without_manual_success_pending() {
+fn auto_compaction_boundary_enriches_started_state_without_manual_success_pending() {
     let mut app = make_test_app();
-    assert!(!app.turn.is_compacting);
+    assert!(!app.turn.compaction.is_active());
 
     handle_client_event(
         &mut app,
-        session_update(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
-            trigger: model::CompactionTrigger::Auto,
-            pre_tokens: 234_567,
-        })),
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Started)),
     );
 
-    assert!(app.turn.is_compacting);
-    assert!(!app.turn.pending_compact_clear);
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
+            model::CompactionBoundary {
+                trigger: model::CompactionTrigger::Auto,
+                pre_tokens: 234_567,
+                post_tokens: None,
+                duration_ms: None,
+            },
+        ))),
+    );
+
+    assert!(app.turn.compaction.is_active());
     assert_eq!(
         app.session_runtime.session_usage.last_compaction_trigger,
         Some(model::CompactionTrigger::Auto)
     );
     assert_eq!(app.session_runtime.session_usage.last_compaction_pre_tokens, Some(234_567));
+}
+
+#[test]
+fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
+    let mut app = make_test_app();
+
+    for _ in 0..2 {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::CompactionUpdate(
+                model::CompactionUpdate::Started,
+            )),
+        );
+    }
+    assert!(app.turn.compaction.is_active());
+
+    for _ in 0..2 {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::CompactionUpdate(
+                model::CompactionUpdate::Finished {
+                    result: model::CompactionResult::Success,
+                    error_code: None,
+                    error: None,
+                },
+            )),
+        );
+    }
+
+    assert!(!app.turn.compaction.is_active());
+    assert!(app.transcript.messages.is_empty());
+}
+
+#[test]
+fn failed_compaction_clears_state_and_surfaces_sdk_error() {
+    let mut app = make_test_app();
+    app.turn.compaction.begin();
+
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Finished {
+            result: model::CompactionResult::Failed,
+            error_code: Some(model::CompactionFailureCode::Unknown),
+            error: Some("Prompt is too long".to_owned()),
+        })),
+    );
+
+    assert!(!app.turn.compaction.is_active());
+    let Some(MessageBlock::Text(block)) =
+        app.transcript.messages.last().and_then(|message| message.blocks.first())
+    else {
+        panic!("expected compaction failure message");
+    };
+    assert_eq!(block.text, "Context compaction failed: Prompt is too long");
+}
+
+#[test]
+fn too_few_groups_compaction_failure_is_actionable() {
+    let mut app = make_test_app();
+    app.turn.compaction.begin();
+
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Finished {
+            result: model::CompactionResult::Failed,
+            error_code: Some(model::CompactionFailureCode::TooFewGroups),
+            error: Some("too_few_groups".to_owned()),
+        })),
+    );
+
+    let Some(MessageBlock::Text(block)) =
+        app.transcript.messages.last().and_then(|message| message.blocks.first())
+    else {
+        panic!("expected compaction failure message");
+    };
+    assert_eq!(
+        block.text,
+        "Context compaction cannot reduce a single oversized request because there are not enough earlier conversation turns to summarize. Start a new session and retry with a smaller request or a skill that loads less context."
+    );
 }
 
 #[test]

@@ -167,23 +167,6 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
     }
 }
 
-pub(super) fn handle_compaction_boundary_update(
-    app: &mut App,
-    boundary: model::CompactionBoundary,
-) {
-    app.turn.is_compacting = true;
-    if matches!(boundary.trigger, model::CompactionTrigger::Manual) {
-        app.turn.pending_compact_clear = true;
-    }
-    app.session_runtime.session_usage.last_compaction_trigger = Some(boundary.trigger);
-    app.session_runtime.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
-    tracing::debug!(
-        "CompactionBoundary: trigger={:?} pre_tokens={}",
-        boundary.trigger,
-        boundary.pre_tokens
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::format_rate_limit_summary;

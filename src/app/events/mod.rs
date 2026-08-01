@@ -3,6 +3,7 @@
 
 mod api_retry;
 mod client;
+mod compaction;
 mod notices;
 mod rate_limit;
 mod retraction;
@@ -258,7 +259,6 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
             | model::SessionUpdate::ToolCall(_)
             | model::SessionUpdate::ToolCallUpdate(_)
             | model::SessionUpdate::TranscriptRetraction(_)
-            | model::SessionUpdate::CompactionBoundary(_)
     );
     handle_session_update(app, update);
     if needs_history_retention {
@@ -270,7 +270,7 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
 fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     match update {
         model::SessionUpdate::AgentMessageChunk(chunk) => {
-            clear_compaction_state(app, true);
+            compaction::finish_inferred(app, true);
             streaming::handle_agent_message_chunk(app, chunk);
         }
         model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc),
@@ -433,22 +433,13 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             handle_settings_parse_error(app, file.as_deref(), &path, &message);
         }
         model::SessionUpdate::SessionStatusUpdate(status) => {
-            let was_compacting = app.turn.is_compacting;
-            if matches!(status, model::SessionStatus::Compacting) {
-                app.turn.is_compacting = true;
-            } else {
-                clear_compaction_state(app, true);
-            }
-            if was_compacting && matches!(status, model::SessionStatus::Idle) {
-                crate::app::session_runtime::request_context_usage_refresh(app);
-            }
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "session_status_applied",
                 message = "session status update applied",
                 outcome = "success",
                 session_status = ?status,
-                compacting = app.turn.is_compacting,
+                compacting = app.turn.compaction.is_active(),
             );
         }
         model::SessionUpdate::SystemNoticeUpdate { severity, message } => {
@@ -459,8 +450,8 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             };
             notices::emit_system_notice(app, severity, &message);
         }
-        model::SessionUpdate::CompactionBoundary(boundary) => {
-            rate_limit::handle_compaction_boundary_update(app, boundary);
+        model::SessionUpdate::CompactionUpdate(update) => {
+            compaction::handle_update(app, update);
         }
     }
 }
@@ -470,7 +461,7 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
     match state {
         model::RuntimeSessionState::Running => {
             if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
-                && !app.turn.is_compacting
+                && !app.turn.compaction.is_active()
             {
                 app.status = AppStatus::Running;
             }
@@ -478,7 +469,7 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
         model::RuntimeSessionState::RequiresAction => {}
         model::RuntimeSessionState::Idle => {
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-                && !app.turn.is_compacting
+                && !app.turn.compaction.is_active()
                 && app.turn.pending_cancel_origin.is_none()
             {
                 app.status = AppStatus::Ready;
@@ -512,22 +503,6 @@ pub(crate) fn push_system_message_with_severity(
         None,
     ));
     app.enforce_history_retention_tracked();
-}
-
-pub(super) fn clear_compaction_state(app: &mut App, emit_manual_success: bool) {
-    if !app.turn.is_compacting && !app.turn.pending_compact_clear {
-        return;
-    }
-    let should_emit_success = emit_manual_success && app.turn.pending_compact_clear;
-    app.turn.pending_compact_clear = false;
-    app.turn.is_compacting = false;
-    if should_emit_success {
-        push_system_message_with_severity(
-            app,
-            Some(SystemSeverity::Info),
-            "Session successfully compacted.",
-        );
-    }
 }
 
 fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {

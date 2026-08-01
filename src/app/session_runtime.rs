@@ -114,7 +114,8 @@ pub(crate) fn tick_context_usage_refresh(app: &mut App, now: Instant) {
 }
 
 fn context_usage_refresh_is_active(app: &App) -> bool {
-    matches!(app.status, AppStatus::Thinking | AppStatus::Running) || app.turn.is_compacting
+    matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+        || app.turn.compaction.is_active()
 }
 
 pub(crate) fn request_status_snapshot_refresh(app: &mut App) {

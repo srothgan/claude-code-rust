@@ -57,6 +57,7 @@ import {
   buildRateLimitUpdate,
   buildSubagentRetryUpdate,
   normalizeSettingsParseErrors,
+  nonNegativeIntegerField,
   numberField,
   parseApiRetryError,
   parseRuntimeSessionState,
@@ -1310,10 +1311,29 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         emitSessionUpdate(session.sessionId, { type: "current_mode_update", current_mode_id: mode });
       }
       if (msg.status === "compacting") {
-        emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "compacting" });
+        emitSessionUpdate(session.sessionId, { type: "compaction_update", phase: "started" });
       } else if (msg.status === "requesting") {
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "requesting" });
       } else if (msg.status === null) {
+        if (msg.compact_result === "success") {
+          emitSessionUpdate(session.sessionId, {
+            type: "compaction_update",
+            phase: "finished",
+            result: "success",
+          });
+        } else if (msg.compact_result === "failed") {
+          const compactError =
+            typeof msg.compact_error === "string" && msg.compact_error.trim().length > 0
+              ? msg.compact_error.trim()
+              : undefined;
+          emitSessionUpdate(session.sessionId, {
+            type: "compaction_update",
+            phase: "finished",
+            result: "failed",
+            error_code: compactError === "too_few_groups" ? "too_few_groups" : "unknown",
+            ...(compactError ? { error: compactError } : {}),
+          });
+        }
         emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "idle" });
       }
       emitFastModeUpdateIfChanged(
@@ -1330,12 +1350,17 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         return;
       }
       const trigger = compactMetadata.trigger;
-      const preTokens = numberField(compactMetadata, "pre_tokens", "preTokens");
+      const preTokens = nonNegativeIntegerField(compactMetadata, "pre_tokens", "preTokens");
+      const postTokens = nonNegativeIntegerField(compactMetadata, "post_tokens", "postTokens");
+      const durationMs = nonNegativeIntegerField(compactMetadata, "duration_ms", "durationMs");
       if ((trigger === "manual" || trigger === "auto") && preTokens !== undefined) {
         emitSessionUpdate(session.sessionId, {
-          type: "compaction_boundary",
+          type: "compaction_update",
+          phase: "boundary",
           trigger,
           pre_tokens: preTokens,
+          ...(postTokens !== undefined ? { post_tokens: postTokens } : {}),
+          ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
         });
       }
       return;

@@ -36,17 +36,6 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         ]));
     }
 
-    if app.turn.is_compacting {
-        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-        rows.push(Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled(
-                "Compacting session... you can draft, submit is paused.",
-                Style::default().fg(theme::DIM),
-            ),
-        ]));
-    }
-
     if autocomplete::is_active(app) {
         rows.extend(autocomplete::composer_hint_rows(app));
     } else if app.input.is_empty()
@@ -134,15 +123,13 @@ mod tests {
     }
 
     #[test]
-    fn build_composer_hint_rows_shows_compaction_draft_hint() {
+    fn build_composer_hint_rows_omits_compaction_status() {
         let mut app = App::test_default();
-        app.turn.is_compacting = true;
+        app.turn.compaction.begin();
 
         let rows = build_composer_hint_rows(&app);
 
-        assert_eq!(rows.len(), 1);
-        assert!(line_text(&rows[0]).contains("Compacting session"));
-        assert!(line_text(&rows[0]).contains("you can draft"));
+        assert!(rows.is_empty());
     }
 
     #[test]

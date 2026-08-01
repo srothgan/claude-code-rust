@@ -6,7 +6,7 @@ use super::super::{
     InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SubagentPermissionContext,
     SystemSeverity, TextBlock, ToolCallInfo, ToolCallScope, UserDialogBlock,
 };
-use super::clear_compaction_state;
+use super::compaction;
 use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
@@ -443,7 +443,7 @@ fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnE
         cancelled_requested: app.turn.pending_cancel_origin,
         show_interrupted_hint: matches!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual)),
     };
-    clear_compaction_state(app, emit_manual_compaction_success);
+    compaction::finish_inferred(app, emit_manual_compaction_success);
     app.turn.pending_cancel_origin = None;
     app.turn.cancelled_pending_hint = false;
     state
@@ -510,7 +510,7 @@ pub(super) fn handle_turn_error_event(
     api_error_status: Option<u16>,
     terminal_reason: Option<crate::agent::types::TerminalReason>,
 ) {
-    let exit = begin_turn_exit(app, true);
+    let exit = begin_turn_exit(app, false);
 
     if exit.cancelled_requested.is_some() {
         let summary = summarize_internal_error(msg);

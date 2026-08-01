@@ -27,7 +27,7 @@ function nonNegativeNumberField(record: Record<string, unknown>, ...keys: string
   return value;
 }
 
-function nonNegativeIntegerField(
+export function nonNegativeIntegerField(
   record: Record<string, unknown>,
   ...keys: string[]
 ): number | undefined {

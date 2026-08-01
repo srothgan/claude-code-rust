@@ -496,7 +496,6 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         }
         types::SessionUpdate::SessionStatusUpdate { status } => {
             Some(model::SessionUpdate::SessionStatusUpdate(match status {
-                types::SessionStatus::Compacting => model::SessionStatus::Compacting,
                 types::SessionStatus::Requesting => model::SessionStatus::Requesting,
                 types::SessionStatus::Idle => model::SessionStatus::Idle,
             }))
@@ -507,13 +506,40 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 message,
             })
         }
-        types::SessionUpdate::CompactionBoundary { trigger, pre_tokens } => {
-            Some(model::SessionUpdate::CompactionBoundary(model::CompactionBoundary {
-                trigger: match trigger {
-                    types::CompactionTrigger::Manual => model::CompactionTrigger::Manual,
-                    types::CompactionTrigger::Auto => model::CompactionTrigger::Auto,
-                },
-                pre_tokens,
+        types::SessionUpdate::CompactionUpdate { update: compaction } => {
+            Some(model::SessionUpdate::CompactionUpdate(match compaction {
+                types::CompactionUpdate::Started => model::CompactionUpdate::Started,
+                types::CompactionUpdate::Boundary {
+                    trigger,
+                    pre_tokens,
+                    post_tokens,
+                    duration_ms,
+                } => model::CompactionUpdate::Boundary(model::CompactionBoundary {
+                    trigger: match trigger {
+                        types::CompactionTrigger::Manual => model::CompactionTrigger::Manual,
+                        types::CompactionTrigger::Auto => model::CompactionTrigger::Auto,
+                    },
+                    pre_tokens,
+                    post_tokens,
+                    duration_ms,
+                }),
+                types::CompactionUpdate::Finished { result, error_code, error } => {
+                    model::CompactionUpdate::Finished {
+                        result: match result {
+                            types::CompactionResult::Success => model::CompactionResult::Success,
+                            types::CompactionResult::Failed => model::CompactionResult::Failed,
+                        },
+                        error_code: error_code.map(|code| match code {
+                            types::CompactionFailureCode::TooFewGroups => {
+                                model::CompactionFailureCode::TooFewGroups
+                            }
+                            types::CompactionFailureCode::Unknown => {
+                                model::CompactionFailureCode::Unknown
+                            }
+                        }),
+                        error,
+                    }
+                }
             }))
         }
     }
@@ -1228,6 +1254,38 @@ mod tests {
                 severity: model::SystemNoticeSeverity::Warning,
                 message: "Plugin install failed.".to_owned(),
             })
+        );
+        assert_eq!(
+            map_session_update(types::SessionUpdate::CompactionUpdate {
+                update: types::CompactionUpdate::Boundary {
+                    trigger: types::CompactionTrigger::Manual,
+                    pre_tokens: 123_456,
+                    post_tokens: Some(20_000),
+                    duration_ms: Some(1_500),
+                },
+            }),
+            Some(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
+                model::CompactionBoundary {
+                    trigger: model::CompactionTrigger::Manual,
+                    pre_tokens: 123_456,
+                    post_tokens: Some(20_000),
+                    duration_ms: Some(1_500),
+                }
+            )))
+        );
+        assert_eq!(
+            map_session_update(types::SessionUpdate::CompactionUpdate {
+                update: types::CompactionUpdate::Finished {
+                    result: types::CompactionResult::Failed,
+                    error_code: Some(types::CompactionFailureCode::TooFewGroups),
+                    error: Some("Prompt is too long".to_owned()),
+                },
+            }),
+            Some(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Finished {
+                result: model::CompactionResult::Failed,
+                error_code: Some(model::CompactionFailureCode::TooFewGroups),
+                error: Some("Prompt is too long".to_owned()),
+            }))
         );
     }
 

@@ -67,17 +67,18 @@ pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
-    App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, CancelOrigin, ChatMessage,
-    ChatMessageId, ChatRenderState, ComposerRenderState, ExtraUsage, HistoryOutputId,
-    ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion, InvalidationLevel,
-    LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
-    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
-    PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
-    SelectionPoint, SessionPickerState, SessionUsageState, SubagentPermissionContext,
-    SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo,
-    ToolCallScope, TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock,
-    WelcomeBlock, hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, CancelOrigin,
+    ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
+    HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion,
+    InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
+    MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
+    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, PostExitAction,
+    RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
+    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock,
+    TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
+    UpdatePromptAction, UpdatePromptState, UsageSnapshot, UsageSourceKind, UsageSourceMode,
+    UsageState, UsageWindow, UserDialogBlock, WelcomeBlock, hash_text_block_content,
+    hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
@@ -257,7 +258,7 @@ async fn run_tui_loop(
                 | AppStatus::CommandPending
                 | AppStatus::Thinking
                 | AppStatus::Running
-        ) || app.turn.is_compacting;
+        ) || app.turn.compaction.is_active();
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);

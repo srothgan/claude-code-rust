@@ -4937,6 +4937,117 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
   );
 });
 
+test("handleSdkMessage emits one typed compaction lifecycle", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "status",
+      status: "compacting",
+      uuid: "compact-started",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: {
+        trigger: "auto",
+        pre_tokens: 180_000,
+        post_tokens: 22_000,
+        duration_ms: 1_250,
+      },
+      uuid: "compact-boundary",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "status",
+      status: null,
+      compact_result: "success",
+      uuid: "compact-finished",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "status",
+      status: null,
+      compact_result: "failed",
+      compact_error: "  Prompt is too long  ",
+      uuid: "compact-failed",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      { type: "compaction_update", phase: "started" },
+      {
+        type: "compaction_update",
+        phase: "boundary",
+        trigger: "auto",
+        pre_tokens: 180_000,
+        post_tokens: 22_000,
+        duration_ms: 1_250,
+      },
+      { type: "compaction_update", phase: "finished", result: "success" },
+      { type: "session_status_update", status: "idle" },
+      {
+        type: "compaction_update",
+        phase: "finished",
+        result: "failed",
+        error_code: "unknown",
+        error: "Prompt is too long",
+      },
+      { type: "session_status_update", status: "idle" },
+    ],
+  );
+});
+
+test("handleSdkMessage classifies too_few_groups compaction failures", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "status",
+      status: null,
+      compact_result: "failed",
+      compact_error: "too_few_groups",
+      uuid: "compact-failed",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "compaction_update",
+        phase: "finished",
+        result: "failed",
+        error_code: "too_few_groups",
+        error: "too_few_groups",
+      },
+      { type: "session_status_update", status: "idle" },
+    ],
+  );
+});
+
+test("handleSdkMessage rejects invalid compaction boundary counters", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "manual", pre_tokens: -1 },
+      uuid: "compact-boundary",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
 test("classifyTurnErrorKind prefers SDK assistant error codes", () => {
   assert.equal(classifyTurnErrorKind("error_during_execution", [], "model_not_found"), "model_unavailable");
   assert.equal(classifyTurnErrorKind("error_during_execution", [], "oauth_org_not_allowed"), "account_access");

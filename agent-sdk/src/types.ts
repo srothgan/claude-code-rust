@@ -339,9 +339,29 @@ export type SessionUpdate =
   | { type: "prompt_suggestion_update"; suggestion: string }
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
-  | { type: "session_status_update"; status: "compacting" | "requesting" | "idle" }
+  | { type: "session_status_update"; status: "requesting" | "idle" }
   | { type: "system_notice_update"; severity: SystemNoticeSeverity; message: string }
-  | { type: "compaction_boundary"; trigger: "manual" | "auto"; pre_tokens: number };
+  | { type: "compaction_update"; phase: "started" }
+  | {
+      type: "compaction_update";
+      phase: "boundary";
+      trigger: "manual" | "auto";
+      pre_tokens: number;
+      post_tokens?: number;
+      duration_ms?: number;
+    }
+  | {
+      type: "compaction_update";
+      phase: "finished";
+      result: "success";
+    }
+  | {
+      type: "compaction_update";
+      phase: "finished";
+      result: "failed";
+      error_code: "too_few_groups" | "unknown";
+      error?: string;
+    };
 
 export interface PermissionOption {
   option_id: string;

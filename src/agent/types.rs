@@ -204,7 +204,6 @@ pub struct RateLimitUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
-    Compacting,
     Requesting,
     Idle,
 }
@@ -214,6 +213,38 @@ pub enum SessionStatus {
 pub enum CompactionTrigger {
     Manual,
     Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionResult {
+    Success,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionFailureCode {
+    TooFewGroups,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum CompactionUpdate {
+    Started,
+    Boundary {
+        trigger: CompactionTrigger,
+        pre_tokens: u64,
+        post_tokens: Option<u64>,
+        duration_ms: Option<u64>,
+    },
+    Finished {
+        result: CompactionResult,
+        error_code: Option<CompactionFailureCode>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,9 +559,9 @@ pub enum SessionUpdate {
         severity: SystemNoticeSeverity,
         message: String,
     },
-    CompactionBoundary {
-        trigger: CompactionTrigger,
-        pre_tokens: u64,
+    CompactionUpdate {
+        #[serde(flatten)]
+        update: CompactionUpdate,
     },
 }
 
@@ -997,7 +1028,8 @@ pub enum McpSnapshotSource {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountInfo, ApiRetryError, AvailableModel, EffortLevel, McpServerOrgMaxPermission,
+        AccountInfo, ApiRetryError, AvailableModel, CompactionFailureCode, CompactionResult,
+        CompactionTrigger, CompactionUpdate, EffortLevel, McpServerOrgMaxPermission,
         McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, RateLimitStatus,
         SessionStatus, SessionUpdate, SubagentRetryUpdate, SystemNoticeSeverity, TaskMetadata,
         TaskUpdateSource, TerminalReason, TranscriptRetractionReason,
@@ -1120,6 +1152,51 @@ mod tests {
         assert!(matches!(
             update,
             SessionUpdate::SessionStatusUpdate { status: SessionStatus::Requesting }
+        ));
+    }
+
+    #[test]
+    fn compaction_updates_deserialize_typed_lifecycle_data() {
+        let boundary: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "compaction_update",
+            "phase": "boundary",
+            "trigger": "manual",
+            "pre_tokens": 123_456,
+            "post_tokens": 20_000,
+            "duration_ms": 1_500
+        }))
+        .expect("deserialize compaction boundary");
+
+        assert!(matches!(
+            boundary,
+            SessionUpdate::CompactionUpdate {
+                update: CompactionUpdate::Boundary {
+                    trigger: CompactionTrigger::Manual,
+                    pre_tokens: 123_456,
+                    post_tokens: Some(20_000),
+                    duration_ms: Some(1_500),
+                }
+            }
+        ));
+
+        let finished: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "compaction_update",
+            "phase": "finished",
+            "result": "failed",
+            "error_code": "too_few_groups",
+            "error": "Prompt is too long"
+        }))
+        .expect("deserialize compaction completion");
+
+        assert!(matches!(
+            finished,
+            SessionUpdate::CompactionUpdate {
+                update: CompactionUpdate::Finished {
+                    result: CompactionResult::Failed,
+                    error_code: Some(CompactionFailureCode::TooFewGroups),
+                    ref error,
+                }
+            } if error.as_deref() == Some("Prompt is too long")
         ));
     }
 
