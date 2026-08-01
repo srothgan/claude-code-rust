@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-08-01 [Changes][v0.14.3]
+
 ### Features
 
 - **Installer download progress** (#312, @srothgan): Stream release downloads with reliable retries, fixed-width progress bars, and optional transfer diagnostics.
@@ -802,6 +804,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.14.3]: https://github.com/srothgan/claude-code-rust/compare/v0.14.2...v0.14.3
 [v0.14.2]: https://github.com/srothgan/claude-code-rust/compare/v0.14.1...v0.14.2
 [v0.14.1]: https://github.com/srothgan/claude-code-rust/compare/v0.14.0...v0.14.1
 [v0.14.0]: https://github.com/srothgan/claude-code-rust/compare/v0.13.4...v0.14.0
