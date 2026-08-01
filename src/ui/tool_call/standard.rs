@@ -39,6 +39,7 @@ const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
 const ASK_USER_QUESTION_RESULT_TEXT_INDENT: &str = "      ";
 const READ_SYNTAX_THEME: EmbeddedThemeName = EmbeddedThemeName::MonokaiExtendedBright;
+const VIEWED_IMAGE_RESULT_PREFIX: &str = "Viewed Image ";
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
 /// Used for in-progress tool calls where only the spinner changes each frame.
@@ -616,6 +617,10 @@ fn render_read_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<
         lines.extend(failed_lines);
         return;
     }
+    if let Some(viewed_image) = render_viewed_image_content(tc, &stripped) {
+        lines.push(viewed_image);
+        return;
+    }
     if read_content_is_markdown(tc) {
         render_markdown_content(&stripped, lines);
         return;
@@ -646,6 +651,28 @@ fn render_read_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<
 
     let fallback_lang = (!title_lang.is_empty()).then_some(title_lang.as_str()).or(fenced_language);
     lines.extend(highlight::highlight_code_with_theme(&clean, fallback_lang, READ_SYNTAX_THEME));
+}
+
+fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'static>> {
+    let file_name = text.strip_prefix(VIEWED_IMAGE_RESULT_PREFIX)?.trim();
+    if file_name.is_empty() || file_name.contains(['\r', '\n']) {
+        return None;
+    }
+
+    let read_path = read_syntax_path(tc)?.as_os_str().to_str()?.trim_end_matches(['/', '\\']);
+    let expected_file_name = read_path.rsplit(['/', '\\']).next()?;
+    if file_name != expected_file_name {
+        return None;
+    }
+
+    Some(Line::from(vec![
+        Span::styled(
+            "Viewed image",
+            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        ),
+        Span::raw(" "),
+        Span::styled(file_name.to_owned(), Style::default().fg(ratatui::style::Color::White)),
+    ]))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

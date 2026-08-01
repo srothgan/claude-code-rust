@@ -1276,6 +1276,98 @@ test("unwrapToolUseResult extracts error/content payload", () => {
   assert.deepEqual(parsed.content, [{ text: "failure output" }]);
 });
 
+test("buildToolResultFields replaces a structured Read image result with its filename", () => {
+  const base = createToolCall("tc-image-read", "Read", {
+    file_path: "C:\\work\\captures\\screen.png",
+  });
+  const fields = buildToolResultFields(
+    false,
+    [
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/png",
+          data: "raw-content-image-data",
+        },
+      },
+    ],
+    base,
+    {
+      type: "image",
+      file: {
+        base64: "structured-image-data",
+        type: "image/png",
+      },
+    },
+  );
+
+  assert.equal(base.title, "Read C:\\work\\captures\\screen.png");
+  assert.deepEqual(fields, {
+    status: "completed",
+    raw_output: "Viewed Image screen.png",
+    content: [
+      {
+        type: "content",
+        content: { type: "text", text: "Viewed Image screen.png" },
+      },
+    ],
+  });
+  assert.equal(JSON.stringify(fields).includes("raw-content-image-data"), false);
+  assert.equal(JSON.stringify(fields).includes("structured-image-data"), false);
+});
+
+test("buildToolResultFields recognizes Read image content blocks without structured output", () => {
+  const base = createToolCall("tc-image-block-read", "Read", {
+    file_path: "assets/capture.unknown",
+  });
+  const fields = buildToolResultFields(
+    false,
+    [
+      {
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: "image/webp",
+          data: "compatibility-image-data",
+        },
+      },
+    ],
+    base,
+  );
+
+  assert.equal(base.title, "Read assets/capture.unknown");
+  assert.equal(fields.raw_output, "Viewed Image capture.unknown");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Viewed Image capture.unknown" },
+    },
+  ]);
+  assert.equal(JSON.stringify(fields).includes("compatibility-image-data"), false);
+});
+
+test("buildToolResultFields preserves failed Read image output", () => {
+  const base = createToolCall("tc-image-read-error", "Read", {
+    file_path: "assets/broken.png",
+  });
+  const fields = buildToolResultFields(
+    true,
+    [{ type: "text", text: "Image data could not be decoded." }],
+    base,
+    { type: "image" },
+  );
+
+  assert.equal(fields.status, "failed");
+  assert.equal(fields.raw_output, "Image data could not be decoded.");
+  assert.deepEqual(fields.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Image data could not be decoded." },
+    },
+  ]);
+});
+
 test("buildToolResultFields renders file_unchanged Read results compactly", () => {
   const base = createToolCall("tc-read", "Read", { file_path: "src/main.rs" });
   const fields = buildToolResultFields(
