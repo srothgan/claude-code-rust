@@ -8,6 +8,7 @@ All notable changes to this project will be documented in this file.
 
 - **Installer download progress** (#312, @srothgan): Stream release archives with curl retries and stall detection, show matching fixed-width bars on PowerShell and Unix, and add opt-in size, speed, and ETA diagnostics while keeping redirected and CI output plain.
 - **Skill tool rendering** (#318, @srothgan): Show Skill calls with a dedicated icon, readable names, compact arguments, and no redundant launch output.
+- **Image read confirmations** (#319, @srothgan): Replace image payloads with compact filename confirmations while preserving Read titles and errors.
 
 ### Fixes
 
