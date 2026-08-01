@@ -484,6 +484,25 @@ function resultRecordCandidates(rawResult: unknown, rawContent: unknown): Record
   return candidates;
 }
 
+function imageReadResultText(
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: ToolCall["raw_input"] | undefined,
+): string | undefined {
+  const isImage = resultRecordCandidates(rawResult, rawContent).some(
+    (candidate) => candidate.type === "image",
+  );
+  if (!isImage) {
+    return undefined;
+  }
+
+  const input = asRecordOrNull(rawInput);
+  const filePath = typeof input?.file_path === "string" ? input.file_path.trim() : "";
+  const normalizedPath = filePath.replaceAll("\\", "/");
+  const fileName = normalizedPath.slice(normalizedPath.lastIndexOf("/") + 1);
+  return fileName ? `Viewed Image ${fileName}` : "Viewed Image";
+}
+
 function parseJsonCandidate(value: unknown): unknown {
   const text = typeof value === "string" ? value : extractText(value);
   const trimmed = text.trim();
@@ -2321,6 +2340,14 @@ export function buildToolResultFields(
       }
       return fields;
     }
+  }
+  const imageReadText = !isError && toolName === "Read"
+    ? imageReadResultText(rawResult, rawContent, base?.raw_input)
+    : undefined;
+  if (imageReadText !== undefined) {
+    fields.raw_output = imageReadText;
+    fields.content = [{ type: "content", content: { type: "text", text: imageReadText } }];
+    return fields;
   }
   const fileUnchangedText = !isError && toolName === "Read" ? fileUnchangedResultText(rawResult, rawContent) : "";
   if (fileUnchangedText) {

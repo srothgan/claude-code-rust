@@ -491,6 +491,44 @@ fn read_body_strips_ansi_before_syntax_coloring() {
 }
 
 #[test]
+fn read_image_body_distinguishes_status_from_filename() {
+    let tc = read_tool_call(r"C:\work\captures\screen.png", "Viewed Image screen.png");
+    let body = standard::render_tool_call_body(&tc, 120);
+
+    assert_eq!(
+        rendered_line_texts_trimmed(&body),
+        vec!["  \u{2514}\u{2500} Viewed image screen.png"]
+    );
+    assert_eq!(body.len(), 1);
+    assert!(body[0].spans.len() >= 4);
+
+    let status = &body[0].spans[1];
+    assert_eq!(status.content.as_ref(), "Viewed image");
+    assert_eq!(status.style.fg, Some(theme::DIM));
+    assert!(status.style.add_modifier.contains(Modifier::ITALIC));
+
+    let separator = &body[0].spans[2];
+    assert_eq!(separator.content.as_ref(), " ");
+
+    let file_name = &body[0].spans[3];
+    assert_eq!(file_name.content.as_ref(), "screen.png");
+    assert_eq!(file_name.style.fg, Some(Color::White));
+    assert!(!file_name.style.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn read_body_does_not_style_unrelated_text_as_an_image_result() {
+    let tc = read_tool_call("notes/status.txt", "Viewed Image screen.png");
+    let body = standard::render_tool_call_body(&tc, 120);
+
+    assert_eq!(
+        rendered_line_texts_trimmed(&body),
+        vec!["  \u{2514}\u{2500} Viewed Image screen.png"]
+    );
+    assert!(!body[0].spans.iter().any(|span| span.content.as_ref() == "Viewed image"));
+}
+
+#[test]
 fn read_body_renders_sdk_line_numbers_as_dim_gutter() {
     let tc = read_tool_call("Cargo.toml", "1[package]\n2name = \"demo\"\n3version = \"0.1.0\"");
     let body = standard::render_tool_call_body(&tc, 120);
