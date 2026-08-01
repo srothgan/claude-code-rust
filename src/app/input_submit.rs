@@ -30,7 +30,7 @@ pub(super) fn submit_input(app: &mut App) {
         return;
     }
 
-    if app.turn.is_compacting {
+    if app.turn.compaction.is_active() {
         app.turn.pending_auto_submit_after_cancel = false;
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
@@ -76,7 +76,7 @@ pub(super) fn submit_input(app: &mut App) {
 fn is_turn_busy(app: &App) -> bool {
     matches!(app.status, AppStatus::Thinking | AppStatus::Running)
         || app.turn.pending_cancel_origin.is_some()
-        || app.turn.is_compacting
+        || app.turn.compaction.is_active()
 }
 
 pub(super) fn request_cancel(app: &mut App, origin: CancelOrigin) -> Result<(), String> {

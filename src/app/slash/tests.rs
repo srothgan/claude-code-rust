@@ -1880,7 +1880,7 @@ fn compact_without_connection_is_handled_locally() {
 
     let consumed = try_handle_submit(&mut app, "/compact");
     assert!(consumed);
-    assert!(!app.turn.pending_compact_clear);
+    assert!(!app.turn.compaction.is_active());
     let Some(last) = app.transcript.messages.last() else {
         panic!("expected system message");
     };
@@ -1892,15 +1892,14 @@ fn compact_without_connection_is_handled_locally() {
 }
 
 #[test]
-fn compact_with_active_session_sets_compacting_without_success_pending() {
+fn compact_with_active_session_starts_manual_compaction() {
     let mut app = App::test_default();
     let _rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
 
     let consumed = try_handle_submit(&mut app, "/compact");
     assert!(!consumed);
-    assert!(!app.turn.pending_compact_clear);
-    assert!(app.turn.is_compacting);
+    assert!(app.turn.compaction.is_active());
 }
 
 #[test]

@@ -126,7 +126,6 @@ pub struct RateLimitUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
-    Compacting,
     Requesting,
     Idle,
 }
@@ -142,6 +141,32 @@ pub enum CompactionTrigger {
 pub struct CompactionBoundary {
     pub trigger: CompactionTrigger,
     pub pre_tokens: u64,
+    pub post_tokens: Option<u64>,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompactionResult {
+    Success,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompactionFailureCode {
+    TooFewGroups,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CompactionUpdate {
+    Started,
+    Boundary(CompactionBoundary),
+    Finished {
+        result: CompactionResult,
+        error_code: Option<CompactionFailureCode>,
+        error: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,5 +230,5 @@ pub enum SessionUpdate {
         severity: SystemNoticeSeverity,
         message: String,
     },
-    CompactionBoundary(CompactionBoundary),
+    CompactionUpdate(CompactionUpdate),
 }

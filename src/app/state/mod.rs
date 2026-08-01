@@ -51,7 +51,7 @@ pub use tool_call_info::{
     InlinePermission, InlineQuestion, SubagentPermissionContext, ToolCallInfo, is_execute_tool_name,
 };
 pub use transcript::Transcript;
-pub use turn::TurnState;
+pub use turn::{ActiveCompaction, CompactionState, TurnState};
 pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
 pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,

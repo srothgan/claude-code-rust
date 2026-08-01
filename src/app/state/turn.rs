@@ -3,13 +3,75 @@
 
 use super::prelude::*;
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CompactionState {
+    #[default]
+    Idle,
+    Active(ActiveCompaction),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ActiveCompaction {
+    trigger: Option<model::CompactionTrigger>,
+    boundary: Option<model::CompactionBoundary>,
+}
+
+impl CompactionState {
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Active(_))
+    }
+
+    pub(crate) fn begin(&mut self) {
+        if matches!(self, Self::Idle) {
+            *self = Self::Active(ActiveCompaction::default());
+        }
+    }
+
+    pub(crate) fn begin_manual(&mut self) {
+        if matches!(self, Self::Idle) {
+            *self = Self::Active(ActiveCompaction {
+                trigger: Some(model::CompactionTrigger::Manual),
+                boundary: None,
+            });
+        }
+    }
+
+    pub(crate) fn apply_boundary(&mut self, boundary: model::CompactionBoundary) -> bool {
+        let Self::Active(active) = self else {
+            return false;
+        };
+        active.trigger = Some(boundary.trigger);
+        active.boundary = Some(boundary);
+        true
+    }
+
+    pub(crate) fn finish(&mut self) -> Option<ActiveCompaction> {
+        match std::mem::take(self) {
+            Self::Idle => None,
+            Self::Active(active) => Some(active),
+        }
+    }
+
+    pub(crate) fn reset(&mut self) {
+        *self = Self::Idle;
+    }
+}
+
+impl ActiveCompaction {
+    pub(crate) fn trigger(&self) -> Option<model::CompactionTrigger> {
+        self.trigger
+    }
+
+    pub(crate) fn boundary(&self) -> Option<model::CompactionBoundary> {
+        self.boundary
+    }
+}
+
 /// State scoped to the currently active turn: in-flight command tracking,
 /// cancellation bookkeeping, inline interactions, and turn-local notices.
 ///
 /// Everything here resets at turn or session boundaries; grouping it makes
 /// those reset contracts explicit instead of scattering them across `App`.
-// The bools are independent latches consumed at different turn-lifecycle
-// points, not an encodable state machine.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Default)]
 pub struct TurnState {
@@ -17,9 +79,8 @@ pub struct TurnState {
     pub pending_command_label: Option<String>,
     /// Ack marker required to clear `CommandPending` for strict completion semantics.
     pub pending_command_ack: Option<PendingCommandAck>,
-    /// When true, the current/next turn completion should clear local conversation history.
-    /// Set by `/compact` once the command is accepted for bridge forwarding.
-    pub pending_compact_clear: bool,
+    /// The single live lifecycle state for manual and automatic context compaction.
+    pub compaction: CompactionState,
     /// Tool call IDs with pending inline interactions, ordered by arrival.
     /// The first entry is the focused interaction that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
@@ -37,8 +98,6 @@ pub struct TurnState {
     /// IDs of root Task/Agent tool calls currently `InProgress`.
     /// Use `App::insert_active_task()`, `App::remove_active_task()`.
     pub active_task_ids: HashSet<String>,
-    /// True while the SDK reports active compaction.
-    pub is_compacting: bool,
     /// Turn-local inline/system notices that may upgrade in place during the active turn.
     pub notice_refs: Vec<TurnNoticeRef>,
 }
@@ -58,13 +117,12 @@ impl TurnState {
     pub fn reset_for_turn_exit(&mut self) {
         self.pending_command_label = None;
         self.pending_command_ack = None;
-        self.pending_compact_clear = false;
+        self.compaction.reset();
         self.pending_interaction_ids.clear();
         self.cancelled_pending_hint = false;
         self.pending_cancel_origin = None;
         self.assistant_message_idx = None;
         self.active_task_ids.clear();
-        self.is_compacting = false;
         self.notice_refs.clear();
     }
 

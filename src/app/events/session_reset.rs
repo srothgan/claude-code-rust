@@ -46,7 +46,7 @@ fn reset_session_identity_state(
             .insert("model".to_owned(), serde_json::Value::String(requested_id));
     }
     app.session_runtime.login_hint = None;
-    super::clear_compaction_state(app, false);
+    super::compaction::reset(app);
     app.session_runtime.session_usage = super::super::SessionUsageState::default();
     app.sdk_inventory.clear_rewind_targets();
     app.status = super::super::AppStatus::Ready;
@@ -170,7 +170,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     }
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
-    super::clear_compaction_state(app, false);
+    super::compaction::reset(app);
     app.status = super::super::AppStatus::Ready;
     app.turn.clear_cancel_state();
     app.enforce_history_retention_tracked();

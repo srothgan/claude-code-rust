@@ -47,7 +47,7 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
 
     let context = active_key_help_context(app);
     let mut items = keymap_help_rows(app, context);
-    if app.turn.is_compacting {
+    if app.turn.compaction.is_active() {
         items.push(("Status".to_owned(), "Compacting context".to_owned()));
     }
     items.push(("Mouse wheel".to_owned(), "Scroll chat".to_owned()));

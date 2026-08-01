@@ -232,7 +232,7 @@ fn plain_enter_preserves_single_line_draft_before_submit() {
 #[test]
 fn compaction_allows_drafting_but_blocks_submit() {
     let (mut app, mut rx) = app_with_connection();
-    app.turn.is_compacting = true;
+    app.turn.compaction.begin();
     app.input.set_text("draft");
 
     events::handle_terminal_event(
@@ -259,7 +259,7 @@ fn compaction_allows_drafting_but_blocks_submit() {
 #[test]
 fn compaction_allows_paste_drafting() {
     let (mut app, _rx) = app_with_connection();
-    app.turn.is_compacting = true;
+    app.turn.compaction.begin();
 
     events::handle_terminal_event(&mut app, Event::Paste(" pasted".into()));
 

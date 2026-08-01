@@ -6,13 +6,14 @@ All notable changes to this project will be documented in this file.
 
 ### Features
 
-- **Installer download progress** (#312, @srothgan): Stream release archives with curl retries and stall detection, show matching fixed-width bars on PowerShell and Unix, and add opt-in size, speed, and ETA diagnostics while keeping redirected and CI output plain.
+- **Installer download progress** (#312, @srothgan): Stream release downloads with reliable retries, fixed-width progress bars, and optional transfer diagnostics.
 - **Skill tool rendering** (#318, @srothgan): Show Skill calls with a dedicated icon, readable names, compact arguments, and no redundant launch output.
 - **Image read confirmations** (#319, @srothgan): Replace image payloads with compact filename confirmations while preserving Read titles and errors.
 
 ### Fixes
 
-- **Runtime and tooling hardening** (#317, @srothgan): Add privacy-minimized baseline diagnostics with bounded retention, preserve resumable session hints through teardown, stop progress heartbeats from creating duplicate tool rows, update base64 to 0.23, and align cargo-deny targets and advisory gating with release packaging.
+- **Runtime and tooling hardening** (#317, @srothgan): Add privacy-minimized diagnostics, preserve resume hints, prevent phantom tool progress, and align dependency checks with release targets.
+- **Compaction lifecycle** (#320, @srothgan): Unify compaction state, surface failures, and prevent duplicate indicators and completion notices.
 
 ## [0.14.2] - 2026-07-26 [Changes][v0.14.2]
 

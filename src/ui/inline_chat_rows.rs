@@ -380,7 +380,7 @@ fn welcome_value_ready(value: &str) -> bool {
 }
 
 fn sync_runtime_indicator(app: &mut App) -> Option<AssistantRuntimeIndicator> {
-    if app.turn.is_compacting {
+    if app.turn.compaction.is_active() {
         app.chat_render.thinking_verb = None;
         return Some(AssistantRuntimeIndicator::Compacting);
     }
@@ -489,7 +489,7 @@ impl RenderedMessageRows {
 
 fn active_assistant_message_is_mutable(app: &App, msg_idx: usize) -> bool {
     app.active_turn_assistant_idx() == Some(msg_idx)
-        && (app.turn.is_compacting
+        && (app.turn.compaction.is_active()
             || matches!(app.status, AppStatus::Thinking | AppStatus::Running))
 }
 
@@ -954,7 +954,11 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         return RenderedMessageRows::empty();
     }
 
-    RenderedMessageRows::rendered(trim_trailing_blank_rows(rows), boundaries)
+    let mut rows = trim_trailing_blank_rows(rows);
+    if matches!(request.indicator, Some(AssistantRuntimeIndicator::Compacting)) {
+        rows.push(Line::default());
+    }
+    RenderedMessageRows::rendered(rows, boundaries)
 }
 
 fn assistant_text_trailing_gap(
@@ -1160,10 +1164,10 @@ fn append_assistant_indicator_rows(
     state: &AssistantInlineLayoutState,
     meta: AssistantIndicatorMeta,
 ) {
-    let line = match meta.indicator {
-        Some(AssistantRuntimeIndicator::Compacting) => compacting_line(meta.spinner.frame),
+    let indicator_lines = match meta.indicator {
+        Some(AssistantRuntimeIndicator::Compacting) => compacting_lines(meta.spinner.frame),
         Some(AssistantRuntimeIndicator::Thinking { verb }) => {
-            thinking_line(meta.spinner.frame, verb)
+            vec![thinking_line(meta.spinner.frame, verb)]
         }
         None => return,
     };
@@ -1179,7 +1183,7 @@ fn append_assistant_indicator_rows(
         start_row: boundary_start,
         commit_ready: false,
     });
-    rows.extend(wrap_lines_to_physical_rows(&[line], meta.width));
+    rows.extend(wrap_lines_to_physical_rows(&indicator_lines, meta.width));
 }
 
 fn spinner_state_for_live(frame: usize) -> SpinnerState {
@@ -1277,16 +1281,22 @@ fn thinking_line(frame: usize, verb: &str) -> Line<'static> {
     ))
 }
 
-fn compacting_line(frame: usize) -> Line<'static> {
+fn compacting_lines(frame: usize) -> Vec<Line<'static>> {
     const SPINNER_FRAMES: &[char] = &[
         '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
         '\u{2827}', '\u{2807}', '\u{280F}',
     ];
     let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
-    Line::from(ratatui::text::Span::styled(
-        format!("{ch} Compacting context..."),
-        Style::default().fg(theme::RUST_ORANGE),
-    ))
+    vec![
+        Line::from(ratatui::text::Span::styled(
+            format!("{ch} Compacting context..."),
+            Style::default().fg(theme::RUST_ORANGE),
+        )),
+        Line::from(ratatui::text::Span::styled(
+            "  └─ Keep drafting — sending resumes when compaction finishes.",
+            Style::default().fg(theme::DIM),
+        )),
+    ]
 }
 
 fn system_severity_color(severity: SystemSeverity) -> Color {
@@ -2089,6 +2099,35 @@ mod tests {
 
         assert_eq!(text.first().map(String::as_str), Some("Claude"));
         assert!(text.iter().any(|line| line.contains("Pondering...")));
+    }
+
+    #[test]
+    fn active_compaction_renders_one_assistant_owned_indicator() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_message());
+        app.bind_active_turn_assistant(0);
+        app.turn.compaction.begin();
+
+        for width in [32, 120, 32] {
+            let serialized = serialize_all_rows_with_boundaries(&mut app, width);
+            let text = line_texts(serialized.rows());
+            let compact = compact_text(serialized.rows());
+
+            assert_eq!(text.first().map(String::as_str), Some("Claude"));
+            assert_eq!(compact.matches("Compactingcontext...").count(), 1);
+            assert!(compact.contains("└─Keepdrafting—sendingresumeswhencompactionfinishes."));
+            assert!(text.iter().any(|line| line.starts_with("  └─ Keep drafting")));
+            assert_eq!(text.last().map(String::as_str), Some(""));
+            assert_eq!(
+                serialized
+                    .segments()
+                    .iter()
+                    .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantIndicator)
+                    .count(),
+                1
+            );
+            assert!(app.transcript.messages[0].blocks.is_empty());
+        }
     }
 
     #[test]
