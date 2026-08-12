@@ -30,6 +30,24 @@ pub(crate) enum AppSlashCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmissionClass {
+    Invalid,
+    TurnControl,
+    Fullscreen,
+    Informational,
+    TurnExclusive,
+}
+
+impl SubmissionClass {
+    pub(crate) const fn requires_idle_turn(self) -> bool {
+        match self {
+            Self::TurnExclusive => true,
+            Self::Invalid | Self::TurnControl | Self::Fullscreen | Self::Informational => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SlashArgSpec {
     pub value: &'static str,
     pub description: &'static str,
@@ -295,6 +313,84 @@ impl AppSlashCommand {
 
     pub(crate) fn usage(self) -> &'static str {
         command_spec(self.name()).map_or(self.name(), |spec| spec.usage)
+    }
+
+    pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
+        match self {
+            Self::Cancel => {
+                if args.is_empty() {
+                    SubmissionClass::TurnControl
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Config | Self::Help | Self::Mcp | Self::Plugins | Self::Status | Self::Usage => {
+                if args.is_empty() {
+                    SubmissionClass::Fullscreen
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Limits => {
+                if args.is_empty() {
+                    SubmissionClass::Informational
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Docs => {
+                if matches!(args, ["mode" | "models" | "shortcuts" | "commands" | "agents"]) {
+                    SubmissionClass::Informational
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::OneMContext => match args {
+                ["status"] => SubmissionClass::Informational,
+                ["enable" | "disable"] => SubmissionClass::TurnExclusive,
+                _ => SubmissionClass::Invalid,
+            },
+            Self::OpusVersion => match args {
+                ["status"] => SubmissionClass::Informational,
+                ["4.5" | "4.6" | "4.7" | "4.8" | "default"] => SubmissionClass::TurnExclusive,
+                _ => SubmissionClass::Invalid,
+            },
+            Self::Compact | Self::Fast | Self::Login | Self::Logout | Self::NewSession => {
+                if args.is_empty() {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Agent | Self::Mode | Self::Model => {
+                if matches!(args, [_]) {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Effort => {
+                if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max"]) {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Resume => {
+                if args.len() <= 1 {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Rewind => {
+                if matches!(args, [_, "both" | "conversation" | "code"]) {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+        }
     }
 }
 

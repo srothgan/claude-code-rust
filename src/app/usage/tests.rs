@@ -1,6 +1,76 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::app::{ExtraUsage, UsageSourceKind};
+use crate::app::{
+    App, AppStatus, ChatMessage, MessageBlock, MessageRole, SystemSeverity, UsageSourceKind,
+};
+
+fn limits_snapshot() -> UsageSnapshot {
+    UsageSnapshot {
+        source: UsageSourceKind::Sdk,
+        fetched_at: SystemTime::now(),
+        subscription_type: None,
+        five_hour: Some(UsageWindow {
+            label: "5-hour".to_owned(),
+            utilization: 42.0,
+            resets_at: None,
+            reset_description: None,
+        }),
+        seven_day: None,
+        seven_day_oauth_apps: None,
+        seven_day_opus: None,
+        seven_day_sonnet: None,
+        model_scoped: Vec::new(),
+        extra_usage: None,
+        session: None,
+        activity: None,
+    }
+}
+
+#[test]
+fn delayed_limits_feedback_stays_with_the_turn_that_requested_it() {
+    let mut app = App::test_default();
+    app.status = AppStatus::Running;
+    app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.bind_active_turn_assistant(0);
+
+    request_limits_summary(&mut app);
+
+    let original_owner = app.transcript.messages[0].id;
+    assert_eq!(app.usage.pending_limits_feedback_owner, Some(original_owner));
+
+    app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.bind_active_turn_assistant(1);
+    app.usage.snapshot = Some(limits_snapshot());
+    emit_pending_limits_success(&mut app);
+
+    let [MessageBlock::Notice(notice)] = app.transcript.messages[0].blocks.as_slice() else {
+        panic!("expected limits feedback on the requesting turn");
+    };
+    assert_eq!(notice.severity, SystemSeverity::Info);
+    assert!(notice.text.text.contains("| 5-hour | 42% |"));
+    assert!(app.transcript.messages[1].blocks.is_empty());
+    assert!(app.usage.pending_limits_feedback_owner.is_none());
+}
+
+#[test]
+fn delayed_between_turn_limits_feedback_does_not_attach_to_a_later_turn() {
+    let mut app = App::test_default();
+
+    request_limits_summary(&mut app);
+
+    assert!(app.usage.pending_limits_feedback_owner.is_none());
+    app.status = AppStatus::Running;
+    app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.bind_active_turn_assistant(0);
+    app.usage.snapshot = Some(limits_snapshot());
+    emit_pending_limits_success(&mut app);
+
+    assert!(app.transcript.messages[0].blocks.is_empty());
+    let Some(message) = app.transcript.messages.get(1) else {
+        panic!("expected standalone limits feedback");
+    };
+    assert!(matches!(message.role, MessageRole::System(Some(SystemSeverity::Info))));
+}
 
 #[test]
 fn formats_day_scale_reset() {

@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Features
 
 - **Claude Agent SDK 0.3.227 migration** (#338, @srothgan): Add guarded resume-at, structured usage, cross-session message provenance, and current SDK metadata support.
+- **Active-turn commands** (@srothgan): Allow safe commands during active turns and preserve blocked drafts instead of cancelling the turn.
 
 ## [0.14.3] - 2026-08-01 [Changes][v0.14.3]
 

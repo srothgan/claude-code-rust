@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use crate::app::{App, AppStatus};
+use crate::app::App;
 use std::time::{Duration, Instant};
 
 const CONTEXT_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(45);
@@ -114,8 +114,7 @@ pub(crate) fn tick_context_usage_refresh(app: &mut App, now: Instant) {
 }
 
 fn context_usage_refresh_is_active(app: &App) -> bool {
-    matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        || app.turn.compaction.is_active()
+    app.is_agent_turn_active()
 }
 
 pub(crate) fn request_status_snapshot_refresh(app: &mut App) {

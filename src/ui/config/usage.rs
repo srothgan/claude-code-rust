@@ -451,6 +451,7 @@ mod tests {
             active_source: UsageSourceMode::Auto,
             last_attempted_source: None,
             pending_limits_response: false,
+            pending_limits_feedback_owner: None,
         };
         app
     }

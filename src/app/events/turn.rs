@@ -2,9 +2,9 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::super::{
-    App, AppStatus, CancelOrigin, ChatMessage, FocusTarget, InlinePermission, InlineQuestion,
-    InvalidationLevel, MessageBlock, MessageRole, NoticeStage, SubagentPermissionContext,
-    SystemSeverity, TextBlock, ToolCallInfo, ToolCallScope, UserDialogBlock,
+    App, AppStatus, ChatMessage, FocusTarget, InlinePermission, InlineQuestion, InvalidationLevel,
+    MessageBlock, MessageRole, NoticeStage, SubagentPermissionContext, SystemSeverity, TextBlock,
+    ToolCallInfo, ToolCallScope, UserDialogBlock,
 };
 use super::compaction;
 use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
@@ -26,8 +26,7 @@ const AUTH_REQUIRED_NEXT_STEPS_HINT: &str = "Authentication required. Type /logi
 struct TurnExitState {
     tail_assistant_idx: Option<usize>,
     turn_was_active: bool,
-    cancelled_requested: Option<CancelOrigin>,
-    show_interrupted_hint: bool,
+    cancel_requested: bool,
 }
 
 pub(super) fn handle_permission_request_event(
@@ -424,11 +423,7 @@ fn reject_permission_request(
 }
 
 pub(super) fn handle_turn_cancelled_event(app: &mut App) {
-    if app.turn.pending_cancel_origin.is_none() {
-        app.turn.pending_cancel_origin = Some(CancelOrigin::Manual);
-    }
-    app.turn.cancelled_pending_hint =
-        matches!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual));
+    app.turn.cancel_requested = true;
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 }
 
@@ -440,12 +435,10 @@ fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnE
             .iter()
             .rposition(|m| matches!(m.role, MessageRole::Assistant)),
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
-        cancelled_requested: app.turn.pending_cancel_origin,
-        show_interrupted_hint: matches!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual)),
+        cancel_requested: app.turn.cancel_requested,
     };
     compaction::finish_inferred(app, emit_manual_compaction_success);
-    app.turn.pending_cancel_origin = None;
-    app.turn.cancelled_pending_hint = false;
+    app.turn.cancel_requested = false;
     state
 }
 
@@ -457,12 +450,10 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     app.sync_git_context();
 
     let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
-    if exit.show_interrupted_hint {
+    if exit.cancel_requested {
         push_interrupted_hint(app);
     }
-    if removed_tail_assistant.is_none()
-        && (exit.turn_was_active || exit.cancelled_requested.is_some())
-    {
+    if removed_tail_assistant.is_none() && (exit.turn_was_active || exit.cancel_requested) {
         mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
     }
     app.turn.reset_for_turn_exit();
@@ -483,7 +474,7 @@ pub(super) fn handle_turn_complete_event(
             terminal_reason = reason.as_stored(),
         );
     }
-    let tool_status = if exit.cancelled_requested.is_some() {
+    let tool_status = if exit.cancel_requested {
         model::ToolCallStatus::Failed
     } else {
         model::ToolCallStatus::Completed
@@ -497,9 +488,6 @@ pub(super) fn handle_turn_complete_event(
             super::super::notify::NotifyEvent::TurnComplete,
         );
     }
-    if app.surface_mode == super::super::SurfaceMode::Chat {
-        super::super::input_submit::maybe_auto_submit_after_cancel(app);
-    }
 }
 
 pub(super) fn handle_turn_error_event(
@@ -511,7 +499,7 @@ pub(super) fn handle_turn_error_event(
 ) {
     let exit = begin_turn_exit(app, false);
 
-    if exit.cancelled_requested.is_some() {
+    if exit.cancel_requested {
         let summary = summarize_internal_error(msg);
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
@@ -526,9 +514,6 @@ pub(super) fn handle_turn_error_event(
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         request_post_turn_resize_purge_replay_if_needed(app);
         crate::app::session_runtime::request_context_usage_refresh(app);
-        if app.surface_mode == super::super::SurfaceMode::Chat {
-            super::super::input_submit::maybe_auto_submit_after_cancel(app);
-        }
         return;
     }
 
@@ -546,7 +531,6 @@ pub(super) fn handle_turn_error_event(
     );
     apply_turn_error_class_side_effects(app, error_class, &summary, api_error_status);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.turn.pending_auto_submit_after_cancel = false;
     app.input.clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
@@ -896,7 +880,7 @@ mod tests {
     fn cancelled_turn_error_removes_empty_tail_assistant_before_hint() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
-        app.turn.pending_cancel_origin = Some(CancelOrigin::Manual);
+        app.turn.cancel_requested = true;
         app.transcript.messages.push(user_message("hello"));
         app.transcript.messages.push(empty_assistant_message());
 

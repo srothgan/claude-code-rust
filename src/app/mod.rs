@@ -67,8 +67,8 @@ pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
-    ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, CancelOrigin,
-    ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
+    ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, ChatMessage,
+    ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
     HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion,
     InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
     MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+use super::messages::ChatMessageId;
 use crate::agent::model;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -187,6 +188,7 @@ pub struct UsageState {
     pub active_source: UsageSourceMode,
     pub last_attempted_source: Option<UsageSourceKind>,
     pub pending_limits_response: bool,
+    pub pending_limits_feedback_owner: Option<ChatMessageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -301,12 +303,6 @@ pub enum ToolCallScope {
     MainAgent,
     SubagentRoot,
     SubagentChild { parent_tool_use_id: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CancelOrigin {
-    Manual,
-    AutoQueue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

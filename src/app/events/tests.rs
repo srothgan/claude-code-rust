@@ -8,7 +8,7 @@ use crate::app::keymap::{
 };
 use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
 use crate::app::{
-    CancelOrigin, ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget, FullscreenView,
+    ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget, FullscreenView,
     InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason, SurfaceMode,
     TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot,
     UsageSourceKind, UsageWindow, mention,
@@ -1105,7 +1105,7 @@ fn test_app_defaults() {
     assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
     assert!(app.sdk_inventory.tasks.is_empty());
     assert!(app.mention.is_none());
-    assert!(!app.turn.cancelled_pending_hint);
+    assert!(!app.turn.cancel_requested);
     assert!(matches!(app.status, AppStatus::Ready));
 }
 
@@ -1244,11 +1244,11 @@ fn turn_complete_after_cancel_renders_interrupted_hint() {
     let mut app = make_test_app();
 
     handle_local_cancel_enqueued(&mut app);
-    assert!(app.turn.cancelled_pending_hint);
+    assert!(app.turn.cancel_requested);
 
     handle_client_event(&mut app, turn_complete(None));
 
-    assert!(!app.turn.cancelled_pending_hint);
+    assert!(!app.turn.cancel_requested);
     let last = app.transcript.messages.last().expect("expected interruption hint message");
     assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Info))));
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
@@ -1289,8 +1289,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
     assert!(live_rows_contain_text(&mut app, "startup assistant reply"));
     assert!(!session_overview_has_welcome(&app));
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.turn.pending_cancel_origin, None);
-    assert!(!app.turn.pending_auto_submit_after_cancel);
+    assert!(!app.turn.cancel_requested);
 
     handle_client_event(
         &mut app,
@@ -1347,8 +1346,7 @@ fn startup_resume_history_allows_immediate_prompt_submit() {
         crate::agent::wire::BridgeCommand::Prompt { session_id, .. }
             if session_id == "startup-resume"
     ));
-    assert_eq!(app.turn.pending_cancel_origin, None);
-    assert!(!app.turn.pending_auto_submit_after_cancel);
+    assert!(!app.turn.cancel_requested);
     assert!(rx.try_recv().is_err(), "resume submit should not send cancel");
 }
 
@@ -2471,7 +2469,7 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
     app.transcript.messages.push(user_msg("build app"));
 
     handle_local_cancel_enqueued(&mut app);
-    assert!(app.turn.cancelled_pending_hint);
+    assert!(app.turn.cancel_requested);
 
     handle_client_event(
         &mut app,
@@ -2483,7 +2481,7 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
         },
     );
 
-    assert!(!app.turn.cancelled_pending_hint);
+    assert!(!app.turn.cancel_requested);
     assert!(matches!(app.status, AppStatus::Ready));
 
     let Some(last) = app.transcript.messages.last() else {
@@ -3273,11 +3271,11 @@ fn second_esc_after_permission_rejection_requests_turn_cancel() {
     };
     assert_eq!(selected.option_id.clone(), "deny");
     assert!(app.turn.pending_interaction_ids.is_empty());
-    assert_eq!(app.turn.pending_cancel_origin, None);
+    assert!(!app.turn.cancel_requested);
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
 
-    assert_eq!(app.turn.pending_cancel_origin, Some(CancelOrigin::Manual));
+    assert!(app.turn.cancel_requested);
     let envelope = rx.try_recv().expect("second Esc should send turn cancel");
     assert!(matches!(
         envelope.command,

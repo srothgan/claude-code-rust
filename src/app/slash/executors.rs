@@ -4,8 +4,8 @@
 //! Slash command executors: dispatching parsed commands to their handler functions.
 
 use super::{
-    AppSlashCommand, parse, push_system_message, push_user_message, require_active_session,
-    require_connection, set_command_pending,
+    AppSlashCommand, ResolvedSubmission, SubmissionClass, push_system_message, push_user_message,
+    require_active_session, require_connection, set_command_pending,
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::types::RewindRestoreMode;
@@ -13,10 +13,9 @@ use crate::app::config::{self, SettingFile, store};
 use crate::app::connect::{
     SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
 };
-use crate::app::events::push_system_message_with_severity;
+use crate::app::events::push_submission_feedback;
 use crate::app::{
-    App, AppStatus, CancelOrigin, FullscreenView, ReleaseReason, SessionPickerState,
-    SystemSeverity, view,
+    App, AppStatus, FullscreenView, ReleaseReason, SessionPickerState, SystemSeverity, view,
 };
 use std::fmt::Write as _;
 use std::path::Path;
@@ -32,43 +31,49 @@ const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 ///
 /// Returns `true` if the slash input was fully handled and should not be sent as a prompt.
 /// Returns `false` when the input should continue through the normal prompt path.
-pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
-    let Some(parsed) = parse(text) else {
+pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmission) -> bool {
+    let ResolvedSubmission::Slash { name, args, command, .. } = submission else {
         return false;
     };
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
 
-    let Some(command) = AppSlashCommand::from_name(parsed.name) else {
-        return handle_unknown_submit(app, parsed.name);
+    let Some(command) = command else {
+        return handle_unknown_submit(app, name);
     };
+    if submission.class() == SubmissionClass::Invalid {
+        push_system_message(app, command.usage());
+        return true;
+    }
 
     match command {
-        AppSlashCommand::OneMContext => handle_1m_context_submit(app, &parsed.args),
+        AppSlashCommand::OneMContext => handle_1m_context_submit(app, &args),
         AppSlashCommand::Cancel => handle_cancel_submit(app),
-        AppSlashCommand::Compact => handle_compact_submit(app, &parsed.args),
-        AppSlashCommand::Config => handle_config_submit(app, &parsed.args),
-        AppSlashCommand::Limits => handle_limits_submit(app, &parsed.args),
-        AppSlashCommand::Docs => handle_docs_submit(app, &parsed.args),
-        AppSlashCommand::Agent => handle_agent_submit(app, &parsed.args),
-        AppSlashCommand::Effort => handle_effort_submit(app, &parsed.args),
-        AppSlashCommand::Fast => handle_fast_submit(app, &parsed.args),
-        AppSlashCommand::Help => handle_help_submit(app, &parsed.args),
-        AppSlashCommand::Mcp => handle_mcp_submit(app, &parsed.args),
-        AppSlashCommand::Plugins => handle_plugins_submit(app, &parsed.args),
-        AppSlashCommand::OpusVersion => handle_opus_version_submit(app, &parsed.args),
-        AppSlashCommand::Status => handle_status_submit(app, &parsed.args),
-        AppSlashCommand::Usage => handle_usage_submit(app, &parsed.args),
-        AppSlashCommand::Login => handle_login_submit(app, &parsed.args),
-        AppSlashCommand::Logout => handle_logout_submit(app, &parsed.args),
-        AppSlashCommand::Mode => handle_mode_submit(app, &parsed.args),
-        AppSlashCommand::Model => handle_model_submit(app, &parsed.args),
-        AppSlashCommand::NewSession => handle_new_session_submit(app, &parsed.args),
-        AppSlashCommand::Resume => handle_resume_submit(app, &parsed.args),
-        AppSlashCommand::Rewind => handle_rewind_submit(app, &parsed.args),
+        AppSlashCommand::Compact => handle_compact_submit(app),
+        AppSlashCommand::Config => handle_config_submit(app),
+        AppSlashCommand::Limits => handle_limits_submit(app),
+        AppSlashCommand::Docs => handle_docs_submit(app, &args),
+        AppSlashCommand::Agent => handle_agent_submit(app, &args),
+        AppSlashCommand::Effort => handle_effort_submit(app, &args),
+        AppSlashCommand::Fast => handle_fast_submit(app),
+        AppSlashCommand::Help => handle_help_submit(app),
+        AppSlashCommand::Mcp => handle_mcp_submit(app),
+        AppSlashCommand::Plugins => handle_plugins_submit(app),
+        AppSlashCommand::OpusVersion => handle_opus_version_submit(app, &args),
+        AppSlashCommand::Status => handle_status_submit(app),
+        AppSlashCommand::Usage => handle_usage_submit(app),
+        AppSlashCommand::Login => handle_login_submit(app),
+        AppSlashCommand::Logout => handle_logout_submit(app),
+        AppSlashCommand::Mode => handle_mode_submit(app, &args),
+        AppSlashCommand::Model => handle_model_submit(app, &args),
+        AppSlashCommand::NewSession => handle_new_session_submit(app),
+        AppSlashCommand::Resume => handle_resume_submit(app, &args),
+        AppSlashCommand::Rewind => handle_rewind_submit(app, &args),
     }
 }
 
-fn usage(command: AppSlashCommand) -> &'static str {
-    command.usage()
+#[cfg(test)]
+pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
+    try_handle_submission(app, &ResolvedSubmission::resolve(text.to_owned()))
 }
 
 fn opus_model_id_for_version(version: &str) -> Option<&'static str> {
@@ -93,16 +98,10 @@ fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
 
 fn handle_opus_version_submit(app: &mut App, args: &[&str]) -> bool {
     let [subcommand] = args else {
-        push_system_message(app, usage(AppSlashCommand::OpusVersion));
-        return true;
+        unreachable!("validated /opus-version arguments must contain one value");
     };
-    let subcommand = subcommand.trim();
-    if subcommand.is_empty() || args.len() != 1 {
-        push_system_message(app, usage(AppSlashCommand::OpusVersion));
-        return true;
-    }
 
-    match subcommand {
+    match *subcommand {
         "status" => {
             match current_opus_version_pin(app) {
                 Ok(Some(model_id)) => {
@@ -116,11 +115,11 @@ fn handle_opus_version_submit(app: &mut App, args: &[&str]) -> bool {
                             "Opus is pinned to {model_id} in this folder via `.claude/settings.local.json`."
                         )
                     };
-                    push_system_message_with_severity(app, Some(SystemSeverity::Info), &message);
+                    push_submission_feedback(app, SystemSeverity::Info, &message);
                 }
-                Ok(None) => push_system_message_with_severity(
+                Ok(None) => push_submission_feedback(
                     app,
-                    Some(SystemSeverity::Info),
+                    SystemSeverity::Info,
                     "Opus is using the default alias resolution in this folder.",
                 ),
                 Err(err) => {
@@ -137,8 +136,7 @@ fn handle_opus_version_submit(app: &mut App, args: &[&str]) -> bool {
         }
         _ => {
             let Some(model_id) = opus_model_id_for_version(subcommand) else {
-                push_system_message(app, usage(AppSlashCommand::OpusVersion));
-                return true;
+                unreachable!("validated /opus-version argument must be supported");
             };
             if let Err(err) = set_opus_version_pin(app, Some(model_id)) {
                 push_system_message(
@@ -153,26 +151,20 @@ fn handle_opus_version_submit(app: &mut App, args: &[&str]) -> bool {
 
 fn handle_1m_context_submit(app: &mut App, args: &[&str]) -> bool {
     let [subcommand] = args else {
-        push_system_message(app, usage(AppSlashCommand::OneMContext));
-        return true;
+        unreachable!("validated /1m-context arguments must contain one value");
     };
-    let subcommand = subcommand.trim();
-    if subcommand.is_empty() || args.len() != 1 {
-        push_system_message(app, usage(AppSlashCommand::OneMContext));
-        return true;
-    }
 
-    match subcommand {
+    match *subcommand {
         "status" => {
             match current_1m_context_disabled(app) {
-                Ok(true) => push_system_message_with_severity(
+                Ok(true) => push_submission_feedback(
                     app,
-                    Some(SystemSeverity::Info),
+                    SystemSeverity::Info,
                     "1M context is disabled for future sessions in this folder via `.claude/settings.local.json`.",
                 ),
-                Ok(false) => push_system_message_with_severity(
+                Ok(false) => push_submission_feedback(
                     app,
-                    Some(SystemSeverity::Info),
+                    SystemSeverity::Info,
                     "1M context is enabled for future sessions in this folder.",
                 ),
                 Err(err) => {
@@ -193,10 +185,7 @@ fn handle_1m_context_submit(app: &mut App, args: &[&str]) -> bool {
             }
             true
         }
-        _ => {
-            push_system_message(app, usage(AppSlashCommand::OneMContext));
-            true
-        }
+        _ => unreachable!("validated /1m-context argument must be supported"),
     }
 }
 
@@ -248,7 +237,7 @@ fn set_1m_context_disabled(app: &mut App, disabled: bool) -> Result<(), String> 
             "Enabled 1M context for future sessions in this folder. Run /new-session to apply it."
         }
     };
-    push_system_message_with_severity(app, Some(SystemSeverity::Info), message);
+    push_submission_feedback(app, SystemSeverity::Info, message);
     Ok(())
 }
 
@@ -304,7 +293,7 @@ fn set_opus_version_pin(app: &mut App, model: Option<&str>) -> Result<(), String
             "Cleared the project-local Opus version pin for future sessions in this folder. Run /new-session to apply it.".to_owned()
         }
     };
-    push_system_message_with_severity(app, Some(SystemSeverity::Info), &message);
+    push_submission_feedback(app, SystemSeverity::Info, &message);
     Ok(())
 }
 
@@ -312,17 +301,13 @@ fn handle_cancel_submit(app: &mut App) -> bool {
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         return true;
     }
-    if let Err(message) = crate::app::input_submit::request_cancel(app, CancelOrigin::Manual) {
+    if let Err(message) = crate::app::input_submit::request_cancel(app) {
         push_system_message(app, format!("Failed to run /cancel: {message}"));
     }
     true
 }
 
-fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Compact));
-        return true;
-    }
+fn handle_compact_submit(app: &mut App) -> bool {
     if require_active_session(
         app,
         "Cannot compact: not connected yet.",
@@ -337,24 +322,14 @@ fn handle_compact_submit(app: &mut App, args: &[&str]) -> bool {
     false
 }
 
-fn handle_config_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Config));
-        return true;
-    }
-
+fn handle_config_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open settings: {err}"));
     }
     true
 }
 
-fn handle_help_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Help));
-        return true;
-    }
-
+fn handle_help_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open help: {err}"));
         return true;
@@ -364,33 +339,24 @@ fn handle_help_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn handle_docs_submit(app: &mut App, args: &[&str]) -> bool {
-    let topic = match args {
-        [topic] if !topic.trim().is_empty() => topic.trim(),
-        _ => {
-            push_system_message(app, docs_usage());
-            return true;
-        }
+    let [topic] = args else {
+        unreachable!("validated /docs arguments must contain one topic");
     };
 
-    let body = match topic {
+    let body = match *topic {
         "mode" => build_docs_mode_markdown(app),
         "models" => build_docs_models_markdown(app),
         "shortcuts" => build_docs_shortcuts_markdown(app),
         "commands" => build_docs_commands_markdown(app),
         "agents" => build_docs_agents_markdown(app),
-        other => {
-            push_system_message(app, format!("Unknown docs topic: {other}\n{}", docs_usage()));
-            return true;
-        }
+        _ => unreachable!("validated /docs topic must be supported"),
     };
 
-    push_system_message_with_severity(app, Some(SystemSeverity::Info), &body);
+    push_submission_feedback(app, SystemSeverity::Info, &body);
     true
 }
 
-fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
-    let _ = args;
-
+fn handle_plugins_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open plugins: {err}"));
         return true;
@@ -399,12 +365,7 @@ fn handle_plugins_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Mcp));
-        return true;
-    }
-
+fn handle_mcp_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open MCP: {err}"));
         return true;
@@ -413,12 +374,7 @@ fn handle_mcp_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_status_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Status));
-        return true;
-    }
-
+fn handle_status_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open status: {err}"));
         return true;
@@ -427,12 +383,7 @@ fn handle_status_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_usage_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Usage));
-        return true;
-    }
-
+fn handle_usage_submit(app: &mut App) -> bool {
     if let Err(err) = crate::app::config::open(app) {
         push_system_message(app, format!("Failed to open usage: {err}"));
         return true;
@@ -441,22 +392,12 @@ fn handle_usage_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_limits_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Limits));
-        return true;
-    }
-
+fn handle_limits_submit(app: &mut App) -> bool {
     crate::app::usage::request_limits_summary(app);
     true
 }
 
-fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Login));
-        return true;
-    }
-
+fn handle_login_submit(app: &mut App) -> bool {
     push_user_message(app, "/login");
     tracing::debug!(
         target: crate::logging::targets::APP_AUTH,
@@ -466,9 +407,9 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     );
 
     if crate::app::auth::has_credentials() {
-        push_system_message_with_severity(
+        push_submission_feedback(
             app,
-            Some(SystemSeverity::Info),
+            SystemSeverity::Info,
             "Already authenticated. Use /logout first to re-authenticate.",
         );
         return true;
@@ -545,12 +486,7 @@ fn handle_login_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Logout));
-        return true;
-    }
-
+fn handle_logout_submit(app: &mut App) -> bool {
     push_user_message(app, "/logout");
     tracing::debug!(
         target: crate::logging::targets::APP_AUTH,
@@ -560,9 +496,9 @@ fn handle_logout_submit(app: &mut App, args: &[&str]) -> bool {
     );
 
     if !crate::app::auth::has_credentials() {
-        push_system_message_with_severity(
+        push_submission_feedback(
             app,
-            Some(SystemSeverity::Info),
+            SystemSeverity::Info,
             "Not currently authenticated. Nothing to log out from.",
         );
         return true;
@@ -693,14 +629,9 @@ fn resolve_claude_cli(app: &mut App, subcommand: &str) -> Option<std::path::Path
 
 fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     let [requested_mode_arg] = args else {
-        push_system_message(app, usage(AppSlashCommand::Mode));
-        return true;
+        unreachable!("validated /mode arguments must contain one value");
     };
-    let requested_mode = requested_mode_arg.trim();
-    if requested_mode.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Mode));
-        return true;
-    }
+    let requested_mode = *requested_mode_arg;
 
     let Some((conn, sid)) = require_active_session(
         app,
@@ -740,14 +671,9 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
 
 fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
     let [model_name_arg] = args else {
-        push_system_message(app, usage(AppSlashCommand::Model));
-        return true;
+        unreachable!("validated /model arguments must contain one value");
     };
-    let model_name = model_name_arg.trim();
-    if model_name.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Model));
-        return true;
-    }
+    let model_name = *model_name_arg;
 
     let Some((conn, sid)) = require_active_session(
         app,
@@ -791,12 +717,10 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
 
 fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     let [effort_arg] = args else {
-        push_system_message(app, usage(AppSlashCommand::Effort));
-        return true;
+        unreachable!("validated /effort arguments must contain one value");
     };
-    let Some(effort) = crate::agent::model::EffortLevel::from_stored(effort_arg.trim()) else {
-        push_system_message(app, usage(AppSlashCommand::Effort));
-        return true;
+    let Some(effort) = crate::agent::model::EffortLevel::from_stored(effort_arg) else {
+        unreachable!("validated /effort argument must be supported");
     };
 
     let Some((conn, sid)) = require_active_session(
@@ -837,12 +761,7 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_fast_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Fast));
-        return true;
-    }
-
+fn handle_fast_submit(app: &mut App) -> bool {
     let Some((conn, sid)) = require_active_session(
         app,
         "Cannot toggle fast mode: not connected yet.",
@@ -883,14 +802,9 @@ fn handle_fast_submit(app: &mut App, args: &[&str]) -> bool {
 
 fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
     let [agent_arg] = args else {
-        push_system_message(app, usage(AppSlashCommand::Agent));
-        return true;
+        unreachable!("validated /agent arguments must contain one value");
     };
-    let requested_agent = agent_arg.trim();
-    if requested_agent.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Agent));
-        return true;
-    }
+    let requested_agent = *agent_arg;
 
     let Some((conn, sid)) = require_active_session(
         app,
@@ -940,12 +854,7 @@ fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
     true
 }
 
-fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
-    if !args.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::NewSession));
-        return true;
-    }
-
+fn handle_new_session_submit(app: &mut App) -> bool {
     push_user_message(app, "/new-session");
 
     let Some(conn) = require_connection(app, "Cannot create new session: not connected yet.")
@@ -985,14 +894,9 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     }
     let [session_id_arg] = args else {
-        push_system_message(app, usage(AppSlashCommand::Resume));
-        return true;
+        unreachable!("validated /resume arguments must contain at most one value");
     };
-    let session_id = session_id_arg.trim();
-    if session_id.is_empty() {
-        push_system_message(app, usage(AppSlashCommand::Resume));
-        return true;
-    }
+    let session_id = *session_id_arg;
 
     push_user_message(app, format!("/resume {session_id}"));
     let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.") else {
@@ -1011,19 +915,12 @@ fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn handle_rewind_submit(app: &mut App, args: &[&str]) -> bool {
-    let [target_uuid, restore_mode_arg] = args else {
-        push_system_message(app, usage(AppSlashCommand::Rewind));
-        return true;
+    let [target_uuid_arg, restore_mode_arg] = args else {
+        unreachable!("validated /rewind arguments must contain a target and restore mode");
     };
-    let target_uuid = target_uuid.trim();
-    let restore_mode_arg = restore_mode_arg.trim();
-    if target_uuid.is_empty() || restore_mode_arg.is_empty() || args.len() != 2 {
-        push_system_message(app, usage(AppSlashCommand::Rewind));
-        return true;
-    }
+    let target_uuid = *target_uuid_arg;
     let Some(restore_mode) = RewindRestoreMode::from_stored(restore_mode_arg) else {
-        push_system_message(app, usage(AppSlashCommand::Rewind));
-        return true;
+        unreachable!("validated /rewind restore mode must be supported");
     };
     let Some(target) =
         app.sdk_inventory.rewind_targets.iter().find(|target| target.uuid == target_uuid)
@@ -1062,10 +959,6 @@ fn handle_unknown_submit(app: &mut App, command_name: &str) -> bool {
     }
     push_system_message(app, format!("{command_name} is not yet supported"));
     true
-}
-
-fn docs_usage() -> &'static str {
-    usage(AppSlashCommand::Docs)
 }
 
 fn build_docs_mode_markdown(app: &App) -> String {

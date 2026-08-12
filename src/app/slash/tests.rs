@@ -32,6 +32,47 @@ fn parse_slash_name_and_args() {
 }
 
 #[test]
+fn resolved_submission_is_the_active_turn_policy_authority() {
+    let classify = |input: &str| ResolvedSubmission::resolve(input.to_owned()).class();
+
+    assert_eq!(classify("/cancel"), SubmissionClass::TurnControl);
+    for input in ["/config", "/help", "/mcp", "/plugins", "/status", "/usage"] {
+        assert_eq!(classify(input), SubmissionClass::Fullscreen, "unexpected class for {input}");
+    }
+    for input in ["/docs commands", "/limits", "/1m-context status", "/opus-version status"] {
+        assert_eq!(classify(input), SubmissionClass::Informational, "unexpected class for {input}");
+    }
+    for input in [
+        "next prompt",
+        "/remote-command",
+        "/compact",
+        "/1m-context enable",
+        "/opus-version 4.8",
+        "/agent reviewer",
+        "/effort high",
+        "/fast",
+        "/login",
+        "/logout",
+        "/mode plan",
+        "/model sonnet",
+        "/new-session",
+        "/resume",
+        "/rewind user-1 conversation",
+    ] {
+        assert_eq!(classify(input), SubmissionClass::TurnExclusive, "unexpected class for {input}");
+    }
+    for input in [
+        "/cancel extra",
+        "/docs nope",
+        "/plugins extra",
+        "/resume one two",
+        "/rewind user-1 invalid",
+    ] {
+        assert_eq!(classify(input), SubmissionClass::Invalid, "unexpected class for {input}");
+    }
+}
+
+#[test]
 fn unsupported_command_is_handled_locally() {
     let mut app = App::test_default();
     let consumed = try_handle_submit(&mut app, "/definitely-unknown");
@@ -719,19 +760,19 @@ fn mcp_with_extra_args_returns_usage() {
 }
 
 #[test]
-fn plugins_with_extra_args_still_opens_plugins_tab() {
+fn plugins_with_extra_args_returns_usage() {
     let mut app = App::test_default();
-    let dir = tempfile::tempdir().expect("tempdir");
-    app.settings_home_override = Some(dir.path().to_path_buf());
 
     let consumed = try_handle_submit(&mut app, "/plugins extra");
 
     assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-    assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
+    let Some(last) = app.transcript.messages.last() else {
+        panic!("expected usage message");
+    };
+    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Usage: /plugins");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1262,8 +1303,7 @@ fn docs_with_unknown_topic_returns_usage() {
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
-    assert!(block.text.contains("Unknown docs topic: nope"));
-    assert!(block.text.contains("Usage: /docs <mode|models|shortcuts|commands|agents>"));
+    assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
 }
 
 #[test]

@@ -54,10 +54,10 @@ pub use transcript::Transcript;
 pub use turn::{ActiveCompaction, CompactionState, TurnState};
 pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
 pub use types::{
-    AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
-    McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
-    PostExitAction, RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState,
-    SessionUsageState, SessionUsageSummary, ToolCallScope, UpdatePromptAction, UpdatePromptState,
+    AppStatus, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState,
+    MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, PostExitAction,
+    RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
+    SessionUsageSummary, ToolCallScope, UpdatePromptAction, UpdatePromptState,
     UsageActivitySummary, UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution,
     UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
@@ -77,8 +77,8 @@ mod prelude {
     pub(super) use super::turn::TurnState;
     pub(super) use super::turn_notices::TurnNoticeRef;
     pub(super) use super::types::{
-        AppStatus, CancelOrigin, HistoryRetentionPolicy, HistoryRetentionStats, McpState,
-        PasteSessionState, PendingCommandAck, RecentSessionInfo, RenderCacheBudget, SelectionPoint,
+        AppStatus, HistoryRetentionPolicy, HistoryRetentionStats, McpState, PasteSessionState,
+        PendingCommandAck, RecentSessionInfo, RenderCacheBudget, SelectionPoint,
         SessionPickerState, ToolCallScope, UpdatePromptState, UsageState,
     };
     pub(super) use crate::agent::events::ClientEvent;

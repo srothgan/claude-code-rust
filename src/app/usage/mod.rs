@@ -30,12 +30,14 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
 }
 
 pub(crate) fn request_limits_summary(app: &mut App) {
+    let feedback_owner = crate::app::events::submission_feedback_owner(app);
     if app.usage.snapshot.as_ref().is_some_and(snapshot_is_fresh) {
-        push_limits_summary(app);
+        push_limits_summary(app, feedback_owner);
         return;
     }
 
     app.usage.pending_limits_response = true;
+    app.usage.pending_limits_feedback_owner = feedback_owner;
     request_refresh(app);
 }
 
@@ -228,20 +230,23 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.usage.last_error = None;
     app.usage.last_attempted_source = None;
     app.usage.pending_limits_response = false;
+    app.usage.pending_limits_feedback_owner = None;
 }
 
 pub(crate) fn emit_pending_limits_success(app: &mut App) {
     if !std::mem::take(&mut app.usage.pending_limits_response) {
         return;
     }
-    push_limits_summary(app);
+    let feedback_owner = app.usage.pending_limits_feedback_owner.take();
+    push_limits_summary(app, feedback_owner);
 }
 
 pub(crate) fn emit_pending_limits_failure(app: &mut App, message: &str) {
     if !std::mem::take(&mut app.usage.pending_limits_response) {
         return;
     }
-    push_error_message(app, &format!("Unable to get recent usage info: {message}"));
+    let feedback_owner = app.usage.pending_limits_feedback_owner.take();
+    push_error_message(app, feedback_owner, &format!("Unable to get recent usage info: {message}"));
 }
 
 pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {
@@ -302,23 +307,37 @@ fn snapshot_is_fresh(snapshot: &UsageSnapshot) -> bool {
     snapshot.fetched_at.elapsed().is_ok_and(|age| age < USAGE_REFRESH_TTL)
 }
 
-fn push_limits_summary(app: &mut App) {
+fn push_limits_summary(app: &mut App, feedback_owner: Option<crate::app::ChatMessageId>) {
     let message = app
         .usage
         .snapshot
         .as_ref()
         .map_or_else(|| "No usage data available.".to_owned(), format_limits_summary);
-    push_info_message(app, &message);
+    push_info_message(app, feedback_owner, &message);
 }
 
-fn push_info_message(app: &mut App, message: &str) {
-    crate::app::events::push_system_message_with_severity(app, Some(SystemSeverity::Info), message);
-}
-
-fn push_error_message(app: &mut App, message: &str) {
-    crate::app::events::push_system_message_with_severity(
+fn push_info_message(
+    app: &mut App,
+    feedback_owner: Option<crate::app::ChatMessageId>,
+    message: &str,
+) {
+    crate::app::events::push_submission_feedback_for_owner(
         app,
-        Some(SystemSeverity::Error),
+        feedback_owner,
+        SystemSeverity::Info,
+        message,
+    );
+}
+
+fn push_error_message(
+    app: &mut App,
+    feedback_owner: Option<crate::app::ChatMessageId>,
+    message: &str,
+) {
+    crate::app::events::push_submission_feedback_for_owner(
+        app,
+        feedback_owner,
+        SystemSeverity::Error,
         message,
     );
 }

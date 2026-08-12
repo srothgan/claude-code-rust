@@ -401,6 +401,7 @@ pub struct RateLimitIncidentKey {
 pub enum NoticeDedupKey {
     RateLimit(RateLimitIncidentKey),
     ApiRetry,
+    ActiveTurnSubmissionBlocked,
 }
 
 pub struct NoticeBlock {

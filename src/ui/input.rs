@@ -47,7 +47,7 @@ fn has_login_hint(app: &App) -> bool {
 }
 
 fn has_cancel_hint(app: &App) -> bool {
-    app.turn.pending_cancel_origin.is_some()
+    app.turn.cancel_requested
 }
 
 fn has_prompt_suggestion_hint(app: &App) -> bool {
@@ -225,7 +225,7 @@ mod tests {
     };
     use crate::app::mention::CommittedMentionSpan;
     use crate::app::subagent::find_subagent_spans;
-    use crate::app::{App, CancelOrigin, FocusTarget, LoginHint};
+    use crate::app::{App, FocusTarget, LoginHint};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier};
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn visual_line_count_includes_cancel_hint_row() {
         let mut app = App::test_default();
-        app.turn.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        app.turn.cancel_requested = true;
         assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
     }
 

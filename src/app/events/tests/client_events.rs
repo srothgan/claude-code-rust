@@ -1812,8 +1812,7 @@ fn resume_history_renders_user_message_chunks() {
     assert!(canonical_messages_contain_text(&app, "assistant reply"));
     assert!(!session_overview_has_welcome(&app));
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.turn.pending_cancel_origin, None);
-    assert!(!app.turn.pending_auto_submit_after_cancel);
+    assert!(!app.turn.cancel_requested);
 
     handle_client_event(
         &mut app,
