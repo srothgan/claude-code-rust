@@ -12,7 +12,7 @@ use super::inline_interactions::{
     clear_inline_interaction_focus, focus_next_inline_interaction, focused_interaction_id,
     has_focused_user_dialog, pop_next_valid_interaction_id,
 };
-use super::{App, InvalidationLevel, MessageBlock, MessageRole};
+use super::{App, InvalidationLevel, MessageBlock};
 use crate::agent::model;
 use crate::app::keymap::InteractionAction;
 use crate::app::keys::KeyOutcome;
@@ -167,14 +167,7 @@ fn respond_dialog(app: &mut App, resolution: DialogResolution) {
 }
 
 fn repopulate_composer_from_last_user_message(app: &mut App) {
-    let last_user_text = app.transcript.messages.iter().rev().find_map(|message| {
-        if !matches!(message.role, MessageRole::User) {
-            return None;
-        }
-        message.blocks.iter().rev().find_map(|block| {
-            if let MessageBlock::Text(text) = block { Some(text.text.clone()) } else { None }
-        })
-    });
+    let last_user_text = app.transcript.latest_user_text().map(str::to_owned);
     if let Some(text) = last_user_text {
         app.input.set_text(&text);
     }
@@ -183,7 +176,9 @@ fn repopulate_composer_from_last_user_message(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, AppStatus, ChatMessage, SystemSeverity, TextBlock, UserDialogBlock};
+    use crate::app::{
+        App, AppStatus, ChatMessage, MessageRole, SystemSeverity, TextBlock, UserDialogBlock,
+    };
     use crossterm::event::{KeyCode, KeyModifiers};
     use tokio::sync::oneshot;
 

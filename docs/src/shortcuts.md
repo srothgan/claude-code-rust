@@ -22,7 +22,8 @@ When the app is blocked before a usable session is available, `Ctrl+C` quits.
 | `Ctrl+C` | Clear the local draft, or quit when the draft is empty. |
 | `Tab` | Focus prompts or accept suggestions. |
 | `Shift+Tab` | Cycle mode. |
-| Arrow keys | Move through text. |
+| `Up` | Move up through text, or recall the latest user message when the input is empty. |
+| `Down`, `Left`, `Right` | Move through text. |
 | `Home`, `End` | Move to line start or line end. |
 | `Ctrl+Left`, `Ctrl+Right` | Move by word. |
 | `Alt+Left`, `Alt+Right` | Move by word. |
