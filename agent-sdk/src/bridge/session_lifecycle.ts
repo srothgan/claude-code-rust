@@ -50,10 +50,7 @@ import {
   emitElicitationRequestEvent,
   emitUserDialogRequestEvent,
 } from "./events.js";
-import {
-  ensureToolCallVisible,
-  setToolCallStatus,
-} from "./tool_calls.js";
+import { ensureToolCallVisible, setToolCallStatus } from "./tool_calls.js";
 import { isToolSearchToolName } from "./tooling.js";
 import {
   requestExitPlanModeApproval,
@@ -61,7 +58,11 @@ import {
   EXIT_PLAN_MODE_TOOL_NAME,
   ASK_USER_QUESTION_TOOL_NAME,
 } from "./user_interaction.js";
-import { mapAvailableAgents, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
+import {
+  mapAvailableAgents,
+  emitAvailableAgentsIfChanged,
+  refreshAvailableAgents,
+} from "./agents.js";
 import {
   mapSdkSlashCommands,
   updateAvailableCommands,
@@ -91,7 +92,9 @@ export type PendingRewindResult = Omit<
 >;
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
-  process.platform === "win32" ? "claude-rs-bridge-bun.exe" : "claude-rs-bridge-bun";
+  process.platform === "win32"
+    ? "claude-rs-bridge-bun.exe"
+    : "claude-rs-bridge-bun";
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
@@ -101,8 +104,10 @@ function permissionDisplayFromCanUseOptions(
   options: Parameters<CanUseTool>[2],
 ): PermissionDisplay | undefined {
   const title = typeof options.title === "string" ? options.title.trim() : "";
-  const displayName = typeof options.displayName === "string" ? options.displayName.trim() : "";
-  const description = typeof options.description === "string" ? options.description.trim() : "";
+  const displayName =
+    typeof options.displayName === "string" ? options.displayName.trim() : "";
+  const description =
+    typeof options.description === "string" ? options.description.trim() : "";
   if (!title && !displayName && !description) {
     return undefined;
   }
@@ -161,6 +166,13 @@ export type SessionState = {
   query: Query;
   initializationTask?: Promise<void>;
   queryConsumerTask?: Promise<void>;
+  initializationReady?: boolean;
+  initializationError?: string;
+  deferConnect?: boolean;
+  resumeDropsTurn?: string;
+  resumeGuardFenceComplete?: boolean;
+  deferredBridgeEvents?: Array<{ event: BridgeEvent; requestId?: string }>;
+  deferredAuthRequired?: { detail?: string };
   input: AsyncQueue<SDKUserMessage>;
   connected: boolean;
   closing: boolean;
@@ -197,7 +209,9 @@ const pendingSessionCloseTasks = new Set<Promise<void>>();
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
 const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
-function isSdkElicitationContentValue(value: Json): value is string | number | boolean | string[] {
+function isSdkElicitationContentValue(
+  value: Json,
+): value is string | number | boolean | string[] {
   return (
     typeof value === "string" ||
     typeof value === "number" ||
@@ -231,7 +245,9 @@ function optionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const entries = value.filter((entry): entry is string => typeof entry === "string");
+  const entries = value.filter(
+    (entry): entry is string => typeof entry === "string",
+  );
   return entries.length > 0 ? entries : undefined;
 }
 
@@ -244,8 +260,10 @@ function normalizeRefusalFallbackPayload(
   payload: Record<string, unknown>,
 ): RefusalFallbackPromptPayload {
   return {
-    original_model: typeof payload.originalModel === "string" ? payload.originalModel : "",
-    fallback_model: typeof payload.fallbackModel === "string" ? payload.fallbackModel : "",
+    original_model:
+      typeof payload.originalModel === "string" ? payload.originalModel : "",
+    fallback_model:
+      typeof payload.fallbackModel === "string" ? payload.fallbackModel : "",
     ...(optionalString(payload.apiRefusalCategory) !== undefined
       ? { api_refusal_category: optionalString(payload.apiRefusalCategory) }
       : {}),
@@ -253,7 +271,11 @@ function normalizeRefusalFallbackPayload(
       ? { guidance_text: optionalString(payload.guidanceText) }
       : {}),
     ...(optionalStringArray(payload.retractedMessageUuids) !== undefined
-      ? { retracted_message_uuids: optionalStringArray(payload.retractedMessageUuids) }
+      ? {
+          retracted_message_uuids: optionalStringArray(
+            payload.retractedMessageUuids,
+          ),
+        }
       : {}),
   };
 }
@@ -263,10 +285,18 @@ function normalizeRefusalFallbackPayload(
  * itself produces (`function Wg$`). `cancelled` is the Esc/decline default and
  * is not a listed option.
  */
-function buildRefusalFallbackOptions(payload: RefusalFallbackPromptPayload): UserDialogOption[] {
+function buildRefusalFallbackOptions(
+  payload: RefusalFallbackPromptPayload,
+): UserDialogOption[] {
   return [
-    { option_id: "retry_fallback", label: `Switch to ${payload.fallback_model}` },
-    { option_id: "edit_prompt", label: `Edit prompt and retry with ${payload.original_model}` },
+    {
+      option_id: "retry_fallback",
+      label: `Switch to ${payload.fallback_model}`,
+    },
+    {
+      option_id: "edit_prompt",
+      label: `Edit prompt and retry with ${payload.original_model}`,
+    },
   ];
 }
 
@@ -295,7 +325,9 @@ function normalizedSettingsFromLaunchSettings(
   };
 
   const sandbox =
-    settings.sandbox && typeof settings.sandbox === "object" && !Array.isArray(settings.sandbox)
+    settings.sandbox &&
+    typeof settings.sandbox === "object" &&
+    !Array.isArray(settings.sandbox)
       ? (settings.sandbox as Record<string, unknown>)
       : undefined;
   if (sandbox?.enabled === true && sandbox.failIfUnavailable === undefined) {
@@ -315,7 +347,10 @@ export function sessionById(sessionId: string): SessionState | null {
   return sessions.get(sessionId) ?? null;
 }
 
-export function updateSessionId(session: SessionState, newSessionId: string): void {
+export function updateSessionId(
+  session: SessionState,
+  newSessionId: string,
+): void {
   if (session.sessionId === newSessionId) {
     return;
   }
@@ -433,7 +468,9 @@ export async function closeSessionsBeforeRegister(
   }
 }
 
-export async function closeAllSessions(options: CloseSessionOptions = {}): Promise<void> {
+export async function closeAllSessions(
+  options: CloseSessionOptions = {},
+): Promise<void> {
   const active = Array.from(sessions.values());
   sessions.clear();
   await Promise.all(
@@ -460,6 +497,10 @@ export async function createSession(params: {
   cwd: string;
   resume?: string;
   resumeSessionAt?: string;
+  resumeDropsTurn?: string;
+  forkSession?: boolean;
+  sessionId?: string;
+  deferConnect?: boolean;
   launchSettings: SessionLaunchSettings;
   connectEvent: ConnectEventKind;
   requestId?: string;
@@ -470,14 +511,18 @@ export async function createSession(params: {
   pendingRewindResult?: PendingRewindResult;
 }): Promise<SessionState> {
   const input = new AsyncQueue<SDKUserMessage>();
-  const provisionalSessionId = params.resume ?? randomUUID();
+  const provisionalSessionId =
+    params.sessionId ??
+    (params.resume && !params.forkSession ? params.resume : randomUUID());
   const initialModel = initialSessionModel(params.launchSettings);
   const initialMode = initialSessionMode(params.launchSettings);
   const supportsBypassPermissionsMode =
-    startupPermissionModeOptions(params.launchSettings).allowDangerouslySkipPermissions === true;
+    startupPermissionModeOptions(params.launchSettings)
+      .allowDangerouslySkipPermissions === true;
   const historyUpdateCount = params.resumeUpdates?.length ?? 0;
   const staleSessionCount = params.sessionsToCloseAfterConnect?.length ?? 0;
-  const staleSessionBeforeRegisterCount = params.sessionsToCloseBeforeRegister?.length ?? 0;
+  const staleSessionBeforeRegisterCount =
+    params.sessionsToCloseBeforeRegister?.length ?? 0;
 
   let session!: SessionState;
   const sessionIdForLogs = () => session?.sessionId ?? provisionalSessionId;
@@ -485,13 +530,32 @@ export async function createSession(params: {
     const toolUseId = options.toolUseID;
     if (isToolSearchToolName(toolName)) {
       session?.hiddenToolUseIds.add(toolUseId);
-      return { behavior: "allow", updatedInput: inputData, toolUseID: toolUseId };
+      return {
+        behavior: "allow",
+        updatedInput: inputData,
+        toolUseID: toolUseId,
+      };
     }
     if (toolName === EXIT_PLAN_MODE_TOOL_NAME) {
-      const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
-      return await requestExitPlanModeApproval(session, toolUseId, inputData, existing);
+      const existing = ensureToolCallVisible(
+        session,
+        toolUseId,
+        toolName,
+        inputData,
+      );
+      return await requestExitPlanModeApproval(
+        session,
+        toolUseId,
+        inputData,
+        existing,
+      );
     }
-    const existing = ensureToolCallVisible(session, toolUseId, toolName, inputData);
+    const existing = ensureToolCallVisible(
+      session,
+      toolUseId,
+      toolName,
+      inputData,
+    );
 
     if (toolName === ASK_USER_QUESTION_TOOL_NAME) {
       return await requestAskUserQuestionAnswers(
@@ -537,10 +601,13 @@ export async function createSession(params: {
 
   const claudeCodeExecutable = process.env.CLAUDE_CODE_EXECUTABLE;
   const sdkDebugFile = process.env.CLAUDE_RS_SDK_DEBUG_FILE;
-  const enableSdkDebug = process.env.CLAUDE_RS_SDK_DEBUG === "1" || Boolean(sdkDebugFile);
+  const enableSdkDebug =
+    process.env.CLAUDE_RS_SDK_DEBUG === "1" || Boolean(sdkDebugFile);
   const enableSpawnDebug = process.env.CLAUDE_RS_SDK_SPAWN_DEBUG === "1";
   if (claudeCodeExecutable && !fs.existsSync(claudeCodeExecutable)) {
-    throw new Error(`CLAUDE_CODE_EXECUTABLE does not exist: ${claudeCodeExecutable}`);
+    throw new Error(
+      `CLAUDE_CODE_EXECUTABLE does not exist: ${claudeCodeExecutable}`,
+    );
   }
 
   let queryHandle: Query;
@@ -556,6 +623,8 @@ export async function createSession(params: {
       connect_event: params.connectEvent,
       resume_requested: params.resume !== undefined,
       resume_session_at: params.resumeSessionAt ?? "<none>",
+      resume_drops_turn: params.resumeDropsTurn ?? "<none>",
+      fork_session: params.forkSession === true,
       history_update_count: historyUpdateCount,
       stale_session_count: staleSessionCount,
       stale_session_before_register_count: staleSessionBeforeRegisterCount,
@@ -568,6 +637,8 @@ export async function createSession(params: {
         cwd: params.cwd,
         resume: params.resume,
         resumeSessionAt: params.resumeSessionAt,
+        resumeDropsTurn: params.resumeDropsTurn,
+        forkSession: params.forkSession,
         launchSettings: params.launchSettings,
         provisionalSessionId,
         input,
@@ -616,6 +687,10 @@ export async function createSession(params: {
     query: queryHandle,
     input,
     connected: false,
+    ...(params.deferConnect ? { deferConnect: true } : {}),
+    ...(params.resumeDropsTurn
+      ? { resumeDropsTurn: params.resumeDropsTurn }
+      : {}),
     closing: false,
     connectEvent: params.connectEvent,
     connectRequestId: params.requestId,
@@ -637,7 +712,9 @@ export async function createSession(params: {
     ...(params.resumeUpdates && params.resumeUpdates.length > 0
       ? { resumeUpdates: params.resumeUpdates }
       : {}),
-    ...(params.restoredInput !== undefined ? { restoredInput: params.restoredInput } : {}),
+    ...(params.restoredInput !== undefined
+      ? { restoredInput: params.restoredInput }
+      : {}),
     ...(params.pendingRewindResult !== undefined
       ? { pendingRewindResult: params.pendingRewindResult }
       : {}),
@@ -648,7 +725,11 @@ export async function createSession(params: {
   refreshCurrentModel(session);
   const { refreshSupportedModesForSession } = await import("./commands.js");
   refreshSupportedModesForSession(session);
-  await closeSessionsBeforeRegister(session, params.sessionsToCloseBeforeRegister, params.requestId);
+  await closeSessionsBeforeRegister(
+    session,
+    params.sessionsToCloseBeforeRegister,
+    params.requestId,
+  );
   sessions.set(provisionalSessionId, session);
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
@@ -662,6 +743,8 @@ export async function createSession(params: {
       connect_event: session.connectEvent,
       resume_requested: params.resume !== undefined,
       resume_session_at: params.resumeSessionAt ?? "<none>",
+      resume_drops_turn: params.resumeDropsTurn ?? "<none>",
+      fork_session: params.forkSession === true,
     },
   });
   bridgeLogger.info({
@@ -689,24 +772,36 @@ export async function createSession(params: {
         eventName: "session_initialization_completed",
         message: "session initialization completed",
         outcome: "success",
-        ...(session.connectRequestId ? { requestId: session.connectRequestId } : {}),
+        ...(session.connectRequestId
+          ? { requestId: session.connectRequestId }
+          : {}),
         sessionId: session.sessionId,
         fields: {
-          available_model_count: Array.isArray(result.models) ? result.models.length : 0,
+          available_model_count: Array.isArray(result.models)
+            ? result.models.length
+            : 0,
           connect_event: session.connectEvent,
           history_update_count: session.resumeUpdates?.length ?? 0,
         },
       });
       session.availableModels = mapAvailableModels(result.models);
       const currentModelChanged = refreshCurrentModel(session);
-      const { buildModeState, refreshSupportedModesForSession } = await import("./commands.js");
+      const { buildModeState, refreshSupportedModesForSession } = await import(
+        "./commands.js"
+      );
       refreshSupportedModesForSession(session);
       const fastModeChanged = setFastModeSnapshotIfChanged(
         session,
         result.fast_mode_state,
         result.fast_mode_disabled_reason,
       );
-      if (!session.connected) {
+      if (
+        !session.connected &&
+        session.deferConnect &&
+        !session.initializationError
+      ) {
+        session.initializationReady = true;
+      } else if (!session.connected) {
         emitConnectEvent(session);
       } else {
         if (currentModelChanged) {
@@ -740,16 +835,24 @@ export async function createSession(params: {
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
+      session.initializationError = message;
       bridgeLogger.error({
         target: LOG_TARGETS.APP_SESSION,
         eventName: "session_initialization_failed",
         message: "session initialization failed before connect",
         outcome: "failure",
-        ...(session.connectRequestId ? { requestId: session.connectRequestId } : {}),
+        ...(session.connectRequestId
+          ? { requestId: session.connectRequestId }
+          : {}),
         sessionId: session.sessionId,
         fields: { error_message: message },
       });
-      failConnection(`agent initialization failed: ${message}`, session.connectRequestId);
+      if (!session.deferConnect) {
+        failConnection(
+          `agent initialization failed: ${message}`,
+          session.connectRequestId,
+        );
+      }
       session.connectRequestId = undefined;
     });
 
@@ -762,7 +865,9 @@ export async function createSession(params: {
       }
       {
         // Lazy import to break circular dependency at module-evaluation time.
-        const { flushPendingWorkerShutdown } = await import("./message_handlers.js");
+        const { flushPendingWorkerShutdown } = await import(
+          "./message_handlers.js"
+        );
         flushPendingWorkerShutdown(session);
       }
       if (!session.connected) {
@@ -774,10 +879,18 @@ export async function createSession(params: {
           ...(params.requestId ? { requestId: params.requestId } : {}),
           sessionId: session.sessionId,
         });
-        failConnection("agent stream ended before session initialization", params.requestId);
+        session.initializationError =
+          "agent stream ended before session initialization";
+        if (!session.deferConnect) {
+          failConnection(
+            "agent stream ended before session initialization",
+            params.requestId,
+          );
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      session.initializationError = message;
       bridgeLogger.error({
         target: LOG_TARGETS.APP_SESSION,
         eventName: "session_stream_failed_before_connect",
@@ -787,17 +900,80 @@ export async function createSession(params: {
         sessionId: session.sessionId,
         fields: { error_message: message },
       });
-      failConnection(`agent stream failed: ${message}`, params.requestId);
+      if (!session.deferConnect) {
+        failConnection(`agent stream failed: ${message}`, params.requestId);
+      }
     }
   })();
 
   return session;
 }
 
+export async function awaitSessionInitialization(
+  session: SessionState,
+): Promise<void> {
+  await session.initializationTask;
+  if (
+    session.deferConnect &&
+    session.resumeDropsTurn &&
+    !session.initializationError
+  ) {
+    // The guard is evaluated at fork time and a refusal is delivered as a result event,
+    // not as a rejected initialization request. A post-initialize control response is
+    // the protocol barrier proving that startup messages have reached the SDK; yield
+    // once more so the bridge's query consumer can process the already-enqueued result.
+    try {
+      await session.query.getContextUsage();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      bridgeLogger.warn({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "session_resume_guard_barrier_failed",
+        message: "guarded resume control fence failed",
+        outcome: "failure",
+        sessionId: session.sessionId,
+        fields: { error_message: message },
+      });
+      throw new Error(`guarded resume validation fence failed: ${message}`);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    session.resumeGuardFenceComplete = true;
+  }
+  if (session.initializationError) {
+    throw new Error(session.initializationError);
+  }
+  if (session.deferConnect && !session.initializationReady) {
+    throw new Error("candidate session did not reach initialization readiness");
+  }
+  if (!session.deferConnect && !session.connected) {
+    throw new Error("session did not connect after initialization");
+  }
+}
+
+export function commitDeferredSession(session: SessionState): void {
+  if (
+    !session.deferConnect ||
+    !session.initializationReady ||
+    session.initializationError ||
+    (session.resumeDropsTurn !== undefined && !session.resumeGuardFenceComplete)
+  ) {
+    throw new Error("candidate session is not ready to commit");
+  }
+  const deferredAuthRequired = session.deferredAuthRequired;
+  session.deferredAuthRequired = undefined;
+  session.deferConnect = false;
+  emitConnectEvent(session);
+  if (deferredAuthRequired) {
+    emitAuthRequired(session, deferredAuthRequired.detail);
+  }
+}
+
 type QueryOptionsBuilderParams = {
   cwd: string;
   resume?: string;
   resumeSessionAt?: string;
+  resumeDropsTurn?: string;
+  forkSession?: boolean;
   launchSettings: SessionLaunchSettings;
   provisionalSessionId: string;
   input: AsyncQueue<SDKUserMessage>;
@@ -873,7 +1049,9 @@ function logSdkProcessExit(
   });
 }
 
-function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | undefined {
+function permissionModeFromSettingsValue(
+  rawMode: unknown,
+): PermissionMode | undefined {
   if (typeof rawMode !== "string") {
     return undefined;
   }
@@ -888,47 +1066,58 @@ function permissionModeFromSettingsValue(rawMode: unknown): PermissionMode | und
     case "dontAsk":
       return rawMode;
     default:
-      throw new Error(`unsupported launch_settings.settings.permissions.defaultMode: ${rawMode}`);
+      throw new Error(
+        `unsupported launch_settings.settings.permissions.defaultMode: ${rawMode}`,
+      );
   }
 }
 
 function initialSessionModel(launchSettings: SessionLaunchSettings): string {
   const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const model = typeof settings?.model === "string" ? settings.model.trim() : "";
+  const model =
+    typeof settings?.model === "string" ? settings.model.trim() : "";
   return model || STARTUP_FALLBACK_MODEL_ALIAS;
 }
 
-function startupModelOption(
-  launchSettings: SessionLaunchSettings,
-): {
+function startupModelOption(launchSettings: SessionLaunchSettings): {
   model?: string;
 } {
   const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const model = typeof settings?.model === "string" ? settings.model.trim() : "";
+  const model =
+    typeof settings?.model === "string" ? settings.model.trim() : "";
   return model ? { model } : {};
 }
 
-function initialSessionMode(launchSettings: SessionLaunchSettings): PermissionMode {
+function initialSessionMode(
+  launchSettings: SessionLaunchSettings,
+): PermissionMode {
   const settings = settingsObjectFromLaunchSettings(launchSettings);
   const permissions =
-    settings?.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions)
+    settings?.permissions &&
+    typeof settings.permissions === "object" &&
+    !Array.isArray(settings.permissions)
       ? (settings.permissions as Record<string, unknown>)
       : undefined;
-  return permissionModeFromSettingsValue(permissions?.defaultMode) ?? DEFAULT_PERMISSION_MODE;
+  return (
+    permissionModeFromSettingsValue(permissions?.defaultMode) ??
+    DEFAULT_PERMISSION_MODE
+  );
 }
 
-function startupPermissionModeOptions(
-  launchSettings: SessionLaunchSettings,
-): {
+function startupPermissionModeOptions(launchSettings: SessionLaunchSettings): {
   permissionMode?: PermissionMode;
   allowDangerouslySkipPermissions?: boolean;
 } {
   const settings = settingsObjectFromLaunchSettings(launchSettings);
   const permissions =
-    settings?.permissions && typeof settings.permissions === "object" && !Array.isArray(settings.permissions)
+    settings?.permissions &&
+    typeof settings.permissions === "object" &&
+    !Array.isArray(settings.permissions)
       ? (settings.permissions as Record<string, unknown>)
       : undefined;
-  const permissionMode = permissionModeFromSettingsValue(permissions?.defaultMode);
+  const permissionMode = permissionModeFromSettingsValue(
+    permissions?.defaultMode,
+  );
   if (!permissionMode) {
     return {};
   }
@@ -963,18 +1152,20 @@ function systemPromptFromLaunchSettings(
 export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
   const modelOption = startupModelOption(params.launchSettings);
-  const permissionModeOptions = startupPermissionModeOptions(params.launchSettings);
-  const shouldPassCanUseTool = permissionModeOptions.permissionMode !== "bypassPermissions";
+  const permissionModeOptions = startupPermissionModeOptions(
+    params.launchSettings,
+  );
+  const shouldPassCanUseTool =
+    permissionModeOptions.permissionMode !== "bypassPermissions";
   const settings = normalizedSettingsFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     promptSuggestions: true,
     enableFileCheckpointing: true,
-    // ProposeSkills reports only a proposal count and expects a native review
-    // surface. Keep it out of this host until claude-rs can display the actual
-    // proposal input and accept/reject it without losing content.
-    disallowedTools: ["ProposeSkills"],
+    // Proposal tools require native review and lifecycle surfaces that the
+    // public headless SDK does not currently expose to this host.
+    disallowedTools: ["ProposeSkills", "ProposeGoal"],
     executable: "bun" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     settings,
@@ -983,7 +1174,10 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.launchSettings.agent_progress_summaries !== undefined
-      ? { agentProgressSummaries: params.launchSettings.agent_progress_summaries }
+      ? {
+          agentProgressSummaries:
+            params.launchSettings.agent_progress_summaries,
+        }
       : {}),
     ...(params.claudeCodeExecutable
       ? { pathToClaudeCodeExecutable: params.claudeCodeExecutable }
@@ -1012,7 +1206,11 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
-      logSdkProcessSpawned(params.sessionIdForLogs() || undefined, child, options.cwd);
+      logSdkProcessSpawned(
+        params.sessionIdForLogs() || undefined,
+        child,
+        options.cwd,
+      );
       child.on("error", (error) => {
         const sessionId = params.sessionIdForLogs();
         bridgeLogger.error({
@@ -1034,17 +1232,28 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     // --setting-sources argument.
     settingSources: DEFAULT_SETTING_SOURCES,
     resume: params.resume,
-    ...(params.resumeSessionAt ? { resumeSessionAt: params.resumeSessionAt } : {}),
+    ...(params.resumeSessionAt
+      ? { resumeSessionAt: params.resumeSessionAt }
+      : {}),
+    ...(params.resumeDropsTurn
+      ? { resumeDropsTurn: params.resumeDropsTurn }
+      : {}),
+    ...(params.forkSession
+      ? { forkSession: true, sessionId: params.provisionalSessionId }
+      : {}),
     ...(shouldPassCanUseTool ? { canUseTool: params.canUseTool } : {}),
-    onElicitation: async (request: {
-      mode?: string;
-      serverName?: string;
-      message?: string;
-      url?: string;
-      elicitationId?: string;
-      requestedSchema?: Record<string, unknown>;
-    }) => {
-      const requestId = randomUUID();
+    onElicitation: async (
+      request: {
+        mode?: string;
+        serverName?: string;
+        message?: string;
+        url?: string;
+        elicitationId?: string;
+        requestedSchema?: Record<string, unknown>;
+      },
+      options: { signal: AbortSignal; requestId: string },
+    ) => {
+      const requestId = options.requestId;
       const mode =
         request.mode === "form" || request.mode === "url"
           ? request.mode
@@ -1054,22 +1263,27 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       const normalized: ElicitationRequest = {
         request_id: requestId,
         server_name:
-          typeof request.serverName === "string" && request.serverName.trim().length > 0
+          typeof request.serverName === "string" &&
+          request.serverName.trim().length > 0
             ? request.serverName
             : "unknown",
         message:
-          typeof request.message === "string" && request.message.trim().length > 0
+          typeof request.message === "string" &&
+          request.message.trim().length > 0
             ? request.message
             : "<no message>",
         mode,
         ...(typeof request.url === "string" && request.url.trim().length > 0
           ? { url: request.url }
           : {}),
-        ...(typeof request.elicitationId === "string" && request.elicitationId.trim().length > 0
+        ...(typeof request.elicitationId === "string" &&
+        request.elicitationId.trim().length > 0
           ? { elicitation_id: request.elicitationId }
           : {}),
         ...(request.requestedSchema
-          ? { requested_schema: request.requestedSchema as Record<string, Json> }
+          ? {
+              requested_schema: request.requestedSchema as Record<string, Json>,
+            }
           : {}),
       };
       bridgeLogger.info({
@@ -1104,8 +1318,40 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
           resolve({ action: "cancel" });
           return;
         }
+        if (currentSession.pendingElicitations.has(requestId)) {
+          bridgeLogger.warn({
+            target: LOG_TARGETS.BRIDGE_PERMISSION,
+            eventName: "elicitation_request_dropped",
+            message: "duplicate elicitation request dropped",
+            outcome: "dropped",
+            sessionId: params.sessionIdForLogs(),
+            requestId,
+            fields: { reason: "duplicate_request_id" },
+          });
+          resolve({ action: "cancel" });
+          return;
+        }
+        let settled = false;
+        const settle = (result: {
+          action: ElicitationAction;
+          content?: Record<string, string | number | boolean | string[]>;
+        }) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          currentSession.pendingElicitations.delete(requestId);
+          options.signal.removeEventListener("abort", onAbort);
+          resolve(result);
+        };
+        const onAbort = () => settle({ action: "cancel" });
+        if (options.signal.aborted) {
+          settle({ action: "cancel" });
+          return;
+        }
+        options.signal.addEventListener("abort", onAbort);
         currentSession.pendingElicitations.set(requestId, {
-          resolve,
+          resolve: settle,
           serverName: normalized.server_name,
           elicitationId: normalized.elicitation_id,
         });
@@ -1124,7 +1370,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     // decline/abort/teardown).
     onUserDialog: async (
       request: UserDialogRequest,
-      options: { signal: AbortSignal },
+      options: { signal: AbortSignal; requestId: string },
     ): Promise<UserDialogResult> => {
       if (request.dialogKind !== REFUSAL_FALLBACK_DIALOG_KIND) {
         bridgeLogger.warn({
@@ -1133,17 +1379,20 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
           message: "request_user_dialog received for unknown kind; cancelled",
           outcome: "cancelled",
           sessionId: params.sessionIdForLogs(),
-          ...(typeof request.toolUseID === "string" ? { toolCallId: request.toolUseID } : {}),
+          ...(typeof request.toolUseID === "string"
+            ? { toolCallId: request.toolUseID }
+            : {}),
           fields: { dialog_kind: request.dialogKind },
         });
         return { behavior: "cancelled" };
       }
 
       const payload = normalizeRefusalFallbackPayload(request.payload);
-      const requestId = randomUUID();
+      const requestId = options.requestId;
       const dialogRequest = {
         request_id: requestId,
-        dialog_kind: REFUSAL_FALLBACK_DIALOG_KIND as typeof REFUSAL_FALLBACK_DIALOG_KIND,
+        dialog_kind:
+          REFUSAL_FALLBACK_DIALOG_KIND as typeof REFUSAL_FALLBACK_DIALOG_KIND,
         payload,
         options: buildRefusalFallbackOptions(payload),
       };
@@ -1154,7 +1403,9 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
         outcome: "start",
         sessionId: params.sessionIdForLogs(),
         requestId,
-        ...(typeof request.toolUseID === "string" ? { toolCallId: request.toolUseID } : {}),
+        ...(typeof request.toolUseID === "string"
+          ? { toolCallId: request.toolUseID }
+          : {}),
         fields: {
           dialog_kind: request.dialogKind,
           original_model: payload.original_model,
@@ -1162,7 +1413,9 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
         },
       });
 
-      const choice = await new Promise<RefusalFallbackPromptChoice | "cancelled">((resolve) => {
+      const choice = await new Promise<
+        RefusalFallbackPromptChoice | "cancelled"
+      >((resolve) => {
         const currentSession = sessions.get(params.sessionIdForLogs());
         if (!currentSession) {
           bridgeLogger.warn({
@@ -1173,6 +1426,19 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
             sessionId: params.sessionIdForLogs(),
             requestId,
             fields: { reason: "unknown_session" },
+          });
+          resolve("cancelled");
+          return;
+        }
+        if (currentSession.pendingUserDialogs.has(requestId)) {
+          bridgeLogger.warn({
+            target: LOG_TARGETS.APP_SESSION,
+            eventName: "user_dialog_request_dropped",
+            message: "duplicate user dialog request dropped",
+            outcome: "dropped",
+            sessionId: params.sessionIdForLogs(),
+            requestId,
+            fields: { reason: "duplicate_request_id" },
           });
           resolve("cancelled");
           return;
@@ -1204,7 +1470,9 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   };
 }
 
-export function handlePermissionResponse(command: Extract<BridgeCommand, { command: "permission_response" }>): void {
+export function handlePermissionResponse(
+  command: Extract<BridgeCommand, { command: "permission_response" }>,
+): void {
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_PERMISSION,
     eventName: "permission_response_received",
@@ -1215,7 +1483,9 @@ export function handlePermissionResponse(command: Extract<BridgeCommand, { comma
     fields: {
       response_kind: command.outcome.outcome,
       selected_option:
-        command.outcome.outcome === "selected" ? command.outcome.option_id : "cancelled",
+        command.outcome.outcome === "selected"
+          ? command.outcome.option_id
+          : "cancelled",
     },
   });
   const session = sessionById(command.session_id);
@@ -1258,7 +1528,8 @@ export function handlePermissionResponse(command: Extract<BridgeCommand, { comma
       fields: {
         tool_name: resolver.toolName,
         response_kind: outcome.outcome,
-        selected_option: outcome.outcome === "selected" ? outcome.option_id : "cancelled",
+        selected_option:
+          outcome.outcome === "selected" ? outcome.option_id : "cancelled",
       },
     });
     resolver.onOutcome(outcome);
@@ -1268,7 +1539,8 @@ export function handlePermissionResponse(command: Extract<BridgeCommand, { comma
     bridgeLogger.warn({
       target: LOG_TARGETS.BRIDGE_PERMISSION,
       eventName: "permission_response_dropped",
-      message: "permission response dropped because resolver callback was missing",
+      message:
+        "permission response dropped because resolver callback was missing",
       outcome: "dropped",
       sessionId: command.session_id,
       toolCallId: command.tool_call_id,
@@ -1276,7 +1548,8 @@ export function handlePermissionResponse(command: Extract<BridgeCommand, { comma
     });
     return;
   }
-  const selectedOption = outcome.outcome === "selected" ? outcome.option_id : "cancelled";
+  const selectedOption =
+    outcome.outcome === "selected" ? outcome.option_id : "cancelled";
   if (
     outcome.outcome === "selected" &&
     (outcome.option_id === "allow_once" ||
@@ -1285,9 +1558,19 @@ export function handlePermissionResponse(command: Extract<BridgeCommand, { comma
   ) {
     setToolCallStatus(session, command.tool_call_id, "in_progress");
   } else if (outcome.outcome === "selected") {
-    setToolCallStatus(session, command.tool_call_id, "failed", "Permission denied");
+    setToolCallStatus(
+      session,
+      command.tool_call_id,
+      "failed",
+      "Permission denied",
+    );
   } else {
-    setToolCallStatus(session, command.tool_call_id, "failed", "Permission cancelled");
+    setToolCallStatus(
+      session,
+      command.tool_call_id,
+      "failed",
+      "Permission cancelled",
+    );
   }
 
   const permissionResult = permissionResultFromOutcome(
@@ -1314,7 +1597,9 @@ export function handlePermissionResponse(command: Extract<BridgeCommand, { comma
   resolver.resolve(permissionResult);
 }
 
-export function handleQuestionResponse(command: Extract<BridgeCommand, { command: "question_response" }>): void {
+export function handleQuestionResponse(
+  command: Extract<BridgeCommand, { command: "question_response" }>,
+): void {
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_PERMISSION,
     eventName: "question_response_received",
@@ -1362,9 +1647,12 @@ export function handleQuestionResponse(command: Extract<BridgeCommand, { command
       tool_name: resolver.toolName,
       response_kind: command.outcome.outcome,
       selected_option_count:
-        command.outcome.outcome === "answered" ? command.outcome.selected_option_ids.length : 0,
+        command.outcome.outcome === "answered"
+          ? command.outcome.selected_option_ids.length
+          : 0,
       has_annotation:
-        command.outcome.outcome === "answered" && command.outcome.annotation !== undefined,
+        command.outcome.outcome === "answered" &&
+        command.outcome.annotation !== undefined,
     },
   });
   resolver.onOutcome(command.outcome);
@@ -1383,7 +1671,9 @@ export function handleUserDialogResponse(
     fields: {
       response_kind: command.outcome.outcome,
       selected_option:
-        command.outcome.outcome === "selected" ? command.outcome.option_id : "cancelled",
+        command.outcome.outcome === "selected"
+          ? command.outcome.option_id
+          : "cancelled",
     },
   });
   const session = sessionById(command.session_id);
@@ -1415,7 +1705,10 @@ export function handleUserDialogResponse(
     return;
   }
   session.pendingUserDialogs.delete(command.request_id);
-  const choice = command.outcome.outcome === "selected" ? command.outcome.option_id : "cancelled";
+  const choice =
+    command.outcome.outcome === "selected"
+      ? command.outcome.option_id
+      : "cancelled";
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_PERMISSION,
     eventName: "user_dialog_response_applied",
@@ -1456,7 +1749,9 @@ export function handleElicitationResponse(
     });
     return;
   }
-  const pending = session.pendingElicitations.get(command.elicitation_request_id);
+  const pending = session.pendingElicitations.get(
+    command.elicitation_request_id,
+  );
   if (!pending) {
     bridgeLogger.warn({
       target: LOG_TARGETS.BRIDGE_PERMISSION,
@@ -1485,9 +1780,11 @@ export function handleElicitationResponse(
   });
   pending.resolve({
     action: command.action,
-    ...(normalizeSdkElicitationContent(command.content) ? {
-      content: normalizeSdkElicitationContent(command.content),
-    } : {}),
+    ...(normalizeSdkElicitationContent(command.content)
+      ? {
+          content: normalizeSdkElicitationContent(command.content),
+        }
+      : {}),
   });
 }
 export function shouldInvalidateResolvedRuntimeModel(
@@ -1495,7 +1792,8 @@ export function shouldInvalidateResolvedRuntimeModel(
   previousSessionModel: string,
   nextRequestedId: string,
 ): boolean {
-  const previousRequested = previousRequestedId?.trim() || previousSessionModel.trim();
+  const previousRequested =
+    previousRequestedId?.trim() || previousSessionModel.trim();
   return previousRequested !== nextRequestedId.trim();
 }
 export function emitCurrentModelUpdate(session: SessionState): boolean {
@@ -1509,7 +1807,10 @@ export function emitCurrentModelUpdate(session: SessionState): boolean {
   return true;
 }
 
-export function refreshCurrentModel(session: SessionState, emitUpdate = false): boolean {
+export function refreshCurrentModel(
+  session: SessionState,
+  emitUpdate = false,
+): boolean {
   const nextModel = resolveCurrentModel(session);
   if (currentModelsEqual(session.currentModel, nextModel)) {
     return false;

@@ -8,8 +8,10 @@ import type {
 } from "../types.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 
-type SdkMcpServerConfig = import("@anthropic-ai/claude-agent-sdk").McpServerConfig;
-type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
+type SdkMcpServerConfig =
+  import("@anthropic-ai/claude-agent-sdk").McpServerConfig;
+type SdkMcpServerStatus =
+  import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
 type SdkMcpServerStatusConfig = NonNullable<SdkMcpServerStatus["config"]>;
 
 type McpServerDiagnosticSummary = {
@@ -54,7 +56,10 @@ function optionalStringArray(
   if (value === undefined) {
     return undefined;
   }
-  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+  if (
+    !Array.isArray(value) ||
+    !value.every((entry) => typeof entry === "string")
+  ) {
     throw new Error(`${context}.${key} must be an array of strings`);
   }
   return value;
@@ -86,7 +91,12 @@ function optionalTimeout(
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 1000) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 1000
+  ) {
     throw new Error(`${context}.timeout must be an integer >= 1000`);
   }
   return value;
@@ -100,7 +110,12 @@ function optionalRequestTimeoutMs(
   if (value === undefined) {
     return undefined;
   }
-  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 1000) {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 1000
+  ) {
     throw new Error(`${context}.request_timeout_ms must be an integer >= 1000`);
   }
   return value;
@@ -140,15 +155,28 @@ function optionalToolPolicies(
     const policy: McpServerToolPolicy = { name };
     const permissionPolicy = item.permission_policy;
     if (permissionPolicy !== undefined) {
-      if (typeof permissionPolicy !== "string" || !TOOL_PERMISSION_POLICIES.has(permissionPolicy as McpServerToolPermissionPolicy)) {
-        throw new Error(`${context}.tools[${index}].permission_policy must be one of always_allow, always_ask, always_deny`);
+      if (
+        typeof permissionPolicy !== "string" ||
+        !TOOL_PERMISSION_POLICIES.has(
+          permissionPolicy as McpServerToolPermissionPolicy,
+        )
+      ) {
+        throw new Error(
+          `${context}.tools[${index}].permission_policy must be one of always_allow, always_ask, always_deny`,
+        );
       }
-      policy.permission_policy = permissionPolicy as McpServerToolPermissionPolicy;
+      policy.permission_policy =
+        permissionPolicy as McpServerToolPermissionPolicy;
     }
     const orgMaxPermission = item.org_max_permission;
     if (orgMaxPermission !== undefined) {
-      if (typeof orgMaxPermission !== "string" || !ORG_MAX_PERMISSIONS.has(orgMaxPermission as McpServerOrgMaxPermission)) {
-        throw new Error(`${context}.tools[${index}].org_max_permission must be one of allow, ask, blocked`);
+      if (
+        typeof orgMaxPermission !== "string" ||
+        !ORG_MAX_PERMISSIONS.has(orgMaxPermission as McpServerOrgMaxPermission)
+      ) {
+        throw new Error(
+          `${context}.tools[${index}].org_max_permission must be one of allow, ask, blocked`,
+        );
       }
       policy.org_max_permission = orgMaxPermission as McpServerOrgMaxPermission;
     }
@@ -156,7 +184,10 @@ function optionalToolPolicies(
   });
 }
 
-export function parseMcpServerConfig(value: unknown, context: string): McpServerConfig {
+export function parseMcpServerConfig(
+  value: unknown,
+  context: string,
+): McpServerConfig {
   const record = asRecord(value, context);
   const rawType = record.type;
   const type = rawType === undefined ? "stdio" : rawType;
@@ -171,7 +202,9 @@ export function parseMcpServerConfig(value: unknown, context: string): McpServer
   switch (type) {
     case "stdio": {
       if (record.tools !== undefined) {
-        throw new Error(`${context}.tools is only supported for http and sse MCP servers`);
+        throw new Error(
+          `${context}.tools is only supported for http and sse MCP servers`,
+        );
       }
       const command = record.command;
       if (typeof command !== "string") {
@@ -180,10 +213,16 @@ export function parseMcpServerConfig(value: unknown, context: string): McpServer
       return {
         type,
         command,
-        ...(optionalStringArray(record, "args", context) ? { args: optionalStringArray(record, "args", context) } : {}),
-        ...(optionalStringMap(record, "env", context) ? { env: optionalStringMap(record, "env", context) } : {}),
+        ...(optionalStringArray(record, "args", context)
+          ? { args: optionalStringArray(record, "args", context) }
+          : {}),
+        ...(optionalStringMap(record, "env", context)
+          ? { env: optionalStringMap(record, "env", context) }
+          : {}),
         ...(timeout === undefined ? {} : { timeout }),
-        ...(requestTimeoutMs === undefined ? {} : { request_timeout_ms: requestTimeoutMs }),
+        ...(requestTimeoutMs === undefined
+          ? {}
+          : { request_timeout_ms: requestTimeoutMs }),
         ...(alwaysLoad === undefined ? {} : { always_load: alwaysLoad }),
       };
     }
@@ -197,10 +236,14 @@ export function parseMcpServerConfig(value: unknown, context: string): McpServer
       return {
         type,
         url,
-        ...(optionalStringMap(record, "headers", context) ? { headers: optionalStringMap(record, "headers", context) } : {}),
+        ...(optionalStringMap(record, "headers", context)
+          ? { headers: optionalStringMap(record, "headers", context) }
+          : {}),
         ...(tools === undefined ? {} : { tools }),
         ...(timeout === undefined ? {} : { timeout }),
-        ...(requestTimeoutMs === undefined ? {} : { request_timeout_ms: requestTimeoutMs }),
+        ...(requestTimeoutMs === undefined
+          ? {}
+          : { request_timeout_ms: requestTimeoutMs }),
         ...(alwaysLoad === undefined ? {} : { always_load: alwaysLoad }),
       };
     }
@@ -215,23 +258,38 @@ export function parseMcpServersRecord(
 ): Record<string, McpServerConfig> {
   const record = asRecord(value, context);
   return Object.fromEntries(
-    Object.entries(record).map(([key, entry]) => [key, parseMcpServerConfig(entry, `${context}.${key}`)]),
+    Object.entries(record).map(([key, entry]) => [
+      key,
+      parseMcpServerConfig(entry, `${context}.${key}`),
+    ]),
   );
 }
 
-function toSdkToolPolicies(tools?: McpServerToolPolicy[]): import("@anthropic-ai/claude-agent-sdk").McpServerToolPolicy[] | undefined {
+function toSdkToolPolicies(
+  tools?: McpServerToolPolicy[],
+): import("@anthropic-ai/claude-agent-sdk").McpServerToolPolicy[] | undefined {
   return tools?.map((tool) => ({
     name: tool.name,
-    ...(tool.permission_policy === undefined ? {} : { permission_policy: tool.permission_policy }),
-    ...(tool.org_max_permission === undefined ? {} : { org_max_permission: tool.org_max_permission }),
+    ...(tool.permission_policy === undefined
+      ? {}
+      : { permission_policy: tool.permission_policy }),
+    ...(tool.org_max_permission === undefined
+      ? {}
+      : { org_max_permission: tool.org_max_permission }),
   }));
 }
 
-function sdkRequestTimeoutConfig(config: { request_timeout_ms?: number }): { requestTimeoutMs?: number } {
-  return config.request_timeout_ms === undefined ? {} : { requestTimeoutMs: config.request_timeout_ms };
+function sdkRequestTimeoutConfig(config: { request_timeout_ms?: number }): {
+  requestTimeoutMs?: number;
+} {
+  return config.request_timeout_ms === undefined
+    ? {}
+    : { requestTimeoutMs: config.request_timeout_ms };
 }
 
-export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfig {
+export function bridgeMcpConfigToSdk(
+  config: McpServerConfig,
+): SdkMcpServerConfig {
   switch (config.type) {
     case "stdio":
       return {
@@ -241,7 +299,9 @@ export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfi
         ...(config.env ? { env: config.env } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
         ...sdkRequestTimeoutConfig(config),
-        ...(config.always_load === undefined ? {} : { alwaysLoad: config.always_load }),
+        ...(config.always_load === undefined
+          ? {}
+          : { alwaysLoad: config.always_load }),
       };
     case "sse":
       return {
@@ -251,7 +311,9 @@ export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfi
         ...(config.tools ? { tools: toSdkToolPolicies(config.tools) } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
         ...sdkRequestTimeoutConfig(config),
-        ...(config.always_load === undefined ? {} : { alwaysLoad: config.always_load }),
+        ...(config.always_load === undefined
+          ? {}
+          : { alwaysLoad: config.always_load }),
       };
     case "http":
       return {
@@ -261,7 +323,9 @@ export function bridgeMcpConfigToSdk(config: McpServerConfig): SdkMcpServerConfi
         ...(config.tools ? { tools: toSdkToolPolicies(config.tools) } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
         ...sdkRequestTimeoutConfig(config),
-        ...(config.always_load === undefined ? {} : { alwaysLoad: config.always_load }),
+        ...(config.always_load === undefined
+          ? {}
+          : { alwaysLoad: config.always_load }),
       };
   }
 }
@@ -270,7 +334,10 @@ export function bridgeMcpServersToSdk(
   servers: Record<string, McpServerConfig>,
 ): Record<string, SdkMcpServerConfig> {
   return Object.fromEntries(
-    Object.entries(servers).map(([name, config]) => [name, bridgeMcpConfigToSdk(config)]),
+    Object.entries(servers).map(([name, config]) => [
+      name,
+      bridgeMcpConfigToSdk(config),
+    ]),
   );
 }
 
@@ -289,23 +356,37 @@ function mapSdkToolPolicies(tools: unknown): McpServerToolPolicy[] | undefined {
       }
       const policy: McpServerToolPolicy = { name: raw.name };
       if (raw.permission_policy !== undefined) {
-        if (typeof raw.permission_policy !== "string" || !TOOL_PERMISSION_POLICIES.has(raw.permission_policy as McpServerToolPermissionPolicy)) {
+        if (
+          typeof raw.permission_policy !== "string" ||
+          !TOOL_PERMISSION_POLICIES.has(
+            raw.permission_policy as McpServerToolPermissionPolicy,
+          )
+        ) {
           return null;
         }
-        policy.permission_policy = raw.permission_policy as McpServerToolPermissionPolicy;
+        policy.permission_policy =
+          raw.permission_policy as McpServerToolPermissionPolicy;
       }
       if (raw.org_max_permission !== undefined) {
-        if (typeof raw.org_max_permission !== "string" || !ORG_MAX_PERMISSIONS.has(raw.org_max_permission as McpServerOrgMaxPermission)) {
+        if (
+          typeof raw.org_max_permission !== "string" ||
+          !ORG_MAX_PERMISSIONS.has(
+            raw.org_max_permission as McpServerOrgMaxPermission,
+          )
+        ) {
           return null;
         }
-        policy.org_max_permission = raw.org_max_permission as McpServerOrgMaxPermission;
+        policy.org_max_permission =
+          raw.org_max_permission as McpServerOrgMaxPermission;
       }
       return policy;
     })
     .filter((tool): tool is McpServerToolPolicy => tool !== null);
 }
 
-export function mapMcpServerStatus(status: SdkMcpServerStatus): McpServerStatus {
+export function mapMcpServerStatus(
+  status: SdkMcpServerStatus,
+): McpServerStatus {
   return {
     name: status.name,
     status: status.status,
@@ -318,7 +399,9 @@ export function mapMcpServerStatus(status: SdkMcpServerStatus): McpServerStatus 
         }
       : {}),
     ...(status.error ? { error: status.error } : {}),
-    ...(status.config ? { config: mapMcpServerStatusConfig(status.config) } : {}),
+    ...(status.config
+      ? { config: mapMcpServerStatusConfig(status.config) }
+      : {}),
     ...(status.scope ? { scope: status.scope } : {}),
     tools: Array.isArray(status.tools)
       ? status.tools.map((tool) => ({
@@ -350,22 +433,32 @@ function sdkRequestTimeoutMs(config: unknown): number | undefined {
   }
   const raw = config as Record<string, unknown>;
   const value = raw.requestTimeoutMs ?? raw.request_timeout_ms;
-  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value)
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value)
     ? value
     : undefined;
 }
 
-export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpServerStatusConfig {
+export function mapMcpServerStatusConfig(
+  config: SdkMcpServerStatusConfig,
+): McpServerStatusConfig {
   switch (config.type) {
     case "stdio":
       return {
         type: "stdio",
         command: config.command,
-        ...(Array.isArray(config.args) && config.args.length > 0 ? { args: config.args } : {}),
+        ...(Array.isArray(config.args) && config.args.length > 0
+          ? { args: config.args }
+          : {}),
         ...(config.env ? { env: config.env } : {}),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
-        ...(sdkRequestTimeoutMs(config) === undefined ? {} : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
-        ...(config.alwaysLoad === undefined ? {} : { always_load: config.alwaysLoad }),
+        ...(sdkRequestTimeoutMs(config) === undefined
+          ? {}
+          : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
+        ...(config.alwaysLoad === undefined
+          ? {}
+          : { always_load: config.alwaysLoad }),
       };
     case "sse": {
       const tools = mapSdkToolPolicies(config.tools);
@@ -375,8 +468,12 @@ export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpS
         ...(config.headers ? { headers: config.headers } : {}),
         ...(tools === undefined ? {} : { tools }),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
-        ...(sdkRequestTimeoutMs(config) === undefined ? {} : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
-        ...(config.alwaysLoad === undefined ? {} : { always_load: config.alwaysLoad }),
+        ...(sdkRequestTimeoutMs(config) === undefined
+          ? {}
+          : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
+        ...(config.alwaysLoad === undefined
+          ? {}
+          : { always_load: config.alwaysLoad }),
       };
     }
     case "http": {
@@ -387,8 +484,12 @@ export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpS
         ...(config.headers ? { headers: config.headers } : {}),
         ...(tools === undefined ? {} : { tools }),
         ...(config.timeout === undefined ? {} : { timeout: config.timeout }),
-        ...(sdkRequestTimeoutMs(config) === undefined ? {} : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
-        ...(config.alwaysLoad === undefined ? {} : { always_load: config.alwaysLoad }),
+        ...(sdkRequestTimeoutMs(config) === undefined
+          ? {}
+          : { request_timeout_ms: sdkRequestTimeoutMs(config) }),
+        ...(config.alwaysLoad === undefined
+          ? {}
+          : { always_load: config.alwaysLoad }),
       };
     }
     case "sdk":
@@ -418,7 +519,9 @@ export function mapMcpServerStatusConfig(config: SdkMcpServerStatusConfig): McpS
   }
 }
 
-function mcpStatusConfigDiagnostics(config: McpServerStatusConfig | undefined): {
+function mcpStatusConfigDiagnostics(
+  config: McpServerStatusConfig | undefined,
+): {
   config_type: string;
   timeout_ms?: number;
   request_timeout_ms?: number;
@@ -437,8 +540,12 @@ function mcpStatusConfigDiagnostics(config: McpServerStatusConfig | undefined): 
       return {
         config_type: "stdio",
         ...(config.timeout === undefined ? {} : { timeout_ms: config.timeout }),
-        ...(config.request_timeout_ms === undefined ? {} : { request_timeout_ms: config.request_timeout_ms }),
-        ...(config.always_load === undefined ? {} : { always_load: config.always_load }),
+        ...(config.request_timeout_ms === undefined
+          ? {}
+          : { request_timeout_ms: config.request_timeout_ms }),
+        ...(config.always_load === undefined
+          ? {}
+          : { always_load: config.always_load }),
         configured_tool_policy_count: 0,
       };
     case "sse":
@@ -446,8 +553,12 @@ function mcpStatusConfigDiagnostics(config: McpServerStatusConfig | undefined): 
       return {
         config_type: config.type,
         ...(config.timeout === undefined ? {} : { timeout_ms: config.timeout }),
-        ...(config.request_timeout_ms === undefined ? {} : { request_timeout_ms: config.request_timeout_ms }),
-        ...(config.always_load === undefined ? {} : { always_load: config.always_load }),
+        ...(config.request_timeout_ms === undefined
+          ? {}
+          : { request_timeout_ms: config.request_timeout_ms }),
+        ...(config.always_load === undefined
+          ? {}
+          : { always_load: config.always_load }),
         configured_tool_policy_count: config.tools?.length ?? 0,
       };
     case "sdk":
@@ -479,9 +590,15 @@ export function summarizeMcpServersForDiagnostics(
       status: server.status,
       config_type: config.config_type,
       ...(server.scope ? { scope: server.scope } : {}),
-      ...(config.timeout_ms === undefined ? {} : { timeout_ms: config.timeout_ms }),
-      ...(config.request_timeout_ms === undefined ? {} : { request_timeout_ms: config.request_timeout_ms }),
-      ...(config.always_load === undefined ? {} : { always_load: config.always_load }),
+      ...(config.timeout_ms === undefined
+        ? {}
+        : { timeout_ms: config.timeout_ms }),
+      ...(config.request_timeout_ms === undefined
+        ? {}
+        : { request_timeout_ms: config.request_timeout_ms }),
+      ...(config.always_load === undefined
+        ? {}
+        : { always_load: config.always_load }),
       tool_count: server.tools.length,
       configured_tool_policy_count: config.configured_tool_policy_count,
       has_error: typeof server.error === "string" && server.error.length > 0,

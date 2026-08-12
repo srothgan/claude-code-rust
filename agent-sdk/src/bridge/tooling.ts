@@ -63,19 +63,31 @@ export function isToolSearchToolResultType(blockType: string): boolean {
 }
 
 export function isToolUseBlockType(blockType: string): boolean {
-  return blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use";
+  return (
+    blockType === "tool_use" ||
+    blockType === "server_tool_use" ||
+    blockType === "mcp_tool_use"
+  );
 }
 
 function inputString(input: Record<string, unknown>, key: string): string {
   return typeof input[key] === "string" ? input[key].trim() : "";
 }
 
-function inputNumber(input: Record<string, unknown>, key: string): number | undefined {
+function inputNumber(
+  input: Record<string, unknown>,
+  key: string,
+): number | undefined {
   const value = input[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
-function inputBoolean(input: Record<string, unknown>, key: string): boolean | undefined {
+function inputBoolean(
+  input: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
   return typeof input[key] === "boolean" ? input[key] : undefined;
 }
 
@@ -88,10 +100,16 @@ export function isShellToolName(name: string): boolean {
 }
 
 function isMcpResourceReadToolName(name: string): boolean {
-  return name === READ_MCP_RESOURCE_TOOL_NAME || name === READ_MCP_RESOURCE_DIR_TOOL_NAME;
+  return (
+    name === READ_MCP_RESOURCE_TOOL_NAME ||
+    name === READ_MCP_RESOURCE_DIR_TOOL_NAME
+  );
 }
 
-function agentInputTitle(name: string, input: Record<string, unknown>): string | undefined {
+function agentInputTitle(
+  name: string,
+  input: Record<string, unknown>,
+): string | undefined {
   if (!isAgentLikeToolName(name)) {
     return undefined;
   }
@@ -326,7 +344,9 @@ export function toolTitle(
   }
   if (name === REMOTE_TRIGGER_TOOL_NAME) {
     const action = typeof input.action === "string" ? input.action.trim() : "";
-    return action ? `${REMOTE_TRIGGER_TOOL_NAME}: ${action}` : REMOTE_TRIGGER_TOOL_NAME;
+    return action
+      ? `${REMOTE_TRIGGER_TOOL_NAME}: ${action}`
+      : REMOTE_TRIGGER_TOOL_NAME;
   }
   if (name === ENTER_PLAN_MODE_TOOL_NAME) {
     return name;
@@ -337,17 +357,22 @@ export function toolTitle(
   }
   if (name === MONITOR_TOOL_NAME) {
     const description = nonEmptyString(input.description);
-    return description ? `${MONITOR_TOOL_NAME}: ${description}` : MONITOR_TOOL_NAME;
+    return description
+      ? `${MONITOR_TOOL_NAME}: ${description}`
+      : MONITOR_TOOL_NAME;
   }
   if (name === WORKFLOW_TOOL_NAME) {
     const workflowName = nonEmptyString(input.name);
-    return workflowName ? `${WORKFLOW_TOOL_NAME}: ${workflowName}` : WORKFLOW_TOOL_NAME;
+    return workflowName
+      ? `${WORKFLOW_TOOL_NAME}: ${workflowName}`
+      : WORKFLOW_TOOL_NAME;
   }
   if (name === PROJECTS_TOOL_NAME) {
     return formatProjectsTitle(input);
   }
   if (name === ARTIFACT_TOOL_NAME) {
-    const label = nonEmptyString(input.label) ?? nonEmptyString(input.file_path);
+    const label =
+      nonEmptyString(input.label) ?? nonEmptyString(input.file_path);
     return label ? `${ARTIFACT_TOOL_NAME}: ${label}` : ARTIFACT_TOOL_NAME;
   }
   if (name === SHOW_ONBOARDING_ROLE_PICKER_TOOL_NAME) {
@@ -360,13 +385,17 @@ export function toolTitle(
       : SKILL_TOOL_NAME;
   }
   if (name === "EnterWorktree") {
-    const worktreeName = typeof input.name === "string" ? input.name.trim() : "";
+    const worktreeName =
+      typeof input.name === "string" ? input.name.trim() : "";
     return worktreeName || "EnterWorktree";
   }
   if (name === "ExitWorktree") {
     return "ExitWorktree";
   }
-  if ((name === "Read" || name === "Write" || name === "Edit") && typeof input.file_path === "string") {
+  if (
+    (name === "Read" || name === "Write" || name === "Edit") &&
+    typeof input.file_path === "string"
+  ) {
     return `${name} ${input.file_path}`;
   }
   if (isMcpResourceReadToolName(name)) {
@@ -384,25 +413,40 @@ export function toolTitle(
 
 function formatProjectsTitle(input: Record<string, unknown>): string {
   const method = nonEmptyString(input.method);
-  const action = method?.startsWith("project_") ? method.slice("project_".length) : method;
+  const action = method?.startsWith("project_")
+    ? method.slice("project_".length)
+    : method;
   const suffix = nonEmptyString(input.path) ?? nonEmptyString(input.query);
   const base = action ? `${PROJECTS_TOOL_NAME}: ${action}` : PROJECTS_TOOL_NAME;
   return suffix ? `${base} ${suffix}` : base;
 }
 
-function editDiffContent(name: string, input: Record<string, unknown>): ToolCall["content"] {
+function editDiffContent(
+  name: string,
+  input: Record<string, unknown>,
+): ToolCall["content"] {
   const filePath = typeof input.file_path === "string" ? input.file_path : "";
   if (!filePath) {
     return [];
   }
 
   if (name === "Edit") {
-    const oldText = typeof input.old_string === "string" ? input.old_string : "";
-    const newText = typeof input.new_string === "string" ? input.new_string : "";
+    const oldText =
+      typeof input.old_string === "string" ? input.old_string : "";
+    const newText =
+      typeof input.new_string === "string" ? input.new_string : "";
     if (!oldText && !newText) {
       return [];
     }
-    return [{ type: "diff", old_path: filePath, new_path: filePath, old: oldText, new: newText }];
+    return [
+      {
+        type: "diff",
+        old_path: filePath,
+        new_path: filePath,
+        old: oldText,
+        new: newText,
+      },
+    ];
   }
 
   if (name === "Write") {
@@ -410,7 +454,15 @@ function editDiffContent(name: string, input: Record<string, unknown>): ToolCall
     if (!newText) {
       return [];
     }
-    return [{ type: "diff", old_path: filePath, new_path: filePath, old: "", new: newText }];
+    return [
+      {
+        type: "diff",
+        old_path: filePath,
+        new_path: filePath,
+        old: "",
+        new: newText,
+      },
+    ];
   }
 
   return [];
@@ -430,7 +482,8 @@ export function createToolCall(
     status: "pending",
     content: editDiffContent(name, input),
     raw_input: input as unknown as Json,
-    locations: typeof input.file_path === "string" ? [{ path: input.file_path }] : [],
+    locations:
+      typeof input.file_path === "string" ? [{ path: input.file_path }] : [],
     meta: {
       claudeCode: {
         toolName: name,
@@ -440,7 +493,10 @@ export function createToolCall(
   };
 }
 
-function resultRecordCandidates(rawResult: unknown, rawContent: unknown): Record<string, unknown>[] {
+function resultRecordCandidates(
+  rawResult: unknown,
+  rawContent: unknown,
+): Record<string, unknown>[] {
   const candidates: Record<string, unknown>[] = [];
 
   const pushRecord = (value: unknown): void => {
@@ -497,7 +553,8 @@ function imageReadResultText(
   }
 
   const input = asRecordOrNull(rawInput);
-  const filePath = typeof input?.file_path === "string" ? input.file_path.trim() : "";
+  const filePath =
+    typeof input?.file_path === "string" ? input.file_path.trim() : "";
   const normalizedPath = filePath.replaceAll("\\", "/");
   const fileName = normalizedPath.slice(normalizedPath.lastIndexOf("/") + 1);
   return fileName ? `Viewed Image ${fileName}` : "Viewed Image";
@@ -540,14 +597,24 @@ function pushStructuredRecordCandidates(
   }
 }
 
-function mcpResourceContentFromResult(rawResult: unknown, rawContent: unknown): ToolCall["content"] {
+function mcpResourceContentFromResult(
+  rawResult: unknown,
+  rawContent: unknown,
+): ToolCall["content"] {
   const candidates: Record<string, unknown>[] = [];
-  for (const candidate of [rawResult, rawContent, parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const candidate of [
+    rawResult,
+    rawContent,
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     pushStructuredRecordCandidates(candidates, candidate);
   }
 
   for (const candidate of candidates) {
-    const contents = Array.isArray(candidate.contents) ? candidate.contents : null;
+    const contents = Array.isArray(candidate.contents)
+      ? candidate.contents
+      : null;
     if (!contents || contents.length === 0) {
       continue;
     }
@@ -563,13 +630,16 @@ function mcpResourceContentFromResult(rawResult: unknown, rawContent: unknown): 
         continue;
       }
       const text =
-        typeof record.text === "string" && record.text.length > 0 ? record.text : undefined;
+        typeof record.text === "string" && record.text.length > 0
+          ? record.text
+          : undefined;
       const mimeType =
         typeof record.mimeType === "string" && record.mimeType.trim().length > 0
           ? record.mimeType.trim()
           : undefined;
       const blobSavedTo =
-        typeof record.blobSavedTo === "string" && record.blobSavedTo.trim().length > 0
+        typeof record.blobSavedTo === "string" &&
+        record.blobSavedTo.trim().length > 0
           ? record.blobSavedTo.trim()
           : undefined;
       if (!text && !blobSavedTo) {
@@ -643,19 +713,32 @@ function extractToolOutputMetadata(
 
   if (toolName === "Bash") {
     for (const candidate of candidates) {
-      const hasAssistantAutoBackgrounded = typeof candidate.assistantAutoBackgrounded === "boolean";
+      const hasAssistantAutoBackgrounded =
+        typeof candidate.assistantAutoBackgrounded === "boolean";
       const timedOutAfterMs = nonNegativeInteger(candidate.timedOutAfterMs);
       const backgroundCwdHint = nonEmptyString(candidate.backgroundCwdHint);
-      if (hasAssistantAutoBackgrounded || timedOutAfterMs !== undefined || backgroundCwdHint) {
+      const hasBackgroundEndsWithFinalResponse =
+        typeof candidate.backgroundEndsWithFinalResponse === "boolean";
+      if (
+        hasAssistantAutoBackgrounded ||
+        timedOutAfterMs !== undefined ||
+        backgroundCwdHint ||
+        hasBackgroundEndsWithFinalResponse
+      ) {
         const bashMetadata: import("../types.js").BashOutputMetadata = {};
         if (hasAssistantAutoBackgrounded) {
-          bashMetadata.assistant_auto_backgrounded = candidate.assistantAutoBackgrounded as boolean;
+          bashMetadata.assistant_auto_backgrounded =
+            candidate.assistantAutoBackgrounded as boolean;
         }
         if (timedOutAfterMs !== undefined) {
           bashMetadata.timed_out_after_ms = timedOutAfterMs;
         }
         if (backgroundCwdHint) {
           bashMetadata.background_cwd_hint = backgroundCwdHint;
+        }
+        if (hasBackgroundEndsWithFinalResponse) {
+          bashMetadata.background_ends_with_final_response =
+            candidate.backgroundEndsWithFinalResponse as boolean;
         }
         metadata.bash = bashMetadata;
         break;
@@ -710,7 +793,10 @@ function extractToolOutputMetadata(
 export function parseToolNonExecutionMetadata(
   value: unknown,
 ): Map<string, import("../types.js").ToolNonExecutionMetadata> {
-  const byToolUseId = new Map<string, import("../types.js").ToolNonExecutionMetadata>();
+  const byToolUseId = new Map<
+    string,
+    import("../types.js").ToolNonExecutionMetadata
+  >();
   if (!Array.isArray(value)) {
     return byToolUseId;
   }
@@ -766,7 +852,12 @@ export function extractText(value: unknown): string {
         if (typeof entry === "string") {
           return entry;
         }
-        if (entry && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          "text" in entry &&
+          typeof entry.text === "string"
+        ) {
           return entry.text;
         }
         return "";
@@ -774,7 +865,12 @@ export function extractText(value: unknown): string {
       .filter((part) => part.length > 0)
       .join("\n");
   }
-  if (value && typeof value === "object" && "text" in value && typeof value.text === "string") {
+  if (
+    value &&
+    typeof value === "object" &&
+    "text" in value &&
+    typeof value.text === "string"
+  ) {
     return value.text;
   }
   return "";
@@ -846,7 +942,10 @@ function sanitizeSdkRejectionText(text: string): string {
   return text;
 }
 
-export function normalizeToolResultText(value: unknown, isError = false): string {
+export function normalizeToolResultText(
+  value: unknown,
+  isError = false,
+): string {
   const text = extractText(value);
   if (!text) {
     return "";
@@ -876,7 +975,15 @@ function writeDiffFromInput(rawInput: Json | undefined): ToolCall["content"] {
   if (!filePath || !content) {
     return [];
   }
-  return [{ type: "diff", old_path: filePath, new_path: filePath, old: "", new: content }];
+  return [
+    {
+      type: "diff",
+      old_path: filePath,
+      new_path: filePath,
+      old: "",
+      new: content,
+    },
+  ];
 }
 
 function editDiffFromInput(rawInput: Json | undefined): ToolCall["content"] {
@@ -900,7 +1007,15 @@ function editDiffFromInput(rawInput: Json | undefined): ToolCall["content"] {
   if (!filePath || (!oldText && !newText)) {
     return [];
   }
-  return [{ type: "diff", old_path: filePath, new_path: filePath, old: oldText, new: newText }];
+  return [
+    {
+      type: "diff",
+      old_path: filePath,
+      new_path: filePath,
+      old: oldText,
+      new: newText,
+    },
+  ];
 }
 
 function writeDiffFromResult(rawContent: unknown): ToolCall["content"] {
@@ -918,16 +1033,26 @@ function writeDiffFromResult(rawContent: unknown): ToolCall["content"] {
           : "";
     const content = typeof record.content === "string" ? record.content : "";
     const originalRaw =
-      "originalFile" in record ? record.originalFile : "original_file" in record ? record.original_file : undefined;
+      "originalFile" in record
+        ? record.originalFile
+        : "original_file" in record
+          ? record.original_file
+          : undefined;
     const gitDiff = asRecordOrNull(record.gitDiff);
     const repository =
-      typeof gitDiff?.repository === "string" && gitDiff.repository.trim().length > 0
+      typeof gitDiff?.repository === "string" &&
+      gitDiff.repository.trim().length > 0
         ? gitDiff.repository.trim()
         : undefined;
     if (!filePath || !content || originalRaw === undefined) {
       continue;
     }
-    const original = typeof originalRaw === "string" ? originalRaw : originalRaw === null ? "" : "";
+    const original =
+      typeof originalRaw === "string"
+        ? originalRaw
+        : originalRaw === null
+          ? ""
+          : "";
     return [
       {
         type: "diff",
@@ -942,7 +1067,10 @@ function writeDiffFromResult(rawContent: unknown): ToolCall["content"] {
   return [];
 }
 
-function editDiffFromResult(rawResult: unknown, rawInput: Json | undefined): ToolCall["content"] {
+function editDiffFromResult(
+  rawResult: unknown,
+  rawInput: Json | undefined,
+): ToolCall["content"] {
   const input = asRecordOrNull(rawInput);
   const filePath = typeof input?.file_path === "string" ? input.file_path : "";
   const oldText =
@@ -976,7 +1104,8 @@ function editDiffFromResult(rawResult: unknown, rawInput: Json | undefined): Too
       continue;
     }
     const repository =
-      typeof gitDiff?.repository === "string" && gitDiff.repository.trim().length > 0
+      typeof gitDiff?.repository === "string" &&
+      gitDiff.repository.trim().length > 0
         ? gitDiff.repository.trim()
         : undefined;
     return [
@@ -1047,13 +1176,17 @@ function buildShellDisplayOutput(record: Record<string, unknown>): string {
   return segments.join("\n");
 }
 
-function fileUnchangedResultText(rawResult: unknown, rawContent: unknown): string {
+function fileUnchangedResultText(
+  rawResult: unknown,
+  rawContent: unknown,
+): string {
   for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
     if (candidate.type !== "file_unchanged") {
       continue;
     }
     const file = asRecordOrNull(candidate.file);
-    const filePath = typeof file?.filePath === "string" ? file.filePath.trim() : "";
+    const filePath =
+      typeof file?.filePath === "string" ? file.filePath.trim() : "";
     if (filePath) {
       return `File unchanged: ${filePath}`;
     }
@@ -1061,13 +1194,18 @@ function fileUnchangedResultText(rawResult: unknown, rawContent: unknown): strin
   return "";
 }
 
-function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown, base?: ToolCall): string {
+function agentTitleFromAgentOutput(
+  rawResult: unknown,
+  rawContent: unknown,
+  base?: ToolCall,
+): string {
   const inputAgentName = nonEmptyString(asRecordOrNull(base?.raw_input)?.name);
   if (inputAgentName) {
     return "";
   }
   for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
-    const agentType = typeof candidate.agentType === "string" ? candidate.agentType.trim() : "";
+    const agentType =
+      typeof candidate.agentType === "string" ? candidate.agentType.trim() : "";
     if (agentType) {
       return `Agent: ${agentType}`;
     }
@@ -1075,19 +1213,30 @@ function agentTitleFromAgentOutput(rawResult: unknown, rawContent: unknown, base
   return "";
 }
 
-function firstSearchRecord(toolName: string, rawResult: unknown, rawContent: unknown): Record<string, unknown> | undefined {
+function firstSearchRecord(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): Record<string, unknown> | undefined {
   if (toolName !== "Glob" && toolName !== "Grep") {
     return undefined;
   }
 
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
   return candidates.find((candidate) => {
     if (toolName === "Glob") {
-      return Array.isArray(candidate.filenames) || "numFiles" in candidate || "truncated" in candidate;
+      return (
+        Array.isArray(candidate.filenames) ||
+        "numFiles" in candidate ||
+        "truncated" in candidate
+      );
     }
     return (
       Array.isArray(candidate.filenames) ||
@@ -1099,31 +1248,52 @@ function firstSearchRecord(toolName: string, rawResult: unknown, rawContent: unk
   });
 }
 
-function recordNumber(record: Record<string, unknown>, key: string): number | undefined {
+function recordNumber(
+  record: Record<string, unknown>,
+  key: string,
+): number | undefined {
   const value = record[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
 }
 
-function recordNonNegativeInteger(record: Record<string, unknown>, key: string): number | undefined {
+function recordNonNegativeInteger(
+  record: Record<string, unknown>,
+  key: string,
+): number | undefined {
   return nonNegativeInteger(record[key]);
 }
 
-function recordString(record: Record<string, unknown>, key: string): string | undefined {
+function recordString(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
   const value = record[key];
   return typeof value === "string" ? value : undefined;
 }
 
 function searchFilenames(record: Record<string, unknown>): string[] {
   return Array.isArray(record.filenames)
-    ? record.filenames.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    ? record.filenames.filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.trim().length > 0,
+      )
     : [];
 }
 
-function pluralize(count: number, singular: string, plural = `${singular}s`): string {
+function pluralize(
+  count: number,
+  singular: string,
+  plural = `${singular}s`,
+): string {
   return count === 1 ? singular : plural;
 }
 
-function truncateList(values: string[], limit: number): { visible: string[]; hidden: number } {
+function truncateList(
+  values: string[],
+  limit: number,
+): { visible: string[]; hidden: number } {
   if (values.length <= limit) {
     return { visible: values, hidden: 0 };
   }
@@ -1139,7 +1309,9 @@ function globResultText(record: Record<string, unknown>): string | undefined {
   if (numFiles === 0 && filenames.length === 0) {
     lines.push("No files found");
   } else {
-    lines.push(`${numFiles} ${pluralize(numFiles, "file")} found${truncated ? " (truncated)" : ""}`);
+    lines.push(
+      `${numFiles} ${pluralize(numFiles, "file")} found${truncated ? " (truncated)" : ""}`,
+    );
   }
 
   if (filenames.length > 0) {
@@ -1169,7 +1341,8 @@ function grepResultText(record: Record<string, unknown>): string | undefined {
     (legacyNumFiles !== 0 || !hasVisibleMatches ? legacyNumFiles : undefined) ??
     (filenames.length > 0 ? filenames.length : undefined);
   const numLines =
-    recordNonNegativeInteger(record, "totalLines") ?? recordNonNegativeInteger(record, "numLines");
+    recordNonNegativeInteger(record, "totalLines") ??
+    recordNonNegativeInteger(record, "numLines");
   const numMatches = recordNumber(record, "numMatches");
   const appliedLimit = recordNumber(record, "appliedLimit");
   const appliedOffset = recordNumber(record, "appliedOffset");
@@ -1193,7 +1366,9 @@ function grepResultText(record: Record<string, unknown>): string | undefined {
     summaryParts.push(`${numFiles} ${pluralize(numFiles, "file")}`);
   }
   if (numMatches !== undefined) {
-    summaryParts.push(`${numMatches} ${pluralize(numMatches, "match", "matches")}`);
+    summaryParts.push(
+      `${numMatches} ${pluralize(numMatches, "match", "matches")}`,
+    );
   }
   if (numLines !== undefined) {
     summaryParts.push(`${numLines} ${pluralize(numLines, "line")}`);
@@ -1213,7 +1388,11 @@ function grepResultText(record: Record<string, unknown>): string | undefined {
   return lines.join("\n");
 }
 
-function searchResultText(toolName: string, rawResult: unknown, rawContent: unknown): string | undefined {
+function searchResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+): string | undefined {
   const record = firstSearchRecord(toolName, rawResult, rawContent);
   if (!record) {
     return undefined;
@@ -1231,14 +1410,22 @@ function worktreeResultFields(
   }
 
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
   for (const candidate of candidates) {
     const branch =
-      typeof candidate.worktreeBranch === "string" ? candidate.worktreeBranch.trim() : "";
-    const path = typeof candidate.worktreePath === "string" ? candidate.worktreePath.trim() : "";
+      typeof candidate.worktreeBranch === "string"
+        ? candidate.worktreeBranch.trim()
+        : "";
+    const path =
+      typeof candidate.worktreePath === "string"
+        ? candidate.worktreePath.trim()
+        : "";
     const output = branch ? `Branch: ${branch}` : path ? `Path: ${path}` : "";
     const isStructuredWorktreeOutput =
       "message" in candidate ||
@@ -1257,7 +1444,11 @@ function booleanLabel(value: boolean): string {
   return value ? "yes" : "no";
 }
 
-function pushBooleanField(lines: string[], label: string, value: unknown): void {
+function pushBooleanField(
+  lines: string[],
+  label: string,
+  value: unknown,
+): void {
   if (typeof value === "boolean") {
     lines.push(`${label}: ${booleanLabel(value)}`);
   }
@@ -1315,13 +1506,27 @@ const CRON_WEEKDAY_NAMES = [
 ] as const;
 
 const CRON_MONTH_ALIASES = new Map(
-  ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"].map(
-    (name, index) => [name, index + 1],
-  ),
+  [
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC",
+  ].map((name, index) => [name, index + 1]),
 );
 
 const CRON_WEEKDAY_ALIASES = new Map(
-  ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((name, index) => [name, index]),
+  ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map((name, index) => [
+    name,
+    index,
+  ]),
 );
 
 type CronField =
@@ -1360,14 +1565,18 @@ function parseCronField(
   const stepMatch = raw.match(/^\*\/(\d+)$/);
   if (stepMatch) {
     const step = Number(stepMatch[1]);
-    return Number.isInteger(step) && step > 0 ? { kind: "step", raw, step } : { kind: "unsupported", raw };
+    return Number.isInteger(step) && step > 0
+      ? { kind: "step", raw, step }
+      : { kind: "unsupported", raw };
   }
   if (raw.includes(",")) {
     const values = raw
       .split(",")
       .map((part) => parseCronValue(part, min, max, aliases))
       .filter((value): value is number => value !== undefined);
-    return values.length === raw.split(",").length ? { kind: "list", raw, values } : { kind: "unsupported", raw };
+    return values.length === raw.split(",").length
+      ? { kind: "list", raw, values }
+      : { kind: "unsupported", raw };
   }
   const rangeMatch = raw.match(/^([^/-]+)-([^/-]+)$/);
   if (rangeMatch) {
@@ -1378,7 +1587,9 @@ function parseCronField(
       : { kind: "unsupported", raw };
   }
   const value = parseCronValue(raw, min, max, aliases);
-  return value !== undefined ? { kind: "single", raw, value } : { kind: "unsupported", raw };
+  return value !== undefined
+    ? { kind: "single", raw, value }
+    : { kind: "unsupported", raw };
 }
 
 function isCronAny(field: CronField): boolean {
@@ -1427,14 +1638,16 @@ function weekdayDescription(field: CronField): string | undefined {
     return "day";
   }
   if (field.kind === "list") {
-    const normalized = [...new Set(field.values.map((value) => (value === 7 ? 0 : value)))].sort(
-      (left, right) => left - right,
-    );
+    const normalized = [
+      ...new Set(field.values.map((value) => (value === 7 ? 0 : value))),
+    ].sort((left, right) => left - right);
     if (normalized.length === 2 && normalized[0] === 0 && normalized[1] === 6) {
       return "weekend day";
     }
     const names = normalized.map(weekdayName);
-    return names.every((name): name is string => name !== undefined) ? joinEnglishList(names) : undefined;
+    return names.every((name): name is string => name !== undefined)
+      ? joinEnglishList(names)
+      : undefined;
   }
   return undefined;
 }
@@ -1447,7 +1660,9 @@ function hourlyScheduleText(minute: CronField): string | undefined {
   if (minute.kind !== "single") {
     return undefined;
   }
-  return minute.value === 0 ? "Every hour on the hour" : `Every hour at minute ${padCronNumber(minute.value)}`;
+  return minute.value === 0
+    ? "Every hour on the hour"
+    : `Every hour at minute ${padCronNumber(minute.value)}`;
 }
 
 function cronScheduleFromExpression(cron: string): string | undefined {
@@ -1467,7 +1682,8 @@ function cronScheduleFromExpression(cron: string): string | undefined {
     return undefined;
   }
 
-  const everyDay = isCronAny(dayOfMonth) && isCronAny(month) && isCronAny(dayOfWeek);
+  const everyDay =
+    isCronAny(dayOfMonth) && isCronAny(month) && isCronAny(dayOfWeek);
   if (everyDay && minute.kind === "any" && hour.kind === "any") {
     return "Every minute";
   }
@@ -1478,7 +1694,10 @@ function cronScheduleFromExpression(cron: string): string | undefined {
     return hourlyScheduleText(minute);
   }
   if (everyDay && minute.kind === "single" && hour.kind === "step") {
-    const suffix = minute.value === 0 ? "on the hour" : `at minute ${padCronNumber(minute.value)}`;
+    const suffix =
+      minute.value === 0
+        ? "on the hour"
+        : `at minute ${padCronNumber(minute.value)}`;
     return `Every ${hour.step} ${pluralUnit(hour.step, "hour")} ${suffix}`;
   }
 
@@ -1508,14 +1727,20 @@ function cronScheduleFromExpression(cron: string): string | undefined {
   if (dayOfMonth.kind === "single" && isCronAny(dayOfWeek)) {
     if (month.kind === "single") {
       const monthLabel = monthName(month.value);
-      return monthLabel ? `Every ${monthLabel} ${dayOfMonth.value} at ${time}` : undefined;
+      return monthLabel
+        ? `Every ${monthLabel} ${dayOfMonth.value} at ${time}`
+        : undefined;
     }
     if (month.kind === "step") {
       return `Every ${month.step} ${pluralUnit(month.step, "month")} on day ${dayOfMonth.value} at ${time}`;
     }
   }
 
-  if (isCronAny(dayOfMonth) && month.kind === "single" && isCronAny(dayOfWeek)) {
+  if (
+    isCronAny(dayOfMonth) &&
+    month.kind === "single" &&
+    isCronAny(dayOfWeek)
+  ) {
     const monthLabel = monthName(month.value);
     return monthLabel ? `Every day in ${monthLabel} at ${time}` : undefined;
   }
@@ -1532,13 +1757,20 @@ function normalizeHumanSchedule(value: unknown): string | undefined {
   if (hourlyMinute) {
     const minute = Number(hourlyMinute[1]);
     if (Number.isInteger(minute) && minute >= 0 && minute <= 59) {
-      return hourlyScheduleText({ kind: "single", raw: hourlyMinute[1], value: minute });
+      return hourlyScheduleText({
+        kind: "single",
+        raw: hourlyMinute[1],
+        value: minute,
+      });
     }
   }
   return text;
 }
 
-function readableCronSchedule(cron: unknown, humanSchedule: unknown): string | undefined {
+function readableCronSchedule(
+  cron: unknown,
+  humanSchedule: unknown,
+): string | undefined {
   const cronText = nonEmptyString(cron);
   if (cronText) {
     const derived = cronScheduleFromExpression(cronText);
@@ -1572,15 +1804,23 @@ function cronCreateResultText(
   return lines.join("\n");
 }
 
-function cronDeleteResultText(candidate: Record<string, unknown>): string | undefined {
-  return typeof candidate.id === "string" ? `Schedule ID: ${candidate.id}` : undefined;
+function cronDeleteResultText(
+  candidate: Record<string, unknown>,
+): string | undefined {
+  return typeof candidate.id === "string"
+    ? `Schedule ID: ${candidate.id}`
+    : undefined;
 }
 
-function cronListResultText(candidate: Record<string, unknown>): string | undefined {
+function cronListResultText(
+  candidate: Record<string, unknown>,
+): string | undefined {
   if (!Array.isArray(candidate.jobs)) {
     return undefined;
   }
-  const jobs = candidate.jobs.map(asRecordOrNull).filter((job): job is Record<string, unknown> => job !== null);
+  const jobs = candidate.jobs
+    .map(asRecordOrNull)
+    .filter((job): job is Record<string, unknown> => job !== null);
   if (jobs.length === 0) {
     return "Jobs: none";
   }
@@ -1639,7 +1879,10 @@ function cronResultText(
   }
 
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
@@ -1720,7 +1963,10 @@ function scheduleWakeupResultText(
   }
 
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
@@ -1733,7 +1979,11 @@ function scheduleWakeupResultText(
       typeof candidate.clampedDelaySeconds === "number"
         ? formatDurationSeconds(candidate.clampedDelaySeconds)
         : undefined;
-    if (!scheduledFor || !clampedDelaySeconds || typeof candidate.wasClamped !== "boolean") {
+    if (
+      !scheduledFor ||
+      !clampedDelaySeconds ||
+      typeof candidate.wasClamped !== "boolean"
+    ) {
       continue;
     }
     return [
@@ -1771,7 +2021,10 @@ function pushNotificationResultText(
 
   const inputMessage = nonEmptyString(asRecordOrNull(rawInput)?.message);
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
@@ -1795,11 +2048,16 @@ function pushNotificationResultText(
     }
     pushBooleanField(lines, "Push sent", candidate.pushSent);
     pushBooleanField(lines, "Local sent", candidate.localSent);
-    const disabledReason = pushNotificationDisabledReason(candidate.disabledReason);
+    const disabledReason = pushNotificationDisabledReason(
+      candidate.disabledReason,
+    );
     if (disabledReason) {
       lines.push(`Disabled reason: ${disabledReason}`);
     }
-    if (typeof candidate.idleSec === "number" && Number.isFinite(candidate.idleSec)) {
+    if (
+      typeof candidate.idleSec === "number" &&
+      Number.isFinite(candidate.idleSec)
+    ) {
       lines.push(`Idle time: ${formatDurationSeconds(candidate.idleSec)}`);
     }
     pushBooleanField(lines, "App focused", candidate.hasFocus);
@@ -1856,12 +2114,18 @@ function remoteTriggerResultFields(
   }
 
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
   for (const candidate of candidates) {
-    if (typeof candidate.status !== "number" || typeof candidate.json !== "string") {
+    if (
+      typeof candidate.status !== "number" ||
+      typeof candidate.json !== "string"
+    ) {
       continue;
     }
 
@@ -1869,11 +2133,10 @@ function remoteTriggerResultFields(
     const summary = nonEmptyString(candidate.summary);
     if (summary) {
       lines.push(`Summary: ${summary}`);
-    } else {
-      const response = compactParsedJsonString(candidate.json);
-      if (response) {
-        lines.push(`Response: ${response}`);
-      }
+    }
+    const response = compactParsedJsonString(candidate.json);
+    if (response) {
+      lines.push(`Response: ${response}`);
     }
 
     return { output: lines.join("\n"), failed: candidate.status >= 400 };
@@ -1916,7 +2179,10 @@ function replResultFields(
   }
 
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
@@ -1950,7 +2216,8 @@ function replResultFields(
 
     if (Array.isArray(candidate.registeredTools)) {
       const registeredTools = candidate.registeredTools.filter(
-        (tool): tool is string => typeof tool === "string" && tool.trim().length > 0,
+        (tool): tool is string =>
+          typeof tool === "string" && tool.trim().length > 0,
       );
       if (registeredTools.length > 0) {
         lines.push(`Registered tools: ${registeredTools.join(", ")}`);
@@ -1976,9 +2243,15 @@ type BackgroundLaunchResult = {
   keepRunning: boolean;
 };
 
-function collectResultCandidates(rawResult: unknown, rawContent: unknown): Record<string, unknown>[] {
+function collectResultCandidates(
+  rawResult: unknown,
+  rawContent: unknown,
+): Record<string, unknown>[] {
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
   return candidates;
@@ -2021,7 +2294,10 @@ function parseSkillResult(
       if (!agentId || typeof candidate.result !== "string") {
         continue;
       }
-      if (candidate.background !== undefined && typeof candidate.background !== "boolean") {
+      if (
+        candidate.background !== undefined &&
+        typeof candidate.background !== "boolean"
+      ) {
         continue;
       }
       return {
@@ -2040,8 +2316,11 @@ function parseSkillResult(
       const allowedToolsValid =
         candidate.allowedTools === undefined ||
         (Array.isArray(candidate.allowedTools) &&
-          candidate.allowedTools.every((tool): tool is string => typeof tool === "string"));
-      const modelValid = candidate.model === undefined || typeof candidate.model === "string";
+          candidate.allowedTools.every(
+            (tool): tool is string => typeof tool === "string",
+          ));
+      const modelValid =
+        candidate.model === undefined || typeof candidate.model === "string";
       if (!allowedToolsValid || !modelValid) {
         continue;
       }
@@ -2068,7 +2347,8 @@ function monitorResultFields(
   for (const candidate of collectResultCandidates(rawResult, rawContent)) {
     const taskId = nonEmptyString(candidate.taskId);
     const timeoutMs =
-      typeof candidate.timeoutMs === "number" && Number.isFinite(candidate.timeoutMs)
+      typeof candidate.timeoutMs === "number" &&
+      Number.isFinite(candidate.timeoutMs)
         ? Math.max(0, Math.trunc(candidate.timeoutMs))
         : undefined;
     const persistent =
@@ -2080,7 +2360,9 @@ function monitorResultFields(
             ? false
             : undefined;
     const isStructuredMonitorOutput =
-      taskId !== undefined || timeoutMs !== undefined || persistent !== undefined;
+      taskId !== undefined ||
+      timeoutMs !== undefined ||
+      persistent !== undefined;
     if (!isStructuredMonitorOutput) {
       continue;
     }
@@ -2230,7 +2512,10 @@ function enterPlanModeStructuredOutputHandled(
   }
 
   const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [parseJsonCandidate(rawResult), parseJsonCandidate(rawContent)]) {
+  for (const parsed of [
+    parseJsonCandidate(rawResult),
+    parseJsonCandidate(rawContent),
+  ]) {
     candidates.push(...resultRecordCandidates(parsed, undefined));
   }
 
@@ -2298,11 +2583,19 @@ function webFetchResultText(
       const codeText = nonEmptyString(candidate.codeText);
       lines.push(`Status: ${candidate.code}${codeText ? ` ${codeText}` : ""}`);
     }
-    if (typeof candidate.bytes === "number" && Number.isFinite(candidate.bytes)) {
+    if (
+      typeof candidate.bytes === "number" &&
+      Number.isFinite(candidate.bytes)
+    ) {
       lines.push(`Bytes: ${Math.max(0, Math.trunc(candidate.bytes))}`);
     }
-    if (typeof candidate.durationMs === "number" && Number.isFinite(candidate.durationMs)) {
-      lines.push(`Duration: ${Math.max(0, Math.trunc(candidate.durationMs))}ms`);
+    if (
+      typeof candidate.durationMs === "number" &&
+      Number.isFinite(candidate.durationMs)
+    ) {
+      lines.push(
+        `Duration: ${Math.max(0, Math.trunc(candidate.durationMs))}ms`,
+      );
     }
     return lines.length > 0 ? lines.join("\n") : undefined;
   }
@@ -2321,11 +2614,17 @@ export function buildToolResultFields(
   const fields: ToolCallUpdateFields = {
     status: isError ? "failed" : "completed",
   };
-  const outputMetadata = extractToolOutputMetadata(toolName, rawResult, rawContent);
+  const outputMetadata = extractToolOutputMetadata(
+    toolName,
+    rawResult,
+    rawContent,
+  );
   if (outputMetadata) {
     fields.output_metadata = outputMetadata;
   }
-  const skillResult = !isError ? parseSkillResult(toolName, rawResult, rawContent) : undefined;
+  const skillResult = !isError
+    ? parseSkillResult(toolName, rawResult, rawContent)
+    : undefined;
   if (skillResult) {
     fields.title = `${SKILL_TOOL_NAME}: ${skillDisplayName(skillResult.commandName)}`;
     if (!skillResult.success) {
@@ -2336,36 +2635,56 @@ export function buildToolResultFields(
       const output = skillResult.result.trim();
       if (output) {
         fields.raw_output = output;
-        fields.content = [{ type: "content", content: { type: "text", text: output } }];
+        fields.content = [
+          { type: "content", content: { type: "text", text: output } },
+        ];
       }
       return fields;
     }
   }
-  const imageReadText = !isError && toolName === "Read"
-    ? imageReadResultText(rawResult, rawContent, base?.raw_input)
-    : undefined;
+  const imageReadText =
+    !isError && toolName === "Read"
+      ? imageReadResultText(rawResult, rawContent, base?.raw_input)
+      : undefined;
   if (imageReadText !== undefined) {
     fields.raw_output = imageReadText;
-    fields.content = [{ type: "content", content: { type: "text", text: imageReadText } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: imageReadText } },
+    ];
     return fields;
   }
-  const fileUnchangedText = !isError && toolName === "Read" ? fileUnchangedResultText(rawResult, rawContent) : "";
+  const fileUnchangedText =
+    !isError && toolName === "Read"
+      ? fileUnchangedResultText(rawResult, rawContent)
+      : "";
   if (fileUnchangedText) {
     fields.raw_output = fileUnchangedText;
-    fields.content = [{ type: "content", content: { type: "text", text: fileUnchangedText } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: fileUnchangedText } },
+    ];
     return fields;
   }
-  const agentTitle = !isError && toolName === "Agent"
-    ? agentTitleFromAgentOutput(rawResult, rawContent, base)
-    : "";
+  const agentTitle =
+    !isError && toolName === "Agent"
+      ? agentTitleFromAgentOutput(rawResult, rawContent, base)
+      : "";
   if (agentTitle) {
     fields.title = agentTitle;
   }
-  const readMcpResourceError = mcpResourceReadErrorText(toolName, rawResult, rawContent);
+  const readMcpResourceError = mcpResourceReadErrorText(
+    toolName,
+    rawResult,
+    rawContent,
+  );
   if (readMcpResourceError) {
     fields.status = "failed";
     fields.raw_output = readMcpResourceError;
-    fields.content = [{ type: "content", content: { type: "text", text: readMcpResourceError } }];
+    fields.content = [
+      {
+        type: "content",
+        content: { type: "text", text: readMcpResourceError },
+      },
+    ];
     return fields;
   }
   const readMcpResourceDirOutput = !isError
@@ -2374,20 +2693,31 @@ export function buildToolResultFields(
   if (readMcpResourceDirOutput !== undefined) {
     fields.raw_output = readMcpResourceDirOutput;
     fields.content = [
-      { type: "content", content: { type: "text", text: readMcpResourceDirOutput } },
+      {
+        type: "content",
+        content: { type: "text", text: readMcpResourceDirOutput },
+      },
     ];
     return fields;
   }
-  const searchOutput = !isError ? searchResultText(toolName, rawResult, rawContent) : undefined;
+  const searchOutput = !isError
+    ? searchResultText(toolName, rawResult, rawContent)
+    : undefined;
   if (searchOutput !== undefined) {
     fields.raw_output = searchOutput;
-    fields.content = [{ type: "content", content: { type: "text", text: searchOutput } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: searchOutput } },
+    ];
     return fields;
   }
-  const webFetchOutput = !isError ? webFetchResultText(toolName, rawResult, rawContent) : undefined;
+  const webFetchOutput = !isError
+    ? webFetchResultText(toolName, rawResult, rawContent)
+    : undefined;
   if (webFetchOutput !== undefined) {
     fields.raw_output = webFetchOutput;
-    fields.content = [{ type: "content", content: { type: "text", text: webFetchOutput } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: webFetchOutput } },
+    ];
     return fields;
   }
   const worktreeOutput = !isError
@@ -2397,7 +2727,10 @@ export function buildToolResultFields(
     if (worktreeOutput.output) {
       fields.raw_output = worktreeOutput.output;
       fields.content = [
-        { type: "content", content: { type: "text", text: worktreeOutput.output } },
+        {
+          type: "content",
+          content: { type: "text", text: worktreeOutput.output },
+        },
       ];
     }
     return fields;
@@ -2407,7 +2740,9 @@ export function buildToolResultFields(
     : undefined;
   if (cronOutput !== undefined) {
     fields.raw_output = cronOutput;
-    fields.content = [{ type: "content", content: { type: "text", text: cronOutput } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: cronOutput } },
+    ];
     return fields;
   }
   const scheduleWakeupOutput = !isError
@@ -2416,17 +2751,28 @@ export function buildToolResultFields(
   if (scheduleWakeupOutput !== undefined) {
     fields.raw_output = scheduleWakeupOutput;
     fields.content = [
-      { type: "content", content: { type: "text", text: scheduleWakeupOutput } },
+      {
+        type: "content",
+        content: { type: "text", text: scheduleWakeupOutput },
+      },
     ];
     return fields;
   }
   const pushNotificationOutput = !isError
-    ? pushNotificationResultText(toolName, rawResult, rawContent, base?.raw_input)
+    ? pushNotificationResultText(
+        toolName,
+        rawResult,
+        rawContent,
+        base?.raw_input,
+      )
     : undefined;
   if (pushNotificationOutput !== undefined) {
     fields.raw_output = pushNotificationOutput;
     fields.content = [
-      { type: "content", content: { type: "text", text: pushNotificationOutput } },
+      {
+        type: "content",
+        content: { type: "text", text: pushNotificationOutput },
+      },
     ];
     return fields;
   }
@@ -2436,7 +2782,11 @@ export function buildToolResultFields(
   ) {
     return fields;
   }
-  const remoteTriggerOutput = remoteTriggerResultFields(toolName, rawResult, rawContent);
+  const remoteTriggerOutput = remoteTriggerResultFields(
+    toolName,
+    rawResult,
+    rawContent,
+  );
   if (remoteTriggerOutput !== undefined) {
     if (remoteTriggerOutput.failed) {
       fields.status = "failed";
@@ -2444,7 +2794,10 @@ export function buildToolResultFields(
     if (remoteTriggerOutput.output) {
       fields.raw_output = remoteTriggerOutput.output;
       fields.content = [
-        { type: "content", content: { type: "text", text: remoteTriggerOutput.output } },
+        {
+          type: "content",
+          content: { type: "text", text: remoteTriggerOutput.output },
+        },
       ];
     }
     return fields;
@@ -2474,7 +2827,10 @@ export function buildToolResultFields(
     if (backgroundLaunchOutput.output) {
       fields.raw_output = backgroundLaunchOutput.output;
       fields.content = [
-        { type: "content", content: { type: "text", text: backgroundLaunchOutput.output } },
+        {
+          type: "content",
+          content: { type: "text", text: backgroundLaunchOutput.output },
+        },
       ];
     }
     return fields;
@@ -2490,15 +2846,30 @@ export function buildToolResultFields(
     fields.raw_output = rawOutput;
   }
   if (!isError && isTaskToolName(toolName)) {
-    if (toolName === "TaskUpdate" && taskUpdateSucceeded(rawResult, rawContent) === false) {
+    if (
+      toolName === "TaskUpdate" &&
+      taskUpdateSucceeded(rawResult, rawContent) === false
+    ) {
       fields.status = "failed";
     }
-    const taskOutput = taskToolResultText(toolName, rawResult, rawContent, base?.raw_input);
+    const taskOutput = taskToolResultText(
+      toolName,
+      rawResult,
+      rawContent,
+      base?.raw_input,
+    );
     if (taskOutput) {
-      fields.content = [{ type: "content", content: { type: "text", text: taskOutput } }];
+      fields.content = [
+        { type: "content", content: { type: "text", text: taskOutput } },
+      ];
       return fields;
     }
-    if (toolName === "TaskCreate" || toolName === "TaskUpdate" || toolName === "TaskOutput" || toolName === "TaskStop") {
+    if (
+      toolName === "TaskCreate" ||
+      toolName === "TaskUpdate" ||
+      toolName === "TaskOutput" ||
+      toolName === "TaskStop"
+    ) {
       return fields;
     }
   }
@@ -2528,7 +2899,10 @@ export function buildToolResultFields(
   }
 
   if (!isError && toolName === READ_MCP_RESOURCE_TOOL_NAME) {
-    const structuredResourceContent = mcpResourceContentFromResult(rawResult, rawContent);
+    const structuredResourceContent = mcpResourceContentFromResult(
+      rawResult,
+      rawContent,
+    );
     if (structuredResourceContent.length > 0) {
       fields.content = structuredResourceContent;
       return fields;
@@ -2536,12 +2910,17 @@ export function buildToolResultFields(
   }
 
   if (rawOutput) {
-    fields.content = [{ type: "content", content: { type: "text", text: rawOutput } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: rawOutput } },
+    ];
   }
   return fields;
 }
 
-export function unwrapToolUseResult(rawResult: unknown): { isError: boolean; content: unknown } {
+export function unwrapToolUseResult(rawResult: unknown): {
+  isError: boolean;
+  content: unknown;
+} {
   if (!rawResult || typeof rawResult !== "object") {
     return { isError: false, content: rawResult };
   }

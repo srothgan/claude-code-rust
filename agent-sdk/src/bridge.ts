@@ -36,18 +36,31 @@ import {
   sessionById,
   createSession,
   closeAllSessions,
-  type PendingRewindResult,
+  closeSessionWithLogging,
+  detachSessionForClose,
+  awaitSessionInitialization,
+  commitDeferredSession,
   type SessionState,
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
-import { emitAvailableAgentsIfChanged, mapAvailableAgents } from "./bridge/agents.js";
-import { mapSdkSlashCommands, updateAvailableCommands } from "./bridge/available_commands.js";
+import {
+  emitAvailableAgentsIfChanged,
+  mapAvailableAgents,
+} from "./bridge/agents.js";
+import {
+  mapSdkSlashCommands,
+  updateAvailableCommands,
+} from "./bridge/available_commands.js";
 import {
   MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS,
   emitReconciledMcpSnapshotFromStatuses,
   staleMcpAuthCandidates,
 } from "./bridge/mcp.js";
-import { bridgeLogger, LOG_TARGETS, logBridgeCommandReceived } from "./bridge/logger.js";
+import {
+  bridgeLogger,
+  LOG_TARGETS,
+  logBridgeCommandReceived,
+} from "./bridge/logger.js";
 import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
 import { handleInteractionCommand } from "./bridge/command_interactions.js";
@@ -58,7 +71,10 @@ import { handleSessionDataCommand } from "./bridge/command_session_data.js";
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
 export { asRecordOrNull } from "./bridge/shared.js";
-export { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./bridge/cache_policy.js";
+export {
+  CACHE_SPLIT_POLICY,
+  previewKilobyteLabel,
+} from "./bridge/cache_policy.js";
 export {
   buildToolResultFields,
   createToolCall,
@@ -83,7 +99,10 @@ export {
   mapSessionMessagesToUpdates,
   mapSdkSessions,
 } from "./bridge/history.js";
-export { handleSdkMessage, handleTaskSystemMessage } from "./bridge/message_handlers.js";
+export {
+  handleSdkMessage,
+  handleTaskSystemMessage,
+} from "./bridge/message_handlers.js";
 export { mapAvailableAgents } from "./bridge/agents.js";
 export {
   buildQueryOptions,
@@ -134,7 +153,9 @@ type UserTextParts = {
   inputText: string;
 };
 
-function userTextPartsFromSessionMessage(message: SessionMessage): UserTextParts | undefined {
+function userTextPartsFromSessionMessage(
+  message: SessionMessage,
+): UserTextParts | undefined {
   const record = message as unknown as Record<string, unknown>;
   if (record.type !== "user") {
     return undefined;
@@ -161,11 +182,17 @@ function userTextPartsFromSessionMessage(message: SessionMessage): UserTextParts
       textBlocks.push(blockRecord.text);
     }
   }
-  const firstText = textBlocks.map(normalizeRewindTargetText).find((text) => text.length > 0);
-  return firstText ? { firstText, inputText: textBlocks.join("\n").trim() } : undefined;
+  const firstText = textBlocks
+    .map(normalizeRewindTargetText)
+    .find((text) => text.length > 0);
+  return firstText
+    ? { firstText, inputText: textBlocks.join("\n").trim() }
+    : undefined;
 }
 
-export function rewindTargetsFromSessionMessages(messages: SessionMessage[]): RewindTarget[] {
+export function rewindTargetsFromSessionMessages(
+  messages: SessionMessage[],
+): RewindTarget[] {
   const targets: RewindTarget[] = [];
   let previousAssistantUuid: string | undefined;
 
@@ -180,29 +207,42 @@ export function rewindTargetsFromSessionMessages(messages: SessionMessage[]): Re
     if (!uuid || !textParts) {
       return;
     }
+    const plan = buildRewindConversationPlan(messages, uuid);
+    if (!plan) {
+      return;
+    }
     targets.push({
       uuid,
       first_text: textParts.firstText,
       input_text: textParts.inputText,
       index,
-      ...(previousAssistantUuid ? { previous_assistant_uuid: previousAssistantUuid } : {}),
+      ...(previousAssistantUuid
+        ? { previous_assistant_uuid: previousAssistantUuid }
+        : {}),
+      ...(plan.resumeSessionAtUuid
+        ? { resume_anchor_uuid: plan.resumeSessionAtUuid }
+        : {}),
     });
   });
 
   return targets.reverse();
 }
 
-type SessionTitleGeneratingQuery = import("@anthropic-ai/claude-agent-sdk").Query & {
-  generateSessionTitle: (
-    description: string,
-    options?: { persist?: boolean },
-  ) => Promise<string | null | undefined>;
-};
+type SessionTitleGeneratingQuery =
+  import("@anthropic-ai/claude-agent-sdk").Query & {
+    generateSessionTitle: (
+      description: string,
+      options?: { persist?: boolean },
+    ) => Promise<string | null | undefined>;
+  };
 
 export function canGenerateSessionTitle(
   query: import("@anthropic-ai/claude-agent-sdk").Query,
 ): query is SessionTitleGeneratingQuery {
-  return typeof (query as { generateSessionTitle?: unknown }).generateSessionTitle === "function";
+  return (
+    typeof (query as { generateSessionTitle?: unknown })
+      .generateSessionTitle === "function"
+  );
 }
 
 export async function generatePersistedSessionTitle(
@@ -212,7 +252,9 @@ export async function generatePersistedSessionTitle(
   if (!canGenerateSessionTitle(query)) {
     throw new Error("SDK query does not support generateSessionTitle");
   }
-  const title = await query.generateSessionTitle(description, { persist: true });
+  const title = await query.generateSessionTitle(description, {
+    persist: true,
+  });
   if (typeof title !== "string" || title.trim().length === 0) {
     throw new Error("SDK did not return a generated session title");
   }
@@ -242,12 +284,16 @@ export async function applySessionFastMode(
     result = await query.reinitialize();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`SDK accepted the fast-mode change but state verification failed: ${message}`);
+    throw new Error(
+      `SDK accepted the fast-mode change but state verification failed: ${message}`,
+    );
   }
 
   const state = parseFastModeState(result.fast_mode_state);
   if (state) {
-    const disabledReason = parseFastModeDisabledReason(result.fast_mode_disabled_reason);
+    const disabledReason = parseFastModeDisabledReason(
+      result.fast_mode_disabled_reason,
+    );
     return {
       state,
       ...(disabledReason ? { disabled_reason: disabledReason } : {}),
@@ -256,7 +302,9 @@ export async function applySessionFastMode(
   if (!enabled && result.fast_mode_state === undefined) {
     return { state: "off" };
   }
-  throw new Error("SDK accepted the fast-mode change but did not report its resulting state");
+  throw new Error(
+    "SDK accepted the fast-mode change but did not report its resulting state",
+  );
 }
 
 export function buildPromptUserMessage(
@@ -287,7 +335,10 @@ export async function applySessionAgent(
   await query.applyFlagSettings(settings);
 }
 
-export function emitEffortConfigOptionUpdate(sessionId: string, effort: EffortLevel): void {
+export function emitEffortConfigOptionUpdate(
+  sessionId: string,
+  effort: EffortLevel,
+): void {
   emitSessionUpdate(sessionId, {
     type: "config_option_update",
     option_id: "effortLevel",
@@ -295,7 +346,10 @@ export function emitEffortConfigOptionUpdate(sessionId: string, effort: EffortLe
   });
 }
 
-export function emitAgentConfigOptionUpdate(sessionId: string, agent: string | null): void {
+export function emitAgentConfigOptionUpdate(
+  sessionId: string,
+  agent: string | null,
+): void {
   emitSessionUpdate(sessionId, {
     type: "config_option_update",
     option_id: "agent",
@@ -303,14 +357,16 @@ export function emitAgentConfigOptionUpdate(sessionId: string, agent: string | n
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.220";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.227";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
   try {
     const entryPath = require.resolve("@anthropic-ai/claude-agent-sdk");
     const packageJsonPath = join(dirname(entryPath), "package.json");
-    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
+    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      version?: unknown;
+    };
     return typeof pkg.version === "string" ? pkg.version : undefined;
   } catch {
     return undefined;
@@ -340,7 +396,11 @@ export async function handleReloadPluginsCommand(
 ): Promise<void> {
   try {
     const result = await session.query.reloadPlugins();
-    updateAvailableCommands(session, "reload_plugins", mapSdkSlashCommands(result.commands));
+    updateAvailableCommands(
+      session,
+      "reload_plugins",
+      mapSdkSlashCommands(result.commands),
+    );
     emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
     await emitReconciledMcpSnapshotFromStatuses(
       session,
@@ -367,6 +427,8 @@ export async function handleReloadPluginsCommand(
 type ResolvedRewindTarget = {
   inputText: string;
   previousAssistantUuid?: string;
+  resumeSessionAtUuid?: string;
+  resumeDropsTurnId?: string;
   targetIndex: number;
   retainedMessages: SessionMessage[];
 };
@@ -379,8 +441,21 @@ function resolveRewindTarget(
   messages: SessionMessage[],
   targetUserMessageId: string,
 ): ResolvedRewindTarget | null {
+  const seenUuids = new Set<string>();
+  for (const message of messages) {
+    const uuid = (message as unknown as Record<string, unknown>).uuid;
+    if (
+      typeof uuid !== "string" ||
+      uuid.trim().length === 0 ||
+      seenUuids.has(uuid.trim())
+    ) {
+      return null;
+    }
+    seenUuids.add(uuid.trim());
+  }
+
   let previousAssistantUuid: string | undefined;
-  let textUserCountBeforeTarget = 0;
+  let previousTextUserIndex: number | undefined;
 
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
@@ -396,22 +471,26 @@ function resolveRewindTarget(
       continue;
     }
     if (uuid === targetUserMessageId) {
-      if (!previousAssistantUuid && textUserCountBeforeTarget > 0) {
-        return null;
-      }
-      if (previousAssistantUuid) {
-        const anchorIndex = messages.findIndex((candidate) => {
-          const candidateRecord = candidate as unknown as Record<string, unknown>;
-          return candidateRecord.uuid === previousAssistantUuid;
-        });
-        if (anchorIndex < 0) {
+      const isLatestTextUser = !messages
+        .slice(index + 1)
+        .some((candidate) => userTextPartsFromSessionMessage(candidate) !== undefined);
+      if (previousTextUserIndex !== undefined) {
+        const anchorRecord = messages[index - 1] as unknown as Record<
+          string,
+          unknown
+        >;
+        const resumeSessionAtUuid =
+          typeof anchorRecord.uuid === "string" ? anchorRecord.uuid.trim() : "";
+        if (!resumeSessionAtUuid || index - 1 < previousTextUserIndex) {
           return null;
         }
         return {
           inputText: textParts.inputText,
           previousAssistantUuid,
+          resumeSessionAtUuid,
+          ...(isLatestTextUser ? { resumeDropsTurnId: uuid } : {}),
           targetIndex: index,
-          retainedMessages: messages.slice(0, anchorIndex + 1),
+          retainedMessages: messages.slice(0, index),
         };
       }
       return {
@@ -421,7 +500,7 @@ function resolveRewindTarget(
       };
     }
     if (uuid) {
-      textUserCountBeforeTarget += 1;
+      previousTextUserIndex = index;
     }
   }
 
@@ -442,7 +521,9 @@ export function buildRewindConversationPlan(
   };
 }
 
-export function mapRewindFilesResult(result: SdkRewindFilesResult): RewindFilesResult {
+export function mapRewindFilesResult(
+  result: SdkRewindFilesResult,
+): RewindFilesResult {
   const skippedLinks =
     Number.isFinite(result.skippedLinks) &&
     Number.isInteger(result.skippedLinks) &&
@@ -453,7 +534,9 @@ export function mapRewindFilesResult(result: SdkRewindFilesResult): RewindFilesR
     can_rewind: result.canRewind,
     ...(result.error ? { error: result.error } : {}),
     files_changed: result.filesChanged ?? [],
-    ...(result.insertions !== undefined ? { insertions: result.insertions } : {}),
+    ...(result.insertions !== undefined
+      ? { insertions: result.insertions }
+      : {}),
     ...(result.deletions !== undefined ? { deletions: result.deletions } : {}),
     ...(skippedLinks !== undefined ? { skipped_links: skippedLinks } : {}),
   };
@@ -471,7 +554,9 @@ async function rewindFiles(
       files_changed: [],
     };
   }
-  return mapRewindFilesResult(await session.query.rewindFiles(targetUserMessageId, { dryRun }));
+  return mapRewindFilesResult(
+    await session.query.rewindFiles(targetUserMessageId, { dryRun }),
+  );
 }
 
 function emitRewindResult(
@@ -508,18 +593,20 @@ function requestIdFromCommandLine(line: string): string | undefined {
   }
 }
 
-async function replaceConversationForRewind(
+async function prepareConversationRewindCandidate(
   command: Extract<BridgeCommand, { command: "rewind" }>,
   session: SessionState,
   targetUserMessageId: string,
   requestId: string | undefined,
-  pendingRewindResult?: PendingRewindResult,
-): Promise<void> {
+): Promise<SessionState> {
   const historyMessages = await getSessionMessages(command.session_id, {
     dir: session.cwd,
     includeSystemMessages: true,
   });
-  const resolved = buildRewindConversationPlan(historyMessages, targetUserMessageId);
+  const resolved = buildRewindConversationPlan(
+    historyMessages,
+    targetUserMessageId,
+  );
   if (!resolved) {
     bridgeLogger.warn({
       target: LOG_TARGETS.APP_SESSION,
@@ -558,75 +645,83 @@ async function replaceConversationForRewind(
     },
   });
 
-  if (!resolved.previousAssistantUuid) {
+  let candidate: SessionState | undefined;
+  try {
+    if (!resolved.resumeSessionAtUuid) {
+      bridgeLogger.info({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "rewind_first_message_branch",
+        message:
+          "conversation rewind target is first user message; creating fresh replacement",
+        outcome: "start",
+        ...(requestId ? { requestId } : {}),
+        sessionId: session.sessionId,
+        fields: {
+          target_user_message_id: targetUserMessageId,
+          history_message_count: historyMessages.length,
+          stale_session_count: staleSessions.length,
+        },
+      });
+      candidate = await createSession({
+        cwd: session.cwd,
+        launchSettings: command.launch_settings,
+        connectEvent: "session_replaced",
+        requestId,
+        deferConnect: true,
+        restoredInput: resolved.inputText,
+        ...(staleSessions.length > 0
+          ? { sessionsToCloseAfterConnect: staleSessions }
+          : {}),
+      });
+    } else {
+      candidate = await createSession({
+        cwd: session.cwd,
+        resume: command.session_id,
+        resumeSessionAt: resolved.resumeSessionAtUuid,
+        resumeDropsTurn: resolved.resumeDropsTurnId,
+        forkSession: true,
+        launchSettings: command.launch_settings,
+        connectEvent: "session_replaced",
+        requestId,
+        deferConnect: true,
+        ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
+        restoredInput: resolved.inputText,
+        ...(staleSessions.length > 0
+          ? { sessionsToCloseAfterConnect: staleSessions }
+          : {}),
+      });
+    }
+    await awaitSessionInitialization(candidate);
     bridgeLogger.info({
       target: LOG_TARGETS.APP_SESSION,
-      eventName: "rewind_first_message_branch",
-      message: "conversation rewind target is first user message; creating fresh replacement",
-      outcome: "start",
-      ...(requestId ? { requestId } : {}),
-      sessionId: session.sessionId,
-      fields: {
-        target_user_message_id: targetUserMessageId,
-        history_message_count: historyMessages.length,
-        stale_session_count: staleSessions.length,
-      },
-    });
-    await createSession({
-      cwd: session.cwd,
-      launchSettings: command.launch_settings,
-      connectEvent: "session_replaced",
-      requestId,
-      restoredInput: resolved.inputText,
-      ...(pendingRewindResult ? { pendingRewindResult } : {}),
-      ...(staleSessions.length > 0 ? { sessionsToCloseAfterConnect: staleSessions } : {}),
-    });
-    bridgeLogger.info({
-      target: LOG_TARGETS.APP_SESSION,
-      eventName: "rewind_replacement_created",
-      message: "conversation rewind replacement session created",
+      eventName: "rewind_candidate_validated",
+      message:
+        "conversation rewind candidate passed initialization and truncation validation",
       outcome: "success",
       ...(requestId ? { requestId } : {}),
+      sessionId: candidate.sessionId,
       fields: {
         target_user_message_id: targetUserMessageId,
-        resume_session_at: "<none>",
-        retained_message_count: 0,
-        retained_update_count: 0,
+        resume_session_at: resolved.resumeSessionAtUuid ?? "<none>",
+        resume_drops_turn: resolved.resumeSessionAtUuid
+          ? (resolved.resumeDropsTurnId ?? "<none>")
+          : "<none>",
+        retained_message_count: resolved.retainedMessages.length,
+        retained_update_count: resumeUpdates.length,
         stale_session_count: staleSessions.length,
       },
     });
-    return;
+    return candidate;
+  } catch (error) {
+    if (candidate) {
+      detachSessionForClose(candidate);
+      await closeSessionWithLogging(candidate, {
+        reason: "rewind_candidate_rejected",
+        requestId,
+      });
+    }
+    throw error;
   }
-
-  const sessionsToCloseAfterConnect = staleSessions.filter((stale) => stale !== session);
-  await createSession({
-    cwd: session.cwd,
-    resume: command.session_id,
-    resumeSessionAt: resolved.previousAssistantUuid,
-    launchSettings: command.launch_settings,
-    connectEvent: "session_replaced",
-    requestId,
-    sessionsToCloseBeforeRegister: [session],
-    ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
-    restoredInput: resolved.inputText,
-    ...(pendingRewindResult ? { pendingRewindResult } : {}),
-    ...(sessionsToCloseAfterConnect.length > 0 ? { sessionsToCloseAfterConnect } : {}),
-  });
-  bridgeLogger.info({
-    target: LOG_TARGETS.APP_SESSION,
-    eventName: "rewind_replacement_created",
-    message: "conversation rewind replacement session created",
-    outcome: "success",
-    ...(requestId ? { requestId } : {}),
-    sessionId: command.session_id,
-    fields: {
-      target_user_message_id: targetUserMessageId,
-      resume_session_at: resolved.previousAssistantUuid,
-      retained_message_count: resolved.retainedMessages.length,
-      retained_update_count: resumeUpdates.length,
-      stale_session_count: staleSessions.length,
-    },
-  });
 }
 
 async function handleRewind(
@@ -635,7 +730,11 @@ async function handleRewind(
 ): Promise<void> {
   const session = sessionById(command.session_id);
   if (!session) {
-    slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+    slashError(
+      command.session_id,
+      `unknown session: ${command.session_id}`,
+      requestId,
+    );
     return;
   }
   const targetUserMessageId = command.target_user_message_id.trim();
@@ -659,7 +758,13 @@ async function handleRewind(
 
   if (command.restore_mode === "conversation") {
     try {
-      await replaceConversationForRewind(command, session, targetUserMessageId, requestId);
+      const candidate = await prepareConversationRewindCandidate(
+        command,
+        session,
+        targetUserMessageId,
+        requestId,
+      );
+      commitDeferredSession(candidate);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       bridgeLogger.error({
@@ -675,25 +780,24 @@ async function handleRewind(
           error_message: message,
         },
       });
-      slashError(command.session_id, `failed to rewind conversation: ${message}`, requestId);
+      slashError(
+        command.session_id,
+        `failed to rewind conversation: ${message}`,
+        requestId,
+      );
     }
     return;
   }
 
-  let appliedFileResult: RewindFilesResult;
+  let dryRunResult: RewindFilesResult;
   try {
-    const dryRunResult = await rewindFiles(session, targetUserMessageId, true);
+    dryRunResult = await rewindFiles(session, targetUserMessageId, true);
     if (!dryRunResult.can_rewind) {
       slashError(
         command.session_id,
         dryRunResult.error ?? "failed to dry-run file rewind",
         requestId,
       );
-      return;
-    }
-    appliedFileResult = await rewindFiles(session, targetUserMessageId, false);
-    if (!appliedFileResult.can_rewind) {
-      slashError(command.session_id, appliedFileResult.error ?? "failed to restore code", requestId);
       return;
     }
   } catch (error) {
@@ -711,35 +815,62 @@ async function handleRewind(
         error_message: message,
       },
     });
-    slashError(command.session_id, `failed to restore code: ${message}`, requestId);
-    return;
-  }
-
-  if (command.restore_mode === "code") {
-    emitRewindResult(
-      session.sessionId,
-      command.restore_mode,
-      "success",
+    slashError(
+      command.session_id,
+      `failed to restore code: ${message}`,
       requestId,
-      appliedFileResult,
     );
     return;
   }
 
+  if (command.restore_mode === "code") {
+    try {
+      const appliedFileResult = await rewindFiles(
+        session,
+        targetUserMessageId,
+        false,
+      );
+      if (!appliedFileResult.can_rewind) {
+        slashError(
+          command.session_id,
+          appliedFileResult.error ?? "failed to restore code",
+          requestId,
+        );
+        return;
+      }
+      emitRewindResult(
+        session.sessionId,
+        command.restore_mode,
+        "success",
+        requestId,
+        appliedFileResult,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      slashError(
+        command.session_id,
+        `failed to restore code: ${message}`,
+        requestId,
+      );
+    }
+    return;
+  }
+
+  let candidate: SessionState;
   try {
-    await replaceConversationForRewind(command, session, targetUserMessageId, requestId, {
-      event: "rewind_result",
-      restore_mode: command.restore_mode,
-      status: "success",
-      file_result: appliedFileResult,
-    });
+    candidate = await prepareConversationRewindCandidate(
+      command,
+      session,
+      targetUserMessageId,
+      requestId,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "rewind_failed",
-      message: "conversation rewind failed after file restore",
-      outcome: "partial_failure",
+      message: "conversation candidate failed before file restore",
+      outcome: "failure",
       ...(requestId ? { requestId } : {}),
       sessionId: session.sessionId,
       fields: {
@@ -748,21 +879,85 @@ async function handleRewind(
         error_message: message,
       },
     });
+    slashError(
+      command.session_id,
+      `failed to validate conversation rewind: ${message}`,
+      requestId,
+    );
+    return;
+  }
+
+  let appliedFileResult: RewindFilesResult;
+  try {
+    appliedFileResult = await rewindFiles(session, targetUserMessageId, false);
+    if (!appliedFileResult.can_rewind) {
+      throw new Error(appliedFileResult.error ?? "failed to restore code");
+    }
+  } catch (error) {
+    detachSessionForClose(candidate);
+    await closeSessionWithLogging(candidate, {
+      reason: "rewind_file_apply_failed",
+      requestId,
+    });
+    const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.error({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "rewind_failed",
+      message: "file rewind failed after conversation candidate validation",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      sessionId: session.sessionId,
+      fields: {
+        target_user_message_id: targetUserMessageId,
+        restore_mode: command.restore_mode,
+        error_message: message,
+      },
+    });
+    slashError(
+      command.session_id,
+      `failed to restore code: ${message}`,
+      requestId,
+    );
+    return;
+  }
+
+  candidate.pendingRewindResult = {
+    event: "rewind_result",
+    restore_mode: command.restore_mode,
+    status: "success",
+    file_result: appliedFileResult,
+  };
+  try {
+    commitDeferredSession(candidate);
+  } catch (error) {
+    detachSessionForClose(candidate);
+    await closeSessionWithLogging(candidate, {
+      reason: "rewind_candidate_failed_after_file_apply",
+      requestId,
+    });
+    const message = error instanceof Error ? error.message : String(error);
     emitRewindResult(
       session.sessionId,
       command.restore_mode,
       "partial_failure",
       requestId,
       appliedFileResult,
-      `Code was restored, but the conversation could not be rewound: ${message}`,
+      `Code was restored, but the conversation candidate could not be committed: ${message}`,
     );
   }
 }
 
-async function handleCommand(command: BridgeCommand, requestId?: string): Promise<void> {
+async function handleCommand(
+  command: BridgeCommand,
+  requestId?: string,
+): Promise<void> {
   logBridgeCommandReceived(command, requestId);
   const sdkVersionError = agentSdkVersionCompatibilityError();
-  if (sdkVersionError && command.command !== "initialize" && command.command !== "shutdown") {
+  if (
+    sdkVersionError &&
+    command.command !== "initialize" &&
+    command.command !== "shutdown"
+  ) {
     bridgeLogger.error({
       target: LOG_TARGETS.BRIDGE_LIFECYCLE,
       eventName: "bridge_command_rejected",
@@ -782,9 +977,12 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
     case "initialize":
     case "create_session":
     case "resume_session":
+    case "resume_session_at":
     case "new_session":
     case "shutdown":
-      await handleLifecycleCommand(command, requestId, sdkVersionError);
+      await handleLifecycleCommand(command, requestId, sdkVersionError, {
+        buildRewindConversationPlan,
+      });
       return;
     case "prompt":
     case "cancel_turn":
@@ -808,6 +1006,7 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
     case "rename_session":
     case "get_status_snapshot":
     case "get_context_usage":
+    case "get_usage":
     case "get_rewind_targets":
     case "rewind":
       await handleSessionDataCommand(command, requestId, {
@@ -840,7 +1039,8 @@ async function handleCommand(command: BridgeCommand, requestId?: string): Promis
         outcome: "failure",
         ...(requestId ? { requestId } : {}),
         fields: {
-          bridge_command: (command as { command?: string }).command ?? "unknown",
+          bridge_command:
+            (command as { command?: string }).command ?? "unknown",
           reason: "unsupported_command",
         },
       });
@@ -943,6 +1143,9 @@ function main(): void {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   main();
 }

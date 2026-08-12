@@ -74,6 +74,7 @@ pub(super) fn handle_transcript_retraction(
         request_id = retraction.request_id.as_deref().unwrap_or(""),
         original_model = retraction.original_model.as_deref().unwrap_or(""),
         fallback_model = retraction.fallback_model.as_deref().unwrap_or(""),
+        scope = retraction.scope.as_deref().unwrap_or("session"),
     );
 }
 

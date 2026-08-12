@@ -82,8 +82,10 @@ fn request_rewind_targets_for_active_argument(app: &mut App) {
     app.sdk_inventory.rewind_targets_in_flight = true;
     app.sdk_inventory.rewind_targets.clear();
     app.sdk_inventory.rewind_targets_session_id = None;
+    app.sdk_inventory.rewind_targets_request_session_id = Some(session_id.clone());
     if let Err(err) = conn.get_rewind_targets(session_id_text.clone()) {
         app.sdk_inventory.rewind_targets_in_flight = false;
+        app.sdk_inventory.rewind_targets_request_session_id = None;
         tracing::warn!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "rewind_targets_request_failed",

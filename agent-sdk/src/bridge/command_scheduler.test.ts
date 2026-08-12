@@ -24,24 +24,35 @@ test("lifecycle commands complete in arrival order when the older operation is d
   const order: string[] = [];
   let authority = "";
 
-  const olderTask = scheduler.schedule(command("resume_session", "older"), async () => {
-    order.push("older:start");
-    await older.promise;
-    authority = "older";
-    order.push("older:end");
-  });
-  const newerTask = scheduler.schedule(command("resume_session", "newer"), async () => {
-    order.push("newer:start");
-    authority = "newer";
-    order.push("newer:end");
-  });
+  const olderTask = scheduler.schedule(
+    command("resume_session", "older"),
+    async () => {
+      order.push("older:start");
+      await older.promise;
+      authority = "older";
+      order.push("older:end");
+    },
+  );
+  const newerTask = scheduler.schedule(
+    command("resume_session", "newer"),
+    async () => {
+      order.push("newer:start");
+      authority = "newer";
+      order.push("newer:end");
+    },
+  );
 
   await Promise.resolve();
   assert.deepEqual(order, ["older:start"]);
   older.resolve();
   await Promise.all([olderTask, newerTask]);
 
-  assert.deepEqual(order, ["older:start", "older:end", "newer:start", "newer:end"]);
+  assert.deepEqual(order, [
+    "older:start",
+    "older:end",
+    "newer:start",
+    "newer:end",
+  ]);
   assert.equal(authority, "newer");
 });
 
@@ -67,7 +78,12 @@ test("new-session is an exclusive barrier between session operations", async () 
   sessionMutation.resolve();
   await Promise.all([before, replacement, after]);
 
-  assert.deepEqual(order, ["mutation:start", "mutation:end", "new-session", "prompt"]);
+  assert.deepEqual(order, [
+    "mutation:start",
+    "mutation:end",
+    "new-session",
+    "prompt",
+  ]);
 });
 
 test("commands are FIFO within a session and concurrent across sessions", async () => {
@@ -75,17 +91,26 @@ test("commands are FIFO within a session and concurrent across sessions", async 
   const firstSession = deferred();
   const order: string[] = [];
 
-  const first = scheduler.schedule(command("set_mode", "session-1"), async () => {
-    order.push("one:start");
-    await firstSession.promise;
-    order.push("one:end");
-  });
-  const sameSession = scheduler.schedule(command("set_effort", "session-1"), async () => {
-    order.push("one:next");
-  });
-  const otherSession = scheduler.schedule(command("set_model", "session-2"), async () => {
-    order.push("two");
-  });
+  const first = scheduler.schedule(
+    command("set_mode", "session-1"),
+    async () => {
+      order.push("one:start");
+      await firstSession.promise;
+      order.push("one:end");
+    },
+  );
+  const sameSession = scheduler.schedule(
+    command("set_effort", "session-1"),
+    async () => {
+      order.push("one:next");
+    },
+  );
+  const otherSession = scheduler.schedule(
+    command("set_model", "session-2"),
+    async () => {
+      order.push("two");
+    },
+  );
 
   await Promise.resolve();
   await Promise.resolve();
@@ -162,8 +187,16 @@ test("unblocking commands remain admitted while shutdown is queued", async () =>
   });
 
   await Promise.all([parent, reply, shutdown]);
-  assert.deepEqual(order, ["parent:start", "response", "parent:end", "shutdown"]);
-  assert.equal(scheduler.schedule(command("cancel_turn"), async () => undefined), undefined);
+  assert.deepEqual(order, [
+    "parent:start",
+    "response",
+    "parent:end",
+    "shutdown",
+  ]);
+  assert.equal(
+    scheduler.schedule(command("cancel_turn"), async () => undefined),
+    undefined,
+  );
 });
 
 test("a failed operation does not poison its scheduling lane", async () => {

@@ -28,6 +28,8 @@ fn input_has_body(tc: &ToolCallInfo) -> bool {
     input.is_some_and(|input| {
         typed::json_string(input, "action").is_some()
             || typed::json_string(input, "trigger_id").is_some()
+            || typed::json_string(input, "session_id").is_some()
+            || typed::json_string(input, "cursor").is_some()
             || input.contains_key("body")
     })
 }
@@ -42,6 +44,12 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         }
         if let Some(trigger_id) = typed::json_string(input, "trigger_id") {
             remote_fields.push(ToolField::new("Trigger ID", trigger_id));
+        }
+        if let Some(session_id) = typed::json_string(input, "session_id") {
+            remote_fields.push(ToolField::new("Session ID", session_id));
+        }
+        if let Some(cursor) = typed::json_string(input, "cursor") {
+            remote_fields.push(ToolField::new("Cursor", cursor));
         }
         if let Some(body) = input.get("body").and_then(typed::compact_json) {
             remote_fields.push(ToolField::new("Body", body));
@@ -104,6 +112,26 @@ mod tests {
             ]
         );
         assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+    }
+
+    #[test]
+    fn paginated_run_log_renders_session_and_cursor() {
+        let tc = remote_trigger_tool_call(
+            json!({
+                "action": "get_run_log",
+                "session_id": "cse_run-1",
+                "cursor": "next-page"
+            }),
+            None,
+            model::ToolCallStatus::InProgress,
+        );
+
+        let lines = render_tool_content(&tc);
+
+        assert_eq!(
+            rendered_line_texts(&lines),
+            vec!["Action: get_run_log", "Session ID: cse_run-1", "Cursor: next-page",]
+        );
     }
 
     #[test]

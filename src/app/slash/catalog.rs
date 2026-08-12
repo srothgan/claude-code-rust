@@ -246,9 +246,9 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Resume,
         name: "/resume",
-        usage: "Usage: /resume <session_id>",
+        usage: "Usage: /resume [session_id]",
         short_description: "Resume a session by ID",
-        long_description: "Resume a recent or manually supplied session ID.",
+        long_description: "Open the session picker, or resume a manually supplied session ID.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {

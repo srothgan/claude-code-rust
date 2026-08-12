@@ -256,6 +256,7 @@ pub(super) fn map_rewind_targets(targets: Vec<types::RewindTarget>) -> Vec<model
             input_text: target.input_text,
             index: target.index,
             previous_assistant_uuid: target.previous_assistant_uuid,
+            resume_anchor_uuid: target.resume_anchor_uuid,
         })
         .collect()
 }
@@ -379,6 +380,21 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             Some(model::SessionUpdate::UserMessageChunk(
                 model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
             ))
+        }
+        types::SessionUpdate::ExternalMessageUpdate { content, source_message_uuid, origin } => {
+            Some(model::SessionUpdate::ExternalMessageUpdate(model::ExternalMessageUpdate {
+                content,
+                source_message_uuid,
+                origin: model::MessageOrigin {
+                    kind: origin.kind,
+                    subkind: origin.subkind,
+                    from: origin.from,
+                    name: origin.name,
+                    from_session: origin.from_session,
+                    sender_task_id: origin.sender_task_id,
+                    verified_peer_pid: origin.verified_peer_pid,
+                },
+            }))
         }
         types::SessionUpdate::AgentMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
@@ -815,6 +831,7 @@ fn convert_transcript_retraction(
         direction: retraction.direction,
         original_model: retraction.original_model,
         fallback_model: retraction.fallback_model,
+        scope: retraction.scope,
         api_refusal_category: retraction.api_refusal_category,
         api_refusal_explanation: retraction.api_refusal_explanation,
         content: retraction.content,
@@ -878,6 +895,7 @@ fn convert_tool_output_metadata(
                 .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
                 .timed_out_after_ms(bash.timed_out_after_ms)
                 .background_cwd_hint(bash.background_cwd_hint)
+                .background_ends_with_final_response(bash.background_ends_with_final_response)
         }))
         .agent(output_metadata.agent.map(|agent| {
             model::AgentOutputMetadata::new()
@@ -1342,6 +1360,34 @@ mod tests {
     }
 
     #[test]
+    fn map_session_update_preserves_external_message_provenance() {
+        let mapped = map_session_update(types::SessionUpdate::ExternalMessageUpdate {
+            content: "Peer message".to_owned(),
+            source_message_uuid: Some("message-peer".to_owned()),
+            origin: types::MessageOrigin {
+                kind: "peer".to_owned(),
+                subkind: Some("peer-send-message".to_owned()),
+                from: Some("reported-route".to_owned()),
+                name: Some("Build session".to_owned()),
+                from_session: Some("session-peer".to_owned()),
+                sender_task_id: Some("task-peer".to_owned()),
+                verified_peer_pid: Some(4242),
+            },
+        })
+        .expect("external update should map");
+
+        let model::SessionUpdate::ExternalMessageUpdate(update) = mapped else {
+            panic!("expected external message update");
+        };
+        assert_eq!(update.content, "Peer message");
+        assert_eq!(update.source_message_uuid.as_deref(), Some("message-peer"));
+        assert_eq!(update.origin.kind, "peer");
+        assert_eq!(update.origin.name.as_deref(), Some("Build session"));
+        assert_eq!(update.origin.from_session.as_deref(), Some("session-peer"));
+        assert_eq!(update.origin.verified_peer_pid, Some(4242));
+    }
+
+    #[test]
     fn map_session_update_preserves_rate_limit_credits_metadata() {
         let mapped = map_session_update(types::SessionUpdate::RateLimitUpdate {
             status: types::RateLimitStatus::Rejected,
@@ -1379,6 +1425,7 @@ mod tests {
                 direction: None,
                 original_model: None,
                 fallback_model: None,
+                scope: Some("local".to_owned()),
                 api_refusal_category: None,
                 api_refusal_explanation: None,
                 content: None,
@@ -1528,6 +1575,7 @@ mod tests {
                     assistant_auto_backgrounded: Some(true),
                     timed_out_after_ms: Some(10_000),
                     background_cwd_hint: Some("session cwd unchanged".to_owned()),
+                    background_ends_with_final_response: Some(true),
                 }),
                 agent: Some(types::AgentOutputMetadata {
                     resolved_model: Some("claude-sonnet-4-7".to_owned()),
@@ -1559,7 +1607,8 @@ mod tests {
                         model::BashOutputMetadata::new()
                             .assistant_auto_backgrounded(Some(true))
                             .timed_out_after_ms(Some(10_000))
-                            .background_cwd_hint(Some("session cwd unchanged".to_owned())),
+                            .background_cwd_hint(Some("session cwd unchanged".to_owned()))
+                            .background_ends_with_final_response(Some(true)),
                     ))
                     .agent(Some(
                         model::AgentOutputMetadata::new()

@@ -4,7 +4,11 @@ import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
 import { applyTaskToolResult } from "./tasks.js";
-import { activeTaskIdForToolUse, linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
+import {
+  activeTaskIdForToolUse,
+  linkTaskToolUse,
+  unlinkTaskToolUse,
+} from "./task_links.js";
 import {
   applyToolNonExecutionMetadata,
   backgroundToolLaunchTaskIdFromResult,
@@ -32,8 +36,19 @@ export type ToolCorrelationMetadata = {
   parentAgentId?: string;
 };
 
-const TOOL_SUMMARY_TOOL_NAMES = new Set(["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"]);
-const TASK_LIFECYCLE_TOOL_NAMES = new Set(["Agent", "Task", "Monitor", "Workflow"]);
+const TOOL_SUMMARY_TOOL_NAMES = new Set([
+  "Agent",
+  "Task",
+  "WebSearch",
+  "WebFetch",
+  "ExitPlanMode",
+]);
+const TASK_LIFECYCLE_TOOL_NAMES = new Set([
+  "Agent",
+  "Task",
+  "Monitor",
+  "Workflow",
+]);
 
 function jsonSize(value: unknown): number | undefined {
   if (value === undefined) {
@@ -46,18 +61,31 @@ function jsonSize(value: unknown): number | undefined {
   }
 }
 
-function toolNameFromMeta(meta: ToolCall["meta"] | undefined): string | undefined {
+function toolNameFromMeta(
+  meta: ToolCall["meta"] | undefined,
+): string | undefined {
   if (!meta || typeof meta !== "object") {
     return undefined;
   }
   const claudeCode =
-    "claudeCode" in meta && meta.claudeCode && typeof meta.claudeCode === "object" ? meta.claudeCode : undefined;
+    "claudeCode" in meta &&
+    meta.claudeCode &&
+    typeof meta.claudeCode === "object"
+      ? meta.claudeCode
+      : undefined;
   const toolName =
-    claudeCode && "toolName" in claudeCode && typeof claudeCode.toolName === "string" ? claudeCode.toolName : "";
+    claudeCode &&
+    "toolName" in claudeCode &&
+    typeof claudeCode.toolName === "string"
+      ? claudeCode.toolName
+      : "";
   return toolName || undefined;
 }
 
-function toolName(base: ToolCall | undefined, fields?: ToolCallUpdateFields): string | undefined {
+function toolName(
+  base: ToolCall | undefined,
+  fields?: ToolCallUpdateFields,
+): string | undefined {
   const fieldMeta = fields?.meta;
   if (fieldMeta && typeof fieldMeta === "object") {
     const fromFields = toolNameFromMeta(fieldMeta);
@@ -78,12 +106,16 @@ export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
   return Boolean(baseToolName && TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName));
 }
 
-export function defersTaskNotificationCompletion(base: ToolCall | undefined): boolean {
+export function defersTaskNotificationCompletion(
+  base: ToolCall | undefined,
+): boolean {
   const baseToolName = toolName(base);
   return baseToolName === "Agent" || baseToolName === "Task";
 }
 
-function classifyFailureKind(rawOutput: string | undefined): "refused" | "timeout" | "failed" {
+function classifyFailureKind(
+  rawOutput: string | undefined,
+): "refused" | "timeout" | "failed" {
   if (!rawOutput) {
     return "failed";
   }
@@ -118,14 +150,22 @@ function updateOutcome(status: ToolCall["status"] | undefined): string {
   }
 }
 
-function parentToolUseIdFromMeta(meta: ToolCall["meta"] | undefined): string | null {
+function parentToolUseIdFromMeta(
+  meta: ToolCall["meta"] | undefined,
+): string | null {
   if (!meta || typeof meta !== "object") {
     return null;
   }
   const claudeCode =
-    "claudeCode" in meta && meta.claudeCode && typeof meta.claudeCode === "object" ? meta.claudeCode : undefined;
+    "claudeCode" in meta &&
+    meta.claudeCode &&
+    typeof meta.claudeCode === "object"
+      ? meta.claudeCode
+      : undefined;
   const parentToolUseId =
-    claudeCode && "parentToolUseId" in claudeCode && typeof claudeCode.parentToolUseId === "string"
+    claudeCode &&
+    "parentToolUseId" in claudeCode &&
+    typeof claudeCode.parentToolUseId === "string"
       ? claudeCode.parentToolUseId
       : null;
   return parentToolUseId;
@@ -135,15 +175,23 @@ function applyToolCorrelationMetadata(
   toolCall: ToolCall,
   metadata: ToolCorrelationMetadata | undefined,
 ): void {
-  if (!metadata?.requestId && !metadata?.subagentType && !metadata?.taskDescription) {
+  if (
+    !metadata?.requestId &&
+    !metadata?.subagentType &&
+    !metadata?.taskDescription
+  ) {
     return;
   }
   const meta =
-    toolCall.meta && typeof toolCall.meta === "object" && !Array.isArray(toolCall.meta)
+    toolCall.meta &&
+    typeof toolCall.meta === "object" &&
+    !Array.isArray(toolCall.meta)
       ? (toolCall.meta as Record<string, unknown>)
       : {};
   const claudeCode =
-    meta.claudeCode && typeof meta.claudeCode === "object" && !Array.isArray(meta.claudeCode)
+    meta.claudeCode &&
+    typeof meta.claudeCode === "object" &&
+    !Array.isArray(meta.claudeCode)
       ? (meta.claudeCode as Record<string, unknown>)
       : {};
   toolCall.meta = {
@@ -152,7 +200,9 @@ function applyToolCorrelationMetadata(
       ...claudeCode,
       ...(metadata.requestId ? { requestId: metadata.requestId } : {}),
       ...(metadata.subagentType ? { subagentType: metadata.subagentType } : {}),
-      ...(metadata.taskDescription ? { taskDescription: metadata.taskDescription } : {}),
+      ...(metadata.taskDescription
+        ? { taskDescription: metadata.taskDescription }
+        : {}),
     },
   };
 }
@@ -197,7 +247,10 @@ function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields): void {
     base.output_metadata = fields.output_metadata;
   }
   if (fields.task_metadata !== undefined) {
-    base.task_metadata = mergeTaskMetadata(base.task_metadata, fields.task_metadata);
+    base.task_metadata = mergeTaskMetadata(
+      base.task_metadata,
+      fields.task_metadata,
+    );
   }
   if (fields.meta !== undefined) {
     base.meta = fields.meta;
@@ -241,8 +294,12 @@ function logToolCallUpdateEmitted(
   updateKind: ToolUpdateKind,
 ): void {
   const nextStatus = fields.status ?? base?.status;
-  const rawOutput = typeof fields.raw_output === "string" ? fields.raw_output : base?.raw_output;
-  const failureKind = nextStatus === "failed" ? classifyFailureKind(rawOutput) : undefined;
+  const rawOutput =
+    typeof fields.raw_output === "string"
+      ? fields.raw_output
+      : base?.raw_output;
+  const failureKind =
+    nextStatus === "failed" ? classifyFailureKind(rawOutput) : undefined;
   const commonEvent = {
     target: LOG_TARGETS.APP_TOOL,
     eventName: "tool_call_update_emitted",
@@ -260,8 +317,11 @@ function logToolCallUpdateEmitted(
       content_block_count: fields.content?.length,
       location_count: fields.locations?.length,
       raw_output_chars: rawOutput?.length,
-      has_output_metadata: fields.output_metadata !== undefined || base?.output_metadata !== undefined,
-      has_task_metadata: fields.task_metadata !== undefined || base?.task_metadata !== undefined,
+      has_output_metadata:
+        fields.output_metadata !== undefined ||
+        base?.output_metadata !== undefined,
+      has_task_metadata:
+        fields.task_metadata !== undefined || base?.task_metadata !== undefined,
       failure_kind: failureKind,
     },
   } as const;
@@ -288,7 +348,10 @@ function emitInitialToolCall(
 ): void {
   session.toolCalls.set(toolCall.tool_call_id, toolCall);
   logToolCallSubmitted(session.sessionId, toolCall, updateKind);
-  emitSessionUpdate(session.sessionId, { type: "tool_call", tool_call: toolCall });
+  emitSessionUpdate(session.sessionId, {
+    type: "tool_call",
+    tool_call: toolCall,
+  });
 }
 
 function taskTitleContext(
@@ -326,7 +389,10 @@ export function emitToolCallUpdate(
 ): void {
   const base = session.toolCalls.get(toolUseId);
   const nextStatus = fields.status ?? base?.status;
-  const terminal = nextStatus === "completed" || nextStatus === "failed" || nextStatus === "killed";
+  const terminal =
+    nextStatus === "completed" ||
+    nextStatus === "failed" ||
+    nextStatus === "killed";
   const hasActiveRetry =
     base?.task_metadata?.subagent_retry?.state === "waiting" ||
     fields.task_metadata?.subagent_retry?.state === "waiting";
@@ -336,7 +402,13 @@ export function emitToolCallUpdate(
       subagent_retry: { state: "clear" },
     };
   }
-  logToolCallUpdateEmitted(session.sessionId, toolUseId, fields, base, updateKind);
+  logToolCallUpdateEmitted(
+    session.sessionId,
+    toolUseId,
+    fields,
+    base,
+    updateKind,
+  );
   emitSessionUpdate(session.sessionId, {
     type: "tool_call_update",
     tool_call_update: {
@@ -363,7 +435,8 @@ export function emitToolCall(
   sourceMessageUuid?: string,
 ): void {
   const existing = session.toolCalls.get(toolUseId);
-  const resolvedParentToolUseId = parentToolUseId ?? parentToolUseIdFromMeta(existing?.meta);
+  const resolvedParentToolUseId =
+    parentToolUseId ?? parentToolUseIdFromMeta(existing?.meta);
   const toolCall = createToolCall(
     toolUseId,
     name,
@@ -415,7 +488,12 @@ export function ensureToolCallVisible(
         parentToolUseId,
         taskTitleContext(session, toolName, input),
       );
-      emitToolCallUpdate(session, toolUseId, { meta: refreshed.meta }, "refresh");
+      emitToolCallUpdate(
+        session,
+        toolUseId,
+        { meta: refreshed.meta },
+        "refresh",
+      );
     }
     return existing;
   }
@@ -446,11 +524,19 @@ export function emitToolResultUpdate(
     rawContent,
     base,
     rawResult,
-    taskTitleContext(session, baseToolName, asRecordOrNull(base?.raw_input) ?? {}),
+    taskTitleContext(
+      session,
+      baseToolName,
+      asRecordOrNull(base?.raw_input) ?? {},
+    ),
   );
   applyToolNonExecutionMetadata(fields, nonExecutionMetadata);
   if (!isError && !nonExecutionMetadata) {
-    const taskId = backgroundToolLaunchTaskIdFromResult(baseToolName, rawResult, rawContent);
+    const taskId = backgroundToolLaunchTaskIdFromResult(
+      baseToolName,
+      rawResult,
+      rawContent,
+    );
     if (taskId) {
       linkTaskToolUse(session, taskId, toolUseId);
     }
@@ -471,12 +557,18 @@ export function emitToolResultUpdate(
   }
 }
 
-export function finalizeOpenToolCalls(session: SessionState, status: "completed" | "failed"): void {
+export function finalizeOpenToolCalls(
+  session: SessionState,
+  status: "completed" | "failed",
+): void {
   for (const [toolUseId, toolCall] of session.toolCalls) {
     if (toolCall.status !== "pending" && toolCall.status !== "in_progress") {
       continue;
     }
-    if (toolAcceptsTaskLifecycle(toolCall) && activeTaskIdForToolUse(session, toolUseId)) {
+    if (
+      toolAcceptsTaskLifecycle(toolCall) &&
+      activeTaskIdForToolUse(session, toolUseId)
+    ) {
       continue;
     }
     emitToolCallUpdate(session, toolUseId, { status }, "finalize");
@@ -515,7 +607,10 @@ export function emitToolProgressUpdate(
   ) {
     taskMetadata.subagent_retry = progress.subagentRetry;
   }
-  if (progress.subagentType && progress.subagentType !== existing.task_metadata?.subagent_type) {
+  if (
+    progress.subagentType &&
+    progress.subagentType !== existing.task_metadata?.subagent_type
+  ) {
     taskMetadata.subagent_type = progress.subagentType;
   }
 
@@ -531,7 +626,11 @@ export function emitToolProgressUpdate(
   }
 }
 
-export function emitToolSummaryUpdate(session: SessionState, toolUseId: string, summary: string): void {
+export function emitToolSummaryUpdate(
+  session: SessionState,
+  toolUseId: string,
+  summary: string,
+): void {
   const base = session.toolCalls.get(toolUseId);
   if (!base) {
     return;
@@ -540,7 +639,10 @@ export function emitToolSummaryUpdate(session: SessionState, toolUseId: string, 
     return;
   }
   const fields: ToolCallUpdateFields = {
-    status: base.status === "failed" || base.status === "killed" ? base.status : "completed",
+    status:
+      base.status === "failed" || base.status === "killed"
+        ? base.status
+        : "completed",
     raw_output: summary,
     content: [{ type: "content", content: { type: "text", text: summary } }],
   };
@@ -561,12 +663,17 @@ export function setToolCallStatus(
   const fields: ToolCallUpdateFields = { status };
   if (message && message.length > 0) {
     fields.raw_output = message;
-    fields.content = [{ type: "content", content: { type: "text", text: message } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: message } },
+    ];
   }
   emitToolCallUpdate(session, toolUseId, fields, "status");
 }
 
-export function resolveTaskToolUseId(session: SessionState, msg: Record<string, unknown>): string {
+export function resolveTaskToolUseId(
+  session: SessionState,
+  msg: Record<string, unknown>,
+): string {
   const direct = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
   if (direct) {
     return direct;
@@ -583,15 +690,19 @@ export function taskProgressText(msg: Record<string, unknown>): string {
   if (summary) {
     return summary;
   }
-  const description = typeof msg.description === "string" ? msg.description : "";
-  const lastTool = typeof msg.last_tool_name === "string" ? msg.last_tool_name : "";
+  const description =
+    typeof msg.description === "string" ? msg.description : "";
+  const lastTool =
+    typeof msg.last_tool_name === "string" ? msg.last_tool_name : "";
   if (description && lastTool) {
     return `${description} (last tool: ${lastTool})`;
   }
   return description || lastTool;
 }
 
-function taskPatchStatus(value: unknown): "pending" | "in_progress" | "completed" | "failed" | "killed" | undefined {
+function taskPatchStatus(
+  value: unknown,
+): "pending" | "in_progress" | "completed" | "failed" | "killed" | undefined {
   switch (value) {
     case "pending":
       return "pending";
@@ -608,7 +719,9 @@ function taskPatchStatus(value: unknown): "pending" | "in_progress" | "completed
   }
 }
 
-function buildTaskMetadata(patch: Record<string, unknown>): TaskMetadata | undefined {
+function buildTaskMetadata(
+  patch: Record<string, unknown>,
+): TaskMetadata | undefined {
   const taskMetadata: TaskMetadata = {};
   if (typeof patch.error === "string" && patch.error.length > 0) {
     taskMetadata.error = patch.error;
@@ -616,7 +729,11 @@ function buildTaskMetadata(patch: Record<string, unknown>): TaskMetadata | undef
   if (typeof patch.is_backgrounded === "boolean") {
     taskMetadata.is_backgrounded = patch.is_backgrounded;
   }
-  if (typeof patch.end_time === "number" && Number.isFinite(patch.end_time) && patch.end_time >= 0) {
+  if (
+    typeof patch.end_time === "number" &&
+    Number.isFinite(patch.end_time) &&
+    patch.end_time >= 0
+  ) {
     taskMetadata.end_time = Math.trunc(patch.end_time);
   }
   if (
@@ -626,24 +743,35 @@ function buildTaskMetadata(patch: Record<string, unknown>): TaskMetadata | undef
   ) {
     taskMetadata.total_paused_ms = Math.trunc(patch.total_paused_ms);
   }
-  if (typeof patch.status === "string" && ["completed", "failed", "killed"].includes(patch.status)) {
+  if (
+    typeof patch.status === "string" &&
+    ["completed", "failed", "killed"].includes(patch.status)
+  ) {
     taskMetadata.terminal_status = patch.status;
   }
   if (typeof patch.blocked === "boolean") {
     taskMetadata.blocked = patch.blocked;
   }
-  if (typeof patch.parent_agent_id === "string" && patch.parent_agent_id.length > 0) {
+  if (
+    typeof patch.parent_agent_id === "string" &&
+    patch.parent_agent_id.length > 0
+  ) {
     taskMetadata.parent_agent_id = patch.parent_agent_id;
   }
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
 }
 
-export function taskUpdatedFields(msg: Record<string, unknown>): ToolCallUpdateFields {
+export function taskUpdatedFields(
+  msg: Record<string, unknown>,
+): ToolCallUpdateFields {
   const patch =
-    msg.patch && typeof msg.patch === "object" ? (msg.patch as Record<string, unknown>) : {};
+    msg.patch && typeof msg.patch === "object"
+      ? (msg.patch as Record<string, unknown>)
+      : {};
   const fields: ToolCallUpdateFields = {};
   const status = taskPatchStatus(patch.status);
-  const description = typeof patch.description === "string" ? patch.description : "";
+  const description =
+    typeof patch.description === "string" ? patch.description : "";
   const error = typeof patch.error === "string" ? patch.error : "";
 
   if (status) {
@@ -651,10 +779,14 @@ export function taskUpdatedFields(msg: Record<string, unknown>): ToolCallUpdateF
   }
   if (description) {
     fields.raw_output = description;
-    fields.content = [{ type: "content", content: { type: "text", text: description } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: description } },
+    ];
   } else if ((status === "failed" || status === "killed") && error) {
     fields.raw_output = error;
-    fields.content = [{ type: "content", content: { type: "text", text: error } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: error } },
+    ];
   }
 
   const taskMetadata = buildTaskMetadata(patch);

@@ -398,7 +398,8 @@ fn log_bridge_command_sent(
     size_bytes: usize,
 ) {
     match bridge_command {
-        "initialize" | "create_session" | "resume_session" | "new_session" | "shutdown" => {
+        "initialize" | "create_session" | "resume_session" | "resume_session_at"
+        | "new_session" | "shutdown" => {
             tracing::info!(
                 target: crate::logging::targets::BRIDGE_PROTOCOL,
                 event_name = "bridge_command_sent",
@@ -456,7 +457,11 @@ fn log_bridge_event_received(envelope: &EventEnvelope, size_bytes: usize) {
             tool_call_id,
             size_bytes,
         ),
-        "auth_required" | "turn_error" | "slash_error" | "mcp_operation_error" => tracing::warn!(
+        "auth_required"
+        | "turn_error"
+        | "slash_error"
+        | "session_resume_failed"
+        | "mcp_operation_error" => tracing::warn!(
             target: crate::logging::targets::BRIDGE_PROTOCOL,
             event_name = "bridge_event_received",
             message = "bridge event received",
@@ -686,6 +691,13 @@ impl AgentConnection {
         })
     }
 
+    pub fn get_usage(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::GetUsage { session_id },
+        })
+    }
+
     pub fn get_rewind_targets(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
@@ -869,6 +881,23 @@ impl AgentConnection {
                 session_id,
                 launch_settings,
                 metadata: std::collections::BTreeMap::new(),
+            },
+        })
+    }
+
+    pub fn resume_session_at(
+        &self,
+        session_id: String,
+        target_user_message_id: String,
+        launch_settings: SessionLaunchSettings,
+        operation_id: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(operation_id),
+            command: BridgeCommand::ResumeSessionAt {
+                session_id,
+                target_user_message_id,
+                launch_settings,
             },
         })
     }
@@ -1211,6 +1240,19 @@ mod tests {
     }
 
     #[test]
+    fn get_usage_sends_bridge_command() {
+        let (conn, mut rx) = AgentConnection::test_channel();
+
+        conn.get_usage("session-1".to_owned()).expect("structured usage");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::GetUsage { session_id: "session-1".to_owned() }
+        );
+    }
+
+    #[test]
     fn reload_plugins_sends_bridge_command() {
         let (conn, mut rx) = AgentConnection::test_channel();
 
@@ -1233,6 +1275,30 @@ mod tests {
         assert_eq!(
             envelope.command,
             BridgeCommand::GetRewindTargets { session_id: "session-1".to_owned() }
+        );
+    }
+
+    #[test]
+    fn resume_session_at_sends_request_correlated_bridge_command() {
+        let (conn, mut rx) = AgentConnection::test_channel();
+
+        conn.resume_session_at(
+            "session-1".to_owned(),
+            "user-2".to_owned(),
+            crate::agent::wire::SessionLaunchSettings::default(),
+            "resume-at-1".to_owned(),
+        )
+        .expect("resume-at command");
+
+        let envelope = rx.try_recv().expect("command");
+        assert_eq!(envelope.request_id.as_deref(), Some("resume-at-1"));
+        assert_eq!(
+            envelope.command,
+            BridgeCommand::ResumeSessionAt {
+                session_id: "session-1".to_owned(),
+                target_user_message_id: "user-2".to_owned(),
+                launch_settings: crate::agent::wire::SessionLaunchSettings::default(),
+            }
         );
     }
 

@@ -314,6 +314,7 @@ pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
     pub timed_out_after_ms: Option<u64>,
     pub background_cwd_hint: Option<String>,
+    pub background_ends_with_final_response: Option<bool>,
 }
 
 impl BashOutputMetadata {
@@ -340,6 +341,15 @@ impl BashOutputMetadata {
     #[must_use]
     pub fn background_cwd_hint(mut self, background_cwd_hint: Option<String>) -> Self {
         self.background_cwd_hint = background_cwd_hint;
+        self
+    }
+
+    #[must_use]
+    pub fn background_ends_with_final_response(
+        mut self,
+        background_ends_with_final_response: Option<bool>,
+    ) -> Self {
+        self.background_ends_with_final_response = background_ends_with_final_response;
         self
     }
 }

@@ -92,6 +92,15 @@ fn build_session_settings_object(app: &App) -> Value {
         "outputStyle".to_owned(),
         Value::String(app.config.output_style_effective().as_stored().to_owned()),
     );
+    let cross_session_inbound = app
+        .config
+        .committed_local_settings_document
+        .get("crossSessionInbound")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "accept" | "refuse"))
+        .unwrap_or("refuse");
+    settings
+        .insert("crossSessionInbound".to_owned(), Value::String(cross_session_inbound.to_owned()));
     settings.insert(
         "spinnerTipsEnabled".to_owned(),
         Value::Bool(
@@ -188,9 +197,23 @@ pub(crate) fn begin_resume_session(
     conn: &AgentConnection,
     session_id: String,
 ) -> anyhow::Result<()> {
-    app.resuming_session_id = Some(session_id.clone());
+    app.set_pending_session_resume(session_id.clone(), None);
     app.show_session_overview = false;
     resume_session(app, conn, session_id)
+}
+
+pub(crate) fn begin_resume_session_at(
+    app: &mut App,
+    conn: &AgentConnection,
+    session_id: String,
+    target_user_message_id: String,
+) -> anyhow::Result<()> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    app.set_pending_session_resume(session_id.clone(), Some(operation_id.clone()));
+    app.show_session_overview = false;
+    let launch_settings = session_launch_settings_for_reason(app, SessionStartReason::Resume);
+    log_session_request(app, SessionStartReason::Resume, &launch_settings, Some(&session_id));
+    conn.resume_session_at(session_id, target_user_message_id, launch_settings, operation_id)
 }
 
 pub(crate) fn begin_rewind(
@@ -239,6 +262,11 @@ mod tests {
         assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
         assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
         assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
+        assert_setting_value(
+            &launch_settings,
+            "crossSessionInbound",
+            &Value::String("refuse".to_owned()),
+        );
         assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
         assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(true));
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
@@ -299,6 +327,58 @@ mod tests {
                 "enabled": true,
                 "failIfUnavailable": true
             }),
+        );
+    }
+
+    #[test]
+    fn persisted_launch_settings_preserve_nested_sandbox_credentials() {
+        let mut app = App::test_default();
+        app.config.committed_settings_document = serde_json::json!({
+            "sandbox": {
+                "enabled": true,
+                "credentials": {
+                    "files": [{
+                        "path": ".secrets/token",
+                        "mode": "mask",
+                        "extract": "token=(.+)",
+                        "onExtractNoMatch": "deny",
+                        "decode": "jwt",
+                        "maskClaims": ["sub"],
+                        "maskDuplicates": true,
+                        "injectHosts": ["api.example.test"]
+                    }],
+                    "envVars": [{
+                        "name": "API_TOKEN",
+                        "mode": "mask",
+                        "decode": "jwt",
+                        "maskClaims": ["sub"],
+                        "injectHosts": ["api.example.test"]
+                    }],
+                    "allowPlaintextInject": false,
+                    "awsPairs": [{
+                        "accessKeyIdVar": "AWS_ACCESS_KEY_ID",
+                        "secretAccessKeyVar": "AWS_SECRET_ACCESS_KEY",
+                        "sessionTokenVar": "AWS_SESSION_TOKEN"
+                    }],
+                    "sigv4": {
+                        "streaming": "deny",
+                        "presigned": "passthrough",
+                        "sigv4a": "deny"
+                    }
+                }
+            }
+        });
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+        let sandbox = settings_object(&launch_settings)
+            .get("sandbox")
+            .and_then(Value::as_object)
+            .expect("sandbox settings");
+
+        assert_eq!(sandbox.get("failIfUnavailable"), Some(&Value::Bool(false)));
+        assert_eq!(
+            sandbox.get("credentials"),
+            app.config.committed_settings_document["sandbox"].get("credentials")
         );
     }
 
@@ -367,6 +447,30 @@ mod tests {
         assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(false));
         assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(false));
         assert_eq!(launch_settings.agent_progress_summaries, Some(true));
+    }
+
+    #[test]
+    fn persisted_launch_settings_allow_only_explicit_local_cross_session_accept() {
+        let mut app = App::test_default();
+        app.config.committed_local_settings_document =
+            serde_json::json!({ "crossSessionInbound": "accept" });
+
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+
+        assert_setting_value(
+            &launch_settings,
+            "crossSessionInbound",
+            &Value::String("accept".to_owned()),
+        );
+
+        app.config.committed_local_settings_document =
+            serde_json::json!({ "crossSessionInbound": "hold" });
+        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
+        assert_setting_value(
+            &launch_settings,
+            "crossSessionInbound",
+            &Value::String("refuse".to_owned()),
+        );
     }
 
     #[test]

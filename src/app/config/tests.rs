@@ -282,6 +282,12 @@ fn space_persists_setting_toggles_to_the_expected_document() {
             vec!["terminalProgressBarEnabled"],
             Value::Bool(false),
         ),
+        (
+            SettingId::CrossSessionInbound,
+            ".claude/settings.local.json",
+            vec!["crossSessionInbound"],
+            Value::String("accept".to_owned()),
+        ),
     ];
 
     for (setting_id, relative_path, json_path, expected) in cases {
@@ -295,6 +301,14 @@ fn space_persists_setting_toggles_to_the_expected_document() {
         let saved = read_json_file(&path);
         assert_eq!(json_at(&saved, &json_path), Some(&expected));
         assert!(app.config.last_error.is_none());
+        if setting_id == SettingId::CrossSessionInbound {
+            assert_eq!(
+                app.config.status_message.as_deref(),
+                Some(
+                    "Saved Cross-session messages: Accept for future sessions. The running session is unchanged; resume or start a new session to apply it."
+                )
+            );
+        }
     }
 }
 

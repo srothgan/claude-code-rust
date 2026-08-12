@@ -60,7 +60,9 @@ class SpawnedBridge {
 
     this.child.once("exit", (code) => {
       this.#exitCode = code;
-      this.#rejectWaiters(new Error(`bridge exited before next protocol event: ${code}`));
+      this.#rejectWaiters(
+        new Error(`bridge exited before next protocol event: ${code}`),
+      );
     });
   }
 
@@ -78,12 +80,16 @@ class SpawnedBridge {
       return Promise.resolve(queued);
     }
     if (this.#exitCode !== undefined) {
-      return Promise.reject(new Error(`bridge already exited: ${this.#exitCode}`));
+      return Promise.reject(
+        new Error(`bridge already exited: ${this.#exitCode}`),
+      );
     }
 
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
-        const index = this.#stdoutWaiters.findIndex((waiter) => waiter.resolve === resolve);
+        const index = this.#stdoutWaiters.findIndex(
+          (waiter) => waiter.resolve === resolve,
+        );
         if (index >= 0) {
           this.#stdoutWaiters.splice(index, 1);
         }
@@ -209,7 +215,10 @@ test("bridge process preserves request_id for unsupported commands", async () =>
 
     assertProtocolEvent(envelope, "connection_failed");
     assert.equal(envelope.request_id, "req-unsupported");
-    assert.match(String(envelope.message), /unsupported command: future_command/);
+    assert.match(
+      String(envelope.message),
+      /unsupported command: future_command/,
+    );
   } finally {
     await bridge.stop();
   }
@@ -256,8 +265,14 @@ test("bridge process reports actionable session initialization failure", async (
 
     assertProtocolEvent(envelope, "connection_failed");
     assert.equal(envelope.request_id, "req-create");
-    assert.match(String(envelope.message), /bridge command failed \(create_session\)/);
-    assert.match(String(envelope.message), /CLAUDE_CODE_EXECUTABLE does not exist/);
+    assert.match(
+      String(envelope.message),
+      /bridge command failed \(create_session\)/,
+    );
+    assert.match(
+      String(envelope.message),
+      /CLAUDE_CODE_EXECUTABLE does not exist/,
+    );
   } finally {
     await bridge.stop();
   }

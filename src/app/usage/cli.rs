@@ -79,15 +79,20 @@ fn parse_usage_output(text: &str) -> Result<UsageSnapshot, String> {
     Ok(UsageSnapshot {
         source: UsageSourceKind::Cli,
         fetched_at: SystemTime::now(),
+        subscription_type: None,
         five_hour: Some(five_hour),
         seven_day,
+        seven_day_oauth_apps: None,
         seven_day_opus,
         seven_day_sonnet,
+        model_scoped: Vec::new(),
         extra_usage: None,
+        session: None,
+        activity: None,
     })
 }
 
-fn extract_window(text: &str, labels: &[&str], window_label: &'static str) -> Option<UsageWindow> {
+fn extract_window(text: &str, labels: &[&str], window_label: &str) -> Option<UsageWindow> {
     let lines = text.lines().collect::<Vec<_>>();
     let normalized_labels =
         labels.iter().map(|label| normalized_for_label_search(label)).collect::<Vec<_>>();
@@ -111,7 +116,7 @@ fn extract_window(text: &str, labels: &[&str], window_label: &'static str) -> Op
         });
 
         return Some(UsageWindow {
-            label: window_label,
+            label: window_label.to_owned(),
             utilization,
             resets_at: None,
             reset_description,

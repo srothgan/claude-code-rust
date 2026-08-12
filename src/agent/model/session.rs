@@ -186,15 +186,35 @@ pub struct TranscriptRetraction {
     pub direction: Option<String>,
     pub original_model: Option<String>,
     pub fallback_model: Option<String>,
+    pub scope: Option<String>,
     pub api_refusal_category: Option<String>,
     pub api_refusal_explanation: Option<String>,
     pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageOrigin {
+    pub kind: String,
+    pub subkind: Option<String>,
+    pub from: Option<String>,
+    pub name: Option<String>,
+    pub from_session: Option<String>,
+    pub sender_task_id: Option<String>,
+    pub verified_peer_pid: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalMessageUpdate {
+    pub content: String,
+    pub source_message_uuid: Option<String>,
+    pub origin: MessageOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionUpdate {
     AgentMessageChunk(ContentChunk),
     UserMessageChunk(ContentChunk),
+    ExternalMessageUpdate(ExternalMessageUpdate),
     AgentThoughtChunk(ContentChunk),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),

@@ -74,11 +74,12 @@ pub use state::{
     MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
     NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, PostExitAction,
     RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
-    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock,
-    TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
-    UpdatePromptAction, UpdatePromptState, UsageSnapshot, UsageSourceKind, UsageSourceMode,
-    UsageState, UsageWindow, UserDialogBlock, WelcomeBlock, hash_text_block_content,
-    hash_welcome_block_content, is_execute_tool_name,
+    SessionUsageSummary, SubagentPermissionContext, SystemSeverity, TerminalSize,
+    TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
+    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
+    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
+    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;

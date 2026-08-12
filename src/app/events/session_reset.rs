@@ -269,6 +269,7 @@ mod tests {
             input_text: "prompt".to_owned(),
             index: 0,
             previous_assistant_uuid: None,
+            resume_anchor_uuid: None,
         }];
         app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
         app.sdk_inventory.rewind_targets_in_flight = true;

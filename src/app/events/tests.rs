@@ -15,7 +15,6 @@ use crate::app::{
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
-use std::fmt::Write as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::oneshot;
@@ -106,6 +105,7 @@ fn transcript_retraction(
         direction: None,
         original_model: None,
         fallback_model: None,
+        scope: None,
         api_refusal_category: None,
         api_refusal_explanation: None,
         content: None,
@@ -3679,6 +3679,37 @@ fn system_notice_update_uses_notice_lane() {
     };
     assert_eq!(notice.severity, SystemSeverity::Warning);
     assert_eq!(notice.text.text, "Plugin install failed.");
+}
+
+#[test]
+fn external_claude_message_is_rendered_as_non_human_input_with_provenance() {
+    let mut app = make_test_app();
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ExternalMessageUpdate(model::ExternalMessageUpdate {
+            content: "Please inspect the build.".to_owned(),
+            source_message_uuid: Some("message-peer".to_owned()),
+            origin: model::MessageOrigin {
+                kind: "peer".to_owned(),
+                subkind: None,
+                from: Some("reported-route".to_owned()),
+                name: Some("Build session".to_owned()),
+                from_session: Some("session-peer".to_owned()),
+                sender_task_id: None,
+                verified_peer_pid: Some(4242),
+            },
+        })),
+    );
+
+    assert_eq!(app.transcript.messages.len(), 1);
+    let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
+        panic!("expected external message text block");
+    };
+    assert!(block.text.contains("Message from another Claude session"));
+    assert!(block.text.contains("sender-reported name: Build session"));
+    assert!(block.text.contains("session session-peer"));
+    assert!(block.text.contains("verified connecting PID 4242"));
+    assert!(block.text.contains("Please inspect the build."));
 }
 
 #[test]

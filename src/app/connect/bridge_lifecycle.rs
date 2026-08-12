@@ -688,7 +688,7 @@ mod tests {
             let dispatch =
                 handle_bridge_event(&event_tx, &connection, &mut connected_once, false, envelope);
             tokio::pin!(dispatch);
-            let marker = wait_for_file(&marker_path);
+            let marker = wait_for_nonempty_file(&marker_path);
             tokio::pin!(marker);
 
             tokio::select! {
@@ -737,11 +737,14 @@ mod tests {
         r#"{"event":"initialized","result":{"agent_name":"test","agent_version":"0","auth_methods":[],"capabilities":{"prompt_image":false,"prompt_embedded_context":false,"supports_session_listing":false,"supports_resume_session":false}}}"#
     }
 
-    async fn wait_for_file(path: &Path) -> std::io::Result<String> {
+    async fn wait_for_nonempty_file(path: &Path) -> std::io::Result<String> {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 match fs::read_to_string(path) {
-                    Ok(contents) => return Ok(contents),
+                    Ok(contents) if !contents.is_empty() => return Ok(contents),
+                    Ok(_) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }

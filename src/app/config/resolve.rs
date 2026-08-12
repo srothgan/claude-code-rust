@@ -21,6 +21,7 @@ pub(super) fn resolve_setting_document(
         SettingId::DefaultPermissionMode => {
             resolve_string_setting(document, spec, DefaultPermissionMode::Default.as_stored())
         }
+        SettingId::CrossSessionInbound => resolve_string_setting(document, spec, "refuse"),
         SettingId::Language => resolve_language_setting(document, spec),
         SettingId::ShowTips | SettingId::RespectGitignore | SettingId::TerminalProgressBar => {
             resolve_bool_setting(document, spec, true)

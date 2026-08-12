@@ -970,6 +970,18 @@ fn bash_title_distinguishes_timeout_auto_backgrounding() {
 }
 
 #[test]
+fn bash_title_renders_final_response_lifetime() {
+    let mut tc = test_tool_call("tc-bash-lifetime", "Bash", model::ToolCallStatus::Completed);
+    tc.output_metadata = Some(model::ToolOutputMetadata::new().bash(Some(
+        model::BashOutputMetadata::new().background_ends_with_final_response(Some(true)),
+    )));
+
+    let rendered = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
+    assert!(text.contains("[ends with final response]"));
+}
+
+#[test]
 fn bash_title_preserves_command_title_in_plan_mode() {
     let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
     tc.terminal_command = Some("echo hi".to_owned());

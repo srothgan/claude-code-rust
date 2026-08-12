@@ -1,4 +1,10 @@
-export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+export type Json =
+  | null
+  | boolean
+  | number
+  | string
+  | Json[]
+  | { [key: string]: Json };
 
 export interface PromptChunk {
   kind: string;
@@ -127,6 +133,16 @@ export interface SettingsParseErrorUpdate {
   message: string;
 }
 
+export interface MessageOrigin {
+  kind: string;
+  subkind?: string;
+  from?: string;
+  name?: string;
+  from_session?: string;
+  sender_task_id?: string;
+  verified_peer_pid?: number;
+}
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; mime_type?: string; uri?: string; data?: string };
@@ -153,6 +169,7 @@ export interface BashOutputMetadata {
   assistant_auto_backgrounded?: boolean;
   timed_out_after_ms?: number;
   background_cwd_hint?: string;
+  background_ends_with_final_response?: boolean;
 }
 
 export interface AgentOutputMetadata {
@@ -269,6 +286,7 @@ export interface TranscriptRetraction {
   direction?: string;
   original_model?: string;
   fallback_model?: string;
+  scope?: string;
   api_refusal_category?: string;
   api_refusal_explanation?: string;
   content?: string;
@@ -304,9 +322,27 @@ export interface TaskStateUpdate {
 }
 
 export type SessionUpdate =
-  | { type: "agent_message_chunk"; content: ContentBlock; source_message_uuid?: string }
-  | { type: "user_message_chunk"; content: ContentBlock; source_message_uuid?: string }
-  | { type: "agent_thought_chunk"; content: ContentBlock; source_message_uuid?: string }
+  | {
+      type: "agent_message_chunk";
+      content: ContentBlock;
+      source_message_uuid?: string;
+    }
+  | {
+      type: "user_message_chunk";
+      content: ContentBlock;
+      source_message_uuid?: string;
+    }
+  | {
+      type: "external_message_update";
+      content: string;
+      source_message_uuid?: string;
+      origin: MessageOrigin;
+    }
+  | {
+      type: "agent_thought_chunk";
+      content: ContentBlock;
+      source_message_uuid?: string;
+    }
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }
   | ({ type: "transcript_retraction" } & TranscriptRetraction)
@@ -340,7 +376,11 @@ export type SessionUpdate =
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "requesting" | "idle" }
-  | { type: "system_notice_update"; severity: SystemNoticeSeverity; message: string }
+  | {
+      type: "system_notice_update";
+      severity: SystemNoticeSeverity;
+      message: string;
+    }
   | { type: "compaction_update"; phase: "started" }
   | {
       type: "compaction_update";
@@ -634,6 +674,68 @@ export interface RewindTarget {
   input_text: string;
   index: number;
   previous_assistant_uuid?: string;
+  resume_anchor_uuid?: string;
+}
+
+export interface StructuredUsageWindow {
+  utilization: number;
+  resets_at?: string;
+}
+
+export interface StructuredModelUsageWindow extends StructuredUsageWindow {
+  display_name: string;
+}
+
+export interface StructuredExtraUsage {
+  monthly_limit?: number;
+  used_credits?: number;
+  utilization?: number;
+  currency?: string;
+}
+
+export interface StructuredSessionUsage {
+  total_cost_usd?: number;
+  total_api_duration_ms?: number;
+  total_duration_ms?: number;
+  total_lines_added?: number;
+  total_lines_removed?: number;
+  model_count?: number;
+}
+
+export interface StructuredActivityWindow {
+  request_count: number;
+  session_count: number;
+  behaviors: StructuredBehaviorAttribution[];
+  agents: StructuredNamedAttribution[];
+  skills: StructuredNamedAttribution[];
+  plugins: StructuredNamedAttribution[];
+  mcp_servers: StructuredNamedAttribution[];
+}
+
+export interface StructuredBehaviorAttribution {
+  key: string;
+  pct: number;
+  count: number;
+}
+
+export interface StructuredNamedAttribution {
+  name: string;
+  pct: number;
+}
+
+export interface StructuredUsageSnapshot {
+  subscription_type?: string;
+  rate_limits_available?: boolean;
+  five_hour?: StructuredUsageWindow;
+  seven_day?: StructuredUsageWindow;
+  seven_day_oauth_apps?: StructuredUsageWindow;
+  seven_day_opus?: StructuredUsageWindow;
+  seven_day_sonnet?: StructuredUsageWindow;
+  model_scoped?: StructuredModelUsageWindow[];
+  extra_usage?: StructuredExtraUsage;
+  session?: StructuredSessionUsage;
+  activity_day?: StructuredActivityWindow;
+  activity_week?: StructuredActivityWindow;
 }
 
 export type RewindRestoreMode = "both" | "conversation" | "code";
@@ -672,6 +774,12 @@ export type BridgeCommand =
       session_id: string;
       launch_settings: SessionLaunchSettings;
       metadata?: Record<string, Json>;
+    }
+  | {
+      command: "resume_session_at";
+      session_id: string;
+      target_user_message_id: string;
+      launch_settings: SessionLaunchSettings;
     }
   | {
       command: "prompt";
@@ -753,6 +861,10 @@ export type BridgeCommand =
     }
   | {
       command: "get_context_usage";
+      session_id: string;
+    }
+  | {
+      command: "get_usage";
       session_id: string;
     }
   | {
@@ -852,15 +964,47 @@ export type BridgeEvent =
   | { event: "auth_required"; method_name: string; method_description: string }
   | { event: "connection_failed"; message: string }
   | { event: "session_update"; session_id: string; update: SessionUpdate }
-  | { event: "permission_request"; session_id: string; request: PermissionRequest }
+  | {
+      event: "permission_request";
+      session_id: string;
+      request: PermissionRequest;
+    }
   | { event: "question_request"; session_id: string; request: QuestionRequest }
-  | { event: "user_dialog_request"; session_id: string; request: UserDialogRequestPayload }
-  | { event: "elicitation_request"; session_id: string; request: ElicitationRequest }
-  | { event: "elicitation_complete"; session_id: string; completion: ElicitationComplete }
-  | { event: "mcp_auth_redirect"; session_id: string; redirect: McpAuthRedirect }
-  | { event: "mcp_operation_error"; session_id: string; error: McpOperationError }
-  | { event: "mcp_set_servers_result"; session_id: string; result: McpSetServersResult }
-  | { event: "turn_complete"; session_id: string; terminal_reason?: TerminalReason }
+  | {
+      event: "user_dialog_request";
+      session_id: string;
+      request: UserDialogRequestPayload;
+    }
+  | {
+      event: "elicitation_request";
+      session_id: string;
+      request: ElicitationRequest;
+    }
+  | {
+      event: "elicitation_complete";
+      session_id: string;
+      completion: ElicitationComplete;
+    }
+  | {
+      event: "mcp_auth_redirect";
+      session_id: string;
+      redirect: McpAuthRedirect;
+    }
+  | {
+      event: "mcp_operation_error";
+      session_id: string;
+      error: McpOperationError;
+    }
+  | {
+      event: "mcp_set_servers_result";
+      session_id: string;
+      result: McpSetServersResult;
+    }
+  | {
+      event: "turn_complete";
+      session_id: string;
+      terminal_reason?: TerminalReason;
+    }
   | {
       event: "turn_error";
       session_id: string;
@@ -872,6 +1016,11 @@ export type BridgeEvent =
       terminal_reason?: TerminalReason;
     }
   | { event: "slash_error"; session_id: string; message: string }
+  | {
+      event: "session_resume_failed";
+      session_id: string;
+      message: string;
+    }
   | { event: "runtime_reload_completed"; session_id: string }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {
@@ -895,9 +1044,16 @@ export type BridgeEvent =
       percentage?: number;
     }
   | {
+      event: "usage_snapshot";
+      session_id: string;
+      snapshot?: StructuredUsageSnapshot;
+      error?: string;
+    }
+  | {
       event: "rewind_targets";
       session_id: string;
       targets: RewindTarget[];
+      error?: string;
     }
   | {
       event: "rewind_result";

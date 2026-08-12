@@ -34,13 +34,21 @@ function isEffortLevel(value: unknown): value is EffortLevel {
 function normalizeModelKey(id: string): NormalizedModelKey {
   const original = id.trim();
   if (!original) {
-    return { original, family: "unknown", versionParts: [], variantParts: [], buildParts: [] };
+    return {
+      original,
+      family: "unknown",
+      versionParts: [],
+      variantParts: [],
+      buildParts: [],
+    };
   }
 
   const lower = original.toLowerCase();
   const contextMatch = lower.match(/\[([^[\]]+)\]$/);
   const contextSuffix = contextMatch?.[1];
-  const withoutContext = contextMatch ? lower.slice(0, contextMatch.index) : lower;
+  const withoutContext = contextMatch
+    ? lower.slice(0, contextMatch.index)
+    : lower;
   const withoutPrefix = withoutContext.startsWith("claude-")
     ? withoutContext.slice("claude-".length)
     : withoutContext;
@@ -111,7 +119,10 @@ function modelKeysAreCompatible(leftId: string, rightId: string): boolean {
 function sameContextSuffix(leftId: string, rightId: string): boolean {
   const left = normalizeModelKey(leftId);
   const right = normalizeModelKey(rightId);
-  return (left.contextSuffix?.toLowerCase() ?? "") === (right.contextSuffix?.toLowerCase() ?? "");
+  return (
+    (left.contextSuffix?.toLowerCase() ?? "") ===
+    (right.contextSuffix?.toLowerCase() ?? "")
+  );
 }
 
 function sameFamilyAndVersion(leftId: string, rightId: string): boolean {
@@ -138,7 +149,8 @@ function hasVariantSiblingConflict(
     return false;
   }
 
-  const resolvedContext = normalizeModelKey(resolvedId).contextSuffix?.toLowerCase() ?? "";
+  const resolvedContext =
+    normalizeModelKey(resolvedId).contextSuffix?.toLowerCase() ?? "";
   if (!resolvedContext) {
     return false;
   }
@@ -150,7 +162,8 @@ function hasVariantSiblingConflict(
     if (!sameFamilyAndVersion(entry.id, resolvedId)) {
       return false;
     }
-    const entryContext = normalizeModelKey(entry.id).contextSuffix?.toLowerCase() ?? "";
+    const entryContext =
+      normalizeModelKey(entry.id).contextSuffix?.toLowerCase() ?? "";
     return entryContext === resolvedContext;
   });
 }
@@ -170,7 +183,9 @@ function humanizeModelId(id: string): string {
           ? "Sonnet"
           : "Haiku";
   const versionLabel =
-    normalized.versionParts.length > 0 ? ` ${normalized.versionParts.join(".")}` : "";
+    normalized.versionParts.length > 0
+      ? ` ${normalized.versionParts.join(".")}`
+      : "";
   const contextLabel =
     normalized.contextSuffix?.toLowerCase() === "1m"
       ? " [1M]"
@@ -209,7 +224,8 @@ function resolveCatalogModel(
 
   if (requestedId) {
     const exactRequested = availableModels.find(
-      (entry) => entry.id === requestedId || entry.resolved_model === requestedId,
+      (entry) =>
+        entry.id === requestedId || entry.resolved_model === requestedId,
     );
     if (
       exactRequested &&
@@ -232,23 +248,28 @@ function resolveCatalogModel(
   return compatible.length === 1 ? compatible[0] : undefined;
 }
 
-export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableModel[] {
+export function mapAvailableModels(
+  models: ModelInfo[] | undefined,
+): AvailableModel[] {
   if (!Array.isArray(models)) {
     return [];
   }
 
   return models
-    .filter((entry): entry is ModelInfo & { value: string; displayName: string } => {
-      return (
-        typeof entry?.value === "string" &&
-        entry.value.trim().length > 0 &&
-        typeof entry.displayName === "string" &&
-        entry.displayName.trim().length > 0
-      );
-    })
+    .filter(
+      (entry): entry is ModelInfo & { value: string; displayName: string } => {
+        return (
+          typeof entry?.value === "string" &&
+          entry.value.trim().length > 0 &&
+          typeof entry.displayName === "string" &&
+          entry.displayName.trim().length > 0
+        );
+      },
+    )
     .map((entry) => ({
       id: entry.value,
-      ...(typeof entry.resolvedModel === "string" && entry.resolvedModel.trim().length > 0
+      ...(typeof entry.resolvedModel === "string" &&
+      entry.resolvedModel.trim().length > 0
         ? { resolved_model: entry.resolvedModel.trim() }
         : {}),
       display_name: entry.displayName,
@@ -265,23 +286,31 @@ export function mapAvailableModels(models: ModelInfo[] | undefined): AvailableMo
       ...(typeof entry.supportsAutoMode === "boolean"
         ? { supports_auto_mode: entry.supportsAutoMode }
         : {}),
-      ...(typeof entry.description === "string" && entry.description.trim().length > 0
+      ...(typeof entry.description === "string" &&
+      entry.description.trim().length > 0
         ? { description: entry.description }
         : {}),
     }));
 }
 
-export function resolveCurrentModel(session: ModelMetadataSession): CurrentModel {
+export function resolveCurrentModel(
+  session: ModelMetadataSession,
+): CurrentModel {
   const requestedId = session.requestedModelId?.trim() || undefined;
   const resolvedId =
     session.resolvedRuntimeModelId?.trim() ||
     session.model.trim() ||
     requestedId ||
     DEFAULT_MODEL_ALIAS;
-  const catalogModel = resolveCatalogModel(session.availableModels, resolvedId, requestedId);
+  const catalogModel = resolveCatalogModel(
+    session.availableModels,
+    resolvedId,
+    requestedId,
+  );
   const runtimeDisplayId = resolvedId || requestedId || DEFAULT_MODEL_ALIAS;
   const displayNameShort = shortDisplayNameForModelId(runtimeDisplayId);
-  const displayNameLong = catalogModel?.display_name ?? humanizeModelId(runtimeDisplayId);
+  const displayNameLong =
+    catalogModel?.display_name ?? humanizeModelId(runtimeDisplayId);
   return {
     resolved_id: resolvedId,
     display_name_short: displayNameShort,
@@ -303,6 +332,9 @@ export function resolveCurrentModel(session: ModelMetadataSession): CurrentModel
   };
 }
 
-export function currentModelsEqual(left: CurrentModel | undefined, right: CurrentModel): boolean {
+export function currentModelsEqual(
+  left: CurrentModel | undefined,
+  right: CurrentModel,
+): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }

@@ -77,6 +77,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         ClientEvent::Connected { .. }
         | ClientEvent::ConnectionFailed(_)
         | ClientEvent::AuthRequired { .. }
+        | ClientEvent::SessionResumeFailed { .. }
         | ClientEvent::SessionReplaced { .. }
         | ClientEvent::SessionsListed { .. }
         | ClientEvent::UpdateAvailable { .. }
@@ -92,6 +93,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }
         | ClientEvent::RuntimeReloadFailed { .. }
+        | ClientEvent::StructuredUsageReceived { .. }
         | ClientEvent::UsageRefreshStarted { .. }
         | ClientEvent::UsageSnapshotReceived { .. }
         | ClientEvent::UsageRefreshFailed { .. }

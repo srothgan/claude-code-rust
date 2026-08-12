@@ -1,6 +1,10 @@
 import type { SessionState } from "./session_lifecycle.js";
 
-export function linkTaskToolUse(session: SessionState, taskId: string, toolUseId: string): void {
+export function linkTaskToolUse(
+  session: SessionState,
+  taskId: string,
+  toolUseId: string,
+): void {
   if (!taskId || !toolUseId) {
     return;
   }
@@ -36,6 +40,9 @@ export function unlinkTaskToolUse(session: SessionState, taskId: string): void {
   }
 }
 
-export function activeTaskIdForToolUse(session: SessionState, toolUseId: string): string | undefined {
+export function activeTaskIdForToolUse(
+  session: SessionState,
+  toolUseId: string,
+): string | undefined {
   return toolUseId ? session.taskIdsByToolUseId.get(toolUseId) : undefined;
 }

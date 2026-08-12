@@ -3,6 +3,11 @@
 
 use super::prelude::*;
 
+pub(crate) struct PendingSessionResume {
+    session_id: String,
+    operation_id: Option<String>,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub surface_mode: SurfaceMode,
@@ -18,8 +23,8 @@ pub struct App {
     pub sdk_inventory: SdkInventoryState,
     pub input: InputState,
     pub status: AppStatus,
-    /// Session id currently being resumed via `/resume`.
-    pub(crate) resuming_session_id: Option<String>,
+    /// Authoritative source and request identity for an in-flight session resume.
+    pub(crate) pending_session_resume: Option<PendingSessionResume>,
     /// Whether the synthetic session overview is eligible for chat transcript output.
     pub(crate) show_session_overview: bool,
     pub should_quit: bool,
@@ -110,6 +115,26 @@ pub struct App {
 }
 
 impl App {
+    pub(crate) fn set_pending_session_resume(
+        &mut self,
+        session_id: String,
+        operation_id: Option<String>,
+    ) {
+        self.pending_session_resume = Some(PendingSessionResume { session_id, operation_id });
+    }
+
+    pub(crate) fn clear_pending_session_resume(&mut self) {
+        self.pending_session_resume = None;
+    }
+
+    pub(crate) fn pending_session_resume_id(&self) -> Option<&str> {
+        self.pending_session_resume.as_ref().map(|pending| pending.session_id.as_str())
+    }
+
+    pub(crate) fn pending_resume_at_operation_id(&self) -> Option<&str> {
+        self.pending_session_resume.as_ref().and_then(|pending| pending.operation_id.as_deref())
+    }
+
     #[must_use]
     pub fn session_thinking_effort_effective(&self) -> model::EffortLevel {
         self.session_runtime
@@ -167,7 +192,7 @@ impl App {
             sdk_inventory: SdkInventoryState::default(),
             input: InputState::new(),
             status: AppStatus::Ready,
-            resuming_session_id: None,
+            pending_session_resume: None,
             show_session_overview: true,
             turn: TurnState::default(),
             should_quit: false,

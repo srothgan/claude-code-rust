@@ -32,6 +32,84 @@ pub struct RewindTarget {
     pub input_text: String,
     pub index: u64,
     pub previous_assistant_uuid: Option<String>,
+    pub resume_anchor_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredUsageWindow {
+    pub utilization: f64,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredModelUsageWindow {
+    pub display_name: String,
+    pub utilization: f64,
+    pub resets_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredExtraUsage {
+    pub monthly_limit: Option<f64>,
+    pub used_credits: Option<f64>,
+    pub utilization: Option<f64>,
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredSessionUsage {
+    pub total_cost_usd: Option<f64>,
+    pub total_api_duration_ms: Option<f64>,
+    pub total_duration_ms: Option<f64>,
+    pub total_lines_added: Option<f64>,
+    pub total_lines_removed: Option<f64>,
+    pub model_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredActivityWindow {
+    pub request_count: u64,
+    pub session_count: u64,
+    #[serde(default)]
+    pub behaviors: Vec<StructuredBehaviorAttribution>,
+    #[serde(default)]
+    pub agents: Vec<StructuredNamedAttribution>,
+    #[serde(default)]
+    pub skills: Vec<StructuredNamedAttribution>,
+    #[serde(default)]
+    pub plugins: Vec<StructuredNamedAttribution>,
+    #[serde(default)]
+    pub mcp_servers: Vec<StructuredNamedAttribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredBehaviorAttribution {
+    pub key: String,
+    pub pct: f64,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredNamedAttribution {
+    pub name: String,
+    pub pct: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredUsageSnapshot {
+    pub subscription_type: Option<String>,
+    pub rate_limits_available: Option<bool>,
+    pub five_hour: Option<StructuredUsageWindow>,
+    pub seven_day: Option<StructuredUsageWindow>,
+    pub seven_day_oauth_apps: Option<StructuredUsageWindow>,
+    pub seven_day_opus: Option<StructuredUsageWindow>,
+    pub seven_day_sonnet: Option<StructuredUsageWindow>,
+    #[serde(default)]
+    pub model_scoped: Vec<StructuredModelUsageWindow>,
+    pub extra_usage: Option<StructuredExtraUsage>,
+    pub session: Option<StructuredSessionUsage>,
+    pub activity_day: Option<StructuredActivityWindow>,
+    pub activity_week: Option<StructuredActivityWindow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +263,17 @@ pub struct SettingsParseErrorUpdate {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageOrigin {
+    pub kind: String,
+    pub subkind: Option<String>,
+    pub from: Option<String>,
+    pub name: Option<String>,
+    pub from_session: Option<String>,
+    pub sender_task_id: Option<String>,
+    pub verified_peer_pid: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RateLimitUpdate {
     pub status: RateLimitStatus,
@@ -295,6 +384,7 @@ pub struct TranscriptRetraction {
     pub direction: Option<String>,
     pub original_model: Option<String>,
     pub fallback_model: Option<String>,
+    pub scope: Option<String>,
     pub api_refusal_category: Option<String>,
     pub api_refusal_explanation: Option<String>,
     pub content: Option<String>,
@@ -325,6 +415,7 @@ pub struct BashOutputMetadata {
     pub assistant_auto_backgrounded: Option<bool>,
     pub timed_out_after_ms: Option<u64>,
     pub background_cwd_hint: Option<String>,
+    pub background_ends_with_final_response: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -475,6 +566,11 @@ pub enum SessionUpdate {
     UserMessageChunk {
         content: ContentBlock,
         source_message_uuid: Option<String>,
+    },
+    ExternalMessageUpdate {
+        content: String,
+        source_message_uuid: Option<String>,
+        origin: MessageOrigin,
     },
     AgentThoughtChunk {
         content: ContentBlock,
@@ -1473,6 +1569,7 @@ mod tests {
             "direction": "retry",
             "original_model": "claude-opus-4-1",
             "fallback_model": "claude-sonnet-4-5",
+            "scope": "local",
             "api_refusal_category": "cyber",
             "api_refusal_explanation": "policy text",
             "content": "Retried with fallback model"
@@ -1487,6 +1584,7 @@ mod tests {
         assert_eq!(retraction.request_id.as_deref(), Some("req-1"));
         assert_eq!(retraction.original_model.as_deref(), Some("claude-opus-4-1"));
         assert_eq!(retraction.fallback_model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(retraction.scope.as_deref(), Some("local"));
     }
 
     #[test]

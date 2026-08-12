@@ -23,10 +23,14 @@ const KNOWN_API_PROVIDERS = new Set<string>([
 ]);
 
 function trimmedString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : undefined;
 }
 
-export function isKnownApiProvider(provider: string | undefined): provider is KnownApiProvider {
+export function isKnownApiProvider(
+  provider: string | undefined,
+): provider is KnownApiProvider {
   return provider !== undefined && KNOWN_API_PROVIDERS.has(provider);
 }
 
@@ -37,7 +41,9 @@ export function apiProviderIsExternal(provider: string | undefined): boolean {
 export function mapSdkAccountInfo(account: SdkAccountInfo): AccountInfo {
   const apiProvider = trimmedString(account.apiProvider);
   return {
-    ...(trimmedString(account.email) ? { email: trimmedString(account.email) } : {}),
+    ...(trimmedString(account.email)
+      ? { email: trimmedString(account.email) }
+      : {}),
     ...(trimmedString(account.organization)
       ? { organization: trimmedString(account.organization) }
       : {}),
@@ -54,7 +60,9 @@ export function mapSdkAccountInfo(account: SdkAccountInfo): AccountInfo {
   };
 }
 
-export function shouldEmitStartupAuthRequiredForAccount(account: SdkAccountInfo): boolean {
+export function shouldEmitStartupAuthRequiredForAccount(
+  account: SdkAccountInfo,
+): boolean {
   const provider = trimmedString(account.apiProvider);
   if (apiProviderIsExternal(provider)) {
     return false;

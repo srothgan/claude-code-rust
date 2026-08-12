@@ -9,6 +9,7 @@ pub struct RewindTarget {
     pub input_text: String,
     pub index: u64,
     pub previous_assistant_uuid: Option<String>,
+    pub resume_anchor_uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

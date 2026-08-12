@@ -57,8 +57,9 @@ pub use types::{
     AppStatus, CancelOrigin, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint,
     McpState, MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck,
     PostExitAction, RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState,
-    SessionUsageState, ToolCallScope, UpdatePromptAction, UpdatePromptState, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    SessionUsageState, SessionUsageSummary, ToolCallScope, UpdatePromptAction, UpdatePromptState,
+    UsageActivitySummary, UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution,
+    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
 
 mod prelude {
