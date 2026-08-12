@@ -127,28 +127,29 @@ fn decode_usage_payload(body: &[u8]) -> Result<UsageSnapshot, OauthFetchError> {
         ));
     }
 
-    let _ = payload.seven_day_oauth_apps;
     let _ = payload.iguana_necktie;
 
     Ok(UsageSnapshot {
         source: UsageSourceKind::Oauth,
         fetched_at: SystemTime::now(),
+        subscription_type: None,
         five_hour,
         seven_day: map_window(payload.seven_day, "7-day"),
+        seven_day_oauth_apps: map_window(payload.seven_day_oauth_apps, "7-day OAuth apps"),
         seven_day_opus: map_window(payload.seven_day_opus, "7-day Opus"),
         seven_day_sonnet: map_window(payload.seven_day_sonnet, "7-day Sonnet"),
+        model_scoped: Vec::new(),
         extra_usage: map_extra_usage(payload.extra_usage),
+        session: None,
+        activity: None,
     })
 }
 
-fn map_window(
-    payload: Option<OAuthUsageWindowPayload>,
-    label: &'static str,
-) -> Option<UsageWindow> {
+fn map_window(payload: Option<OAuthUsageWindowPayload>, label: &str) -> Option<UsageWindow> {
     let payload = payload?;
     let utilization = payload.utilization?;
     Some(UsageWindow {
-        label,
+        label: label.to_owned(),
         utilization: utilization.clamp(0.0, 100.0),
         resets_at: payload.resets_at.as_ref().and_then(parse_timestamp_value),
         reset_description: None,
@@ -195,6 +196,11 @@ fn parse_timestamp_value(value: &serde_json::Value) -> Option<SystemTime> {
             .or_else(|| raw.trim().parse::<i64>().ok().and_then(system_time_from_epoch)),
         _ => None,
     }
+}
+
+pub(super) fn parse_timestamp(raw: &str) -> Option<SystemTime> {
+    parse_iso8601_timestamp(raw)
+        .or_else(|| raw.trim().parse::<i64>().ok().and_then(system_time_from_epoch))
 }
 
 fn system_time_from_epoch(raw: i64) -> Option<SystemTime> {

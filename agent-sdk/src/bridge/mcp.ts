@@ -25,7 +25,8 @@ import {
 } from "./mcp_monitor.js";
 import type { SessionState } from "./session_lifecycle.js";
 
-type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
+type SdkMcpServerStatus =
+  import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
 
 export const MCP_STALE_STATUS_REVALIDATION_COOLDOWN_MS = 30_000;
 
@@ -78,10 +79,14 @@ function mapMcpSetServersResult(result: unknown): McpSetServersResult {
     ? record.added.filter((value): value is string => typeof value === "string")
     : [];
   const removed = Array.isArray(record.removed)
-    ? record.removed.filter((value): value is string => typeof value === "string")
+    ? record.removed.filter(
+        (value): value is string => typeof value === "string",
+      )
     : [];
   const errors =
-    record.errors && typeof record.errors === "object" && !Array.isArray(record.errors)
+    record.errors &&
+    typeof record.errors === "object" &&
+    !Array.isArray(record.errors)
       ? Object.fromEntries(
           Object.entries(record.errors as Record<string, unknown>).filter(
             (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -153,11 +158,17 @@ function emitMcpSnapshotFromMappedStatuses(
   requestId?: string,
 ): McpServerStatus[] {
   rememberKnownConnectedMcpServers(session, mapped);
-  logMcpSuccess("mcp_snapshot_emitted", "MCP snapshot emitted", session.sessionId, requestId, {
-    source,
-    server_count: mapped.length,
-    servers: summarizeMcpServersForDiagnostics(mapped),
-  });
+  logMcpSuccess(
+    "mcp_snapshot_emitted",
+    "MCP snapshot emitted",
+    session.sessionId,
+    requestId,
+    {
+      source,
+      server_count: mapped.length,
+      servers: summarizeMcpServersForDiagnostics(mapped),
+    },
+  );
   writeEvent(
     {
       event: "mcp_snapshot",
@@ -203,13 +214,18 @@ function rememberKnownConnectedMcpServers(
   }
 }
 
-function forgetKnownConnectedMcpServer(session: SessionState, serverName: string): void {
+function forgetKnownConnectedMcpServer(
+  session: SessionState,
+  serverName: string,
+): void {
   session.knownConnectedMcpServers.delete(serverName);
 }
 
 type McpMonitorActivityCheck = () => boolean;
 
-async function loadReconciledMcpStatuses(session: SessionState): Promise<McpServerStatus[]>;
+async function loadReconciledMcpStatuses(
+  session: SessionState,
+): Promise<McpServerStatus[]>;
 async function loadReconciledMcpStatuses(
   session: SessionState,
   isActive: McpMonitorActivityCheck,
@@ -300,7 +316,9 @@ async function reconcileSuspiciousMcpStatuses(
   return isActive() ? refreshed.map(mapMcpServerStatus) : undefined;
 }
 
-function shouldKeepMonitoringMcpAuth(server: McpServerStatus | undefined): boolean {
+function shouldKeepMonitoringMcpAuth(
+  server: McpServerStatus | undefined,
+): boolean {
   return server?.status === "needs-auth" || server?.status === "pending";
 }
 
@@ -409,9 +427,15 @@ export async function handleMcpReconnectCommand(
 ): Promise<void> {
   try {
     await session.query.reconnectMcpServer(command.server_name);
-    logMcpSuccess("mcp_reconnect_completed", "MCP reconnect completed", command.session_id, requestId, {
-      server_name: command.server_name,
-    });
+    logMcpSuccess(
+      "mcp_reconnect_completed",
+      "MCP reconnect completed",
+      command.session_id,
+      requestId,
+      {
+        server_name: command.server_name,
+      },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logMcpFailure(
@@ -456,7 +480,13 @@ export async function handleMcpToggleCommand(
       requestId,
       { server_name: command.server_name, enabled: command.enabled },
     );
-    emitMcpCommandError(command.session_id, "toggle", message, requestId, command.server_name);
+    emitMcpCommandError(
+      command.session_id,
+      "toggle",
+      message,
+      requestId,
+      command.server_name,
+    );
   }
 }
 
@@ -505,7 +535,11 @@ export async function handleMcpSetServersCommand(
       { operation: "set-servers", message },
       requestId,
     );
-    slashError(command.session_id, `failed to set MCP servers: ${message}`, requestId);
+    slashError(
+      command.session_id,
+      `failed to set MCP servers: ${message}`,
+      requestId,
+    );
   }
 }
 
@@ -515,14 +549,20 @@ export async function handleMcpAuthenticateCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    const redirect = await authenticateMcpServer(session.query, command.server_name);
+    const redirect = await authenticateMcpServer(
+      session.query,
+      command.server_name,
+    );
     if (redirect) {
       logMcpSuccess(
         "mcp_auth_redirect_emitted",
         "MCP auth redirect emitted",
         command.session_id,
         requestId,
-        { server_name: command.server_name, requires_user_action: redirect.requires_user_action },
+        {
+          server_name: command.server_name,
+          requires_user_action: redirect.requires_user_action,
+        },
       );
       writeEvent(
         {
@@ -571,9 +611,15 @@ export async function handleMcpClearAuthCommand(
     await clearMcpServerAuth(session.query, command.server_name);
     forgetKnownConnectedMcpServer(session, command.server_name);
     session.mcpStatusRevalidatedAt.delete(command.server_name);
-    logMcpSuccess("mcp_clear_auth_completed", "MCP auth cleared", command.session_id, requestId, {
-      server_name: command.server_name,
-    });
+    logMcpSuccess(
+      "mcp_clear_auth_completed",
+      "MCP auth cleared",
+      command.session_id,
+      requestId,
+      {
+        server_name: command.server_name,
+      },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logMcpFailure(
@@ -600,7 +646,11 @@ export async function handleMcpOauthCallbackUrlCommand(
   requestId?: string,
 ): Promise<void> {
   try {
-    await submitMcpOAuthCallbackUrl(session.query, command.server_name, command.callback_url);
+    await submitMcpOAuthCallbackUrl(
+      session.query,
+      command.server_name,
+      command.callback_url,
+    );
     logMcpSuccess(
       "mcp_oauth_callback_completed",
       "MCP OAuth callback URL submitted",

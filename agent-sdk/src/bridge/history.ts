@@ -1,5 +1,15 @@
-import type { SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Json, SessionListEntry, SessionUpdate, TaskItem, TaskStatus, ToolCall } from "../types.js";
+import type {
+  SDKSessionInfo,
+  SessionMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Json,
+  SessionListEntry,
+  SessionUpdate,
+  TaskItem,
+  TaskStatus,
+  ToolCall,
+} from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import {
   applyToolNonExecutionMetadata,
@@ -91,7 +101,10 @@ function taskSystemMetadata(
   patch: Record<string, unknown> | undefined,
 ): Record<string, Json> | undefined {
   const metadata: Record<string, Json> = {};
-  const copyValue = (from: Record<string, unknown> | undefined, key: string): void => {
+  const copyValue = (
+    from: Record<string, unknown> | undefined,
+    key: string,
+  ): void => {
     if (!from || !Object.hasOwn(from, key)) {
       return;
     }
@@ -118,7 +131,8 @@ function taskSystemMetadata(
     copyValue(msg, key);
     copyValue(patch, key);
   }
-  const terminalStatus = nonEmptyTrimmed(msg.status) ?? nonEmptyTrimmed(patch?.status);
+  const terminalStatus =
+    nonEmptyTrimmed(msg.status) ?? nonEmptyTrimmed(patch?.status);
   if (
     terminalStatus === "completed" ||
     terminalStatus === "failed" ||
@@ -160,12 +174,15 @@ function pushResumeTaskSystemUpdate(
   const status =
     normalizeLifecycleTaskStatus(msg.status) ??
     normalizeLifecycleTaskStatus(patch?.status) ??
-    (subtype === "task_started" || subtype === "task_progress" ? "in_progress" : undefined);
+    (subtype === "task_started" || subtype === "task_progress"
+      ? "in_progress"
+      : undefined);
   const description =
     nonEmptyTrimmed(patch?.description) ??
     nonEmptyTrimmed(msg.description) ??
     nonEmptyTrimmed(msg.summary);
-  const activeForm = nonEmptyTrimmed(patch?.activeForm) ?? nonEmptyTrimmed(patch?.active_form);
+  const activeForm =
+    nonEmptyTrimmed(patch?.activeForm) ?? nonEmptyTrimmed(patch?.active_form);
   const subject =
     nonEmptyTrimmed(patch?.subject) ??
     nonEmptyTrimmed(msg.subject) ??
@@ -174,20 +191,34 @@ function pushResumeTaskSystemUpdate(
     nonEmptyTrimmed(msg.task_description) ??
     description ??
     taskId;
-  const metadata = mergeTaskMetadata(existing?.metadata, taskSystemMetadata(msg, patch));
-  const sourceToolCallId = taskToolUseIds.get(taskId) ?? existing?.source_tool_call_id;
+  const metadata = mergeTaskMetadata(
+    existing?.metadata,
+    taskSystemMetadata(msg, patch),
+  );
+  const sourceToolCallId =
+    taskToolUseIds.get(taskId) ?? existing?.source_tool_call_id;
 
   const task: TaskItem = {
     task_id: taskId,
     subject,
-    ...(description !== undefined ? { description } : existing?.description !== undefined ? { description: existing.description } : {}),
-    ...(activeForm !== undefined ? { active_form: activeForm } : existing?.active_form !== undefined ? { active_form: existing.active_form } : {}),
+    ...(description !== undefined
+      ? { description }
+      : existing?.description !== undefined
+        ? { description: existing.description }
+        : {}),
+    ...(activeForm !== undefined
+      ? { active_form: activeForm }
+      : existing?.active_form !== undefined
+        ? { active_form: existing.active_form }
+        : {}),
     status: status ?? existing?.status ?? "pending",
     ...(existing?.owner !== undefined ? { owner: existing.owner } : {}),
     blocks: existing ? [...existing.blocks] : [],
     blocked_by: existing ? [...existing.blocked_by] : [],
     ...(metadata !== undefined ? { metadata } : {}),
-    ...(sourceToolCallId !== undefined ? { source_tool_call_id: sourceToolCallId } : {}),
+    ...(sourceToolCallId !== undefined
+      ? { source_tool_call_id: sourceToolCallId }
+      : {}),
   };
   tasksById.set(taskId, task);
   updates.push({
@@ -258,15 +289,22 @@ function pushResumeToolResult(
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
-  nonExecutionByToolUseId: Map<string, import("../types.js").ToolNonExecutionMetadata>,
+  nonExecutionByToolUseId: Map<
+    string,
+    import("../types.js").ToolNonExecutionMetadata
+  >,
   sourceMessageUuid?: string,
 ): void {
-  const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
+  const toolUseId =
+    typeof block.tool_use_id === "string" ? block.tool_use_id : "";
   if (!toolUseId) {
     return;
   }
   const blockType = typeof block.type === "string" ? block.type : "";
-  if (isToolSearchToolResultType(blockType) || hiddenToolUseIds.has(toolUseId)) {
+  if (
+    isToolSearchToolResultType(blockType) ||
+    hiddenToolUseIds.has(toolUseId)
+  ) {
     hiddenToolUseIds.add(toolUseId);
     return;
   }
@@ -314,13 +352,22 @@ export function mapSdkSessionInfo(info: SDKSessionInfo): SessionListEntry {
     last_modified_ms: info.lastModified,
     file_size_bytes: info.fileSize ?? 0,
     ...(nonEmptyTrimmed(info.cwd) ? { cwd: info.cwd?.trim() } : {}),
-    ...(nonEmptyTrimmed(info.gitBranch) ? { git_branch: info.gitBranch?.trim() } : {}),
-    ...(nonEmptyTrimmed(info.customTitle) ? { custom_title: info.customTitle?.trim() } : {}),
-    ...(nonEmptyTrimmed(info.firstPrompt) ? { first_prompt: info.firstPrompt?.trim() } : {}),
+    ...(nonEmptyTrimmed(info.gitBranch)
+      ? { git_branch: info.gitBranch?.trim() }
+      : {}),
+    ...(nonEmptyTrimmed(info.customTitle)
+      ? { custom_title: info.customTitle?.trim() }
+      : {}),
+    ...(nonEmptyTrimmed(info.firstPrompt)
+      ? { first_prompt: info.firstPrompt?.trim() }
+      : {}),
   };
 }
 
-export function mapSdkSessions(infos: SDKSessionInfo[], limit = 50): SessionListEntry[] {
+export function mapSdkSessions(
+  infos: SDKSessionInfo[],
+  limit = 50,
+): SessionListEntry[] {
   const sorted = [...infos].sort((a, b) => b.lastModified - a.lastModified);
   const entries: SessionListEntry[] = [];
   const seen = new Set<string>();
@@ -337,7 +384,9 @@ export function mapSdkSessions(infos: SDKSessionInfo[], limit = 50): SessionList
   return entries;
 }
 
-export function mapSessionMessagesToUpdates(messages: SessionMessage[]): SessionUpdate[] {
+export function mapSessionMessagesToUpdates(
+  messages: SessionMessage[],
+): SessionUpdate[] {
   const updates: SessionUpdate[] = [];
   const toolCalls = new Map<string, ToolCall>();
   const hiddenToolUseIds = new Set<string>();
@@ -346,11 +395,19 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
 
   for (const entry of messages) {
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
-    const entrySourceMessageUuid = typeof entry.uuid === "string" ? entry.uuid : undefined;
+    const entrySourceMessageUuid =
+      typeof entry.uuid === "string" ? entry.uuid : undefined;
     const candidates = messageCandidates(entry.message);
     if (entry.type === "system") {
       for (const message of candidates) {
-        if (pushResumeTaskSystemUpdate(updates, tasksById, taskToolUseIds, message)) {
+        if (
+          pushResumeTaskSystemUpdate(
+            updates,
+            tasksById,
+            taskToolUseIds,
+            message,
+          )
+        ) {
           break;
         }
       }
@@ -358,9 +415,14 @@ export function mapSessionMessagesToUpdates(messages: SessionMessage[]): Session
     }
     for (const message of candidates) {
       const sourceMessageUuid =
-        typeof message.uuid === "string" ? message.uuid : entrySourceMessageUuid;
+        typeof message.uuid === "string"
+          ? message.uuid
+          : entrySourceMessageUuid;
       const roleCandidate = message.role;
-      const role = roleCandidate === "assistant" || roleCandidate === "user" ? roleCandidate : fallbackRole;
+      const role =
+        roleCandidate === "assistant" || roleCandidate === "user"
+          ? roleCandidate
+          : fallbackRole;
       const parentToolUseId =
         typeof entry.parent_tool_use_id === "string"
           ? entry.parent_tool_use_id

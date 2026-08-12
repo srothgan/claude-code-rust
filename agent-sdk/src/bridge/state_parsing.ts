@@ -9,7 +9,10 @@ import type {
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 
-export function numberField(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+export function numberField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): number | undefined {
   for (const key of keys) {
     const value = record[key];
     if (typeof value === "number" && Number.isFinite(value)) {
@@ -19,7 +22,10 @@ export function numberField(record: Record<string, unknown>, ...keys: string[]):
   return undefined;
 }
 
-function nonNegativeNumberField(record: Record<string, unknown>, ...keys: string[]): number | undefined {
+function nonNegativeNumberField(
+  record: Record<string, unknown>,
+  ...keys: string[]
+): number | undefined {
   const value = numberField(record, ...keys);
   if (value === undefined || value < 0) {
     return undefined;
@@ -32,25 +38,46 @@ export function nonNegativeIntegerField(
   ...keys: string[]
 ): number | undefined {
   const value = numberField(record, ...keys);
-  return value !== undefined && value >= 0 && Number.isInteger(value) ? value : undefined;
+  return value !== undefined && value >= 0 && Number.isInteger(value)
+    ? value
+    : undefined;
 }
 
-export function buildSubagentRetryUpdate(message: Record<string, unknown>): SubagentRetryUpdate | null {
+export function buildSubagentRetryUpdate(
+  message: Record<string, unknown>,
+): SubagentRetryUpdate | null {
   const retry = asRecordOrNull(message.subagent_retry);
   if (!retry) {
     return null;
   }
   const attempt = nonNegativeIntegerField(retry, "attempt");
-  const maxRetries = nonNegativeIntegerField(retry, "max_retries", "maxRetries");
-  const retryDelayMs = nonNegativeIntegerField(retry, "retry_delay_ms", "retryDelayMs");
-  if (attempt === undefined || maxRetries === undefined || retryDelayMs === undefined) {
+  const maxRetries = nonNegativeIntegerField(
+    retry,
+    "max_retries",
+    "maxRetries",
+  );
+  const retryDelayMs = nonNegativeIntegerField(
+    retry,
+    "retry_delay_ms",
+    "retryDelayMs",
+  );
+  if (
+    attempt === undefined ||
+    maxRetries === undefined ||
+    retryDelayMs === undefined
+  ) {
     return null;
   }
 
-  const agentId = typeof retry.agent_id === "string" ? retry.agent_id.trim() : "";
+  const agentId =
+    typeof retry.agent_id === "string" ? retry.agent_id.trim() : "";
   const errorCategory =
     typeof retry.error_category === "string" ? retry.error_category.trim() : "";
-  const errorStatus = nonNegativeIntegerField(retry, "error_status", "errorStatus");
+  const errorStatus = nonNegativeIntegerField(
+    retry,
+    "error_status",
+    "errorStatus",
+  );
   return {
     state: "waiting",
     ...(agentId ? { agent_id: agentId } : {}),
@@ -69,7 +96,9 @@ export function parseFastModeState(value: unknown): FastModeState | null {
   return null;
 }
 
-export function parseFastModeDisabledReason(value: unknown): string | undefined {
+export function parseFastModeDisabledReason(
+  value: unknown,
+): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -78,13 +107,19 @@ export function parseFastModeDisabledReason(value: unknown): string | undefined 
 }
 
 export function parseRateLimitStatus(value: unknown): RateLimitStatus | null {
-  if (value === "allowed" || value === "allowed_warning" || value === "rejected") {
+  if (
+    value === "allowed" ||
+    value === "allowed_warning" ||
+    value === "rejected"
+  ) {
     return value;
   }
   return null;
 }
 
-export function parseRuntimeSessionState(value: unknown): RuntimeSessionState | null {
+export function parseRuntimeSessionState(
+  value: unknown,
+): RuntimeSessionState | null {
   if (value === "idle" || value === "running" || value === "requires_action") {
     return value;
   }
@@ -154,7 +189,10 @@ export function buildRateLimitUpdate(
     update.overage_resets_at = overageResetsAt;
   }
 
-  if (typeof info.overageDisabledReason === "string" && info.overageDisabledReason.length > 0) {
+  if (
+    typeof info.overageDisabledReason === "string" &&
+    info.overageDisabledReason.length > 0
+  ) {
     update.overage_disabled_reason = info.overageDisabledReason;
   }
 
@@ -174,7 +212,8 @@ export function buildRateLimitUpdate(
   }
 
   if (typeof info.hasChargeableSavedPaymentMethod === "boolean") {
-    update.has_chargeable_saved_payment_method = info.hasChargeableSavedPaymentMethod;
+    update.has_chargeable_saved_payment_method =
+      info.hasChargeableSavedPaymentMethod;
   }
 
   return update;
@@ -185,13 +224,24 @@ export function buildApiRetryUpdate(
 ): Extract<SessionUpdate, { type: "api_retry_update" }> | null {
   const attempt = numberField(message, "attempt");
   const maxRetries = numberField(message, "max_retries", "maxRetries");
-  const retryDelayMs = nonNegativeNumberField(message, "retry_delay_ms", "retryDelayMs");
-  if (attempt === undefined || maxRetries === undefined || retryDelayMs === undefined) {
+  const retryDelayMs = nonNegativeNumberField(
+    message,
+    "retry_delay_ms",
+    "retryDelayMs",
+  );
+  if (
+    attempt === undefined ||
+    maxRetries === undefined ||
+    retryDelayMs === undefined
+  ) {
     return null;
   }
 
   const rawStatus = message.error_status ?? message.errorStatus;
-  const errorStatus = typeof rawStatus === "number" && Number.isFinite(rawStatus) ? rawStatus : null;
+  const errorStatus =
+    typeof rawStatus === "number" && Number.isFinite(rawStatus)
+      ? rawStatus
+      : null;
 
   return {
     type: "api_retry_update",
@@ -203,17 +253,23 @@ export function buildApiRetryUpdate(
   };
 }
 
-export function normalizeSettingsParseError(value: unknown): SettingsParseErrorUpdate | null {
+export function normalizeSettingsParseError(
+  value: unknown,
+): SettingsParseErrorUpdate | null {
   const record = asRecordOrNull(value);
   if (!record) {
     return null;
   }
-  const message = typeof record.message === "string" ? record.message.trim() : "";
+  const message =
+    typeof record.message === "string" ? record.message.trim() : "";
   if (!message) {
     return null;
   }
   const path = typeof record.path === "string" ? record.path : "";
-  const file = typeof record.file === "string" && record.file.trim() ? record.file : undefined;
+  const file =
+    typeof record.file === "string" && record.file.trim()
+      ? record.file
+      : undefined;
   return {
     ...(file ? { file } : {}),
     path,
@@ -221,7 +277,9 @@ export function normalizeSettingsParseError(value: unknown): SettingsParseErrorU
   };
 }
 
-export function normalizeSettingsParseErrors(value: unknown): SettingsParseErrorUpdate[] {
+export function normalizeSettingsParseErrors(
+  value: unknown,
+): SettingsParseErrorUpdate[] {
   const entries = Array.isArray(value) ? value : [value];
   return entries.flatMap((entry) => {
     const normalized = normalizeSettingsParseError(entry);

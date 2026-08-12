@@ -25,7 +25,11 @@ function isDynamicSource(source: AvailableCommandsSource): boolean {
 
 function commandSignature(commands: AvailableCommand[]): string {
   return JSON.stringify(
-    commands.map((command) => [command.name, command.description, command.input_hint ?? ""]),
+    commands.map((command) => [
+      command.name,
+      command.description,
+      command.input_hint ?? "",
+    ]),
   );
 }
 
@@ -72,7 +76,10 @@ function shouldAcceptAvailableCommandsSnapshot(
   }
   if (!current) {
     if (commands.length === 0) {
-      return { accept: false, reason: "empty bootstrap snapshot ignored before first command list" };
+      return {
+        accept: false,
+        reason: "empty bootstrap snapshot ignored before first command list",
+      };
     }
     return { accept: true, reason: "initial command snapshot" };
   }
@@ -91,7 +98,10 @@ function shouldAcceptAvailableCommandsSnapshot(
   if (commands.length === 0) {
     return { accept: false, reason: "empty bootstrap snapshot ignored" };
   }
-  return { accept: true, reason: "bootstrap refresh before dynamic command source" };
+  return {
+    accept: true,
+    reason: "bootstrap refresh before dynamic command source",
+  };
 }
 
 export function updateAvailableCommands(
@@ -99,7 +109,11 @@ export function updateAvailableCommands(
   source: AvailableCommandsSource,
   commands: AvailableCommand[],
 ): boolean {
-  const decision = shouldAcceptAvailableCommandsSnapshot(session, source, commands);
+  const decision = shouldAcceptAvailableCommandsSnapshot(
+    session,
+    source,
+    commands,
+  );
   const currentGeneration = session.availableCommands?.generation ?? 0;
   const nextGeneration = currentGeneration + 1;
   if (!decision.accept) {
@@ -114,7 +128,8 @@ export function updateAvailableCommands(
     return false;
   }
 
-  const dynamicSeen = session.availableCommands?.dynamicSeen === true || isDynamicSource(source);
+  const dynamicSeen =
+    session.availableCommands?.dynamicSeen === true || isDynamicSource(source);
   session.availableCommands = {
     generation: nextGeneration,
     source,
@@ -164,8 +179,10 @@ export function mapSdkSlashCommand(command: unknown): AvailableCommand | null {
   }
   return {
     name,
-    description: typeof record.description === "string" ? record.description : "",
-    input_hint: typeof record.argumentHint === "string" ? record.argumentHint : undefined,
+    description:
+      typeof record.description === "string" ? record.description : "",
+    input_hint:
+      typeof record.argumentHint === "string" ? record.argumentHint : undefined,
   };
 }
 

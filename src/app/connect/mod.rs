@@ -66,7 +66,8 @@ struct StartConnectionParams {
 }
 
 pub(crate) use session_start::{
-    SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
+    SessionStartReason, begin_resume_session, begin_resume_session_at, begin_rewind,
+    start_new_session,
 };
 
 /// Four full UI drain batches absorb short bridge bursts while keeping retained
@@ -171,7 +172,7 @@ pub fn create_app(cli: &Cli) -> App {
         sdk_inventory: SdkInventoryState::default(),
         input: super::InputState::new(),
         status: AppStatus::Connecting,
-        resuming_session_id: None,
+        pending_session_resume: None,
         show_session_overview: !matches!(
             &cli.command,
             Some(Command::Resume { session_id: Some(_) })

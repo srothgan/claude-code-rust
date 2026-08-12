@@ -28,14 +28,21 @@ export function mapAvailableAgents(value: unknown): AvailableAgent[] {
     if (!name) {
       continue;
     }
-    const description = typeof record.description === "string" ? record.description : "";
-    const model = typeof record.model === "string" && record.model.trim().length > 0 ? record.model : undefined;
+    const description =
+      typeof record.description === "string" ? record.description : "";
+    const model =
+      typeof record.model === "string" && record.model.trim().length > 0
+        ? record.model
+        : undefined;
     const existing = byName.get(name);
     if (!existing) {
       byName.set(name, { name, description, model });
       continue;
     }
-    if (existing.description.trim().length === 0 && description.trim().length > 0) {
+    if (
+      existing.description.trim().length === 0 &&
+      description.trim().length > 0
+    ) {
       existing.description = description;
     }
     if (!existing.model && model) {
@@ -61,13 +68,19 @@ export function mapAvailableAgentsFromNames(value: unknown): AvailableAgent[] {
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function emitAvailableAgentsIfChanged(session: SessionState, agents: AvailableAgent[]): void {
+export function emitAvailableAgentsIfChanged(
+  session: SessionState,
+  agents: AvailableAgent[],
+): void {
   const signature = availableAgentsSignature(agents);
   if (session.lastAvailableAgentsSignature === signature) {
     return;
   }
   session.lastAvailableAgentsSignature = signature;
-  emitSessionUpdate(session.sessionId, { type: "available_agents_update", agents });
+  emitSessionUpdate(session.sessionId, {
+    type: "available_agents_update",
+    agents,
+  });
 }
 
 export function refreshAvailableAgents(session: SessionState): void {

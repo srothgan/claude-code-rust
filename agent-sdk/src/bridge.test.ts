@@ -69,6 +69,7 @@ import {
   handleUserDialogResponse,
   closeSession,
   closeSessionsBeforeRegister,
+  commitDeferredSession,
   refreshCurrentModel,
   resolveCurrentModel,
   sessions,
@@ -78,20 +79,35 @@ import {
 } from "./bridge/session_lifecycle.js";
 import {
   classifyTurnErrorKind,
+  emitAuthRequired,
   setFastModeSnapshotIfChanged,
 } from "./bridge/error_classification.js";
 import {
   buildConnectBridgeEvent,
+  emitSessionResumeFailed,
+  emitSessionUpdate,
   replaceProtocolEventWriter,
+  writeEvent,
 } from "./bridge/events.js";
-import { emitToolCall, emitToolProgressUpdate, emitToolResultUpdate } from "./bridge/tool_calls.js";
+import {
+  emitToolCall,
+  emitToolProgressUpdate,
+  emitToolResultUpdate,
+} from "./bridge/tool_calls.js";
 import { linkTaskToolUse } from "./bridge/task_links.js";
 import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
-import { flushPendingWorkerShutdown, handleResultMessage } from "./bridge/message_handlers.js";
+import {
+  flushPendingWorkerShutdown,
+  handleResultMessage,
+} from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
+import { normalizeStructuredUsage } from "./bridge/command_session_data.js";
+import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
-  process.platform === "win32" ? "claude-rs-bridge-bun.exe" : "claude-rs-bridge-bun";
+  process.platform === "win32"
+    ? "claude-rs-bridge-bun.exe"
+    : "claude-rs-bridge-bun";
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
@@ -100,7 +116,9 @@ const GERMAN_LANGUAGE_PROMPT =
   "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.";
 
 function makeSessionState(): SessionState {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   return {
     sessionId: "session-1",
     cwd: "C:/work",
@@ -133,6 +151,21 @@ function makeSessionState(): SessionState {
     authHintSent: false,
   };
 }
+
+test("session resume failures carry their operation identity", () => {
+  const events = captureBridgeEvents(() => {
+    emitSessionResumeFailed("source-session", "resume-at-1", "resume rejected");
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "resume-at-1",
+      event: "session_resume_failed",
+      session_id: "source-session",
+      message: "resume rejected",
+    },
+  ]);
+});
 
 test("closeSessionsBeforeRegister closes same-key stale session before replacement registration", async () => {
   sessions.clear();
@@ -193,9 +226,11 @@ test("closeAllSessions waits for tracked stale-session cleanup", async () => {
   });
   trackSessionCloseTask(cleanup);
 
-  const closePromise = closeAllSessions({ reason: "test_shutdown" }).then(() => {
-    closeResolved = true;
-  });
+  const closePromise = closeAllSessions({ reason: "test_shutdown" }).then(
+    () => {
+      closeResolved = true;
+    },
+  );
   await Promise.resolve();
   assert.equal(closeResolved, false);
 
@@ -242,7 +277,8 @@ test("closeSession cancels and awaits one coalesced MCP auth monitor per server"
 
 test("replacement handoff suppresses an old session's in-flight MCP monitor snapshot", async () => {
   const session = makeSessionState();
-  type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
+  type SdkMcpServerStatus =
+    import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
   let resolveStatus!: (statuses: SdkMcpServerStatus[]) => void;
   let statusStarted!: () => void;
   const started = new Promise<void>((resolve) => {
@@ -266,7 +302,9 @@ test("replacement handoff suppresses an old session's in-flight MCP monitor snap
     });
     await started;
     beginSessionClose(session);
-    resolveStatus([{ name: "docs", status: "connected" } as SdkMcpServerStatus]);
+    resolveStatus([
+      { name: "docs", status: "connected" } as SdkMcpServerStatus,
+    ]);
     const result = await monitor;
     assert.equal(result.outcome, "cancelled");
     assert.equal(session.closing, true);
@@ -346,10 +384,13 @@ test("refreshSupportedModesForSession retains current mode before capability dat
 
   refreshSupportedModesForSession(session);
 
-  assert.deepEqual(
-    session.supportedModeIds,
-    ["default", "auto", "acceptEdits", "plan", "dontAsk"],
-  );
+  assert.deepEqual(session.supportedModeIds, [
+    "default",
+    "auto",
+    "acceptEdits",
+    "plan",
+    "dontAsk",
+  ]);
 });
 
 test("markModeUnavailableForSession prunes rejected runtime mode from session list", () => {
@@ -447,6 +488,35 @@ async function captureBridgeEventsAsync(
     });
 }
 
+test("resume-at validation failures use the correlated failure event", async () => {
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleLifecycleCommand(
+      {
+        command: "resume_session_at",
+        session_id: "source-session",
+        target_user_message_id: " ",
+        launch_settings: {},
+      },
+      "resume-at-invalid",
+      undefined,
+      {
+        buildRewindConversationPlan: () => {
+          throw new Error("unexpected plan construction");
+        },
+      },
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "resume-at-invalid",
+      event: "session_resume_failed",
+      session_id: "source-session",
+      message: "resume target cannot be empty",
+    },
+  ]);
+});
+
 test("parseCommandEnvelope validates initialize command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({
@@ -503,6 +573,26 @@ test("parseCommandEnvelope validates resume_session command without cwd", () => 
     terminalProgressBarEnabled: true,
   });
   assert.equal(parsed.command.launch_settings.agent_progress_summaries, true);
+});
+
+test("parseCommandEnvelope validates resume_session_at independently from plain resume", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-resume-at",
+      command: "resume_session_at",
+      session_id: "session-123",
+      target_user_message_id: "user-2",
+      launch_settings: {},
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-resume-at");
+  assert.deepEqual(parsed.command, {
+    command: "resume_session_at",
+    session_id: "session-123",
+    target_user_message_id: "user-2",
+    launch_settings: {},
+  });
 });
 
 test("parseCommandEnvelope validates rename_session command", () => {
@@ -690,7 +780,9 @@ test("parseCommandEnvelope rejects invalid latest MCP config fields", () => {
         JSON.stringify({
           command: "mcp_set_servers",
           session_id: "session-123",
-          servers: { bad: { type: "http", url: "https://mcp.example.com", timeout: 999 } },
+          servers: {
+            bad: { type: "http", url: "https://mcp.example.com", timeout: 999 },
+          },
         }),
       ),
     /mcp_set_servers\.servers\.bad\.timeout must be an integer >= 1000/,
@@ -720,7 +812,13 @@ test("parseCommandEnvelope rejects invalid latest MCP config fields", () => {
         JSON.stringify({
           command: "mcp_set_servers",
           session_id: "session-123",
-          servers: { bad: { type: "http", url: "https://mcp.example.com", always_load: "yes" } },
+          servers: {
+            bad: {
+              type: "http",
+              url: "https://mcp.example.com",
+              always_load: "yes",
+            },
+          },
         }),
       ),
     /mcp_set_servers\.servers\.bad\.always_load must be a boolean/,
@@ -975,7 +1073,11 @@ test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {
       always_load: true,
       tools: [
         { name: "search" },
-        { name: "write", permission_policy: "always_allow", org_max_permission: "blocked" },
+        {
+          name: "write",
+          permission_policy: "always_allow",
+          org_max_permission: "blocked",
+        },
       ],
     }),
     {
@@ -986,7 +1088,11 @@ test("bridgeMcpConfigToSdk maps latest MCP fields to SDK casing", () => {
       alwaysLoad: true,
       tools: [
         { name: "search" },
-        { name: "write", permission_policy: "always_allow", org_max_permission: "blocked" },
+        {
+          name: "write",
+          permission_policy: "always_allow",
+          org_max_permission: "blocked",
+        },
       ],
     },
   );
@@ -1005,9 +1111,15 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
       alwaysLoad: true,
       tools: [
         { name: "search" },
-        { name: "write", permission_policy: "always_deny", org_max_permission: "ask" },
+        {
+          name: "write",
+          permission_policy: "always_deny",
+          org_max_permission: "ask",
+        },
       ],
-    } as unknown as NonNullable<import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]>,
+    } as unknown as NonNullable<
+      import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]
+    >,
     tools: [],
   });
 
@@ -1020,7 +1132,11 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
     always_load: true,
     tools: [
       { name: "search" },
-      { name: "write", permission_policy: "always_deny", org_max_permission: "ask" },
+      {
+        name: "write",
+        permission_policy: "always_deny",
+        org_max_permission: "ask",
+      },
     ],
   });
 });
@@ -1029,7 +1145,9 @@ test("mapMcpServerStatusConfig maps unknown config types without throwing", () =
   const mapped = mapMcpServerStatusConfig({
     type: "future-transport",
     url: "future://server",
-  } as unknown as NonNullable<import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]>);
+  } as unknown as NonNullable<
+    import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]
+  >);
 
   assert.deepEqual(mapped, { type: "unknown", raw_type: "future-transport" });
 });
@@ -1209,6 +1327,106 @@ test("parseCommandEnvelope validates get_context_usage command", () => {
   });
 });
 
+test("parseCommandEnvelope validates get_usage command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({ command: "get_usage", session_id: "session-usage" }),
+  );
+
+  assert.deepEqual(parsed.command, {
+    command: "get_usage",
+    session_id: "session-usage",
+  });
+});
+
+test("normalizeStructuredUsage keeps stable fields and tolerates malformed optional data", () => {
+  const snapshot = normalizeStructuredUsage({
+    subscription_type: " max ",
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: 125, resets_at: " 2026-08-12T10:00:00Z " },
+      seven_day: { utilization: "bad", resets_at: null },
+      seven_day_oauth_apps: { utilization: 18, resets_at: null },
+      model_scoped: [
+        {
+          display_name: " Fable ",
+          utilization: 33,
+          resets_at: "2026-08-18T10:00:00Z",
+        },
+        { display_name: "Broken", utilization: null, resets_at: null },
+      ],
+      extra_usage: {
+        is_enabled: true,
+        monthly_limit: 2_000,
+        used_credits: 375,
+        utilization: -4,
+        currency: " USD ",
+      },
+    },
+    session: {
+      total_cost_usd: 0.125,
+      total_api_duration_ms: 1_500,
+      total_duration_ms: 2_000,
+      total_lines_added: 12,
+      total_lines_removed: 3,
+      model_usage: { opus: {}, sonnet: {} },
+    },
+    behaviors: {
+      day: {
+        request_count: 4.9,
+        session_count: 2,
+        behaviors: [{ key: "long_context", pct: 25, count: 1 }],
+        agents: [{ name: "Explore", pct: 40 }],
+        skills: [{ name: "review", pct: 20 }],
+        plugins: [],
+        mcp_servers: [{ name: "github", pct: 10 }],
+      },
+      week: { request_count: -1, session_count: 3 },
+    },
+  });
+
+  assert.deepEqual(snapshot, {
+    subscription_type: "max",
+    rate_limits_available: true,
+    five_hour: { utilization: 100, resets_at: "2026-08-12T10:00:00Z" },
+    seven_day_oauth_apps: { utilization: 18 },
+    model_scoped: [
+      {
+        display_name: "Fable",
+        utilization: 33,
+        resets_at: "2026-08-18T10:00:00Z",
+      },
+    ],
+    extra_usage: {
+      monthly_limit: 2_000,
+      used_credits: 375,
+      utilization: 0,
+      currency: "USD",
+    },
+    session: {
+      total_cost_usd: 0.125,
+      total_api_duration_ms: 1_500,
+      total_duration_ms: 2_000,
+      total_lines_added: 12,
+      total_lines_removed: 3,
+      model_count: 2,
+    },
+    activity_day: {
+      request_count: 4,
+      session_count: 2,
+      behaviors: [{ key: "long_context", pct: 25, count: 1 }],
+      agents: [{ name: "Explore", pct: 40 }],
+      skills: [{ name: "review", pct: 20 }],
+      plugins: [],
+      mcp_servers: [{ name: "github", pct: 10 }],
+    },
+  });
+});
+
+test("normalizeStructuredUsage isolates an incompatible root as an empty snapshot", () => {
+  assert.deepEqual(normalizeStructuredUsage(null), {});
+  assert.deepEqual(normalizeStructuredUsage("not-an-object"), {});
+});
+
 test("parseCommandEnvelope validates get_rewind_targets command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({
@@ -1235,8 +1453,14 @@ test("mapRewindFilesResult preserves valid skipped link counts", () => {
     can_rewind: true,
     files_changed: ["src/main.rs"],
   });
-  assert.equal(mapRewindFilesResult({ ...base, skippedLinks: 0 }).skipped_links, 0);
-  assert.equal(mapRewindFilesResult({ ...base, skippedLinks: 2 }).skipped_links, 2);
+  assert.equal(
+    mapRewindFilesResult({ ...base, skippedLinks: 0 }).skipped_links,
+    0,
+  );
+  assert.equal(
+    mapRewindFilesResult({ ...base, skippedLinks: 2 }).skipped_links,
+    2,
+  );
 });
 
 test("mapRewindFilesResult drops malformed skipped link counts", () => {
@@ -1245,7 +1469,10 @@ test("mapRewindFilesResult drops malformed skipped link counts", () => {
     filesChanged: [],
   };
   for (const skippedLinks of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-    assert.equal(mapRewindFilesResult({ ...base, skippedLinks }).skipped_links, undefined);
+    assert.equal(
+      mapRewindFilesResult({ ...base, skippedLinks }).skipped_links,
+      undefined,
+    );
   }
 });
 
@@ -1295,22 +1522,34 @@ test("rewindTargetsFromSessionMessages filters user text messages with UUIDs", (
     {
       type: "user",
       uuid: "user-1",
-      message: { role: "user", content: [{ type: "text", text: " first prompt\nline " }] },
+      message: {
+        role: "user",
+        content: [{ type: "text", text: " first prompt\nline " }],
+      },
     },
     {
       type: "assistant",
       uuid: "assistant-1",
-      message: { role: "assistant", content: [{ type: "text", text: "ignored" }] },
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "ignored" }],
+      },
     },
     {
       type: "user",
       uuid: "tool-result",
-      message: { role: "user", content: [{ type: "tool_result", content: "ignored" }] },
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", content: "ignored" }],
+      },
     },
     {
       type: "user",
       uuid: "user-2",
-      message: { role: "user", content: [{ type: "text", text: "second prompt" }] },
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "second prompt" }],
+      },
     },
   ] as unknown as SessionMessage[];
 
@@ -1321,6 +1560,7 @@ test("rewindTargetsFromSessionMessages filters user text messages with UUIDs", (
       input_text: "second prompt",
       index: 3,
       previous_assistant_uuid: "assistant-1",
+      resume_anchor_uuid: "tool-result",
     },
     {
       uuid: "user-1",
@@ -1331,7 +1571,7 @@ test("rewindTargetsFromSessionMessages filters user text messages with UUIDs", (
   ]);
 });
 
-test("buildRewindConversationPlan anchors at previous assistant message", () => {
+test("buildRewindConversationPlan anchors at the last kept chain entry", () => {
   const messages = [
     {
       type: "user",
@@ -1341,7 +1581,10 @@ test("buildRewindConversationPlan anchors at previous assistant message", () => 
     {
       type: "assistant",
       uuid: "assistant-1",
-      message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "reply" }],
+      },
     },
     {
       type: "user",
@@ -1355,6 +1598,8 @@ test("buildRewindConversationPlan anchors at previous assistant message", () => 
   assert.ok(plan);
   assert.equal(plan.inputText, "second prompt");
   assert.equal(plan.previousAssistantUuid, "assistant-1");
+  assert.equal(plan.resumeSessionAtUuid, "assistant-1");
+  assert.equal(plan.resumeDropsTurnId, "user-2");
   assert.equal(plan.targetIndex, 2);
   assert.deepEqual(
     plan.retainedMessages.map((message) => message.uuid),
@@ -1373,7 +1618,10 @@ test("buildRewindConversationPlan treats first user message as fresh replacement
     {
       type: "assistant",
       uuid: "assistant-1",
-      message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "reply" }],
+      },
     },
   ] as unknown as SessionMessage[];
 
@@ -1382,12 +1630,14 @@ test("buildRewindConversationPlan treats first user message as fresh replacement
   assert.ok(plan);
   assert.equal(plan.inputText, " first prompt\nline ");
   assert.equal(plan.previousAssistantUuid, undefined);
+  assert.equal(plan.resumeSessionAtUuid, undefined);
+  assert.equal(plan.resumeDropsTurnId, undefined);
   assert.equal(plan.targetIndex, 0);
   assert.deepEqual(plan.retainedMessages, []);
   assert.deepEqual(plan.resumeUpdates, []);
 });
 
-test("buildRewindConversationPlan rejects stale or inconsistent targets", () => {
+test("buildRewindConversationPlan accepts a queued prompt and rejects stale targets", () => {
   const messages = [
     {
       type: "user",
@@ -1402,7 +1652,109 @@ test("buildRewindConversationPlan rejects stale or inconsistent targets", () => 
   ] as unknown as SessionMessage[];
 
   assert.equal(buildRewindConversationPlan(messages, "missing-user"), null);
-  assert.equal(buildRewindConversationPlan(messages, "user-2"), null);
+  const queuedPromptPlan = buildRewindConversationPlan(messages, "user-2");
+  assert.ok(queuedPromptPlan);
+  assert.equal(queuedPromptPlan.resumeSessionAtUuid, "user-1");
+  assert.equal(queuedPromptPlan.resumeDropsTurnId, "user-2");
+});
+
+test("buildRewindConversationPlan leaves older truncation boundaries unguarded", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: "first prompt" },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: "first response" },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: "second prompt" },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-2",
+      message: { role: "assistant", content: "second response" },
+    },
+    {
+      type: "user",
+      uuid: "user-3",
+      message: { role: "user", content: "third prompt" },
+    },
+  ] as unknown as SessionMessage[];
+
+  const olderPlan = buildRewindConversationPlan(messages, "user-2");
+  const tailPlan = buildRewindConversationPlan(messages, "user-3");
+
+  assert.ok(olderPlan);
+  assert.equal(olderPlan.resumeSessionAtUuid, "assistant-1");
+  assert.equal(olderPlan.resumeDropsTurnId, undefined);
+  assert.ok(tailPlan);
+  assert.equal(tailPlan.resumeSessionAtUuid, "assistant-2");
+  assert.equal(tailPlan.resumeDropsTurnId, "user-3");
+});
+
+test("buildRewindConversationPlan anchors after kept turn attachments", () => {
+  const messages = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: "first prompt" },
+    },
+    {
+      type: "assistant",
+      uuid: "assistant-1",
+      message: { role: "assistant", content: "tool response" },
+    },
+    {
+      type: "system",
+      uuid: "structured-output-1",
+      subtype: "structured_output",
+      data: { result: "kept output" },
+    },
+    {
+      type: "user",
+      uuid: "user-2",
+      message: { role: "user", content: "second prompt" },
+    },
+  ] as unknown as SessionMessage[];
+
+  const plan = buildRewindConversationPlan(messages, "user-2");
+
+  assert.ok(plan);
+  assert.equal(plan.previousAssistantUuid, "assistant-1");
+  assert.equal(plan.resumeSessionAtUuid, "structured-output-1");
+  assert.equal(plan.resumeDropsTurnId, "user-2");
+});
+
+test("buildRewindConversationPlan rejects empty and duplicate chain UUIDs", () => {
+  const duplicate = [
+    { type: "user", uuid: "same", message: { role: "user", content: "first" } },
+    {
+      type: "assistant",
+      uuid: "same",
+      message: { role: "assistant", content: "reply" },
+    },
+  ] as unknown as SessionMessage[];
+  const empty = [
+    {
+      type: "user",
+      uuid: "user-1",
+      message: { role: "user", content: "first" },
+    },
+    {
+      type: "assistant",
+      uuid: " ",
+      message: { role: "assistant", content: "reply" },
+    },
+  ] as unknown as SessionMessage[];
+
+  assert.equal(buildRewindConversationPlan(duplicate, "same"), null);
+  assert.equal(buildRewindConversationPlan(empty, "user-1"), null);
 });
 
 test("staleMcpAuthCandidates selects previously connected servers that regressed to needs-auth", () => {
@@ -1459,7 +1811,8 @@ test("staleMcpAuthCandidates respects the revalidation cooldown", () => {
 });
 
 test("MCP connection history is isolated between sessions with the same server name", async () => {
-  type SdkMcpServerStatus = import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
+  type SdkMcpServerStatus =
+    import("@anthropic-ai/claude-agent-sdk").McpServerStatus;
   const connected = {
     name: "docs",
     status: "connected",
@@ -1491,7 +1844,9 @@ test("MCP connection history is isolated between sessions with the same server n
 });
 
 test("buildSessionMutationOptions scopes rename requests to the session cwd", () => {
-  assert.deepEqual(buildSessionMutationOptions("C:/worktree"), { dir: "C:/worktree" });
+  assert.deepEqual(buildSessionMutationOptions("C:/worktree"), {
+    dir: "C:/worktree",
+  });
   assert.equal(buildSessionMutationOptions(undefined), undefined);
 });
 
@@ -1503,7 +1858,12 @@ test("canGenerateSessionTitle detects supported query objects", () => {
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
   assert.equal(canGenerateSessionTitle(query), true);
-  assert.equal(canGenerateSessionTitle({} as import("@anthropic-ai/claude-agent-sdk").Query), false);
+  assert.equal(
+    canGenerateSessionTitle(
+      {} as import("@anthropic-ai/claude-agent-sdk").Query,
+    ),
+    false,
+  );
 });
 
 test("generatePersistedSessionTitle calls sdk query with persist true", async () => {
@@ -1525,7 +1885,9 @@ test("generatePersistedSessionTitle calls sdk query with persist true", async ()
 });
 
 test("buildQueryOptions maps launch settings into sdk query options", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1566,7 +1928,8 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     preset: "claude_code",
     append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
   });
-  const _systemPrompt: NonNullable<Options["systemPrompt"]> = options.systemPrompt;
+  const _systemPrompt: NonNullable<Options["systemPrompt"]> =
+    options.systemPrompt;
   assert.ok(_systemPrompt);
   assert.equal(options.model, "haiku");
   assert.equal(options.permissionMode, "plan");
@@ -1576,7 +1939,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
   assert.equal(options.agentProgressSummaries, true);
   assert.equal(options.promptSuggestions, true);
   assert.equal(options.enableFileCheckpointing, true);
-  assert.deepEqual(options.disallowedTools, ["ProposeSkills"]);
+  assert.deepEqual(options.disallowedTools, ["ProposeSkills", "ProposeGoal"]);
   assert.equal(options.executable, "bun");
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
@@ -1586,11 +1949,15 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
 });
 
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     resume: "session-1",
     resumeSessionAt: "assistant-1",
+    resumeDropsTurn: "user-2",
+    forkSession: true,
     launchSettings: {},
     provisionalSessionId: "session-1",
     input,
@@ -1602,11 +1969,15 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
 
   assert.equal(options.resume, "session-1");
   assert.equal(options.resumeSessionAt, "assistant-1");
-  assert.equal("sessionId" in options, false);
+  assert.equal(options.resumeDropsTurn, "user-2");
+  assert.equal(options.forkSession, true);
+  assert.equal(options.sessionId, "session-1");
 });
 
 test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1646,7 +2017,9 @@ test("buildQueryOptions forwards settings and maps startup model and permission 
 });
 
 test("buildQueryOptions normalizes manual startup permission mode to default", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1666,7 +2039,9 @@ test("buildQueryOptions normalizes manual startup permission mode to default", (
 });
 
 test("buildQueryOptions trims startup model before passing sdk option", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1688,7 +2063,9 @@ test("buildQueryOptions trims startup model before passing sdk option", () => {
 });
 
 test("buildQueryOptions maps auto startup permission mode", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1709,7 +2086,9 @@ test("buildQueryOptions maps auto startup permission mode", () => {
 });
 
 test("buildQueryOptions enables dangerous skip flag for bypass permissions startup mode", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1731,7 +2110,9 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
 });
 
 test("buildQueryOptions omits optional startup overrides but keeps bridge guard prompt", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {},
@@ -1756,7 +2137,9 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
 });
 
 test("buildQueryOptions disables feedback drafts without mutating launch settings", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const settings = {
     feedbackDrafts: "notify",
     spinnerTipsEnabled: true,
@@ -1785,7 +2168,11 @@ test("buildQueryOptions disables feedback drafts without mutating launch setting
 test("dispatchCancelTurnCommand interrupts the matching session query", async () => {
   let interruptCount = 0;
   let receiptReturned = false;
-  const slashErrors: Array<{ sessionId: string; message: string; requestId?: string }> = [];
+  const slashErrors: Array<{
+    sessionId: string;
+    message: string;
+    requestId?: string;
+  }> = [];
 
   await dispatchCancelTurnCommand(
     { command: "cancel_turn", session_id: "session-1" },
@@ -1816,7 +2203,11 @@ test("dispatchCancelTurnCommand interrupts the matching session query", async ()
 
 test("dispatchCancelTurnCommand emits slash error for unknown session", async () => {
   const interruptCount = 0;
-  const slashErrors: Array<{ sessionId: string; message: string; requestId?: string }> = [];
+  const slashErrors: Array<{
+    sessionId: string;
+    message: string;
+    requestId?: string;
+  }> = [];
 
   await dispatchCancelTurnCommand(
     { command: "cancel_turn", session_id: "missing-session" },
@@ -1844,12 +2235,20 @@ test("resolveClaudeCodeSpawnCommand remaps bare bun to the bridge runtime execut
 });
 
 test("resolveClaudeCodeSpawnCommand preserves commands with path separators", () => {
-  assert.equal(resolveClaudeCodeSpawnCommand("/opt/runtime/bun"), "/opt/runtime/bun");
-  assert.equal(resolveClaudeCodeSpawnCommand("C:\\runtime\\bun.exe"), "C:\\runtime\\bun.exe");
+  assert.equal(
+    resolveClaudeCodeSpawnCommand("/opt/runtime/bun"),
+    "/opt/runtime/bun",
+  );
+  assert.equal(
+    resolveClaudeCodeSpawnCommand("C:\\runtime\\bun.exe"),
+    "C:\\runtime\\bun.exe",
+  );
 });
 
 test("buildQueryOptions spawn hook remaps bare bun command", async () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {},
@@ -1885,7 +2284,9 @@ test("buildQueryOptions spawn hook remaps bare bun command", async () => {
 });
 
 test("buildQueryOptions forwards SDK-provided spawn env without passing top-level env", async () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {},
@@ -1936,7 +2337,9 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
 });
 
 test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1964,7 +2367,9 @@ test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
 });
 
 test("buildQueryOptions preserves explicit sandbox failIfUnavailable setting", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -1993,7 +2398,9 @@ test("buildQueryOptions preserves explicit sandbox failIfUnavailable setting", (
 });
 
 test("buildQueryOptions preserves target sandbox network and filesystem fields", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -2015,6 +2422,60 @@ test("buildQueryOptions preserves target sandbox network and filesystem fields",
   assert.deepEqual(options.settings?.sandbox, {
     network: { strictAllowlist: true },
     filesystem: { disabled: true },
+  });
+});
+
+test("buildQueryOptions preserves nested sandbox credential controls", () => {
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
+  const credentials = {
+    files: [
+      {
+        path: ".secrets/token",
+        mode: "mask",
+        extract: "token=(.+)",
+        onExtractNoMatch: "deny",
+        decode: "jwt",
+        maskClaims: ["sub"],
+        maskDuplicates: true,
+        injectHosts: ["api.example.test"],
+      },
+    ],
+    envVars: [
+      {
+        name: "API_TOKEN",
+        mode: "mask",
+        decode: "jwt",
+        maskClaims: ["sub"],
+        injectHosts: ["api.example.test"],
+      },
+    ],
+    allowPlaintextInject: false,
+    awsPairs: [
+      {
+        accessKeyIdVar: "AWS_ACCESS_KEY_ID",
+        secretAccessKeyVar: "AWS_SECRET_ACCESS_KEY",
+        sessionTokenVar: "AWS_SESSION_TOKEN",
+      },
+    ],
+    sigv4: { streaming: "deny", presigned: "passthrough", sigv4a: "deny" },
+  };
+  const options = buildQueryOptions({
+    cwd: "C:/work",
+    launchSettings: { settings: { sandbox: { enabled: true, credentials } } },
+    provisionalSessionId: "session-sandbox-credentials",
+    input,
+    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false,
+    enableSpawnDebug: false,
+    sessionIdForLogs: () => "session-sandbox-credentials",
+  });
+
+  assert.deepEqual(options.settings?.sandbox, {
+    enabled: true,
+    failIfUnavailable: false,
+    credentials,
   });
 });
 
@@ -2085,7 +2546,10 @@ test("handleTaskSystemMessage falls back to description and last tool when progr
         content: [
           {
             type: "content",
-            content: { type: "text", text: "Inspecting auth code (last tool: Read)" },
+            content: {
+              type: "text",
+              text: "Inspecting auth code (last tool: Read)",
+            },
           },
         ],
       },
@@ -2164,7 +2628,10 @@ test("handleTaskSystemMessage keeps Agent completed notification provisional unt
         content: [
           {
             type: "content",
-            content: { type: "text", text: "Found the auth bug and prepared the fix" },
+            content: {
+              type: "text",
+              text: "Found the auth bug and prepared the fix",
+            },
           },
         ],
         task_metadata: {
@@ -2267,7 +2734,10 @@ test("handleTaskSystemMessage ignores lifecycle content for concrete output tool
   for (const toolCall of protectedTools) {
     const stored = session.toolCalls.get(toolCall.tool_call_id);
     assert.equal(stored?.status, "in_progress");
-    assert.equal(stored?.raw_output, `actual output for ${toolCall.tool_call_id}`);
+    assert.equal(
+      stored?.raw_output,
+      `actual output for ${toolCall.tool_call_id}`,
+    );
   }
 });
 
@@ -2292,7 +2762,9 @@ test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", 
     handleSdkMessage(session, {
       type: "tool_use_summary",
       summary: "Show commits on this branch since diverging from main",
-      preceding_tool_use_ids: protectedTools.map((toolCall) => toolCall.tool_call_id),
+      preceding_tool_use_ids: protectedTools.map(
+        (toolCall) => toolCall.tool_call_id,
+      ),
       uuid: "message-summary",
       session_id: "session-1",
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
@@ -2309,7 +2781,9 @@ test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", 
 
 test("handleSdkMessage applies tool_use_summary for summary-oriented tools", () => {
   const session = makeSessionState();
-  const toolCall = createToolCall("tool-agent", "Agent", { prompt: "Inspect auth flow" });
+  const toolCall = createToolCall("tool-agent", "Agent", {
+    prompt: "Inspect auth flow",
+  });
   session.toolCalls.set(toolCall.tool_call_id, toolCall);
 
   const events = captureBridgeEvents(() => {
@@ -2335,13 +2809,19 @@ test("handleSdkMessage applies tool_use_summary for summary-oriented tools", () 
         content: [
           {
             type: "content",
-            content: { type: "text", text: "Inspected auth flow and found the failing check" },
+            content: {
+              type: "text",
+              text: "Inspected auth flow and found the failing check",
+            },
           },
         ],
       },
     },
   });
-  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.raw_output, "Inspected auth flow and found the failing check");
+  assert.equal(
+    session.toolCalls.get(toolCall.tool_call_id)?.raw_output,
+    "Inspected auth flow and found the failing check",
+  );
 });
 
 test("handleSdkMessage suppresses ToolSearch bridge events without denying SDK use", () => {
@@ -2412,6 +2892,7 @@ test("handleSdkMessage emits transcript retraction for model_refusal_fallback", 
       direction: "retry",
       original_model: "claude-opus-4-1",
       fallback_model: "claude-sonnet-4-5",
+      scope: "local",
       request_id: "req-1",
       api_refusal_category: "cyber",
       api_refusal_explanation: "policy text",
@@ -2422,25 +2903,30 @@ test("handleSdkMessage emits transcript retraction for model_refusal_fallback", 
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "transcript_retraction",
-      message_uuids: ["assistant-old"],
-      reason: "model_refusal_fallback",
-      request_id: "req-1",
-      trigger: "refusal",
-      direction: "retry",
-      original_model: "claude-opus-4-1",
-      fallback_model: "claude-sonnet-4-5",
-      api_refusal_category: "cyber",
-      api_refusal_explanation: "policy text",
-      content: "Retried with fallback model",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "transcript_retraction",
+        message_uuids: ["assistant-old"],
+        reason: "model_refusal_fallback",
+        request_id: "req-1",
+        trigger: "refusal",
+        direction: "retry",
+        original_model: "claude-opus-4-1",
+        fallback_model: "claude-sonnet-4-5",
+        scope: "local",
+        api_refusal_category: "cyber",
+        api_refusal_explanation: "policy text",
+        content: "Retried with fallback model",
+      },
+    ],
+  );
   assert.equal(
     events.some(
       (event) =>
-        (event.update as Record<string, unknown> | undefined)?.type === "system_notice_update",
+        (event.update as Record<string, unknown> | undefined)?.type ===
+        "system_notice_update",
     ),
     false,
   );
@@ -2464,14 +2950,17 @@ test("handleSdkMessage emits warning notice for model_refusal_no_fallback with e
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "system_notice_update",
-      severity: "warning",
-      message:
-        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Reason: policy text.",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message:
+          "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Reason: policy text.",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage emits warning notice for model_refusal_no_fallback with category only", () => {
@@ -2489,14 +2978,17 @@ test("handleSdkMessage emits warning notice for model_refusal_no_fallback with c
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "system_notice_update",
-      severity: "warning",
-      message:
-        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refusal category: cyber.",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message:
+          "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refusal category: cyber.",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage emits warning notice for model_refusal_no_fallback with content detail", () => {
@@ -2514,14 +3006,17 @@ test("handleSdkMessage emits warning notice for model_refusal_no_fallback with c
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "system_notice_update",
-      severity: "warning",
-      message:
-        "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refused by policy!",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message:
+          "Could not continue with claude-opus-4-1: model refused the request and no fallback model is configured. Refused by policy!",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage emits readable model_refusal_no_fallback notice for empty metadata", () => {
@@ -2542,14 +3037,17 @@ test("handleSdkMessage emits readable model_refusal_no_fallback notice for empty
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "system_notice_update",
-      severity: "warning",
-      message:
-        "Could not continue with the selected model: model refused the request and no fallback model is configured.",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message:
+          "Could not continue with the selected model: model refused the request and no fallback model is configured.",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage emits tolerant transcript retraction for model_fallback", () => {
@@ -2567,15 +3065,19 @@ test("handleSdkMessage emits tolerant transcript retraction for model_fallback",
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "transcript_retraction",
-      message_uuids: ["old-1", "old-2"],
-      reason: "model_fallback",
-      original_model: "claude-opus-4-1",
-      fallback_model: "claude-sonnet-4-5",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "transcript_retraction",
+        message_uuids: ["old-1", "old-2"],
+        reason: "model_fallback",
+        original_model: "claude-opus-4-1",
+        fallback_model: "claude-sonnet-4-5",
+        scope: "session",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage emits assistant supersedes before replacement content", () => {
@@ -2590,33 +3092,41 @@ test("handleSdkMessage emits assistant supersedes before replacement content", (
       message: {
         role: "assistant",
         content: [
-          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "echo ok" } },
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Bash",
+            input: { command: "echo ok" },
+          },
         ],
       },
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "transcript_retraction",
-      message_uuids: ["assistant-old"],
-      reason: "assistant_supersedes",
-    },
-    {
-      type: "tool_call",
-      tool_call: {
-        tool_call_id: "tool-1",
-        title: "echo ok",
-        kind: "execute",
-        status: "in_progress",
-        source_message_uuid: "assistant-new",
-        content: [],
-        raw_input: { command: "echo ok" },
-        locations: [],
-        meta: { claudeCode: { toolName: "Bash", parentToolUseId: null } },
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "transcript_retraction",
+        message_uuids: ["assistant-old"],
+        reason: "assistant_supersedes",
       },
-    },
-  ]);
+      {
+        type: "tool_call",
+        tool_call: {
+          tool_call_id: "tool-1",
+          title: "echo ok",
+          kind: "execute",
+          status: "in_progress",
+          source_message_uuid: "assistant-new",
+          content: [],
+          raw_input: { command: "echo ok" },
+          locations: [],
+          meta: { claudeCode: { toolName: "Bash", parentToolUseId: null } },
+        },
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage propagates source UUIDs for stream text and tool results", () => {
@@ -2654,7 +3164,12 @@ test("handleSdkMessage propagates source UUIDs for stream text and tool results"
       message: {
         role: "user",
         content: [
-          { type: "tool_result", tool_use_id: "tool-1", content: "ok", is_error: false },
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "ok",
+            is_error: false,
+          },
         ],
       },
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
@@ -2690,7 +3205,9 @@ test("handleSdkMessage propagates source UUIDs for stream text and tool results"
           fields: {
             status: "completed",
             raw_output: "ok",
-            content: [{ type: "content", content: { type: "text", text: "ok" } }],
+            content: [
+              { type: "content", content: { type: "text", text: "ok" } },
+            ],
           },
         },
       },
@@ -2727,44 +3244,55 @@ test("handleSdkMessage refreshes Grep title when final assistant snapshot carrie
             type: "tool_use",
             id: "tool-grep",
             name: "Grep",
-            input: { pattern: "<rare string>", output_mode: "content", "-n": true },
+            input: {
+              pattern: "<rare string>",
+              output_mode: "content",
+              "-n": true,
+            },
           },
         ],
       },
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "tool_call",
-      tool_call: {
-        tool_call_id: "tool-grep",
-        title: "Grep",
-        kind: "search",
-        status: "in_progress",
-        source_message_uuid: "assistant-stream",
-        content: [],
-        raw_input: {},
-        locations: [],
-        meta: { claudeCode: { toolName: "Grep", parentToolUseId: null } },
-      },
-    },
-    {
-      type: "tool_call_update",
-      tool_call_update: {
-        tool_call_id: "tool-grep",
-        source_message_uuid: "assistant-final",
-        fields: {
-          title: "Grep <rare string> (content)",
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "tool_call",
+        tool_call: {
+          tool_call_id: "tool-grep",
+          title: "Grep",
           kind: "search",
           status: "in_progress",
-          raw_input: { pattern: "<rare string>", output_mode: "content", "-n": true },
+          source_message_uuid: "assistant-stream",
+          content: [],
+          raw_input: {},
           locations: [],
           meta: { claudeCode: { toolName: "Grep", parentToolUseId: null } },
         },
       },
-    },
-  ]);
+      {
+        type: "tool_call_update",
+        tool_call_update: {
+          tool_call_id: "tool-grep",
+          source_message_uuid: "assistant-final",
+          fields: {
+            title: "Grep <rare string> (content)",
+            kind: "search",
+            status: "in_progress",
+            raw_input: {
+              pattern: "<rare string>",
+              output_mode: "content",
+              "-n": true,
+            },
+            locations: [],
+            meta: { claudeCode: { toolName: "Grep", parentToolUseId: null } },
+          },
+        },
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage refreshes Agent title when final assistant snapshot carries input", () => {
@@ -2809,43 +3337,46 @@ test("handleSdkMessage refreshes Agent title when final assistant snapshot carri
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "tool_call",
-      tool_call: {
-        tool_call_id: "tool-agent",
-        title: "Agent",
-        kind: "think",
-        status: "in_progress",
-        source_message_uuid: "assistant-stream",
-        content: [],
-        raw_input: {},
-        locations: [],
-        meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
-      },
-    },
-    {
-      type: "tool_call_update",
-      tool_call_update: {
-        tool_call_id: "tool-agent",
-        source_message_uuid: "assistant-final",
-        fields: {
-          title: "Agent: review-worker",
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "tool_call",
+        tool_call: {
+          tool_call_id: "tool-agent",
+          title: "Agent",
           kind: "think",
           status: "in_progress",
-          raw_input: {
-            description: "review changes",
-            prompt: "Review the branch",
-            name: "review-worker",
-            subagent_type: "general-purpose",
-            model: "opus",
-          },
+          source_message_uuid: "assistant-stream",
+          content: [],
+          raw_input: {},
           locations: [],
           meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
         },
       },
-    },
-  ]);
+      {
+        type: "tool_call_update",
+        tool_call_update: {
+          tool_call_id: "tool-agent",
+          source_message_uuid: "assistant-final",
+          fields: {
+            title: "Agent: review-worker",
+            kind: "think",
+            status: "in_progress",
+            raw_input: {
+              description: "review changes",
+              prompt: "Review the branch",
+              name: "review-worker",
+              subagent_type: "general-purpose",
+              model: "opus",
+            },
+            locations: [],
+            meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
+          },
+        },
+      },
+    ],
+  );
   assert.deepEqual(session.toolCalls.get("tool-agent")?.raw_input, {
     description: "review changes",
     prompt: "Review the branch",
@@ -3088,11 +3619,17 @@ test("Workflow task notifications finish the linked root tool", () => {
     const toolCall = session.toolCalls.get(`tool-workflow-${sdkStatus}`);
     assert.equal(toolCall?.status, expectedStatus);
     assert.equal(toolCall?.raw_output, `Workflow ${sdkStatus}`);
-    assert.equal(toolCall?.task_metadata?.output_file, `C:/tmp/workflow-${sdkStatus}.output`);
+    assert.equal(
+      toolCall?.task_metadata?.output_file,
+      `C:/tmp/workflow-${sdkStatus}.output`,
+    );
     assert.equal(toolCall?.task_metadata?.summary, `Workflow ${sdkStatus}`);
     assert.equal(toolCall?.task_metadata?.terminal_status, sdkStatus);
     assert.equal(session.taskToolUseIds.has(`workflow-${sdkStatus}`), false);
-    assert.equal(session.taskIdsByToolUseId.has(`tool-workflow-${sdkStatus}`), false);
+    assert.equal(
+      session.taskIdsByToolUseId.has(`tool-workflow-${sdkStatus}`),
+      false,
+    );
   }
 });
 
@@ -3111,18 +3648,29 @@ test("TaskCreate output emits task state and links lifecycle task id", () => {
     });
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
-  assert.equal(updates.some((update) => update.type === "tool_call"), true);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
+  assert.equal(
+    updates.some((update) => update.type === "tool_call"),
+    true,
+  );
   const toolResult = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-create";
   })?.tool_call_update as Record<string, unknown> | undefined;
-  const resultFields = toolResult?.fields as Record<string, unknown> | undefined;
+  const resultFields = toolResult?.fields as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(resultFields?.status, "completed");
   assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
   assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
 
-  const taskUpdate = updates.find((update) => update.type === "task_state_update");
+  const taskUpdate = updates.find(
+    (update) => update.type === "task_state_update",
+  );
   assert.deepEqual(taskUpdate, {
     type: "task_state_update",
     source: "task_create",
@@ -3187,9 +3735,13 @@ test("TaskCreate transcript toolUseResult object emits typed task state", () => 
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
   const result = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-create-transcript";
   })?.tool_call_update as Record<string, unknown> | undefined;
   const resultFields = result?.fields as Record<string, unknown> | undefined;
@@ -3197,24 +3749,27 @@ test("TaskCreate transcript toolUseResult object emits typed task state", () => 
   assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
   assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
 
-  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
-    type: "task_state_update",
-    source: "task_create",
-    tasks: [
-      {
-        task_id: "1",
-        subject: "Scaffold Next.js app",
-        description: "Run create-next-app",
-        active_form: "Scaffolding Next.js app",
-        status: "pending",
-        blocks: [],
-        blocked_by: [],
-        source_tool_call_id: "tool-create-transcript",
-      },
-    ],
-    removed_task_ids: [],
-    is_complete_snapshot: false,
-  });
+  assert.deepEqual(
+    updates.find((update) => update.type === "task_state_update"),
+    {
+      type: "task_state_update",
+      source: "task_create",
+      tasks: [
+        {
+          task_id: "1",
+          subject: "Scaffold Next.js app",
+          description: "Run create-next-app",
+          active_form: "Scaffolding Next.js app",
+          status: "pending",
+          blocks: [],
+          blocked_by: [],
+          source_tool_call_id: "tool-create-transcript",
+        },
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
+    },
+  );
 });
 
 test("TodoWrite tool use remains generic and emits no plan or task state", () => {
@@ -3247,10 +3802,21 @@ test("TodoWrite tool use remains generic and emits no plan or task state", () =>
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
-  assert.equal(updates.some((update) => update.type === "tool_call"), true);
-  assert.equal(updates.some((update) => update.type === "plan"), false);
-  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
+  assert.equal(
+    updates.some((update) => update.type === "tool_call"),
+    true,
+  );
+  assert.equal(
+    updates.some((update) => update.type === "plan"),
+    false,
+  );
+  assert.equal(
+    updates.some((update) => update.type === "task_state_update"),
+    false,
+  );
   assert.equal(session.tasksById.size, 0);
 });
 
@@ -3280,9 +3846,13 @@ test("TaskUpdate success patches one task by task id", () => {
     });
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
   const result = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-update";
   })?.tool_call_update as Record<string, unknown> | undefined;
   const resultFields = result?.fields as Record<string, unknown> | undefined;
@@ -3331,8 +3901,13 @@ test("TaskUpdate title uses known subject when input only has task id", () => {
 
   const toolCall = events
     .map((event) => event.update as Record<string, unknown>)
-    .find((update) => update.type === "tool_call")?.tool_call as Record<string, unknown> | undefined;
-  assert.equal(toolCall?.title, "Update task: Scaffold Next.js app via create-next-app CLI");
+    .find((update) => update.type === "tool_call")?.tool_call as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(
+    toolCall?.title,
+    "Update task: Scaffold Next.js app via create-next-app CLI",
+  );
 });
 
 test("TaskOutput renders structured fields and deduplicates XML content without mutating task state", () => {
@@ -3371,15 +3946,18 @@ test("TaskOutput renders structured fields and deduplicates XML content without 
     );
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
-  const toolCall = updates.find((update) => update.type === "tool_call")?.tool_call as
-    | Record<string, unknown>
-    | undefined;
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
+  const toolCall = updates.find((update) => update.type === "tool_call")
+    ?.tool_call as Record<string, unknown> | undefined;
   assert.equal(toolCall?.kind, "other");
   assert.equal(toolCall?.title, "Task output: Watch build");
 
   const result = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-output";
   })?.tool_call_update as Record<string, unknown> | undefined;
   const fields = result?.fields as Record<string, unknown> | undefined;
@@ -3394,12 +3972,16 @@ test("TaskOutput renders structured fields and deduplicates XML content without 
       },
     },
   ]);
-  const text = (((fields?.content as Array<Record<string, unknown>> | undefined)?.[0]?.content as
-    | Record<string, unknown>
-    | undefined)?.text ?? "") as string;
+  const text = ((
+    (fields?.content as Array<Record<string, unknown>> | undefined)?.[0]
+      ?.content as Record<string, unknown> | undefined
+  )?.text ?? "") as string;
   assert.equal(text.includes("<retrieval_status>"), false);
   assert.equal(text.includes("Task ID: task-1"), false);
-  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  assert.equal(
+    updates.some((update) => update.type === "task_state_update"),
+    false,
+  );
   assert.equal(session.tasksById.get("task-1")?.status, "in_progress");
 });
 
@@ -3423,7 +4005,9 @@ test("TaskOutput parses XML leaf fields when structured result is unavailable", 
   const result = events
     .map((event) => event.update as Record<string, unknown>)
     .find((update) => {
-      const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+      const toolCallUpdate = update.tool_call_update as
+        | Record<string, unknown>
+        | undefined;
       return toolCallUpdate?.tool_call_id === "tool-output-xml";
     })?.tool_call_update as Record<string, unknown> | undefined;
   const fields = result?.fields as Record<string, unknown> | undefined;
@@ -3464,15 +4048,18 @@ test("TaskStop renders structured output and marks the task terminal", () => {
     });
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
-  const toolCall = updates.find((update) => update.type === "tool_call")?.tool_call as
-    | Record<string, unknown>
-    | undefined;
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
+  const toolCall = updates.find((update) => update.type === "tool_call")
+    ?.tool_call as Record<string, unknown> | undefined;
   assert.equal(toolCall?.kind, "other");
   assert.equal(toolCall?.title, "Stop task: Watch build");
 
   const result = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-stop";
   })?.tool_call_update as Record<string, unknown> | undefined;
   const fields = result?.fields as Record<string, unknown> | undefined;
@@ -3488,27 +4075,30 @@ test("TaskStop renders structured output and marks the task terminal", () => {
     },
   ]);
 
-  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
-    type: "task_state_update",
-    source: "task_lifecycle",
-    tasks: [
-      {
-        task_id: "task-1",
-        subject: "Watch build",
-        status: "completed",
-        blocks: [],
-        blocked_by: [],
-        metadata: {
-          terminal_status: "stopped",
-          task_type: "bash",
-          command: "npm run watch",
+  assert.deepEqual(
+    updates.find((update) => update.type === "task_state_update"),
+    {
+      type: "task_state_update",
+      source: "task_lifecycle",
+      tasks: [
+        {
+          task_id: "task-1",
+          subject: "Watch build",
+          status: "completed",
+          blocks: [],
+          blocked_by: [],
+          metadata: {
+            terminal_status: "stopped",
+            task_type: "bash",
+            command: "npm run watch",
+          },
+          source_tool_call_id: "tool-agent",
         },
-        source_tool_call_id: "tool-agent",
-      },
-    ],
-    removed_task_ids: [],
-    is_complete_snapshot: false,
-  });
+      ],
+      removed_task_ids: [],
+      is_complete_snapshot: false,
+    },
+  );
   assert.equal(session.taskToolUseIds.has("task-1"), false);
 });
 
@@ -3527,14 +4117,21 @@ test("TaskStop result for an already-gone task does not create stale task state"
     });
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
   const result = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-stop-missing";
   })?.tool_call_update as Record<string, unknown> | undefined;
   const fields = result?.fields as Record<string, unknown> | undefined;
   assert.equal(fields?.status, "completed");
-  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  assert.equal(
+    updates.some((update) => update.type === "task_state_update"),
+    false,
+  );
   assert.equal(session.tasksById.has("task-missing"), false);
 });
 
@@ -3562,16 +4159,22 @@ test("TaskUpdate in-progress result leaves activity rendering to app task state"
     });
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
   const result = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-activity";
   })?.tool_call_update as Record<string, unknown> | undefined;
   const fields = result?.fields as Record<string, unknown> | undefined;
   assert.equal(fields?.status, "completed");
   assert.equal(Object.hasOwn(fields ?? {}, "raw_output"), false);
   assert.equal(Object.hasOwn(fields ?? {}, "content"), false);
-  const taskUpdate = updates.find((update) => update.type === "task_state_update");
+  const taskUpdate = updates.find(
+    (update) => update.type === "task_state_update",
+  );
   assert.deepEqual(taskUpdate, {
     type: "task_state_update",
     source: "task_update",
@@ -3616,7 +4219,9 @@ test("TaskUpdate in-progress result omits activity when none is known", () => {
   const result = events
     .map((event) => event.update as Record<string, unknown>)
     .find((update) => {
-      const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+      const toolCallUpdate = update.tool_call_update as
+        | Record<string, unknown>
+        | undefined;
       return toolCallUpdate?.tool_call_id === "tool-no-activity";
     })?.tool_call_update as Record<string, unknown> | undefined;
   const fields = result?.fields as Record<string, unknown> | undefined;
@@ -3648,22 +4253,31 @@ test("TaskUpdate deleted removes task without persisting deleted status", () => 
     });
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
   const toolResult = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-delete";
   })?.tool_call_update as Record<string, unknown> | undefined;
-  const resultFields = toolResult?.fields as Record<string, unknown> | undefined;
+  const resultFields = toolResult?.fields as
+    | Record<string, unknown>
+    | undefined;
   assert.equal(resultFields?.status, "completed");
   assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
   assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
-  assert.deepEqual(updates.find((update) => update.type === "task_state_update"), {
-    type: "task_state_update",
-    source: "task_update",
-    tasks: [],
-    removed_task_ids: ["task-1"],
-    is_complete_snapshot: false,
-  });
+  assert.deepEqual(
+    updates.find((update) => update.type === "task_state_update"),
+    {
+      type: "task_state_update",
+      source: "task_update",
+      tasks: [],
+      removed_task_ids: ["task-1"],
+      is_complete_snapshot: false,
+    },
+  );
   assert.equal(session.tasksById.has("task-1"), false);
 });
 
@@ -3691,13 +4305,23 @@ test("failed TaskUpdate output renders failure but does not mutate task state", 
     });
   });
 
-  const updates = events.map((event) => event.update as Record<string, unknown>);
-  assert.equal(updates.some((update) => update.type === "task_state_update"), false);
+  const updates = events.map(
+    (event) => event.update as Record<string, unknown>,
+  );
+  assert.equal(
+    updates.some((update) => update.type === "task_state_update"),
+    false,
+  );
   const toolResult = updates.find((update) => {
-    const toolCallUpdate = update.tool_call_update as Record<string, unknown> | undefined;
+    const toolCallUpdate = update.tool_call_update as
+      | Record<string, unknown>
+      | undefined;
     return toolCallUpdate?.tool_call_id === "tool-failed-update";
   })?.tool_call_update as Record<string, unknown> | undefined;
-  assert.equal((toolResult?.fields as Record<string, unknown> | undefined)?.status, "failed");
+  assert.equal(
+    (toolResult?.fields as Record<string, unknown> | undefined)?.status,
+    "failed",
+  );
   assert.equal(session.tasksById.get("task-1")?.status, "pending");
 });
 
@@ -3776,7 +4400,9 @@ test("TaskGet null emits removal or confirmed absence", () => {
   });
 
   assert.deepEqual(
-    events.map((event) => event.update as Record<string, unknown>).find((update) => update.type === "task_state_update"),
+    events
+      .map((event) => event.update as Record<string, unknown>)
+      .find((update) => update.type === "task_state_update"),
     {
       type: "task_state_update",
       source: "task_get",
@@ -3801,24 +4427,27 @@ test("handleTaskSystemMessage emits task state for unlinked task_updated message
     });
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "task_state_update",
-      source: "task_lifecycle",
-      tasks: [
-        {
-          task_id: "task-missing",
-          subject: "This should not be emitted",
-          description: "This should not be emitted",
-          status: "in_progress",
-          blocks: [],
-          blocked_by: [],
-        },
-      ],
-      removed_task_ids: [],
-      is_complete_snapshot: false,
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "task_state_update",
+        source: "task_lifecycle",
+        tasks: [
+          {
+            task_id: "task-missing",
+            subject: "This should not be emitted",
+            description: "This should not be emitted",
+            status: "in_progress",
+            blocks: [],
+            blocked_by: [],
+          },
+        ],
+        removed_task_ids: [],
+        is_complete_snapshot: false,
+      },
+    ],
+  );
 });
 
 test("handleTaskSystemMessage maps stopped notifications to terminal task state", () => {
@@ -3841,29 +4470,32 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
     });
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "task_state_update",
-      source: "task_lifecycle",
-      tasks: [
-        {
-          task_id: "task-1",
-          subject: "Watch build",
-          description: "Stopped background watch",
-          status: "completed",
-          blocks: [],
-          blocked_by: [],
-          metadata: {
-            output_file: "C:/tmp/task-1.txt",
-            summary: "Stopped background watch",
-            terminal_status: "stopped",
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "task_state_update",
+        source: "task_lifecycle",
+        tasks: [
+          {
+            task_id: "task-1",
+            subject: "Watch build",
+            description: "Stopped background watch",
+            status: "completed",
+            blocks: [],
+            blocked_by: [],
+            metadata: {
+              output_file: "C:/tmp/task-1.txt",
+              summary: "Stopped background watch",
+              terminal_status: "stopped",
+            },
           },
-        },
-      ],
-      removed_task_ids: [],
-      is_complete_snapshot: false,
-    },
-  ]);
+        ],
+        removed_task_ids: [],
+        is_complete_snapshot: false,
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage emits MCP snapshot from init status payload", () => {
@@ -3924,7 +4556,10 @@ test("handleSdkMessage emits MCP snapshot from init status payload", () => {
 
 test("authority snapshots publish fast mode set during initialization", () => {
   const session = makeSessionState();
-  assert.equal(setFastModeSnapshotIfChanged(session, "on", "model_not_allowed"), true);
+  assert.equal(
+    setFastModeSnapshotIfChanged(session, "on", "model_not_allowed"),
+    true,
+  );
 
   for (const connectEvent of ["connected", "session_replaced"] as const) {
     session.connectEvent = connectEvent;
@@ -3954,7 +4589,8 @@ test("handleSdkMessage emits fast mode as a delta after authority exists", () =>
   const fastModeUpdates = events.filter(
     (event) =>
       event.event === "session_update" &&
-      (event.update as { type?: unknown } | undefined)?.type === "fast_mode_update",
+      (event.update as { type?: unknown } | undefined)?.type ===
+        "fast_mode_update",
   );
   assert.deepEqual(fastModeUpdates, [
     {
@@ -4010,8 +4646,12 @@ test("fast mode snapshots deduplicate state and reason together and clear stale 
     .filter((event) => event.event === "session_update")
     .map((event) => event.update as import("./types.js").SessionUpdate)
     .filter(
-      (update): update is Extract<import("./types.js").SessionUpdate, { type: "fast_mode_update" }> =>
-        update.type === "fast_mode_update",
+      (
+        update,
+      ): update is Extract<
+        import("./types.js").SessionUpdate,
+        { type: "fast_mode_update" }
+      > => update.type === "fast_mode_update",
     );
   assert.deepEqual(updates, [
     ...reasons.map((reason) => ({
@@ -4093,9 +4733,15 @@ test("handleSdkMessage correlates heartbeat progress to its existing parent tool
     },
   });
   assert.equal(session.toolCalls.size, 1);
-  assert.equal(session.toolCalls.get(parentToolCall.tool_call_id)?.status, "in_progress");
+  assert.equal(
+    session.toolCalls.get(parentToolCall.tool_call_id)?.status,
+    "in_progress",
+  );
   for (let heartbeat = 0; heartbeat < 3; heartbeat += 1) {
-    assert.equal(session.toolCalls.has(`tool-shell-parent-heartbeat-${heartbeat}`), false);
+    assert.equal(
+      session.toolCalls.has(`tool-shell-parent-heartbeat-${heartbeat}`),
+      false,
+    );
   }
 });
 
@@ -4174,9 +4820,13 @@ test("handleSdkMessage updates and clears subagent retry progress in place", () 
       },
     },
   });
-  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.status, "in_progress");
   assert.equal(
-    session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry?.state,
+    session.toolCalls.get(toolCall.tool_call_id)?.status,
+    "in_progress",
+  );
+  assert.equal(
+    session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry
+      ?.state,
     "waiting",
   );
 
@@ -4242,7 +4892,10 @@ test("handleSdkMessage ignores malformed subagent retry progress", () => {
   });
 
   assert.deepEqual(events, []);
-  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.task_metadata, undefined);
+  assert.equal(
+    session.toolCalls.get(toolCall.tool_call_id)?.task_metadata,
+    undefined,
+  );
 });
 
 test("emitToolResultUpdate clears active subagent retry metadata", () => {
@@ -4274,12 +4927,19 @@ test("emitToolResultUpdate clears active subagent retry metadata", () => {
   const update = events.at(-1)?.update as Record<string, unknown>;
   const toolCallUpdate = update.tool_call_update as Record<string, unknown>;
   const fields = toolCallUpdate.fields as Record<string, unknown>;
-  assert.deepEqual(fields.task_metadata, { subagent_retry: { state: "clear" } });
-  assert.equal(session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry, undefined);
+  assert.deepEqual(fields.task_metadata, {
+    subagent_retry: { state: "clear" },
+  });
+  assert.equal(
+    session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry,
+    undefined,
+  );
 });
 
 test("buildQueryOptions trims language before appending system prompt", () => {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: {
@@ -4302,7 +4962,10 @@ test("buildQueryOptions trims language before appending system prompt", () => {
 
 test("parseCommandEnvelope rejects missing required fields", () => {
   assert.throws(
-    () => parseCommandEnvelope(JSON.stringify({ command: "set_model", session_id: "s1" })),
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({ command: "set_model", session_id: "s1" }),
+      ),
     /set_model\.model must be a string/,
   );
 });
@@ -4410,7 +5073,9 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
     status: "in_progress",
     content: [] as Array<import("./types.js").ToolCallContent>,
     locations: [] as Array<import("./types.js").ToolLocation>,
-    meta: { claudeCode: { toolName: "AskUserQuestion", parentToolUseId: null } },
+    meta: {
+      claudeCode: { toolName: "AskUserQuestion", parentToolUseId: null },
+    },
   };
 
   const events = await captureBridgeEventsAsync(async () => {
@@ -4482,14 +5147,17 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
       },
       annotations: {
         "Pick deployment target": {
-          preview: "Deploy to staging first.\n\nDeploy to production after approval.",
+          preview:
+            "Deploy to staging first.\n\nDeploy to production after approval.",
           notes: "Roll out in both environments",
         },
       },
     });
   });
 
-  const questionEvent = events.find((event) => event.event === "question_request");
+  const questionEvent = events.find(
+    (event) => event.event === "question_request",
+  );
   assert.ok(questionEvent, "expected question request event");
   assert.deepEqual(questionEvent.request, {
     tool_call: {
@@ -4499,7 +5167,9 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
       status: "in_progress",
       content: [],
       locations: [],
-      meta: { claudeCode: { toolName: "AskUserQuestion", parentToolUseId: null } },
+      meta: {
+        claudeCode: { toolName: "AskUserQuestion", parentToolUseId: null },
+      },
       raw_input: {
         prompt: {
           question: "Pick deployment target",
@@ -4548,13 +5218,26 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
   });
 
   const completedQuestionUpdate = events
-    .map((event) => (event.event === "session_update" ? (event.update as Record<string, unknown>) : undefined))
+    .map((event) =>
+      event.event === "session_update"
+        ? (event.update as Record<string, unknown>)
+        : undefined,
+    )
     .find((update) => {
-      const toolCallUpdate = update?.tool_call_update as Record<string, unknown> | undefined;
-      const fields = toolCallUpdate?.fields as Record<string, unknown> | undefined;
-      return toolCallUpdate?.tool_call_id === "tool-question" && fields?.status === "completed";
+      const toolCallUpdate = update?.tool_call_update as
+        | Record<string, unknown>
+        | undefined;
+      const fields = toolCallUpdate?.fields as
+        | Record<string, unknown>
+        | undefined;
+      return (
+        toolCallUpdate?.tool_call_id === "tool-question" &&
+        fields?.status === "completed"
+      );
     })?.tool_call_update as Record<string, unknown> | undefined;
-  const completedFields = completedQuestionUpdate?.fields as Record<string, unknown> | undefined;
+  const completedFields = completedQuestionUpdate?.fields as
+    | Record<string, unknown>
+    | undefined;
   assert.deepEqual(completedFields?.raw_input, {
     questions: [
       {
@@ -4580,7 +5263,8 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
     },
     annotations: {
       "Pick deployment target": {
-        preview: "Deploy to staging first.\n\nDeploy to production after approval.",
+        preview:
+          "Deploy to staging first.\n\nDeploy to production after approval.",
         notes: "Roll out in both environments",
       },
     },
@@ -4605,7 +5289,8 @@ test("requestAskUserQuestionAnswers preserves previews and annotations in update
           },
         ],
         annotation: {
-          preview: "Deploy to staging first.\n\nDeploy to production after approval.",
+          preview:
+            "Deploy to staging first.\n\nDeploy to production after approval.",
           notes: "Roll out in both environments",
         },
       },
@@ -4639,7 +5324,10 @@ test("normalizeToolKind maps known tool names", () => {
   assert.equal(normalizeToolKind("Agent"), "think");
   assert.equal(normalizeToolKind("EnterPlanMode"), "switch_mode");
   assert.equal(normalizeToolKind("ExitPlanMode"), "switch_mode");
-  assert.equal(normalizeToolKind("TodoWrite"), normalizeToolKind("FutureUnknownTool"));
+  assert.equal(
+    normalizeToolKind("TodoWrite"),
+    normalizeToolKind("FutureUnknownTool"),
+  );
 });
 
 test("isShellToolName recognizes only supported shell tools", () => {
@@ -4650,12 +5338,20 @@ test("isShellToolName recognizes only supported shell tools", () => {
 });
 
 test("shell tool titles use input command", () => {
-  assert.equal(createToolCall("tc-bash-title", "Bash", { command: "git status" }).title, "git status");
   assert.equal(
-    createToolCall("tc-powershell-title", "PowerShell", { command: "Get-ChildItem" }).title,
+    createToolCall("tc-bash-title", "Bash", { command: "git status" }).title,
+    "git status",
+  );
+  assert.equal(
+    createToolCall("tc-powershell-title", "PowerShell", {
+      command: "Get-ChildItem",
+    }).title,
     "Get-ChildItem",
   );
-  assert.equal(createToolCall("tc-powershell-empty", "PowerShell", {}).title, "Terminal");
+  assert.equal(
+    createToolCall("tc-powershell-empty", "PowerShell", {}).title,
+    "Terminal",
+  );
 });
 
 test("ReadMcpResourceDir titles include server and URI context", () => {
@@ -4742,9 +5438,21 @@ test("buildRateLimitUpdate normalizes SDK overage boolean spellings", () => {
     ["new spelling true", { overageInUse: true }, true],
     ["new spelling false", { overageInUse: false }, false],
     ["both spellings true", { isUsingOverage: true, overageInUse: true }, true],
-    ["both spellings false", { isUsingOverage: false, overageInUse: false }, false],
-    ["conflicting spellings prefer new true", { isUsingOverage: false, overageInUse: true }, true],
-    ["conflicting spellings prefer new false", { isUsingOverage: true, overageInUse: false }, false],
+    [
+      "both spellings false",
+      { isUsingOverage: false, overageInUse: false },
+      false,
+    ],
+    [
+      "conflicting spellings prefer new true",
+      { isUsingOverage: false, overageInUse: true },
+      true,
+    ],
+    [
+      "conflicting spellings prefer new false",
+      { isUsingOverage: true, overageInUse: false },
+      false,
+    ],
   ] as const;
 
   for (const [name, fields, expected] of cases) {
@@ -4767,10 +5475,13 @@ test("buildRateLimitUpdate rejects invalid payloads", () => {
     }),
     { type: "rate_limit_update", status: "rejected" },
   );
-  assert.deepEqual(buildRateLimitUpdate({ status: "rejected", errorCode: "other" }), {
-    type: "rate_limit_update",
-    status: "rejected",
-  });
+  assert.deepEqual(
+    buildRateLimitUpdate({ status: "rejected", errorCode: "other" }),
+    {
+      type: "rate_limit_update",
+      status: "rejected",
+    },
+  );
 });
 
 test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {
@@ -4875,10 +5586,13 @@ test("normalizeSettingsParseError accepts only SDK-shaped errors", () => {
       message: "Expected array",
     },
   );
-  assert.deepEqual(normalizeSettingsParseError({ path: "", message: "Invalid JSON" }), {
-    path: "",
-    message: "Invalid JSON",
-  });
+  assert.deepEqual(
+    normalizeSettingsParseError({ path: "", message: "Invalid JSON" }),
+    {
+      path: "",
+      message: "Invalid JSON",
+    },
+  );
   assert.equal(normalizeSettingsParseError({ path: "", message: "" }), null);
   assert.equal(normalizeSettingsParseError("Invalid JSON"), null);
 });
@@ -4922,7 +5636,10 @@ test("handleSdkMessage emits lifecycle compatibility session updates", () => {
   assert.deepEqual(
     events.map((event) => event.update),
     [
-      { type: "prompt_suggestion_update", suggestion: "Write tests for this change" },
+      {
+        type: "prompt_suggestion_update",
+        suggestion: "Write tests for this change",
+      },
       {
         type: "api_retry_update",
         attempt: 1,
@@ -5049,13 +5766,42 @@ test("handleSdkMessage rejects invalid compaction boundary counters", () => {
 });
 
 test("classifyTurnErrorKind prefers SDK assistant error codes", () => {
-  assert.equal(classifyTurnErrorKind("error_during_execution", [], "model_not_found"), "model_unavailable");
-  assert.equal(classifyTurnErrorKind("error_during_execution", [], "oauth_org_not_allowed"), "account_access");
-  assert.equal(classifyTurnErrorKind("error_during_execution", [], "overloaded"), "transient_service");
-  assert.equal(classifyTurnErrorKind("error_during_execution", [], "server_error"), "transient_service");
-  assert.equal(classifyTurnErrorKind("error_during_execution", [], "authentication_failed"), "auth_required");
-  assert.equal(classifyTurnErrorKind("error_during_execution", [], "billing_error"), "plan_limit");
-  assert.equal(classifyTurnErrorKind("error_during_execution", [], "rate_limit"), "plan_limit");
+  assert.equal(
+    classifyTurnErrorKind("error_during_execution", [], "model_not_found"),
+    "model_unavailable",
+  );
+  assert.equal(
+    classifyTurnErrorKind(
+      "error_during_execution",
+      [],
+      "oauth_org_not_allowed",
+    ),
+    "account_access",
+  );
+  assert.equal(
+    classifyTurnErrorKind("error_during_execution", [], "overloaded"),
+    "transient_service",
+  );
+  assert.equal(
+    classifyTurnErrorKind("error_during_execution", [], "server_error"),
+    "transient_service",
+  );
+  assert.equal(
+    classifyTurnErrorKind(
+      "error_during_execution",
+      [],
+      "authentication_failed",
+    ),
+    "auth_required",
+  );
+  assert.equal(
+    classifyTurnErrorKind("error_during_execution", [], "billing_error"),
+    "plan_limit",
+  );
+  assert.equal(
+    classifyTurnErrorKind("error_during_execution", [], "rate_limit"),
+    "plan_limit",
+  );
 });
 
 test("handleSdkMessage replaces available commands from commands_changed", () => {
@@ -5073,17 +5819,20 @@ test("handleSdkMessage replaces available commands from commands_changed", () =>
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "available_commands_update",
-      commands: [
-        { name: "/one", description: "First command", input_hint: "<value>" },
-        { name: "/two", description: "" },
-      ],
-      source: "commands_changed",
-      generation: 1,
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "available_commands_update",
+        commands: [
+          { name: "/one", description: "First command", input_hint: "<value>" },
+          { name: "/two", description: "" },
+        ],
+        source: "commands_changed",
+        generation: 1,
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage accepts empty commands_changed replacement list", () => {
@@ -5098,14 +5847,17 @@ test("handleSdkMessage accepts empty commands_changed replacement list", () => {
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "available_commands_update",
-      commands: [],
-      source: "commands_changed",
-      generation: 1,
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "available_commands_update",
+        commands: [],
+        source: "commands_changed",
+        generation: 1,
+      },
+    ],
+  );
 });
 
 test("available command registry blocks stale supportedCommands after dynamic updates", () => {
@@ -5163,13 +5915,17 @@ test("available command registry blocks stale supportedCommands after dynamic up
 test("commands_changed wins an actual supportedCommands bootstrap race", async () => {
   const session = makeSessionState();
   let resolveSupportedCommands:
-    | ((commands: import("@anthropic-ai/claude-agent-sdk").SlashCommand[]) => void)
+    | ((
+        commands: import("@anthropic-ai/claude-agent-sdk").SlashCommand[],
+      ) => void)
     | undefined;
   session.query = {
     supportedCommands: () =>
-      new Promise<import("@anthropic-ai/claude-agent-sdk").SlashCommand[]>((resolve) => {
-        resolveSupportedCommands = resolve;
-      }),
+      new Promise<import("@anthropic-ai/claude-agent-sdk").SlashCommand[]>(
+        (resolve) => {
+          resolveSupportedCommands = resolve;
+        },
+      ),
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
   captureBridgeEvents(() => {
@@ -5257,10 +6013,21 @@ test("handleSdkMessage emits system notices for notifications and plugin failure
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    { type: "system_notice_update", severity: "info", message: "Sync completed" },
-    { type: "system_notice_update", severity: "warning", message: "Plugin install failed acme: download failed" },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "info",
+        message: "Sync completed",
+      },
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message: "Plugin install failed acme: download failed",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage maps informational system messages to notices by level", () => {
@@ -5292,11 +6059,22 @@ test("handleSdkMessage maps informational system messages to notices by level", 
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    { type: "system_notice_update", severity: "info", message: "Sync ready" },
-    { type: "system_notice_update", severity: "info", message: "Suggestion: Try /compact" },
-    { type: "system_notice_update", severity: "warning", message: "Hook blocked continuation" },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      { type: "system_notice_update", severity: "info", message: "Sync ready" },
+      {
+        type: "system_notice_update",
+        severity: "info",
+        message: "Suggestion: Try /compact",
+      },
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message: "Hook blocked continuation",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage keeps informational info log-only unless continuation is prevented", () => {
@@ -5321,13 +6099,16 @@ test("handleSdkMessage keeps informational info log-only unless continuation is 
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "system_notice_update",
-      severity: "warning",
-      message: "Stop hook denied continuation",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message: "Stop hook denied continuation",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage deduplicates informational messages by tool use, level, and content", () => {
@@ -5362,10 +6143,17 @@ test("handleSdkMessage deduplicates informational messages by tool use, level, a
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    { type: "system_notice_update", severity: "info", message: "Progress" },
-    { type: "system_notice_update", severity: "info", message: "Progress updated" },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      { type: "system_notice_update", severity: "info", message: "Progress" },
+      {
+        type: "system_notice_update",
+        severity: "info",
+        message: "Progress updated",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage does not deduplicate informational messages without a tool use id", () => {
@@ -5383,10 +6171,21 @@ test("handleSdkMessage does not deduplicate informational messages without a too
     }
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    { type: "system_notice_update", severity: "info", message: "Repeated global notice" },
-    { type: "system_notice_update", severity: "info", message: "Repeated global notice" },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "info",
+        message: "Repeated global notice",
+      },
+      {
+        type: "system_notice_update",
+        severity: "info",
+        message: "Repeated global notice",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage treats worker shutdown before connect as log-only", () => {
@@ -5420,13 +6219,16 @@ test("handleSdkMessage flushes connected worker shutdown only when stream ends",
     flushPendingWorkerShutdown(session);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "system_notice_update",
-      severity: "warning",
-      message: "Claude worker is shutting down: host_exit",
-    },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "warning",
+        message: "Claude worker is shutting down: host_exit",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage cancels pending worker shutdown after later SDK activity", () => {
@@ -5450,9 +6252,16 @@ test("handleSdkMessage cancels pending worker shutdown after later SDK activity"
     flushPendingWorkerShutdown(session);
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    { type: "system_notice_update", severity: "info", message: "Still running" },
-  ]);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "system_notice_update",
+        severity: "info",
+        message: "Still running",
+      },
+    ],
+  );
 });
 
 test("handleSdkMessage ignores unknown future system subtypes", () => {
@@ -5477,7 +6286,11 @@ test("handleSdkMessage treats mirror errors as log-only diagnostics", () => {
       type: "system",
       subtype: "mirror_error",
       error: "append timed out",
-      key: { projectKey: "project", sessionId: "session-1", subpath: "subagents/agent-1" },
+      key: {
+        projectKey: "project",
+        sessionId: "session-1",
+        subpath: "subagents/agent-1",
+      },
       uuid: "message-mirror",
       session_id: "session-1",
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
@@ -5542,13 +6355,88 @@ test("handleSdkMessage accepts auto-continuation message origin without user out
   assert.deepEqual(events, []);
 });
 
+test("handleSdkMessage renders cross-session peer input with preserved provenance", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "user",
+      uuid: "peer-message-1",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      origin: {
+        kind: "peer",
+        from: "reported-route",
+        name: "Build session",
+        fromSession: "session-peer",
+        body: "Decoded peer message",
+        verifiedPeerPid: 4242,
+      },
+      message: {
+        role: "user",
+        content: "raw envelope that must not be rendered",
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, [
+    {
+      event: "session_update",
+      session_id: "session-1",
+      update: {
+        type: "external_message_update",
+        content: "Decoded peer message",
+        source_message_uuid: "peer-message-1",
+        origin: {
+          kind: "peer",
+          from: "reported-route",
+          name: "Build session",
+          from_session: "session-peer",
+          verified_peer_pid: 4242,
+        },
+      },
+    },
+  ]);
+});
+
+test("handleSdkMessage distinguishes peer-send task notifications from human prompts", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "user",
+      uuid: "task-peer-1",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      origin: { kind: "task-notification", subkind: "peer-send-message" },
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "Peer task body" }],
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]?.update, {
+    type: "external_message_update",
+    content: "Peer task body",
+    source_message_uuid: "task-peer-1",
+    origin: { kind: "task-notification", subkind: "peer-send-message" },
+  });
+});
+
 test("handleSdkMessage preserves assistant correlation metadata on tool calls", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
     handleSdkMessage(session, {
       type: "assistant",
       message: {
-        content: [{ type: "tool_use", id: "tool-1", name: "Bash", input: { command: "npm test" } }],
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Bash",
+            input: { command: "npm test" },
+          },
+        ],
       },
       parent_tool_use_id: null,
       request_id: "request-1",
@@ -5598,68 +6486,76 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
     });
   });
 
-  assert.deepEqual(events.map((event) => event.update), [
-    {
-      type: "tool_call",
-      tool_call: {
-        tool_call_id: "tool-1",
-        title: "Agent",
-        kind: "think",
-        status: "pending",
-        content: [],
-        raw_input: {},
-        locations: [],
-        meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "tool_call",
+        tool_call: {
+          tool_call_id: "tool-1",
+          title: "Agent",
+          kind: "think",
+          status: "pending",
+          content: [],
+          raw_input: {},
+          locations: [],
+          meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
+        },
       },
-    },
-    {
-      type: "task_state_update",
-      source: "task_lifecycle",
-      tasks: [
-        {
-          task_id: "task-1",
-          subject: "Validate the branch",
-          description: "Run checks",
-          status: "in_progress",
-          blocks: [],
-          blocked_by: [],
-          metadata: {
-            request_id: "request-1",
-            subagent_type: "tester",
-            task_description: "Validate the branch",
+      {
+        type: "task_state_update",
+        source: "task_lifecycle",
+        tasks: [
+          {
+            task_id: "task-1",
+            subject: "Validate the branch",
+            description: "Run checks",
+            status: "in_progress",
+            blocks: [],
+            blocked_by: [],
+            metadata: {
+              request_id: "request-1",
+              subagent_type: "tester",
+              task_description: "Validate the branch",
+            },
+            source_tool_call_id: "tool-1",
           },
-          source_tool_call_id: "tool-1",
-        },
-      ],
-      removed_task_ids: [],
-      is_complete_snapshot: false,
-    },
-    {
-      type: "tool_call_update",
-      tool_call_update: {
-        tool_call_id: "tool-1",
-        fields: {
-          status: "in_progress",
-        },
+        ],
+        removed_task_ids: [],
+        is_complete_snapshot: false,
       },
-    },
-    {
-      type: "tool_call_update",
-      tool_call_update: {
-        tool_call_id: "tool-1",
-        fields: {
-          status: "in_progress",
-          raw_output: "Run checks",
-          content: [{ type: "content", content: { type: "text", text: "Run checks" } }],
-          task_metadata: {
-            request_id: "request-1",
-            subagent_type: "tester",
-            task_description: "Validate the branch",
+      {
+        type: "tool_call_update",
+        tool_call_update: {
+          tool_call_id: "tool-1",
+          fields: {
+            status: "in_progress",
           },
         },
       },
-    },
-  ]);
+      {
+        type: "tool_call_update",
+        tool_call_update: {
+          tool_call_id: "tool-1",
+          fields: {
+            status: "in_progress",
+            raw_output: "Run checks",
+            content: [
+              {
+                type: "content",
+                content: { type: "text", text: "Run checks" },
+              },
+            ],
+            task_metadata: {
+              request_id: "request-1",
+              subagent_type: "tester",
+              task_description: "Validate the branch",
+            },
+          },
+        },
+      },
+    ],
+  );
 });
 
 test("parseCommandEnvelope validates set_effort command", () => {
@@ -5819,7 +6715,9 @@ test("applySessionFastMode applies live settings and decodes the SDK's sparse of
     state: "on",
     disabled_reason: "pending",
   });
-  assert.deepEqual(await applySessionFastMode(query, true), { state: "cooldown" });
+  assert.deepEqual(await applySessionFastMode(query, true), {
+    state: "cooldown",
+  });
   assert.deepEqual(await applySessionFastMode(query, false), { state: "off" });
   assert.deepEqual(await applySessionFastMode(query, false), { state: "off" });
   assert.deepEqual(calls, [
@@ -5986,7 +6884,10 @@ test("shouldEmitStartupAuthRequiredForAccount skips Claude OAuth hint for extern
     "anthropicGoogleCloud",
     "mantle",
   ] as const) {
-    assert.equal(shouldEmitStartupAuthRequiredForAccount({ apiProvider }), false);
+    assert.equal(
+      shouldEmitStartupAuthRequiredForAccount({ apiProvider }),
+      false,
+    );
   }
 });
 
@@ -6089,7 +6990,11 @@ test("permissionOptionsFromSuggestions uses session label when only session scop
   ]);
   assert.deepEqual(options, [
     { option_id: "allow_once", name: "Allow once", kind: "allow_once" },
-    { option_id: "allow_session", name: "Allow for session", kind: "allow_session" },
+    {
+      option_id: "allow_session",
+      name: "Allow for session",
+      kind: "allow_session",
+    },
     { option_id: "reject_once", name: "Deny", kind: "reject_once" },
   ]);
 });
@@ -6231,7 +7136,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.220");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.227");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -6258,7 +7163,12 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
         id: "msg-1",
         role: "assistant",
         content: [
-          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "echo hello" } },
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Bash",
+            input: { command: "echo hello" },
+          },
           { type: "text", text: "Nested assistant final" },
         ],
         usage: {
@@ -6301,32 +7211,39 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
   const userChunk = updates.find(
     (
       update,
-    ): update is Extract<import("./types.js").SessionUpdate, { type: "user_message_chunk" }> =>
-      update.type === "user_message_chunk",
+    ): update is Extract<
+      import("./types.js").SessionUpdate,
+      { type: "user_message_chunk" }
+    > => update.type === "user_message_chunk",
   );
   const agentChunk = updates.find(
     (
       update,
-    ): update is Extract<import("./types.js").SessionUpdate, { type: "agent_message_chunk" }> =>
-      update.type === "agent_message_chunk",
+    ): update is Extract<
+      import("./types.js").SessionUpdate,
+      { type: "agent_message_chunk" }
+    > => update.type === "agent_message_chunk",
   );
   const toolCall = updates.find(
-    (update): update is Extract<import("./types.js").SessionUpdate, { type: "tool_call" }> =>
-      update.type === "tool_call",
+    (
+      update,
+    ): update is Extract<
+      import("./types.js").SessionUpdate,
+      { type: "tool_call" }
+    > => update.type === "tool_call",
   );
   const toolCallUpdate = updates.find(
     (
       update,
-    ): update is Extract<import("./types.js").SessionUpdate, { type: "tool_call_update" }> =>
-      update.type === "tool_call_update",
+    ): update is Extract<
+      import("./types.js").SessionUpdate,
+      { type: "tool_call_update" }
+    > => update.type === "tool_call_update",
   );
   assert.equal(userChunk?.source_message_uuid, "u1");
   assert.equal(agentChunk?.source_message_uuid, "a1");
   assert.equal(toolCall?.tool_call.source_message_uuid, "a1");
-  assert.equal(
-    toolCallUpdate?.tool_call_update.source_message_uuid,
-    "u2",
-  );
+  assert.equal(toolCallUpdate?.tool_call_update.source_message_uuid, "u2");
 });
 
 test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {
@@ -6346,7 +7263,12 @@ test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {
             name: "ToolSearch",
             input: { query: "src/" },
           },
-          { type: "tool_use", id: "tool-bash", name: "Bash", input: { command: "echo ok" } },
+          {
+            type: "tool_use",
+            id: "tool-bash",
+            name: "Bash",
+            input: { command: "echo ok" },
+          },
         ],
       },
     },
@@ -6377,7 +7299,9 @@ test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {
   ]);
 
   const toolCalls = updates.filter((update) => update.type === "tool_call");
-  const toolUpdates = updates.filter((update) => update.type === "tool_call_update");
+  const toolUpdates = updates.filter(
+    (update) => update.type === "tool_call_update",
+  );
 
   assert.deepEqual(
     toolCalls.map((update) => update.tool_call.tool_call_id),
@@ -6400,8 +7324,18 @@ test("mapSessionMessagesToUpdates preserves parallel tool results", () => {
       message: {
         role: "assistant",
         content: [
-          { type: "tool_use", id: "tool-a", name: "Bash", input: { command: "echo a" } },
-          { type: "tool_use", id: "tool-b", name: "Bash", input: { command: "echo b" } },
+          {
+            type: "tool_use",
+            id: "tool-a",
+            name: "Bash",
+            input: { command: "echo a" },
+          },
+          {
+            type: "tool_use",
+            id: "tool-b",
+            name: "Bash",
+            input: { command: "echo b" },
+          },
         ],
       },
     },
@@ -6432,7 +7366,9 @@ test("mapSessionMessagesToUpdates preserves parallel tool results", () => {
   ]);
 
   const toolCalls = updates.filter((update) => update.type === "tool_call");
-  const toolUpdates = updates.filter((update) => update.type === "tool_call_update");
+  const toolUpdates = updates.filter(
+    (update) => update.type === "tool_call_update",
+  );
 
   assert.deepEqual(
     toolCalls.map((update) => update.tool_call.tool_call_id),
@@ -6493,22 +7429,31 @@ test("handleSdkMessage correlates tool non-execution metadata by tool ID", () =>
         ...cases.map(([id, kind]) => ({
           id,
           non_execution_kind: kind,
-          ...(id === "tool-user-rejected" ? { user_feedback: "Please use a safer command." } : {}),
+          ...(id === "tool-user-rejected"
+            ? { user_feedback: "Please use a safer command." }
+            : {}),
         })),
       ].reverse(),
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
   const updates = events
-    .map((event) => event.update as import("./types.js").SessionUpdate | undefined)
+    .map(
+      (event) => event.update as import("./types.js").SessionUpdate | undefined,
+    )
     .filter(
-      (update): update is Extract<import("./types.js").SessionUpdate, { type: "tool_call_update" }> =>
-        update?.type === "tool_call_update",
+      (
+        update,
+      ): update is Extract<
+        import("./types.js").SessionUpdate,
+        { type: "tool_call_update" }
+      > => update?.type === "tool_call_update",
     );
   assert.equal(updates.length, cases.length);
   for (const [id, kind, status] of cases) {
-    const fields = updates.find((update) => update.tool_call_update.tool_call_id === id)
-      ?.tool_call_update.fields;
+    const fields = updates.find(
+      (update) => update.tool_call_update.tool_call_id === id,
+    )?.tool_call_update.fields;
     assert.equal(fields?.status, status);
     assert.equal(fields?.raw_output, `raw output for ${id}`);
     assert.equal(fields?.output_metadata?.non_execution?.kind, kind);
@@ -6530,7 +7475,14 @@ test("handleSdkMessage ignores malformed and mismatched tool non-execution metad
       session_id: "session-1",
       message: {
         role: "assistant",
-        content: [{ type: "tool_use", id: "tool-ok", name: "Bash", input: { command: "echo ok" } }],
+        content: [
+          {
+            type: "tool_use",
+            id: "tool-ok",
+            name: "Bash",
+            input: { command: "echo ok" },
+          },
+        ],
       },
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
     handleSdkMessage(session, {
@@ -6539,7 +7491,14 @@ test("handleSdkMessage ignores malformed and mismatched tool non-execution metad
       session_id: "session-1",
       message: {
         role: "user",
-        content: [{ type: "tool_result", tool_use_id: "tool-ok", content: "ok", is_error: false }],
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-ok",
+            content: "ok",
+            is_error: false,
+          },
+        ],
       },
       tool_result_meta: [
         null,
@@ -6552,7 +7511,9 @@ test("handleSdkMessage ignores malformed and mismatched tool non-execution metad
   });
 
   const update = events
-    .map((event) => event.update as import("./types.js").SessionUpdate | undefined)
+    .map(
+      (event) => event.update as import("./types.js").SessionUpdate | undefined,
+    )
     .find((candidate) => candidate?.type === "tool_call_update");
   assert.equal(update?.type, "tool_call_update");
   if (update?.type !== "tool_call_update") {
@@ -6573,7 +7534,12 @@ test("mapSessionMessagesToUpdates carries tool non-execution metadata from histo
       message: {
         role: "assistant",
         content: [
-          { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "echo ok" } },
+          {
+            type: "tool_use",
+            id: "tool-1",
+            name: "Bash",
+            input: { command: "echo ok" },
+          },
         ],
       },
     },
@@ -6604,16 +7570,21 @@ test("mapSessionMessagesToUpdates carries tool non-execution metadata from histo
     },
   ] as unknown as SessionMessage[]);
 
-  const update = updates.find((candidate) => candidate.type === "tool_call_update");
+  const update = updates.find(
+    (candidate) => candidate.type === "tool_call_update",
+  );
   assert.equal(update?.type, "tool_call_update");
   if (update?.type !== "tool_call_update") {
     throw new Error("expected tool update");
   }
   assert.equal(update.tool_call_update.fields.status, "killed");
-  assert.deepEqual(update.tool_call_update.fields.output_metadata?.non_execution, {
-    kind: "interrupted",
-    user_feedback: "Stopped intentionally.",
-  });
+  assert.deepEqual(
+    update.tool_call_update.fields.output_metadata?.non_execution,
+    {
+      kind: "interrupted",
+      user_feedback: "Stopped intentionally.",
+    },
+  );
 });
 
 test("mapSessionMessagesToUpdates maps task system records from resume history", () => {
@@ -6702,7 +7673,9 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
     },
   ]);
 
-  const taskUpdates = updates.filter((update) => update.type === "task_state_update");
+  const taskUpdates = updates.filter(
+    (update) => update.type === "task_state_update",
+  );
   assert.equal(taskUpdates.length, 4);
   assert.deepEqual(taskUpdates.at(1), {
     type: "task_state_update",
@@ -6872,7 +7845,8 @@ test("handleResultMessage preserves new SDK terminal reasons", () => {
 
     assert.equal(events.at(-1)?.event, "turn_complete");
     assert.equal(
-      (events.at(-1) as { terminal_reason?: string } | undefined)?.terminal_reason,
+      (events.at(-1) as { terminal_reason?: string } | undefined)
+        ?.terminal_reason,
       terminalReason,
     );
   }
@@ -6967,6 +7941,98 @@ test("handleResultMessage emits terminal reason on turn errors", () => {
   });
 });
 
+test("handleResultMessage captures resumeDropsTurn refusal before candidate commit", () => {
+  const session = makeSessionState();
+  session.connected = false;
+  session.deferConnect = true;
+  session.initializationReady = true;
+  session.resumeDropsTurn = "user-2";
+  const refusal =
+    "Resume rejected by --resume-drops-turn: unexpected queued message";
+
+  const events = captureBridgeEvents(() => {
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "error_during_execution",
+      errors: [refusal],
+    });
+  });
+
+  assert.deepEqual(events, []);
+  assert.equal(session.initializationReady, false);
+  assert.equal(session.initializationError, refusal);
+});
+
+test("commitDeferredSession requires the guarded-resume validation fence", () => {
+  sessions.clear();
+  const session = makeSessionState();
+  session.connected = false;
+  session.deferConnect = true;
+  session.initializationReady = true;
+  session.resumeDropsTurn = "user-2";
+  sessions.set(session.sessionId, session);
+  try {
+    const events = captureBridgeEvents(() => {
+      assert.throws(
+        () => commitDeferredSession(session),
+        /not ready to commit/,
+      );
+    });
+    assert.deepEqual(events, []);
+    assert.equal(session.deferConnect, true);
+  } finally {
+    sessions.clear();
+  }
+});
+
+test("commitDeferredSession publishes connect before all buffered session-scoped and auth events", () => {
+  sessions.clear();
+  const session = makeSessionState();
+  session.connected = false;
+  session.deferConnect = true;
+  session.initializationReady = true;
+  session.resumeDropsTurn = "user-2";
+  session.resumeGuardFenceComplete = true;
+  sessions.set(session.sessionId, session);
+  try {
+    const events = captureBridgeEvents(() => {
+      emitSessionUpdate(session.sessionId, {
+        type: "session_status_update",
+        status: "idle",
+      });
+      writeEvent({
+        event: "runtime_reload_completed",
+        session_id: session.sessionId,
+      });
+      sessions.delete(session.sessionId);
+      session.sessionId = "session-committed";
+      sessions.set(session.sessionId, session);
+      emitAuthRequired(session, "Login is required");
+      commitDeferredSession(session);
+    });
+
+    assert.deepEqual(
+      events.map((event) => event.event),
+      [
+        "connected",
+        "session_update",
+        "runtime_reload_completed",
+        "auth_required",
+      ],
+    );
+    assert.deepEqual(
+      events.flatMap((event) =>
+        "session_id" in event ? [event.session_id] : [],
+      ),
+      ["session-committed", "session-committed", "session-committed"],
+    );
+    assert.equal(session.deferredBridgeEvents, undefined);
+    assert.equal(session.deferredAuthRequired, undefined);
+  } finally {
+    sessions.clear();
+  }
+});
+
 test("handleResultMessage emits typed turn error classifications for SDK assistant errors", () => {
   const cases = [
     ["model_not_found", "model_unavailable"],
@@ -7007,7 +8073,9 @@ test("handleResultMessage preserves target api error status shapes", () => {
         type: "result",
         subtype: "error_during_execution",
         errors: ["service overloaded"],
-        ...(apiErrorStatus !== undefined ? { api_error_status: apiErrorStatus } : {}),
+        ...(apiErrorStatus !== undefined
+          ? { api_error_status: apiErrorStatus }
+          : {}),
       });
     });
 
@@ -7018,7 +8086,9 @@ test("handleResultMessage preserves target api error status shapes", () => {
       error_kind: "transient_service",
       sdk_result_subtype: "error_during_execution",
       assistant_error: "overloaded",
-      ...(typeof apiErrorStatus === "number" ? { api_error_status: apiErrorStatus } : {}),
+      ...(typeof apiErrorStatus === "number"
+        ? { api_error_status: apiErrorStatus }
+        : {}),
     });
   }
 });
@@ -7434,7 +8504,9 @@ test("resolveCurrentModel keeps runtime version in short display while using cat
 });
 
 function userDialogHandlerForTest(): NonNullable<Options["onUserDialog"]> {
-  const input = new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>();
+  const input = new AsyncQueue<
+    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+  >();
   const options = buildQueryOptions({
     cwd: "C:/work",
     launchSettings: { language: "English" },
@@ -7472,11 +8544,12 @@ test("onUserDialog round-trips a retry_fallback selection", async () => {
             guidanceText: "This request was declined.",
           },
         },
-        { signal: new AbortController().signal },
+        { signal: new AbortController().signal, requestId: "dialog-retry-1" },
       );
 
       const requestId = [...session.pendingUserDialogs.keys()][0];
       assert.ok(requestId, "expected a pending user dialog resolver");
+      assert.equal(requestId, "dialog-retry-1");
 
       handleUserDialogResponse({
         command: "user_dialog_response",
@@ -7491,7 +8564,9 @@ test("onUserDialog round-trips a retry_fallback selection", async () => {
       });
     });
 
-    const dialogEvent = events.find((event) => event.event === "user_dialog_request");
+    const dialogEvent = events.find(
+      (event) => event.event === "user_dialog_request",
+    );
     assert.ok(dialogEvent, "expected a user_dialog_request event");
     const request = dialogEvent.request as {
       dialog_kind: string;
@@ -7507,7 +8582,10 @@ test("onUserDialog round-trips a retry_fallback selection", async () => {
       ["retry_fallback", "edit_prompt"],
     );
     assert.equal(request.options[0].label, "Switch to claude-sonnet-4-6");
-    assert.equal(request.options[1].label, "Edit prompt and retry with claude-opus-4-8");
+    assert.equal(
+      request.options[1].label,
+      "Edit prompt and retry with claude-opus-4-8",
+    );
   } finally {
     sessions.delete("session-dialog");
   }
@@ -7520,9 +8598,12 @@ test("onUserDialog round-trips an edit_prompt selection", async () => {
     const resultPromise = handler(
       {
         dialogKind: "refusal_fallback_prompt",
-        payload: { originalModel: "claude-opus-4-8", fallbackModel: "claude-sonnet-4-6" },
+        payload: {
+          originalModel: "claude-opus-4-8",
+          fallbackModel: "claude-sonnet-4-6",
+        },
       },
-      { signal: new AbortController().signal },
+      { signal: new AbortController().signal, requestId: "dialog-edit-1" },
     );
 
     const requestId = [...session.pendingUserDialogs.keys()][0];
@@ -7533,7 +8614,10 @@ test("onUserDialog round-trips an edit_prompt selection", async () => {
       outcome: { outcome: "selected", option_id: "edit_prompt" },
     });
 
-    assert.deepEqual(await resultPromise, { behavior: "completed", result: "edit_prompt" });
+    assert.deepEqual(await resultPromise, {
+      behavior: "completed",
+      result: "edit_prompt",
+    });
   } finally {
     sessions.delete("session-dialog");
   }
@@ -7547,9 +8631,12 @@ test("onUserDialog cancels when the dialog is aborted", async () => {
     const resultPromise = handler(
       {
         dialogKind: "refusal_fallback_prompt",
-        payload: { originalModel: "claude-opus-4-8", fallbackModel: "claude-sonnet-4-6" },
+        payload: {
+          originalModel: "claude-opus-4-8",
+          fallbackModel: "claude-sonnet-4-6",
+        },
       },
-      { signal: controller.signal },
+      { signal: controller.signal, requestId: "dialog-abort-1" },
     );
 
     assert.equal(session.pendingUserDialogs.size, 1);
@@ -7569,7 +8656,7 @@ test("onUserDialog fails closed on an unknown dialog kind without emitting", asy
     const events = await captureBridgeEventsAsync(async () => {
       const result = await handler(
         { dialogKind: "some_future_dialog_kind", payload: { anything: true } },
-        { signal: new AbortController().signal },
+        { signal: new AbortController().signal, requestId: "dialog-unknown-1" },
       );
       assert.deepEqual(result, { behavior: "cancelled" });
     });
@@ -7591,9 +8678,15 @@ test("handleUserDialogResponse ignores a duplicate response for a resolved reque
     const resultPromise = handler(
       {
         dialogKind: "refusal_fallback_prompt",
-        payload: { originalModel: "claude-opus-4-8", fallbackModel: "claude-sonnet-4-6" },
+        payload: {
+          originalModel: "claude-opus-4-8",
+          fallbackModel: "claude-sonnet-4-6",
+        },
       },
-      { signal: new AbortController().signal },
+      {
+        signal: new AbortController().signal,
+        requestId: "dialog-duplicate-response-1",
+      },
     );
 
     const requestId = [...session.pendingUserDialogs.keys()][0];
@@ -7601,11 +8694,17 @@ test("handleUserDialogResponse ignores a duplicate response for a resolved reque
       command: "user_dialog_response" as const,
       session_id: "session-dialog",
       request_id: requestId,
-      outcome: { outcome: "selected" as const, option_id: "retry_fallback" as const },
+      outcome: {
+        outcome: "selected" as const,
+        option_id: "retry_fallback" as const,
+      },
     };
 
     handleUserDialogResponse(response);
-    assert.deepEqual(await resultPromise, { behavior: "completed", result: "retry_fallback" });
+    assert.deepEqual(await resultPromise, {
+      behavior: "completed",
+      result: "retry_fallback",
+    });
 
     // A replayed pending_user_dialog_requests entry with the same id must be a
     // no-op now that the resolver is gone.

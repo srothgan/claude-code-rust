@@ -14,7 +14,10 @@ use crate::app::connect::{
     SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
 };
 use crate::app::events::push_system_message_with_severity;
-use crate::app::{App, AppStatus, CancelOrigin, ReleaseReason, SystemSeverity};
+use crate::app::{
+    App, AppStatus, CancelOrigin, FullscreenView, ReleaseReason, SessionPickerState,
+    SystemSeverity, view,
+};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
@@ -962,6 +965,25 @@ fn handle_new_session_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
+    if args.is_empty() {
+        push_user_message(app, "/resume");
+        if require_connection(app, "Cannot open resume picker: not connected yet.").is_none() {
+            return true;
+        }
+        let current_session_id =
+            app.session_runtime.session_id.as_ref().map(crate::agent::model::SessionId::as_str);
+        let selected = current_session_id
+            .and_then(|session_id| {
+                app.recent_sessions
+                    .iter()
+                    .take(crate::app::session_picker::MAX_PICKER_SESSIONS)
+                    .position(|session| session.session_id == session_id)
+            })
+            .unwrap_or(0);
+        app.session_picker = SessionPickerState { selected, ..SessionPickerState::default() };
+        view::set_fullscreen_view(app, FullscreenView::SessionPicker);
+        return true;
+    }
     let [session_id_arg] = args else {
         push_system_message(app, usage(AppSlashCommand::Resume));
         return true;

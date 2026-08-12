@@ -82,7 +82,10 @@ pub(super) fn activate_setting(app: &mut App, spec: &SettingSpec) {
         SettingId::Model => open_model_overlay(app),
         SettingId::OutputStyle => open_output_style_overlay(app),
         SettingId::ThinkingEffort => open_thinking_effort_overlay(app),
-        SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
+        SettingId::CrossSessionInbound
+        | SettingId::Theme
+        | SettingId::Notifications
+        | SettingId::EditorMode => {
             cycle_static_enum(app, spec, 1);
         }
     }
@@ -116,7 +119,10 @@ pub(super) fn step_setting(app: &mut App, spec: &SettingSpec, delta: isize) {
                 store::set_default_permission_mode(document, next);
             });
         }
-        SettingId::Theme | SettingId::Notifications | SettingId::EditorMode => {
+        SettingId::CrossSessionInbound
+        | SettingId::Theme
+        | SettingId::Notifications
+        | SettingId::EditorMode => {
             cycle_static_enum(app, spec, delta);
         }
         SettingId::Language
@@ -402,11 +408,15 @@ where
             }
             app.reconcile_runtime_from_persisted_settings_change();
             app.config.last_error = None;
-            app.config.status_message = Some(format!(
-                "Saved {}: {}",
-                spec.label,
-                setting_display_value(app, spec, &resolved_setting(app, spec))
-            ));
+            let value = setting_display_value(app, spec, &resolved_setting(app, spec));
+            app.config.status_message = Some(if spec.id == SettingId::CrossSessionInbound {
+                format!(
+                    "Saved {}: {} for future sessions. The running session is unchanged; resume or start a new session to apply it.",
+                    spec.label, value
+                )
+            } else {
+                format!("Saved {}: {}", spec.label, value)
+            });
             true
         }
         Err(err) => {
@@ -457,6 +467,7 @@ const fn default_static_value(setting_id: SettingId) -> &'static str {
         SettingId::Theme => "dark",
         SettingId::OutputStyle => OutputStyle::Default.as_stored(),
         SettingId::ThinkingEffort => "medium",
+        SettingId::CrossSessionInbound => "refuse",
         SettingId::Notifications => "iterm2",
         SettingId::EditorMode => "default",
         SettingId::AlwaysThinking

@@ -8,6 +8,7 @@ use super::status::model_status_label;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingId {
     AlwaysThinking,
+    CrossSessionInbound,
     Model,
     DefaultPermissionMode,
     EditorMode,
@@ -312,12 +313,16 @@ const EDITOR_MODE_OPTIONS: &[SettingOption] = &[
     SettingOption { stored: "default", label: "Default" },
     SettingOption { stored: "vim", label: "Vim" },
 ];
+const CROSS_SESSION_INBOUND_OPTIONS: &[SettingOption] = &[
+    SettingOption { stored: "refuse", label: "Refuse" },
+    SettingOption { stored: "accept", label: "Accept" },
+];
 pub(crate) const DEFAULT_MODEL_ALIAS_ID: &str = "fable";
 pub(crate) const DEFAULT_MODEL_ALIAS_LABEL: &str = "Fable 5";
 pub(crate) const LANGUAGE_MIN_CHARS: usize = 2;
 pub(crate) const LANGUAGE_MAX_CHARS: usize = 30;
 
-const CONFIG_SETTINGS: [SettingSpec; 14] = [
+const CONFIG_SETTINGS: [SettingSpec; 15] = [
     SettingSpec {
         id: SettingId::AlwaysThinking,
         entry_id: "A04",
@@ -329,6 +334,20 @@ const CONFIG_SETTINGS: [SettingSpec; 14] = [
         editor: EditorKind::Toggle,
         source: ValueSource::PersistedOnly,
         options: SettingOptions::None,
+        fallback: FallbackPolicy::AppDefault,
+        supported: true,
+    },
+    SettingSpec {
+        id: SettingId::CrossSessionInbound,
+        entry_id: "A21",
+        label: "Cross-session messages",
+        description: "Controls messages sent by your other Claude sessions. Refuse is the safe default; Accept is an explicit local opt-in. Changes apply when a session starts or resumes, not to the running session. Hold and automatic mode are unavailable because the Agent SDK exposes no held-message review API.",
+        file: SettingFile::LocalSettings,
+        json_path: &["crossSessionInbound"],
+        kind: SettingKind::Enum,
+        editor: EditorKind::Cycle,
+        source: ValueSource::PersistedOnly,
+        options: SettingOptions::Static(CROSS_SESSION_INBOUND_OPTIONS),
         fallback: FallbackPolicy::AppDefault,
         supported: true,
     },

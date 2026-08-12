@@ -11,6 +11,7 @@ const LIFECYCLE_COMMANDS = new Set<BridgeCommand["command"]>([
   "initialize",
   "create_session",
   "resume_session",
+  "resume_session_at",
   "new_session",
   "rewind",
   "shutdown",
@@ -49,9 +50,13 @@ export class BridgeCommandScheduler {
   private lifecycleTail: Promise<void> | undefined;
   private readonly sessionTails = new Map<string, Promise<void>>();
   private readonly activeTasks = new Set<Promise<void>>();
-  private shutdownState: "accepting" | "queued" | "running" | "complete" = "accepting";
+  private shutdownState: "accepting" | "queued" | "running" | "complete" =
+    "accepting";
 
-  schedule(command: BridgeCommand, task: CommandTask): Promise<void> | undefined {
+  schedule(
+    command: BridgeCommand,
+    task: CommandTask,
+  ): Promise<void> | undefined {
     const lane = commandLane(command);
     if (!this.accepts(command, lane)) {
       return undefined;
@@ -115,7 +120,9 @@ export class BridgeCommandScheduler {
       dependencies.add(this.lifecycleTail);
     }
     const operation =
-      dependencies.size === 0 ? this.start(task) : Promise.all(dependencies).then(task);
+      dependencies.size === 0
+        ? this.start(task)
+        : Promise.all(dependencies).then(task);
     const tail = settle(operation);
     this.lifecycleTail = tail;
     void tail.then(() => {
@@ -136,7 +143,9 @@ export class BridgeCommandScheduler {
       dependencies.push(previousSessionTask);
     }
     const operation =
-      dependencies.length === 0 ? this.start(task) : Promise.all(dependencies).then(task);
+      dependencies.length === 0
+        ? this.start(task)
+        : Promise.all(dependencies).then(task);
     const tail = settle(operation);
     this.sessionTails.set(sessionId, tail);
     void tail.then(() => {

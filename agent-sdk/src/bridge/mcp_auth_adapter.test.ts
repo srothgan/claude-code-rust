@@ -46,7 +46,10 @@ test("MCP auth adapter preserves receiver and forwards exact arguments", async (
       callbackUrl: string,
     ) {
       assert.equal(this.marker, "query");
-      calls.push({ method: "submit_callback", args: [serverName, callbackUrl] });
+      calls.push({
+        method: "submit_callback",
+        args: [serverName, callbackUrl],
+      });
     },
   };
 
@@ -56,7 +59,11 @@ test("MCP auth adapter preserves receiver and forwards exact arguments", async (
     requires_user_action: true,
   });
   await clearMcpServerAuth(query, "docs");
-  await submitMcpOAuthCallbackUrl(query, "docs", "https://callback.example.test/code");
+  await submitMcpOAuthCallbackUrl(
+    query,
+    "docs",
+    "https://callback.example.test/code",
+  );
 
   assert.deepEqual(calls, [
     { method: "authenticate", args: ["docs"] },
@@ -108,11 +115,18 @@ test("MCP auth adapter rejects missing methods and incompatible responses", asyn
   );
 });
 
-function installedRuntimeMethodSource(source: string, methodName: string): string {
+function installedRuntimeMethodSource(
+  source: string,
+  methodName: string,
+): string {
   const start = source.indexOf(`async ${methodName}(`);
   assert.notEqual(start, -1, `installed SDK runtime is missing ${methodName}`);
   const end = source.indexOf("}async ", start);
-  assert.notEqual(end, -1, `could not isolate installed SDK runtime method ${methodName}`);
+  assert.notEqual(
+    end,
+    -1,
+    `could not isolate installed SDK runtime method ${methodName}`,
+  );
   return source.slice(start, end + 1);
 }
 
@@ -132,7 +146,10 @@ test("pinned SDK runtime retains the MCP auth control-request contract", async (
   assert.match(clearAuth, /serverName:/);
   assert.match(clearAuth, /\.response/);
 
-  const submitCallback = installedRuntimeMethodSource(source, "mcpSubmitOAuthCallbackUrl");
+  const submitCallback = installedRuntimeMethodSource(
+    source,
+    "mcpSubmitOAuthCallbackUrl",
+  );
   assert.match(submitCallback, /subtype:"mcp_oauth_callback_url"/);
   assert.match(submitCallback, /serverName:/);
   assert.match(submitCallback, /callbackUrl:/);

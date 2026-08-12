@@ -453,8 +453,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     app.finalize_turn_runtime_artifacts(tool_status);
     app.status = AppStatus::Ready;
     app.files_accessed = 0;
-    app.sdk_inventory.rewind_targets_session_id = None;
-    app.sdk_inventory.rewind_targets_in_flight = false;
+    app.sdk_inventory.clear_rewind_targets();
     app.sync_git_context();
 
     let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);

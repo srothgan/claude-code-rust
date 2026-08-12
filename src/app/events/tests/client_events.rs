@@ -110,7 +110,7 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
         "/test",
         "-",
     ));
-    app.resuming_session_id = Some("resume-123".into());
+    app.set_pending_session_resume("resume-123".into(), Some("resume-at-1".into()));
 
     handle_client_event(
         &mut app,
@@ -128,7 +128,7 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
 
     assert_eq!(app.cwd_raw, "/changed");
     assert_eq!(app.cwd, "/changed");
-    assert!(app.resuming_session_id.is_none());
+    assert!(app.pending_session_resume.is_none());
     let Some(first) = app.transcript.messages.first() else {
         panic!("missing welcome message");
     };
@@ -232,11 +232,16 @@ fn connected_resets_session_scoped_view_data() {
     app.usage.snapshot = Some(UsageSnapshot {
         source: UsageSourceKind::Oauth,
         fetched_at: std::time::SystemTime::now(),
+        subscription_type: None,
         five_hour: None,
         seven_day: None,
+        seven_day_oauth_apps: None,
         seven_day_opus: None,
         seven_day_sonnet: None,
+        model_scoped: Vec::new(),
         extra_usage: None,
+        session: None,
+        activity: None,
     });
     app.session_runtime.account_info = Some(crate::agent::model::AccountInfo {
         email: Some("old@example.com".into()),
@@ -1001,11 +1006,16 @@ fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
             snapshot: UsageSnapshot {
                 source: UsageSourceKind::Oauth,
                 fetched_at: std::time::SystemTime::now(),
+                subscription_type: None,
                 five_hour: None,
                 seven_day: None,
+                seven_day_oauth_apps: None,
                 seven_day_opus: None,
                 seven_day_sonnet: None,
+                model_scoped: Vec::new(),
                 extra_usage: None,
+                session: None,
+                activity: None,
             },
         },
     );
@@ -1026,21 +1036,26 @@ fn pending_limits_response_prints_summary_on_usage_refresh_success() {
             snapshot: UsageSnapshot {
                 source: UsageSourceKind::Oauth,
                 fetched_at: SystemTime::now(),
+                subscription_type: None,
                 five_hour: Some(UsageWindow {
-                    label: "5-hour",
+                    label: "5-hour".to_owned(),
                     utilization: 47.0,
                     resets_at: None,
                     reset_description: Some("resets in 2h 14m".to_owned()),
                 }),
                 seven_day: Some(UsageWindow {
-                    label: "7-day",
+                    label: "7-day".to_owned(),
                     utilization: 62.0,
                     resets_at: None,
                     reset_description: Some("resets in 4d 11h".to_owned()),
                 }),
+                seven_day_oauth_apps: None,
                 seven_day_opus: None,
                 seven_day_sonnet: None,
+                model_scoped: Vec::new(),
                 extra_usage: None,
+                session: None,
+                activity: None,
             },
         },
     );
@@ -1095,16 +1110,21 @@ fn stale_usage_refresh_result_does_not_print_pending_limits_response() {
             snapshot: UsageSnapshot {
                 source: UsageSourceKind::Oauth,
                 fetched_at: SystemTime::now(),
+                subscription_type: None,
                 five_hour: Some(UsageWindow {
-                    label: "5-hour",
+                    label: "5-hour".to_owned(),
                     utilization: 47.0,
                     resets_at: None,
                     reset_description: Some("resets in 2h 14m".to_owned()),
                 }),
                 seven_day: None,
+                seven_day_oauth_apps: None,
                 seven_day_opus: None,
                 seven_day_sonnet: None,
+                model_scoped: Vec::new(),
                 extra_usage: None,
+                session: None,
+                activity: None,
             },
         },
     );
@@ -1138,16 +1158,65 @@ fn stale_plugin_inventory_result_for_old_cwd_is_ignored() {
 fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
     let mut app = make_test_app();
     app.status = AppStatus::CommandPending;
-    app.resuming_session_id = Some("resume-123".into());
+    app.set_pending_session_resume("resume-123".into(), None);
 
     handle_client_event(&mut app, slash_command_error("resume failed".into()));
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert!(app.resuming_session_id.is_none());
+    assert!(app.pending_session_resume.is_none());
 }
 
 #[test]
-fn slash_command_error_clears_rewind_target_loading_state() {
+fn matching_resume_at_failure_is_visible_and_clears_pending_state() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Forking before selected message...".into());
+    app.set_pending_session_resume("source-session".into(), Some("resume-at-1".into()));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionResumeFailed {
+            session_id: "source-session".into(),
+            operation_id: "resume-at-1".into(),
+            message: "session changed while selecting a turn".into(),
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert!(app.turn.pending_command_label.is_none());
+    assert!(app.pending_session_resume.is_none());
+    let last = app.transcript.messages.last().expect("visible error notice");
+    let MessageBlock::Notice(notice) = last.blocks.first().expect("error notice block") else {
+        panic!("expected error notice");
+    };
+    assert!(notice.text.text.contains("session changed while selecting a turn"));
+}
+
+#[test]
+fn stale_resume_at_failure_does_not_cancel_current_operation() {
+    let mut app = make_test_app();
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Forking before selected message...".into());
+    app.set_pending_session_resume("source-session".into(), Some("resume-at-current".into()));
+    let message_count = app.transcript.messages.len();
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionResumeFailed {
+            session_id: "source-session".into(),
+            operation_id: "resume-at-old".into(),
+            message: "old failure".into(),
+        },
+    );
+
+    assert!(matches!(app.status, AppStatus::CommandPending));
+    assert_eq!(app.pending_session_resume_id(), Some("source-session"));
+    assert_eq!(app.pending_resume_at_operation_id(), Some("resume-at-current"));
+    assert_eq!(app.transcript.messages.len(), message_count);
+}
+
+#[test]
+fn unrelated_slash_command_error_does_not_clear_rewind_target_loading_state() {
     let mut app = make_test_app();
     app.sdk_inventory.rewind_targets_in_flight = true;
     app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
@@ -1157,12 +1226,131 @@ fn slash_command_error_clears_rewind_target_loading_state() {
         input_text: "hello".into(),
         index: 0,
         previous_assistant_uuid: None,
+        resume_anchor_uuid: None,
     }];
 
     handle_client_event(&mut app, slash_command_error("failed to load rewind targets".into()));
 
+    assert!(app.sdk_inventory.rewind_targets_in_flight);
+    assert_eq!(
+        app.sdk_inventory.rewind_targets_session_id.as_ref().map(model::SessionId::as_str),
+        Some("session-1")
+    );
+}
+
+#[test]
+fn matching_rewind_target_response_populates_fullscreen_turn_picker() {
+    let mut app = make_test_app();
+    app.session_picker.turn_session_id = Some("listed-session".to_owned());
+    app.sdk_inventory.rewind_targets_in_flight = true;
+    app.sdk_inventory.rewind_targets_request_session_id =
+        Some(model::SessionId::new("listed-session"));
+    let targets = vec![model::RewindTarget {
+        uuid: "user-2".into(),
+        first_text: "second prompt".into(),
+        input_text: "second prompt".into(),
+        index: 2,
+        previous_assistant_uuid: Some("assistant-1".into()),
+        resume_anchor_uuid: Some("assistant-1".into()),
+    }];
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::RewindTargetsReceived {
+            session_id: "listed-session".into(),
+            targets: targets.clone(),
+            error: None,
+        },
+    );
+
+    assert_eq!(app.sdk_inventory.rewind_targets, targets);
+    assert_eq!(
+        app.sdk_inventory.rewind_targets_session_id.as_ref().map(model::SessionId::as_str),
+        Some("listed-session")
+    );
     assert!(!app.sdk_inventory.rewind_targets_in_flight);
+    assert!(app.sdk_inventory.rewind_targets_request_session_id.is_none());
+}
+
+#[test]
+fn stale_rewind_target_response_cannot_replace_picker_results() {
+    let mut app = make_test_app();
+    app.sdk_inventory.rewind_targets_in_flight = true;
+    app.sdk_inventory.rewind_targets_request_session_id =
+        Some(model::SessionId::new("new-session"));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::RewindTargetsReceived {
+            session_id: "old-session".into(),
+            targets: vec![model::RewindTarget {
+                uuid: "old-user".into(),
+                first_text: "stale".into(),
+                input_text: "stale".into(),
+                index: 0,
+                previous_assistant_uuid: None,
+                resume_anchor_uuid: None,
+            }],
+            error: None,
+        },
+    );
+
+    assert!(app.sdk_inventory.rewind_targets.is_empty());
+    assert!(app.sdk_inventory.rewind_targets_in_flight);
+    assert_eq!(
+        app.sdk_inventory.rewind_targets_request_session_id.as_ref().map(model::SessionId::as_str),
+        Some("new-session")
+    );
+}
+
+#[test]
+fn matching_rewind_target_error_stays_local_to_the_request() {
+    let mut app = make_test_app();
+    app.session_picker.turn_session_id = Some("listed-session".to_owned());
+    app.sdk_inventory.rewind_targets_in_flight = true;
+    app.sdk_inventory.rewind_targets_request_session_id =
+        Some(model::SessionId::new("listed-session"));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::RewindTargetsReceived {
+            session_id: "listed-session".into(),
+            targets: Vec::new(),
+            error: Some("failed to load rewind targets: history unavailable".into()),
+        },
+    );
+
+    assert!(app.sdk_inventory.rewind_targets.is_empty());
     assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
+    assert!(!app.sdk_inventory.rewind_targets_in_flight);
+    assert_eq!(
+        app.sdk_inventory.rewind_targets_error.as_deref(),
+        Some("failed to load rewind targets: history unavailable")
+    );
+}
+
+#[test]
+fn slash_rewind_target_error_is_visible_without_clearing_unrelated_state() {
+    let mut app = make_test_app();
+    app.sdk_inventory.rewind_targets_in_flight = true;
+    app.sdk_inventory.rewind_targets_request_session_id =
+        Some(model::SessionId::new("active-session"));
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::RewindTargetsReceived {
+            session_id: "active-session".into(),
+            targets: Vec::new(),
+            error: Some("failed to load rewind targets: history unavailable".into()),
+        },
+    );
+
+    let message = app.transcript.messages.last().expect("rewind target error notice");
+    let crate::app::MessageBlock::Notice(notice) = message.blocks.first().expect("notice text")
+    else {
+        panic!("expected notice block");
+    };
+    assert_eq!(notice.text.text, "failed to load rewind targets: history unavailable");
 }
 
 #[test]
@@ -1561,7 +1749,7 @@ fn non_matching_config_option_update_keeps_pending() {
 #[test]
 fn resume_does_not_add_confirmation_system_message() {
     let mut app = make_test_app();
-    app.resuming_session_id = Some("requested-123".into());
+    app.set_pending_session_resume("requested-123".into(), None);
 
     handle_client_event(
         &mut app,
@@ -1580,7 +1768,7 @@ fn resume_does_not_add_confirmation_system_message() {
 
     assert_eq!(app.transcript.messages.len(), 1);
     assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert!(app.resuming_session_id.is_none());
+    assert!(app.pending_session_resume.is_none());
     assert!(matches!(app.status, AppStatus::Ready));
 }
 

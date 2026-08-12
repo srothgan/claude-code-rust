@@ -47,11 +47,15 @@ type DiagnosticEvent = {
   fields?: DiagnosticFields;
 };
 
-function definedFields(fields?: DiagnosticFields): DiagnosticFields | undefined {
+function definedFields(
+  fields?: DiagnosticFields,
+): DiagnosticFields | undefined {
   if (!fields) {
     return undefined;
   }
-  const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
+  const entries = Object.entries(fields).filter(
+    ([, value]) => value !== undefined,
+  );
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
@@ -74,7 +78,9 @@ function writeDiagnostic(level: LogLevel, event: DiagnosticEvent): void {
     ...(event.terminalId ? { terminal_id: event.terminalId } : {}),
     ...(event.errorKind ? { error_kind: event.errorKind } : {}),
     ...(event.errorCode ? { error_code: event.errorCode } : {}),
-    ...(event.durationMs !== undefined ? { duration_ms: event.durationMs } : {}),
+    ...(event.durationMs !== undefined
+      ? { duration_ms: event.durationMs }
+      : {}),
     ...(event.count !== undefined ? { count: event.count } : {}),
     ...(event.sizeBytes !== undefined ? { size_bytes: event.sizeBytes } : {}),
   };
@@ -92,6 +98,7 @@ function previewText(value: string, limit: number): string {
 function commandSessionId(command: BridgeCommand): string | undefined {
   switch (command.command) {
     case "resume_session":
+    case "resume_session_at":
     case "prompt":
     case "cancel_turn":
     case "set_model":
@@ -104,6 +111,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "elicitation_response":
     case "get_status_snapshot":
     case "get_context_usage":
+    case "get_usage":
     case "get_rewind_targets":
     case "rewind":
     case "reload_plugins":
@@ -132,6 +140,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "initialize":
     case "create_session":
     case "resume_session":
+    case "resume_session_at":
     case "prompt":
     case "cancel_turn":
     case "set_model":
@@ -143,6 +152,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "elicitation_response":
     case "get_status_snapshot":
     case "get_context_usage":
+    case "get_usage":
     case "get_rewind_targets":
     case "rewind":
     case "reload_plugins":
@@ -167,6 +177,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "auth_required":
     case "connection_failed":
     case "session_update":
+    case "user_dialog_request":
     case "elicitation_request":
     case "elicitation_complete":
     case "mcp_auth_redirect":
@@ -175,6 +186,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "turn_complete":
     case "turn_error":
     case "slash_error":
+    case "session_resume_failed":
     case "runtime_reload_completed":
     case "runtime_reload_failed":
     case "session_replaced":
@@ -182,6 +194,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "sessions_listed":
     case "status_snapshot":
     case "context_usage":
+    case "usage_snapshot":
     case "rewind_targets":
     case "rewind_result":
     case "mcp_snapshot":
@@ -194,6 +207,7 @@ function protocolCommandLevel(command: BridgeCommand): LogLevel {
     case "initialize":
     case "create_session":
     case "resume_session":
+    case "resume_session_at":
     case "new_session":
     case "shutdown":
       return "info";
@@ -214,6 +228,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "mcp_operation_error":
     case "turn_error":
     case "slash_error":
+    case "session_resume_failed":
     case "runtime_reload_failed":
       return "warn";
     case "session_update":
@@ -228,6 +243,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "sessions_listed":
     case "status_snapshot":
     case "context_usage":
+    case "usage_snapshot":
     case "rewind_targets":
     case "rewind_result":
     case "runtime_reload_completed":
@@ -286,15 +302,22 @@ export function logSdkStderrLine(line: string, sessionId?: string): void {
   });
 }
 
-export function logBridgeCommandReceived(command: BridgeCommand, requestId?: string): void {
+export function logBridgeCommandReceived(
+  command: BridgeCommand,
+  requestId?: string,
+): void {
   writeDiagnostic(protocolCommandLevel(command), {
     target: LOG_TARGETS.BRIDGE_PROTOCOL,
     eventName: "bridge_command_received",
     message: "bridge command received",
     outcome: "success",
     ...(requestId ? { requestId } : {}),
-    ...(commandSessionId(command) ? { sessionId: commandSessionId(command) } : {}),
-    ...(commandToolCallId(command) ? { toolCallId: commandToolCallId(command) } : {}),
+    ...(commandSessionId(command)
+      ? { sessionId: commandSessionId(command) }
+      : {}),
+    ...(commandToolCallId(command)
+      ? { toolCallId: commandToolCallId(command) }
+      : {}),
     fields: { bridge_command: command.command },
   });
 }

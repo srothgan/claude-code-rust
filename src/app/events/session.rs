@@ -73,7 +73,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
     }
     maybe_emit_fast_mode_disabled_notice(app, None);
     clear_pending_command(app);
-    app.resuming_session_id = None;
+    app.clear_pending_session_resume();
     crate::app::file_index::restart(app);
     app.rebuild_chat_focus_from_state();
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
@@ -159,7 +159,7 @@ pub(super) fn handle_auth_required_event(
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
     app.status = AppStatus::Ready;
-    app.resuming_session_id = None;
+    app.clear_pending_session_resume();
     app.session_runtime.login_hint = Some(LoginHint { method_name, method_description });
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
@@ -191,7 +191,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
-    app.resuming_session_id = None;
+    app.clear_pending_session_resume();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.input.clear();
     app.pending_submit = None;
@@ -208,8 +208,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
-    app.sdk_inventory.rewind_targets_in_flight = false;
-    app.sdk_inventory.rewind_targets_session_id = None;
     if app.config.pending_session_title_change.take().is_some() {
         app.config.last_error = Some(msg.to_owned());
         app.config.status_message = None;
@@ -218,7 +216,41 @@ pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     }
     super::notices::emit_system_notice(app, SystemSeverity::Error, msg);
     clear_pending_command(app);
-    app.resuming_session_id = None;
+    app.clear_pending_session_resume();
+}
+
+pub(super) fn handle_session_resume_failed_event(
+    app: &mut App,
+    session_id: &str,
+    operation_id: &str,
+    message: &str,
+) {
+    let matches_pending_operation = app.pending_session_resume_id() == Some(session_id)
+        && app.pending_resume_at_operation_id() == Some(operation_id);
+    if !matches_pending_operation {
+        tracing::debug!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "session_resume_failure_dropped",
+            message = "session resume failure dropped for a stale operation",
+            outcome = "dropped",
+            session_id,
+            operation_id,
+        );
+        return;
+    }
+
+    super::notices::emit_system_notice(app, SystemSeverity::Error, message);
+    clear_pending_command(app);
+    app.clear_pending_session_resume();
+    tracing::warn!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "session_resume_failed",
+        message = "session resume-at operation failed",
+        outcome = "failure",
+        session_id,
+        operation_id,
+        error_message = message,
+    );
 }
 
 pub(super) fn handle_auth_completed_event(app: &mut App, conn: &Rc<AgentConnection>) {
@@ -343,7 +375,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     if let Some(restored_input) = restored_input.as_deref() {
         app.input.set_text(restored_input);
     }
-    app.resuming_session_id = None;
+    app.clear_pending_session_resume();
     crate::app::file_index::restart(app);
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
     // After session replacement, terminal scrollback is stale. Rebuild from

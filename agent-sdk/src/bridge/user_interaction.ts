@@ -96,8 +96,12 @@ export async function requestExitPlanModeApproval(
   return { behavior: "allow", updatedInput: inputData, toolUseID: toolUseId };
 }
 
-export function parseAskUserQuestionPrompts(inputData: Record<string, unknown>): AskUserQuestionPrompt[] {
-  const rawQuestions = Array.isArray(inputData.questions) ? inputData.questions : [];
+export function parseAskUserQuestionPrompts(
+  inputData: Record<string, unknown>,
+): AskUserQuestionPrompt[] {
+  const rawQuestions = Array.isArray(inputData.questions)
+    ? inputData.questions
+    : [];
   const prompts: AskUserQuestionPrompt[] = [];
 
   for (const rawQuestion of rawQuestions) {
@@ -105,24 +109,38 @@ export function parseAskUserQuestionPrompts(inputData: Record<string, unknown>):
     if (!questionRecord) {
       continue;
     }
-    const question = typeof questionRecord.question === "string" ? questionRecord.question.trim() : "";
+    const question =
+      typeof questionRecord.question === "string"
+        ? questionRecord.question.trim()
+        : "";
     if (!question) {
       continue;
     }
-    const headerRaw = typeof questionRecord.header === "string" ? questionRecord.header.trim() : "";
+    const headerRaw =
+      typeof questionRecord.header === "string"
+        ? questionRecord.header.trim()
+        : "";
     const header = headerRaw || `Q${prompts.length + 1}`;
     const multiSelect = Boolean(questionRecord.multiSelect);
-    const rawOptions = Array.isArray(questionRecord.options) ? questionRecord.options : [];
+    const rawOptions = Array.isArray(questionRecord.options)
+      ? questionRecord.options
+      : [];
     const options: AskUserQuestionOption[] = [];
     for (const rawOption of rawOptions) {
       const optionRecord = asRecordOrNull(rawOption);
       if (!optionRecord) {
         continue;
       }
-      const label = typeof optionRecord.label === "string" ? optionRecord.label.trim() : "";
+      const label =
+        typeof optionRecord.label === "string" ? optionRecord.label.trim() : "";
       const description =
-        typeof optionRecord.description === "string" ? optionRecord.description.trim() : "";
-      const preview = typeof optionRecord.preview === "string" ? optionRecord.preview.trim() : "";
+        typeof optionRecord.description === "string"
+          ? optionRecord.description.trim()
+          : "";
+      const preview =
+        typeof optionRecord.preview === "string"
+          ? optionRecord.preview.trim()
+          : "";
       if (!label) {
         continue;
       }
@@ -141,7 +159,9 @@ export function parseAskUserQuestionPrompts(inputData: Record<string, unknown>):
   return prompts;
 }
 
-function askUserQuestionOptions(prompt: AskUserQuestionPrompt): QuestionOption[] {
+function askUserQuestionOptions(
+  prompt: AskUserQuestionPrompt,
+): QuestionOption[] {
   return prompt.options.map((option, index) => ({
     option_id: `question_${index}`,
     label: option.label,
@@ -207,7 +227,9 @@ function buildQuestionRequest(
 function askUserQuestionTranscript(
   answers: Array<{ header: string; question: string; answer: string }>,
 ): string {
-  return answers.map((entry) => `${entry.header}: ${entry.answer}\n  ${entry.question}`).join("\n");
+  return answers
+    .map((entry) => `${entry.header}: ${entry.answer}\n  ${entry.question}`)
+    .join("\n");
 }
 
 function askUserQuestionCompletedRawInput(
@@ -228,12 +250,16 @@ function askUserQuestionCompletedRawInput(
       })),
     })),
     answers,
-    ...(Object.keys(annotations).length > 0 ? { annotations: questionAnnotationsJson(annotations) } : {}),
+    ...(Object.keys(annotations).length > 0
+      ? { annotations: questionAnnotationsJson(annotations) }
+      : {}),
     question_results: questionResults,
   };
 }
 
-function questionAnnotationsJson(annotations: Record<string, QuestionAnnotation>): { [key: string]: Json } {
+function questionAnnotationsJson(
+  annotations: Record<string, QuestionAnnotation>,
+): { [key: string]: Json } {
   return Object.fromEntries(
     Object.entries(annotations).map(([question, annotation]) => [
       question,
@@ -255,7 +281,9 @@ function deriveAnnotation(
         .map((option) => option.preview?.trim() ?? "")
         .filter((previewText) => previewText.length > 0)
         .join("\n\n");
-  const notes = annotation?.notes?.trim().length ? annotation.notes.trim() : undefined;
+  const notes = annotation?.notes?.trim().length
+    ? annotation.notes.trim()
+    : undefined;
   if (!preview && !notes) {
     return undefined;
   }
@@ -278,11 +306,20 @@ export async function requestAskUserQuestionAnswers(
 
   const answers: Record<string, string> = {};
   const annotations: Record<string, QuestionAnnotation> = {};
-  const transcript: Array<{ header: string; question: string; answer: string }> = [];
+  const transcript: Array<{
+    header: string;
+    question: string;
+    answer: string;
+  }> = [];
   const questionResults: Json[] = [];
 
   for (const [index, prompt] of prompts.entries()) {
-    const promptToolCall = askUserQuestionPromptToolCall(baseToolCall, prompt, index, prompts.length);
+    const promptToolCall = askUserQuestionPromptToolCall(
+      baseToolCall,
+      prompt,
+      index,
+      prompts.length,
+    );
     const fields: ToolCallUpdateFields = {
       title: promptToolCall.title,
       status: "in_progress",
@@ -290,7 +327,12 @@ export async function requestAskUserQuestionAnswers(
     };
     emitToolCallUpdate(session, toolUseId, fields, "status");
 
-    const request = buildQuestionRequest(promptToolCall, prompt, index, prompts.length);
+    const request = buildQuestionRequest(
+      promptToolCall,
+      prompt,
+      index,
+      prompts.length,
+    );
     const outcome = await new Promise<QuestionOutcome>((resolve) => {
       session.pendingQuestions.set(toolUseId, {
         onOutcome: resolve,
@@ -316,7 +358,11 @@ export async function requestAskUserQuestionAnswers(
 
     if (outcome.outcome !== "answered") {
       setToolCallStatus(session, toolUseId, "failed", "Question cancelled");
-      return { behavior: "deny", message: "Question cancelled", toolUseID: toolUseId };
+      return {
+        behavior: "deny",
+        message: "Question cancelled",
+        toolUseID: toolUseId,
+      };
     }
 
     const selectedOptions = request.prompt.options.filter((option) =>
@@ -326,8 +372,17 @@ export async function requestAskUserQuestionAnswers(
       selectedOptions.length === 0 ||
       (!prompt.multiSelect && selectedOptions.length !== 1)
     ) {
-      setToolCallStatus(session, toolUseId, "failed", "Question answer was invalid");
-      return { behavior: "deny", message: "Question answer was invalid", toolUseID: toolUseId };
+      setToolCallStatus(
+        session,
+        toolUseId,
+        "failed",
+        "Question answer was invalid",
+      );
+      return {
+        behavior: "deny",
+        message: "Question answer was invalid",
+        toolUseID: toolUseId,
+      };
     }
 
     const answer = selectedOptions.map((option) => option.label).join(", ");
@@ -336,7 +391,11 @@ export async function requestAskUserQuestionAnswers(
     if (annotation) {
       annotations[prompt.question] = annotation;
     }
-    transcript.push({ header: prompt.header, question: prompt.question, answer });
+    transcript.push({
+      header: prompt.header,
+      question: prompt.question,
+      answer,
+    });
     questionResults.push({
       question: prompt.question,
       header: prompt.header,
@@ -365,7 +424,14 @@ export async function requestAskUserQuestionAnswers(
       raw_output: summary,
       content: [{ type: "content", content: { type: "text", text: summary } }],
       ...(completed
-        ? { raw_input: askUserQuestionCompletedRawInput(prompts, answers, annotations, questionResults) }
+        ? {
+            raw_input: askUserQuestionCompletedRawInput(
+              prompts,
+              answers,
+              annotations,
+              questionResults,
+            ),
+          }
         : {}),
     };
     emitToolCallUpdate(session, toolUseId, progressFields, "summary");

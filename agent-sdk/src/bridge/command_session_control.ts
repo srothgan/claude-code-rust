@@ -1,9 +1,5 @@
 import type { Query, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type {
-  BridgeCommand,
-  EffortLevel,
-  FastModeSnapshot,
-} from "../types.js";
+import type { BridgeCommand, EffortLevel, FastModeSnapshot } from "../types.js";
 import {
   buildModeState,
   markModeUnavailableForSession,
@@ -45,9 +41,18 @@ export type SessionControlCommandDeps = {
   ) => SDKUserMessage | undefined;
   applySessionEffort: (query: Query, effort: EffortLevel) => Promise<void>;
   applySessionAgent: (query: Query, agent: string | null) => Promise<void>;
-  applySessionFastMode: (query: Query, enabled: boolean) => Promise<FastModeSnapshot>;
-  emitEffortConfigOptionUpdate: (sessionId: string, effort: EffortLevel) => void;
-  emitAgentConfigOptionUpdate: (sessionId: string, agent: string | null) => void;
+  applySessionFastMode: (
+    query: Query,
+    enabled: boolean,
+  ) => Promise<FastModeSnapshot>;
+  emitEffortConfigOptionUpdate: (
+    sessionId: string,
+    effort: EffortLevel,
+  ) => void;
+  emitAgentConfigOptionUpdate: (
+    sessionId: string,
+    agent: string | null,
+  ) => void;
   handleReloadPluginsCommand: (
     session: SessionState,
     requestId?: string,
@@ -64,7 +69,11 @@ export async function handleSessionControlCommand(
       handlePrompt(command, requestId, deps);
       return;
     case "cancel_turn":
-      await dispatchCancelTurnCommand(command, { requestId, sessionById, slashError });
+      await dispatchCancelTurnCommand(command, {
+        requestId,
+        sessionById,
+        slashError,
+      });
       return;
     case "set_model":
       await setModel(command, requestId);
@@ -130,16 +139,18 @@ async function setModel(
     await session.query.setModel(command.model);
     session.requestedModelId = command.model;
     session.model = command.model;
-    const invalidatedResolvedRuntimeModel = shouldInvalidateResolvedRuntimeModel(
-      previousRequestedModel,
-      previousSessionModel,
-      command.model,
-    );
+    const invalidatedResolvedRuntimeModel =
+      shouldInvalidateResolvedRuntimeModel(
+        previousRequestedModel,
+        previousSessionModel,
+        command.model,
+      );
     if (invalidatedResolvedRuntimeModel) {
       session.resolvedRuntimeModelId = undefined;
     }
     const changed = refreshCurrentModel(session, true);
-    const forcedCurrentModelUpdate = !changed && emitCurrentModelUpdate(session);
+    const forcedCurrentModelUpdate =
+      !changed && emitCurrentModelUpdate(session);
     bridgeLogger.info({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "set_model_succeeded",
@@ -184,7 +195,11 @@ async function setModel(
         previous_current_model: session.currentModel?.resolved_id,
       },
     });
-    slashError(command.session_id, `failed to set model: ${message}`, requestId);
+    slashError(
+      command.session_id,
+      `failed to set model: ${message}`,
+      requestId,
+    );
   }
 }
 
@@ -198,7 +213,11 @@ async function setMode(
   }
   const mode = toPermissionMode(command.mode);
   if (!mode) {
-    slashError(command.session_id, `unsupported mode: ${command.mode}`, requestId);
+    slashError(
+      command.session_id,
+      `unsupported mode: ${command.mode}`,
+      requestId,
+    );
     return;
   }
   try {
@@ -220,7 +239,11 @@ async function setMode(
         });
       }
     }
-    slashError(command.session_id, `failed to set mode to ${mode}: ${message}`, requestId);
+    slashError(
+      command.session_id,
+      `failed to set mode to ${mode}: ${message}`,
+      requestId,
+    );
   }
 }
 
@@ -238,7 +261,11 @@ async function setEffort(
     deps.emitEffortConfigOptionUpdate(session.sessionId, command.effort);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    slashError(command.session_id, `failed to set effort: ${message}`, requestId);
+    slashError(
+      command.session_id,
+      `failed to set effort: ${message}`,
+      requestId,
+    );
   }
 }
 
@@ -256,7 +283,11 @@ async function setAgent(
     deps.emitAgentConfigOptionUpdate(session.sessionId, command.agent);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    slashError(command.session_id, `failed to set agent: ${message}`, requestId);
+    slashError(
+      command.session_id,
+      `failed to set agent: ${message}`,
+      requestId,
+    );
   }
 }
 
@@ -282,7 +313,10 @@ async function setFastMode(
     },
   });
   try {
-    const snapshot = await deps.applySessionFastMode(session.query, command.enabled);
+    const snapshot = await deps.applySessionFastMode(
+      session.query,
+      command.enabled,
+    );
     const state = snapshot.state;
     session.fastModeState = state;
     session.fastModeDisabledReason = snapshot.disabled_reason;
@@ -292,7 +326,8 @@ async function setFastMode(
       bridgeLogger.warn({
         target: LOG_TARGETS.APP_SESSION,
         eventName: "set_fast_mode_mismatch",
-        message: "SDK reported a fast-mode state that did not match the request",
+        message:
+          "SDK reported a fast-mode state that did not match the request",
         outcome: "failure",
         sessionId: session.sessionId,
         requestId,
@@ -336,7 +371,11 @@ async function setFastMode(
         error_message: message,
       },
     });
-    slashError(command.session_id, `failed to set fast mode: ${message}`, requestId);
+    slashError(
+      command.session_id,
+      `failed to set fast mode: ${message}`,
+      requestId,
+    );
   }
 }
 
@@ -351,7 +390,10 @@ async function reloadPlugins(
   }
 }
 
-function requireSession(sessionId: string, requestId?: string): SessionState | null {
+function requireSession(
+  sessionId: string,
+  requestId?: string,
+): SessionState | null {
   const session = sessionById(sessionId);
   if (!session) {
     slashError(sessionId, `unknown session: ${sessionId}`, requestId);

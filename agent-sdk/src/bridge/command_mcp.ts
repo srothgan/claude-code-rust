@@ -31,7 +31,11 @@ export async function handleMcpCommand(
 ): Promise<void> {
   const session = sessionById(command.session_id);
   if (!session) {
-    slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+    slashError(
+      command.session_id,
+      `unknown session: ${command.session_id}`,
+      requestId,
+    );
     return;
   }
   switch (command.command) {

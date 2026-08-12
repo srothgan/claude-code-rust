@@ -76,6 +76,12 @@ pub struct SessionPickerState {
     pub selected: usize,
     /// Scroll offset for when the list exceeds the visible area.
     pub scroll_offset: usize,
+    /// Session whose turns are being inspected for a resume-at fork.
+    pub turn_session_id: Option<String>,
+    /// Highlighted turn in `app.sdk_inventory.rewind_targets`.
+    pub turn_selected: usize,
+    /// Scroll offset for the turn list.
+    pub turn_scroll_offset: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -96,23 +102,54 @@ pub enum UsageSourceMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageSourceKind {
+    Sdk,
     Oauth,
     Cli,
 }
 
-impl UsageSourceKind {
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Oauth => "oauth",
-            Self::Cli => "cli",
-        }
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionUsageSummary {
+    pub total_cost_usd: Option<f64>,
+    pub total_api_duration_ms: Option<f64>,
+    pub total_duration_ms: Option<f64>,
+    pub total_lines_added: Option<f64>,
+    pub total_lines_removed: Option<f64>,
+    pub model_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageActivityWindow {
+    pub request_count: u64,
+    pub session_count: u64,
+    pub behaviors: Vec<UsageBehaviorAttribution>,
+    pub agents: Vec<UsageNamedAttribution>,
+    pub skills: Vec<UsageNamedAttribution>,
+    pub plugins: Vec<UsageNamedAttribution>,
+    pub mcp_servers: Vec<UsageNamedAttribution>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageBehaviorAttribution {
+    pub key: String,
+    pub pct: f64,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageNamedAttribution {
+    pub name: String,
+    pub pct: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageActivitySummary {
+    pub day: Option<UsageActivityWindow>,
+    pub week: Option<UsageActivityWindow>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageWindow {
-    pub label: &'static str,
+    pub label: String,
     pub utilization: f64,
     pub resets_at: Option<std::time::SystemTime>,
     pub reset_description: Option<String>,
@@ -130,11 +167,16 @@ pub struct ExtraUsage {
 pub struct UsageSnapshot {
     pub source: UsageSourceKind,
     pub fetched_at: std::time::SystemTime,
+    pub subscription_type: Option<String>,
     pub five_hour: Option<UsageWindow>,
     pub seven_day: Option<UsageWindow>,
+    pub seven_day_oauth_apps: Option<UsageWindow>,
     pub seven_day_opus: Option<UsageWindow>,
     pub seven_day_sonnet: Option<UsageWindow>,
+    pub model_scoped: Vec<UsageWindow>,
     pub extra_usage: Option<ExtraUsage>,
+    pub session: Option<SessionUsageSummary>,
+    pub activity: Option<UsageActivitySummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

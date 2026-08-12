@@ -1,4 +1,10 @@
-import type { Json, TaskItem, TaskStatus, TaskUpdateSource, ToolCall } from "../types.js";
+import type {
+  Json,
+  TaskItem,
+  TaskStatus,
+  TaskUpdateSource,
+  ToolCall,
+} from "../types.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { emitSessionUpdate } from "./events.js";
 import { asRecordOrNull } from "./shared.js";
@@ -64,7 +70,8 @@ export function taskToolTitle(
     return label ? `Task output: ${label}` : "Task output";
   }
   if (name === "TaskStop") {
-    const taskId = nonEmptyString(input.task_id) ?? nonEmptyString(input.shell_id) ?? "";
+    const taskId =
+      nonEmptyString(input.task_id) ?? nonEmptyString(input.shell_id) ?? "";
     const label = context.taskSubject || taskId;
     return label ? `Stop task: ${label}` : "Stop task";
   }
@@ -102,14 +109,18 @@ function jsonRecord(value: unknown): Record<string, Json> | undefined {
 }
 
 function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+  return typeof value === "string" && value.trim().length > 0
+    ? value
+    : undefined;
 }
 
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  return value.filter(
+    (entry): entry is string => typeof entry === "string" && entry.length > 0,
+  );
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -175,7 +186,11 @@ function extractText(value: unknown): string {
   return typeof record?.text === "string" ? record.text : "";
 }
 
-function visitCandidate(value: unknown, records: Record<string, unknown>[], depth = 0): void {
+function visitCandidate(
+  value: unknown,
+  records: Record<string, unknown>[],
+  depth = 0,
+): void {
   if (value === undefined || value === null || depth > 6) {
     return;
   }
@@ -214,7 +229,10 @@ function visitCandidate(value: unknown, records: Record<string, unknown>[], dept
   }
 }
 
-function resultCandidates(rawResult: unknown, rawContent: unknown): Record<string, unknown>[] {
+function resultCandidates(
+  rawResult: unknown,
+  rawContent: unknown,
+): Record<string, unknown>[] {
   const records: Record<string, unknown>[] = [];
   visitCandidate(rawResult, records);
   visitCandidate(rawContent, records);
@@ -244,7 +262,9 @@ function humanizeFieldLabel(key: string): string {
       if (word === "id") {
         return "ID";
       }
-      return index === 0 ? `${word.charAt(0).toUpperCase()}${word.slice(1)}` : word;
+      return index === 0
+        ? `${word.charAt(0).toUpperCase()}${word.slice(1)}`
+        : word;
     })
     .join(" ");
 }
@@ -255,7 +275,9 @@ function displayScalarValue(value: unknown): string | undefined {
     if (!trimmed) {
       return undefined;
     }
-    return /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/u.test(trimmed) ? trimmed.replace(/_/g, " ") : trimmed;
+    return /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/u.test(trimmed)
+      ? trimmed.replace(/_/g, " ")
+      : trimmed;
   }
   if (typeof value === "boolean") {
     return value ? "yes" : "no";
@@ -267,34 +289,41 @@ function displayScalarValue(value: unknown): string | undefined {
 }
 
 function decodeXmlText(value: string): string {
-  return value.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|amp|lt|gt|quot|apos);/g, (match, dec, hex) => {
-    if (typeof dec === "string" && dec.length > 0) {
-      const codePoint = Number.parseInt(dec, 10);
-      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
-        ? String.fromCodePoint(codePoint)
-        : match;
-    }
-    if (typeof hex === "string" && hex.length > 0) {
-      const codePoint = Number.parseInt(hex, 16);
-      return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
-        ? String.fromCodePoint(codePoint)
-        : match;
-    }
-    switch (match) {
-      case "&amp;":
-        return "&";
-      case "&lt;":
-        return "<";
-      case "&gt;":
-        return ">";
-      case "&quot;":
-        return "\"";
-      case "&apos;":
-        return "'";
-      default:
-        return match;
-    }
-  });
+  return value.replace(
+    /&(?:#(\d+)|#x([0-9a-fA-F]+)|amp|lt|gt|quot|apos);/g,
+    (match, dec, hex) => {
+      if (typeof dec === "string" && dec.length > 0) {
+        const codePoint = Number.parseInt(dec, 10);
+        return Number.isInteger(codePoint) &&
+          codePoint >= 0 &&
+          codePoint <= 0x10ffff
+          ? String.fromCodePoint(codePoint)
+          : match;
+      }
+      if (typeof hex === "string" && hex.length > 0) {
+        const codePoint = Number.parseInt(hex, 16);
+        return Number.isInteger(codePoint) &&
+          codePoint >= 0 &&
+          codePoint <= 0x10ffff
+          ? String.fromCodePoint(codePoint)
+          : match;
+      }
+      switch (match) {
+        case "&amp;":
+          return "&";
+        case "&lt;":
+          return "<";
+        case "&gt;":
+          return ">";
+        case "&quot;":
+          return '"';
+        case "&apos;":
+          return "'";
+        default:
+          return match;
+      }
+    },
+  );
 }
 
 function xmlLeafFields(text: string): Array<[string, string]> {
@@ -308,7 +337,11 @@ function xmlLeafFields(text: string): Array<[string, string]> {
       break;
     }
     const [, key, rawValue] = match;
-    if (!key || rawValue === undefined || /<[A-Za-z][\w.-]{0,79}[\s>]/u.test(rawValue)) {
+    if (
+      !key ||
+      rawValue === undefined ||
+      /<[A-Za-z][\w.-]{0,79}[\s>]/u.test(rawValue)
+    ) {
       continue;
     }
     const value = decodeXmlText(rawValue).trim();
@@ -319,13 +352,18 @@ function xmlLeafFields(text: string): Array<[string, string]> {
   return fields;
 }
 
-function firstTaskRecord(candidates: Record<string, unknown>[]): Record<string, unknown> | undefined {
+function firstTaskRecord(
+  candidates: Record<string, unknown>[],
+): Record<string, unknown> | undefined {
   for (const candidate of candidates) {
     const nestedTask = asRecordOrNull(candidate.task);
     if (nestedTask && typeof nestedTask.id === "string") {
       return nestedTask;
     }
-    if (typeof candidate.id === "string" && typeof candidate.subject === "string") {
+    if (
+      typeof candidate.id === "string" &&
+      typeof candidate.subject === "string"
+    ) {
       return candidate;
     }
   }
@@ -342,15 +380,21 @@ function firstTaskUpdateOutput(
   candidates: Record<string, unknown>[],
 ): Record<string, unknown> | undefined {
   return candidates.find(
-    (candidate) => typeof candidate.success === "boolean" && typeof candidate.taskId === "string",
+    (candidate) =>
+      typeof candidate.success === "boolean" &&
+      typeof candidate.taskId === "string",
   );
 }
 
-function firstTaskListOutput(candidates: Record<string, unknown>[]): Record<string, unknown> | undefined {
+function firstTaskListOutput(
+  candidates: Record<string, unknown>[],
+): Record<string, unknown> | undefined {
   return candidates.find((candidate) => Array.isArray(candidate.tasks));
 }
 
-function firstTaskStopOutput(candidates: Record<string, unknown>[]): Record<string, unknown> | undefined {
+function firstTaskStopOutput(
+  candidates: Record<string, unknown>[],
+): Record<string, unknown> | undefined {
   return candidates.find(
     (candidate) =>
       typeof candidate.message === "string" &&
@@ -476,7 +520,9 @@ function removeTasks(session: SessionState, taskIds: string[]): string[] {
   }
   if (removed.length > 0) {
     const removedSet = new Set(removed);
-    session.taskOrder = session.taskOrder.filter((taskId) => !removedSet.has(taskId));
+    session.taskOrder = session.taskOrder.filter(
+      (taskId) => !removedSet.has(taskId),
+    );
   }
   return removed;
 }
@@ -537,7 +583,10 @@ function taskCreatePatch(
   const metadata = jsonValue(input.metadata);
   return {
     task_id: taskId,
-    subject: nonEmptyString(taskRecord.subject) ?? nonEmptyString(input.subject) ?? taskId,
+    subject:
+      nonEmptyString(taskRecord.subject) ??
+      nonEmptyString(input.subject) ??
+      taskId,
     description: nonEmptyString(input.description),
     active_form: nonEmptyString(input.activeForm),
     status: "pending",
@@ -555,8 +604,13 @@ function taskUpdatePatch(
   output: Record<string, unknown>,
 ): TaskPatch {
   const existing = session.tasksById.get(taskId);
-  const metadata = mergeMetadata(existing?.metadata, jsonRecord(input.metadata));
-  const status = normalizeTaskStatus(input.status) ?? normalizeTaskStatus(asRecordOrNull(output.statusChange)?.to);
+  const metadata = mergeMetadata(
+    existing?.metadata,
+    jsonRecord(input.metadata),
+  );
+  const status =
+    normalizeTaskStatus(input.status) ??
+    normalizeTaskStatus(asRecordOrNull(output.statusChange)?.to);
   const addBlocks = stringArray(input.addBlocks);
   const addBlockedBy = stringArray(input.addBlockedBy);
   const patch: TaskPatch = {
@@ -566,7 +620,10 @@ function taskUpdatePatch(
     active_form: nonEmptyString(input.activeForm),
     status,
     owner: nonEmptyString(input.owner),
-    blocks: addBlocks.length > 0 ? uniqueStrings([...(existing?.blocks ?? []), ...addBlocks]) : undefined,
+    blocks:
+      addBlocks.length > 0
+        ? uniqueStrings([...(existing?.blocks ?? []), ...addBlocks])
+        : undefined,
     blocked_by:
       addBlockedBy.length > 0
         ? uniqueStrings([...(existing?.blocked_by ?? []), ...addBlockedBy])
@@ -579,7 +636,10 @@ function taskUpdatePatch(
   return patch;
 }
 
-function taskGetPatch(taskRecord: Record<string, unknown>, existing?: TaskItem): TaskPatch | undefined {
+function taskGetPatch(
+  taskRecord: Record<string, unknown>,
+  existing?: TaskItem,
+): TaskPatch | undefined {
   const taskId = nonEmptyString(taskRecord.id);
   const subject = nonEmptyString(taskRecord.subject);
   const status = normalizeTaskStatus(taskRecord.status);
@@ -600,7 +660,10 @@ function taskGetPatch(taskRecord: Record<string, unknown>, existing?: TaskItem):
   };
 }
 
-function taskListPatch(taskRecord: Record<string, unknown>, existing?: TaskItem): TaskPatch | undefined {
+function taskListPatch(
+  taskRecord: Record<string, unknown>,
+  existing?: TaskItem,
+): TaskPatch | undefined {
   const taskId = nonEmptyString(taskRecord.id);
   const subject = nonEmptyString(taskRecord.subject);
   const status = normalizeTaskStatus(taskRecord.status);
@@ -651,7 +714,10 @@ function replaceTaskSnapshot(
   return { tasks: emitted, removedTaskIds };
 }
 
-function upsertFromExisting(existing: TaskItem | undefined, patch: TaskPatch): TaskItem {
+function upsertFromExisting(
+  existing: TaskItem | undefined,
+  patch: TaskPatch,
+): TaskItem {
   return {
     task_id: patch.task_id,
     subject: patch.subject ?? existing?.subject ?? patch.task_id,
@@ -662,7 +728,8 @@ function upsertFromExisting(existing: TaskItem | undefined, patch: TaskPatch): T
     blocks: patch.blocks ?? existing?.blocks ?? [],
     blocked_by: patch.blocked_by ?? existing?.blocked_by ?? [],
     metadata: patch.metadata ?? existing?.metadata,
-    source_tool_call_id: patch.source_tool_call_id ?? existing?.source_tool_call_id,
+    source_tool_call_id:
+      patch.source_tool_call_id ?? existing?.source_tool_call_id,
   };
 }
 
@@ -679,7 +746,10 @@ function taskStatusMarker(status: unknown): string {
 }
 
 function taskRecordLine(record: Record<string, unknown>): string {
-  const subject = typeof record.subject === "string" && record.subject.trim() ? record.subject : "Task";
+  const subject =
+    typeof record.subject === "string" && record.subject.trim()
+      ? record.subject
+      : "Task";
   return `${taskStatusMarker(record.status)} ${subject}`;
 }
 
@@ -689,7 +759,10 @@ function taskListWindow(lines: string[]): string[] {
   }
   const firstUnfinished = lines.findIndex((line) => !line.startsWith("■ "));
   const anchor = firstUnfinished >= 0 ? firstUnfinished : lines.length - 1;
-  const start = Math.min(Math.max(anchor - 4, 0), Math.max(lines.length - 9, 0));
+  const start = Math.min(
+    Math.max(anchor - 4, 0),
+    Math.max(lines.length - 9, 0),
+  );
   const end = Math.min(start + 9, lines.length);
   const visible = lines.slice(start, end);
   if (start > 0) {
@@ -719,7 +792,10 @@ export function taskToolResultText(
       return "";
     }
     if (output.success !== true) {
-      const error = typeof output.error === "string" && output.error.trim() ? output.error : "Task update failed";
+      const error =
+        typeof output.error === "string" && output.error.trim()
+          ? output.error
+          : "Task update failed";
       return error;
     }
     return "";
@@ -739,7 +815,9 @@ export function taskToolResultText(
       lines.push(task.description);
     }
     const blockedBy = Array.isArray(task.blockedBy)
-      ? task.blockedBy.filter((entry): entry is string => typeof entry === "string")
+      ? task.blockedBy.filter(
+          (entry): entry is string => typeof entry === "string",
+        )
       : [];
     if (blockedBy.length > 0) {
       lines.push(`Blocked by: ${blockedBy.join(", ")}`);
@@ -783,10 +861,12 @@ export function taskToolResultText(
   return "";
 }
 
-export function taskUpdateSucceeded(rawResult: unknown, rawContent: unknown): boolean | undefined {
-  return firstTaskUpdateOutput(resultCandidates(rawResult, rawContent))?.success as
-    | boolean
-    | undefined;
+export function taskUpdateSucceeded(
+  rawResult: unknown,
+  rawContent: unknown,
+): boolean | undefined {
+  return firstTaskUpdateOutput(resultCandidates(rawResult, rawContent))
+    ?.success as boolean | undefined;
 }
 
 export function applyTaskToolResult(
@@ -809,7 +889,9 @@ export function applyTaskToolResult(
 
   if (toolName === "TaskCreate") {
     const taskRecord = firstTaskRecord(candidates);
-    const patch = taskRecord ? taskCreatePatch(taskRecord, input, toolUseId) : undefined;
+    const patch = taskRecord
+      ? taskCreatePatch(taskRecord, input, toolUseId)
+      : undefined;
     if (!patch) {
       return;
     }
@@ -820,7 +902,8 @@ export function applyTaskToolResult(
 
   if (toolName === "TaskUpdate") {
     const output = firstTaskUpdateOutput(candidates);
-    const taskId = nonEmptyString(output?.taskId) ?? nonEmptyString(input.taskId);
+    const taskId =
+      nonEmptyString(output?.taskId) ?? nonEmptyString(input.taskId);
     if (!output || !taskId || output.success !== true) {
       return;
     }
@@ -844,11 +927,19 @@ export function applyTaskToolResult(
     const taskRecord = asRecordOrNull(output.task);
     if (!taskRecord) {
       if (taskId) {
-        emitTaskStateUpdate(session, "task_get", [], removeTasks(session, [taskId]));
+        emitTaskStateUpdate(
+          session,
+          "task_get",
+          [],
+          removeTasks(session, [taskId]),
+        );
       }
       return;
     }
-    const patch = taskGetPatch(taskRecord, session.tasksById.get(nonEmptyString(taskRecord.id) ?? ""));
+    const patch = taskGetPatch(
+      taskRecord,
+      session.tasksById.get(nonEmptyString(taskRecord.id) ?? ""),
+    );
     if (patch) {
       emitTaskStateUpdate(session, "task_get", [upsertTask(session, patch)]);
     }
@@ -864,11 +955,22 @@ export function applyTaskToolResult(
       .map((entry) => {
         const record = asRecordOrNull(entry);
         const taskId = nonEmptyString(record?.id);
-        return record ? taskListPatch(record, taskId ? session.tasksById.get(taskId) : undefined) : undefined;
+        return record
+          ? taskListPatch(
+              record,
+              taskId ? session.tasksById.get(taskId) : undefined,
+            )
+          : undefined;
       })
       .filter((patch): patch is TaskPatch => Boolean(patch));
     const snapshot = replaceTaskSnapshot(session, patches);
-    emitTaskStateUpdate(session, "task_list", snapshot.tasks, snapshot.removedTaskIds, true);
+    emitTaskStateUpdate(
+      session,
+      "task_list",
+      snapshot.tasks,
+      snapshot.removedTaskIds,
+      true,
+    );
     return;
   }
 
@@ -886,19 +988,26 @@ export function applyTaskToolResult(
       return;
     }
     const existing = session.tasksById.get(taskId);
-    const sourceToolCallId = existing?.source_tool_call_id ?? session.taskToolUseIds.get(taskId);
+    const sourceToolCallId =
+      existing?.source_tool_call_id ?? session.taskToolUseIds.get(taskId);
     if (!existing && !sourceToolCallId) {
       return;
     }
     const metadata = mergeMetadata(existing?.metadata, {
       terminal_status: "stopped",
       task_type: output.task_type as Json,
-      ...(typeof output.command === "string" ? { command: output.command } : {}),
+      ...(typeof output.command === "string"
+        ? { command: output.command }
+        : {}),
     });
     emitTaskStateUpdate(session, "task_lifecycle", [
       upsertTask(session, {
         task_id: taskId,
-        subject: existing?.subject ?? nonEmptyString(output.command) ?? nonEmptyString(output.task_type) ?? taskId,
+        subject:
+          existing?.subject ??
+          nonEmptyString(output.command) ??
+          nonEmptyString(output.task_type) ??
+          taskId,
         status: "completed",
         metadata,
         source_tool_call_id: sourceToolCallId,
@@ -908,9 +1017,14 @@ export function applyTaskToolResult(
   }
 }
 
-function lifecycleTaskStatus(subtype: string, msg: Record<string, unknown>): TaskStatus | undefined {
+function lifecycleTaskStatus(
+  subtype: string,
+  msg: Record<string, unknown>,
+): TaskStatus | undefined {
   const patch = asRecordOrNull(msg.patch);
-  const explicit = normalizeLifecycleTaskStatus(msg.status) ?? normalizeLifecycleTaskStatus(patch?.status);
+  const explicit =
+    normalizeLifecycleTaskStatus(msg.status) ??
+    normalizeLifecycleTaskStatus(patch?.status);
   if (explicit) {
     return explicit;
   }
@@ -920,10 +1034,16 @@ function lifecycleTaskStatus(subtype: string, msg: Record<string, unknown>): Tas
   return undefined;
 }
 
-function lifecycleMetadata(msg: Record<string, unknown>): Record<string, Json> | undefined {
+function lifecycleMetadata(
+  msg: Record<string, unknown>,
+): Record<string, Json> | undefined {
   const patch = asRecordOrNull(msg.patch) ?? undefined;
   const metadata: Record<string, Json> = {};
-  const copyValue = (from: Record<string, unknown> | undefined, key: string, outKey = key): void => {
+  const copyValue = (
+    from: Record<string, unknown> | undefined,
+    key: string,
+    outKey = key,
+  ): void => {
     if (!from || !Object.hasOwn(from, key)) {
       return;
     }
@@ -952,7 +1072,8 @@ function lifecycleMetadata(msg: Record<string, unknown>): Record<string, Json> |
     copyValue(msg, key);
     copyValue(patch, key);
   }
-  const terminalStatus = nonEmptyString(msg.status) ?? nonEmptyString(patch?.status);
+  const terminalStatus =
+    nonEmptyString(msg.status) ?? nonEmptyString(patch?.status);
   if (
     terminalStatus === "completed" ||
     terminalStatus === "failed" ||
@@ -982,7 +1103,9 @@ export function applyTaskLifecycleState(
   const existing = session.tasksById.get(taskId);
   const status = lifecycleTaskStatus(subtype, msg);
   const description =
-    nonEmptyString(patch?.description) ?? nonEmptyString(msg.description) ?? nonEmptyString(msg.summary);
+    nonEmptyString(patch?.description) ??
+    nonEmptyString(msg.description) ??
+    nonEmptyString(msg.summary);
   const activeForm = nonEmptyString(patch?.activeForm);
   const subject =
     nonEmptyString(patch?.subject) ??
@@ -995,7 +1118,13 @@ export function applyTaskLifecycleState(
   const metadata = mergeMetadata(existing?.metadata, lifecycleMetadata(msg));
   const sourceToolCallId = session.taskToolUseIds.get(taskId);
 
-  if (!status && !description && !activeForm && metadata === existing?.metadata && !sourceToolCallId) {
+  if (
+    !status &&
+    !description &&
+    !activeForm &&
+    metadata === existing?.metadata &&
+    !sourceToolCallId
+  ) {
     return;
   }
 

@@ -6,24 +6,31 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use std::time::{SystemTime, UNIX_EPOCH};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::theme;
+
+const SESSION_DESCRIPTION: &str = "Recent sessions for this project directory.";
+const TURN_DESCRIPTION: &str = "The original session will not change. The selected message and everything after it will be omitted from the fork.";
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
+    let selecting_turn = app.session_picker.turn_session_id.is_some();
     let outer = Block::default()
         .borders(Borders::ALL)
-        .title("Resume Session")
+        .title(if selecting_turn { "Fork Before Message" } else { "Resume Session" })
         .border_style(Style::default().fg(theme::DIM));
     frame.render_widget(outer, area);
 
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
+    let description = if selecting_turn { TURN_DESCRIPTION } else { SESSION_DESCRIPTION };
+    let description_height = wrapped_line_count(description, inner.width);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(description_height),
             Constraint::Min(3),
             Constraint::Length(1),
         ])
@@ -31,18 +38,46 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Select a session to resume",
+            if selecting_turn {
+                "Select where the fork should stop"
+            } else {
+                "Select a session to resume"
+            },
             Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
         ))),
         chunks[0],
     );
     frame.render_widget(
-        Paragraph::new("Recent sessions for this project directory.")
-            .style(Style::default().fg(theme::DIM)),
+        Paragraph::new(description)
+            .style(Style::default().fg(theme::DIM))
+            .wrap(Wrap { trim: false }),
         chunks[1],
     );
 
-    if crate::app::session_picker::startup_picker_is_loading(app) {
+    if selecting_turn && app.sdk_inventory.rewind_targets_in_flight {
+        frame.render_widget(
+            Paragraph::new("Loading session messages...")
+                .style(Style::default().fg(theme::DIM))
+                .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
+    } else if selecting_turn && app.sdk_inventory.rewind_targets_error.is_some() {
+        frame.render_widget(
+            Paragraph::new(app.sdk_inventory.rewind_targets_error.as_deref().unwrap_or_default())
+                .style(Style::default().fg(theme::STATUS_ERROR))
+                .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
+    } else if selecting_turn && crate::app::session_picker::picker_turn_count(app) == 0 {
+        frame.render_widget(
+            Paragraph::new("No resumable user messages found in this session.")
+                .style(Style::default().fg(theme::DIM))
+                .wrap(Wrap { trim: false }),
+            chunks[2],
+        );
+    } else if selecting_turn {
+        render_turn_list(frame, chunks[2], app);
+    } else if crate::app::session_picker::startup_picker_is_loading(app) {
         frame.render_widget(
             Paragraph::new("Loading recent sessions...")
                 .style(Style::default().fg(theme::DIM))
@@ -64,6 +99,51 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Paragraph::new(footer_text(app)).style(Style::default().fg(theme::DIM)),
         chunks[3],
     );
+}
+
+fn wrapped_line_count(text: &str, width: u16) -> u16 {
+    u16::try_from(Paragraph::new(text).wrap(Wrap { trim: false }).line_count(width.max(1)))
+        .unwrap_or(u16::MAX)
+        .max(1)
+}
+
+fn render_turn_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    let visible_count = usize::from(area.height.max(1));
+    let turn_count = crate::app::session_picker::picker_turn_count(app);
+    let max_offset = turn_count.saturating_sub(visible_count);
+    app.session_picker.turn_scroll_offset = app.session_picker.turn_scroll_offset.min(max_offset);
+    if app.session_picker.turn_selected < app.session_picker.turn_scroll_offset {
+        app.session_picker.turn_scroll_offset = app.session_picker.turn_selected;
+    }
+    if app.session_picker.turn_selected >= app.session_picker.turn_scroll_offset + visible_count {
+        app.session_picker.turn_scroll_offset =
+            app.session_picker.turn_selected + 1 - visible_count;
+    }
+
+    let start = app.session_picker.turn_scroll_offset;
+    let end = (start + visible_count).min(turn_count);
+    let lines = app.sdk_inventory.rewind_targets[start..end]
+        .iter()
+        .enumerate()
+        .map(|(idx, target)| {
+            let selected = start + idx == app.session_picker.turn_selected;
+            let style = if selected {
+                Style::default().fg(ratatui::style::Color::White).bg(theme::RUST_ORANGE)
+            } else {
+                Style::default()
+            };
+            let marker = if selected { ">" } else { " " };
+            Line::from(Span::styled(
+                format!(
+                    "{marker} Msg. {} - {}",
+                    turn_count.saturating_sub(start + idx),
+                    truncate(&target.first_text, 60)
+                ),
+                style,
+            ))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
 }
 
 fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -90,10 +170,18 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
             Style::default()
         };
         let marker = if selected { ">" } else { " " };
-        lines.push(Line::from(Span::styled(
-            format!("{marker} {}", display_primary(session)),
-            base_style.add_modifier(Modifier::BOLD),
-        )));
+        let current = app
+            .session_runtime
+            .session_id
+            .as_ref()
+            .is_some_and(|active| active.as_str() == session.session_id);
+        let current_label = if current { " [current]" } else { "" };
+        lines.push(session_line(
+            area.width,
+            &format!("{marker} {}{current_label}", display_primary(session)),
+            base_style,
+            selected,
+        ));
         if start + idx + 1 < end {
             lines.push(Line::default());
         }
@@ -102,11 +190,41 @@ fn render_session_list(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
 }
 
+fn session_line(width: u16, left: &str, base_style: Style, selected: bool) -> Line<'static> {
+    const FULL_ACTION: &str = "messages ›";
+    const COMPACT_ACTION: &str = "›";
+
+    let available_width = usize::from(width);
+    let action = if available_width >= UnicodeWidthStr::width(FULL_ACTION) + 3 {
+        FULL_ACTION
+    } else {
+        COMPACT_ACTION
+    };
+    let action_width = UnicodeWidthStr::width(action);
+    let max_left_width = available_width.saturating_sub(action_width.saturating_add(1));
+    let fitted_left = fit_with_ellipsis(left, max_left_width);
+    let left_width = UnicodeWidthStr::width(fitted_left.as_str());
+    let gap = available_width.saturating_sub(left_width.saturating_add(action_width));
+    let action_style = if selected {
+        base_style.add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)
+    };
+
+    Line::from(vec![
+        Span::styled(fitted_left, base_style.add_modifier(Modifier::BOLD)),
+        Span::styled(" ".repeat(gap), base_style),
+        Span::styled(action, action_style),
+    ])
+}
+
 fn footer_text(app: &App) -> &'static str {
     if crate::app::session_picker::startup_picker_is_loading(app) {
         "Preparing session picker | Ctrl+Q to quit"
+    } else if app.session_picker.turn_session_id.is_some() {
+        "Enter to fork before message | Left/Esc back | Ctrl+Q to quit"
     } else {
-        "Enter to resume | Esc to start new session | Ctrl+Q to quit"
+        "Enter to resume | Right choose message | Esc close | Ctrl+Q to quit"
     }
 }
 
@@ -132,6 +250,29 @@ fn truncate(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let truncated: String = chars.by_ref().take(max_chars).collect();
     if chars.next().is_some() { format!("{truncated}...") } else { truncated }
+}
+
+fn fit_with_ellipsis(value: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(value) <= max_width {
+        return value.to_owned();
+    }
+    if max_width <= 3 {
+        return ".".repeat(max_width);
+    }
+
+    let content_width = max_width - 3;
+    let mut used_width = 0;
+    let mut fitted = String::new();
+    for ch in value.chars() {
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used_width + char_width > content_width {
+            break;
+        }
+        fitted.push(ch);
+        used_width += char_width;
+    }
+    fitted.push_str("...");
+    fitted
 }
 
 fn format_relative_age(last_modified_ms: u64) -> String {
@@ -255,5 +396,69 @@ mod tests {
 
         assert!(text.contains("Session 10"));
         assert!(!text.contains("Session 11"));
+    }
+
+    #[test]
+    fn renders_message_drop_level_and_navigation_help() {
+        let mut app = App::test_default();
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
+        app.session_picker.turn_session_id = Some("s1".to_owned());
+        app.sdk_inventory.rewind_targets = vec![
+            crate::agent::model::RewindTarget {
+                uuid: "user-2".to_owned(),
+                first_text: "Resume from this message".to_owned(),
+                input_text: "Resume from this message".to_owned(),
+                index: 2,
+                previous_assistant_uuid: Some("assistant-1".to_owned()),
+                resume_anchor_uuid: Some("assistant-1".to_owned()),
+            },
+            crate::agent::model::RewindTarget {
+                uuid: "user-1".to_owned(),
+                first_text: "Start from the beginning".to_owned(),
+                input_text: "Start from the beginning".to_owned(),
+                index: 0,
+                previous_assistant_uuid: None,
+                resume_anchor_uuid: None,
+            },
+        ];
+
+        let text = draw_text(&mut app);
+
+        assert!(text.contains("Fork Before Message"));
+        assert!(text.contains("> Msg. 2 - Resume from this message"));
+        assert!(text.contains("  Msg. 1 - Start from the beginning"));
+        assert!(text.contains("Left/Esc back"));
+    }
+
+    #[test]
+    fn marks_the_current_session_and_exposes_message_navigation() {
+        let mut app = App::test_default();
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("s1"));
+        app.recent_sessions = vec![session("s1", "Current Session")];
+
+        let text = draw_text(&mut app);
+
+        assert!(text.contains("[current]"));
+        let session_row = text
+            .lines()
+            .find(|line| line.contains("Current Session"))
+            .expect("current session row");
+        let action_column = session_row.find("messages ›").expect("message action");
+        assert!(action_column > 50, "message action should be aligned to the right: {session_row}");
+        assert!(text.contains("Right choose message"));
+    }
+
+    #[test]
+    fn renders_correlated_rewind_target_error_in_picker() {
+        let mut app = App::test_default();
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
+        app.session_picker.turn_session_id = Some("s1".to_owned());
+        app.sdk_inventory.rewind_targets_error = Some("Session history is unavailable".to_owned());
+
+        let text = draw_text(&mut app);
+
+        assert!(text.contains("Session history is unavailable"));
+        assert!(!text.contains("No resumable user messages"));
     }
 }

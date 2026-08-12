@@ -28,6 +28,7 @@ use crate::app::tasks::apply_task_state_update;
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 use crossterm::event::{Event, KeyEventKind};
+use std::fmt::Write as _;
 
 pub use client::handle_client_event;
 
@@ -256,6 +257,7 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
     let needs_history_retention = matches!(
         &update,
         model::SessionUpdate::AgentMessageChunk(_)
+            | model::SessionUpdate::ExternalMessageUpdate(_)
             | model::SessionUpdate::ToolCall(_)
             | model::SessionUpdate::ToolCallUpdate(_)
             | model::SessionUpdate::TranscriptRetraction(_)
@@ -293,6 +295,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_task_state_update(app, update);
         }
         model::SessionUpdate::UserMessageChunk(_) => {}
+        model::SessionUpdate::ExternalMessageUpdate(update) => {
+            handle_external_message_update(app, &update);
+        }
         model::SessionUpdate::AgentThoughtChunk(chunk) => {
             let chunk_chars = match &chunk.content {
                 model::ContentBlock::Text(text) => text.text.chars().count(),
@@ -454,6 +459,42 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             compaction::handle_update(app, update);
         }
     }
+}
+
+fn handle_external_message_update(app: &mut App, update: &model::ExternalMessageUpdate) {
+    let origin = &update.origin;
+    let mut label = match (origin.kind.as_str(), origin.subkind.as_deref()) {
+        ("task-notification", Some("peer-send-message")) | ("peer", _) => {
+            "Message from another Claude session".to_owned()
+        }
+        ("task-notification", Some("scheduled-trigger")) => {
+            "Scheduled Claude task message".to_owned()
+        }
+        ("task-notification", _) => "Claude task notification".to_owned(),
+        _ => "Claude-generated input".to_owned(),
+    };
+    if let Some(name) = origin.name.as_deref().filter(|value| !value.is_empty()) {
+        let _ = write!(label, " (sender-reported name: {name})");
+    }
+    if let Some(from_session) = origin.from_session.as_deref().filter(|value| !value.is_empty()) {
+        let _ = write!(label, " [session {from_session}]");
+    }
+    if let Some(pid) = origin.verified_peer_pid {
+        let _ = write!(label, " [verified connecting PID {pid}]");
+    }
+    let rendered = format!("{label}:\n\n{}", update.content);
+    push_system_message_with_severity(app, Some(SystemSeverity::Info), &rendered);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "external_claude_message_rendered",
+        message = "non-human Claude message rendered with origin metadata",
+        outcome = "success",
+        origin_kind = %origin.kind,
+        origin_subkind = ?origin.subkind,
+        source_session = ?origin.from_session,
+        verified_peer_pid = ?origin.verified_peer_pid,
+        source_message_uuid = ?update.source_message_uuid,
+    );
 }
 
 fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessionState) {

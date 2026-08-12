@@ -1,12 +1,21 @@
-import { listSessions, type ListSessionsOptions } from "@anthropic-ai/claude-agent-sdk";
+import {
+  listSessions,
+  type ListSessionsOptions,
+} from "@anthropic-ai/claude-agent-sdk";
 import { writeSync } from "node:fs";
-import type { BridgeEvent, BridgeEventEnvelope, McpOperationError, SessionUpdate } from "../types.js";
+import type {
+  BridgeEvent,
+  BridgeEventEnvelope,
+  McpOperationError,
+  SessionUpdate,
+} from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
 import { bridgeLogger, LOG_TARGETS, logBridgeEventSent } from "./logger.js";
 import {
   detachSessionForClose,
   resolveCurrentModel,
+  sessionById,
   trackSessionCloseTask,
   type SessionState,
 } from "./session_lifecycle.js";
@@ -34,7 +43,9 @@ function writeProtocolEventToStdout(line: string): void {
 
 let protocolEventWriter: ProtocolEventWriter = writeProtocolEventToStdout;
 
-export function replaceProtocolEventWriter(writer: ProtocolEventWriter): () => void {
+export function replaceProtocolEventWriter(
+  writer: ProtocolEventWriter,
+): () => void {
   const previous = protocolEventWriter;
   protocolEventWriter = writer;
   return () => {
@@ -60,6 +71,23 @@ export function currentSessionListOptions(): ListSessionsOptions {
 }
 
 export function writeEvent(event: BridgeEvent, requestId?: string): void {
+  if (
+    "session_id" in event &&
+    event.event !== "connected" &&
+    event.event !== "session_replaced"
+  ) {
+    const session = sessionById(event.session_id);
+    if (session?.deferConnect) {
+      const events = session.deferredBridgeEvents ?? [];
+      events.push({ event, ...(requestId ? { requestId } : {}) });
+      session.deferredBridgeEvents = events;
+      return;
+    }
+  }
+  writeEventNow(event, requestId);
+}
+
+function writeEventNow(event: BridgeEvent, requestId?: string): void {
   const envelope: BridgeEventEnvelope = {
     ...(requestId ? { request_id: requestId } : {}),
     ...event,
@@ -73,12 +101,40 @@ export function failConnection(message: string, requestId?: string): void {
   writeEvent({ event: "connection_failed", message }, requestId);
 }
 
-export function slashError(sessionId: string, message: string, requestId?: string): void {
-  writeEvent({ event: "slash_error", session_id: sessionId, message }, requestId);
+export function slashError(
+  sessionId: string,
+  message: string,
+  requestId?: string,
+): void {
+  writeEvent(
+    { event: "slash_error", session_id: sessionId, message },
+    requestId,
+  );
 }
 
-export function emitRuntimeReloadCompleted(sessionId: string, requestId?: string): void {
-  writeEvent({ event: "runtime_reload_completed", session_id: sessionId }, requestId);
+export function emitSessionResumeFailed(
+  sessionId: string,
+  operationId: string,
+  message: string,
+): void {
+  writeEventNow(
+    {
+      event: "session_resume_failed",
+      session_id: sessionId,
+      message,
+    },
+    operationId,
+  );
+}
+
+export function emitRuntimeReloadCompleted(
+  sessionId: string,
+  requestId?: string,
+): void {
+  writeEvent(
+    { event: "runtime_reload_completed", session_id: sessionId },
+    requestId,
+  );
 }
 
 export function emitRuntimeReloadFailed(
@@ -86,7 +142,10 @@ export function emitRuntimeReloadFailed(
   message: string,
   requestId?: string,
 ): void {
-  writeEvent({ event: "runtime_reload_failed", session_id: sessionId, message }, requestId);
+  writeEvent(
+    { event: "runtime_reload_failed", session_id: sessionId, message },
+    requestId,
+  );
 }
 
 export function emitMcpOperationError(
@@ -94,10 +153,16 @@ export function emitMcpOperationError(
   error: McpOperationError,
   requestId?: string,
 ): void {
-  writeEvent({ event: "mcp_operation_error", session_id: sessionId, error }, requestId);
+  writeEvent(
+    { event: "mcp_operation_error", session_id: sessionId, error },
+    requestId,
+  );
 }
 
-export function emitSessionUpdate(sessionId: string, update: SessionUpdate): void {
+export function emitSessionUpdate(
+  sessionId: string,
+  update: SessionUpdate,
+): void {
   writeEvent({ event: "session_update", session_id: sessionId, update });
 }
 
@@ -203,8 +268,12 @@ export function buildConnectBridgeEvent(
         ...(session.fastModeDisabledReason
           ? { fast_mode_disabled_reason: session.fastModeDisabledReason }
           : {}),
-        ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
-        ...(session.restoredInput !== undefined ? { restored_input: session.restoredInput } : {}),
+        ...(historyUpdates && historyUpdates.length > 0
+          ? { history_updates: historyUpdates }
+          : {}),
+        ...(session.restoredInput !== undefined
+          ? { restored_input: session.restoredInput }
+          : {}),
       }
     : {
         event: "connected",
@@ -217,7 +286,9 @@ export function buildConnectBridgeEvent(
         ...(session.fastModeDisabledReason
           ? { fast_mode_disabled_reason: session.fastModeDisabledReason }
           : {}),
-        ...(historyUpdates && historyUpdates.length > 0 ? { history_updates: historyUpdates } : {}),
+        ...(historyUpdates && historyUpdates.length > 0
+          ? { history_updates: historyUpdates }
+          : {}),
       };
 }
 
@@ -228,8 +299,14 @@ function logConnectEventEmission(
 ): void {
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
-    eventName: eventName === "session_replaced" ? "session_replaced_emitted" : "session_connected_emitted",
-    message: eventName === "session_replaced" ? "session replaced event emitted" : "session connected event emitted",
+    eventName:
+      eventName === "session_replaced"
+        ? "session_replaced_emitted"
+        : "session_connected_emitted",
+    message:
+      eventName === "session_replaced"
+        ? "session replaced event emitted"
+        : "session connected event emitted",
     outcome: "success",
     ...(requestId ? { requestId } : {}),
     sessionId: session.sessionId,
@@ -252,7 +329,11 @@ export function emitConnectEvent(session: SessionState): void {
     }
   }
   const bridgeEvent = buildConnectBridgeEvent(session, session.connectEvent);
-  logConnectEventEmission(session, session.connectEvent, session.connectRequestId);
+  logConnectEventEmission(
+    session,
+    session.connectEvent,
+    session.connectRequestId,
+  );
   writeEvent(bridgeEvent, session.connectRequestId);
   if (session.pendingRewindResult) {
     writeEvent(
@@ -264,6 +345,16 @@ export function emitConnectEvent(session: SessionState): void {
   session.connectRequestId = undefined;
   session.connected = true;
   session.authHintSent = false;
+  const deferredBridgeEvents = session.deferredBridgeEvents;
+  session.deferredBridgeEvents = undefined;
+  if (deferredBridgeEvents) {
+    for (const deferred of deferredBridgeEvents) {
+      writeEventNow(
+        { ...deferred.event, session_id: session.sessionId } as BridgeEvent,
+        deferred.requestId,
+      );
+    }
+  }
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
@@ -286,12 +377,18 @@ export function emitConnectEvent(session: SessionState): void {
   trackSessionCloseTask(closeTask);
 }
 
-export function emitSessionReplacedEvent(session: SessionState, requestId?: string): void {
+export function emitSessionReplacedEvent(
+  session: SessionState,
+  requestId?: string,
+): void {
   const bridgeEvent = buildConnectBridgeEvent(session, "session_replaced");
   logConnectEventEmission(session, "session_replaced", requestId);
   writeEvent(bridgeEvent, requestId);
   if (session.pendingRewindResult) {
-    writeEvent({ ...session.pendingRewindResult, session_id: session.sessionId }, requestId);
+    writeEvent(
+      { ...session.pendingRewindResult, session_id: session.sessionId },
+      requestId,
+    );
     session.pendingRewindResult = undefined;
   }
   session.resumeUpdates = undefined;

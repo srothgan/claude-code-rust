@@ -1,6 +1,7 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
+  SessionUpdate,
   SystemNoticeSeverity,
   TaskMetadata,
   TerminalReason,
@@ -8,7 +9,11 @@ import type {
   ToolCallUpdateFields,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
-import { toPermissionMode, buildModeState, refreshSupportedModesForSession } from "./commands.js";
+import {
+  toPermissionMode,
+  buildModeState,
+  refreshSupportedModesForSession,
+} from "./commands.js";
 import {
   writeEvent,
   emitSessionUpdate,
@@ -37,7 +42,10 @@ import {
   taskUpdatedFields,
   type ToolCorrelationMetadata,
 } from "./tool_calls.js";
-import { applyBackgroundTasksChanged, applyTaskLifecycleState } from "./tasks.js";
+import {
+  applyBackgroundTasksChanged,
+  applyTaskLifecycleState,
+} from "./tasks.js";
 import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
 import {
   emitAuthRequired,
@@ -46,7 +54,11 @@ import {
   emitFastModeUpdateIfChanged,
   setFastModeSnapshotIfChanged,
 } from "./error_classification.js";
-import { mapAvailableAgentsFromNames, emitAvailableAgentsIfChanged, refreshAvailableAgents } from "./agents.js";
+import {
+  mapAvailableAgentsFromNames,
+  emitAvailableAgentsIfChanged,
+  refreshAvailableAgents,
+} from "./agents.js";
 import {
   mapInitSlashCommands,
   mapSdkSlashCommands,
@@ -64,11 +76,17 @@ import {
 } from "./state_parsing.js";
 import { looksLikeAuthRequired } from "./auth.js";
 import type { SessionState } from "./session_lifecycle.js";
-import { emitCurrentModelUpdate, refreshCurrentModel, updateSessionId } from "./session_lifecycle.js";
+import {
+  emitCurrentModelUpdate,
+  refreshCurrentModel,
+  updateSessionId,
+} from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitMcpSnapshotFromStatuses } from "./mcp.js";
 
-export function textFromPrompt(command: Extract<BridgeCommand, { command: "prompt" }>): string {
+export function textFromPrompt(
+  command: Extract<BridgeCommand, { command: "prompt" }>,
+): string {
   const chunks = command.chunks ?? [];
   return chunks
     .map((chunk) => {
@@ -91,7 +109,11 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
-type SupportedImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+type SupportedImageMimeType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp";
 
 type PromptContentBlock =
   | { type: "text"; text: string }
@@ -104,30 +126,59 @@ type PromptContentBlock =
       };
     };
 
-function sdkCorrelationMetadata(msg: Record<string, unknown>): ToolCorrelationMetadata {
+function sdkCorrelationMetadata(
+  msg: Record<string, unknown>,
+): ToolCorrelationMetadata {
   return {
     requestId: typeof msg.request_id === "string" ? msg.request_id : undefined,
-    subagentType: typeof msg.subagent_type === "string" ? msg.subagent_type : undefined,
-    taskDescription: typeof msg.task_description === "string" ? msg.task_description : undefined,
-    parentAgentId: typeof msg.parent_agent_id === "string" ? msg.parent_agent_id : undefined,
+    subagentType:
+      typeof msg.subagent_type === "string" ? msg.subagent_type : undefined,
+    taskDescription:
+      typeof msg.task_description === "string"
+        ? msg.task_description
+        : undefined,
+    parentAgentId:
+      typeof msg.parent_agent_id === "string" ? msg.parent_agent_id : undefined,
   };
 }
 
-function sdkTaskMetadata(msg: Record<string, unknown>): TaskMetadata | undefined {
+function sdkTaskMetadata(
+  msg: Record<string, unknown>,
+): TaskMetadata | undefined {
   const metadata = sdkCorrelationMetadata(msg);
-  const taskType = typeof msg.task_type === "string" && msg.task_type.length > 0 ? msg.task_type : undefined;
+  const taskType =
+    typeof msg.task_type === "string" && msg.task_type.length > 0
+      ? msg.task_type
+      : undefined;
   const workflowName =
-    typeof msg.workflow_name === "string" && msg.workflow_name.length > 0 ? msg.workflow_name : undefined;
-  const prompt = typeof msg.prompt === "string" && msg.prompt.length > 0 ? msg.prompt : undefined;
-  const outputFile = typeof msg.output_file === "string" && msg.output_file.length > 0 ? msg.output_file : undefined;
-  const status = typeof msg.status === "string" && msg.status.length > 0 ? msg.status : undefined;
+    typeof msg.workflow_name === "string" && msg.workflow_name.length > 0
+      ? msg.workflow_name
+      : undefined;
+  const prompt =
+    typeof msg.prompt === "string" && msg.prompt.length > 0
+      ? msg.prompt
+      : undefined;
+  const outputFile =
+    typeof msg.output_file === "string" && msg.output_file.length > 0
+      ? msg.output_file
+      : undefined;
+  const status =
+    typeof msg.status === "string" && msg.status.length > 0
+      ? msg.status
+      : undefined;
   const summary =
-    status && typeof msg.summary === "string" && msg.summary.length > 0 ? msg.summary : undefined;
+    status && typeof msg.summary === "string" && msg.summary.length > 0
+      ? msg.summary
+      : undefined;
   const taskMetadata: TaskMetadata = {
     ...(metadata.requestId ? { request_id: metadata.requestId } : {}),
     ...(metadata.subagentType ? { subagent_type: metadata.subagentType } : {}),
-    ...(metadata.taskDescription ? { task_description: metadata.taskDescription } : {}),
-    ...(metadata.parentAgentId ? { parent_agent_id: metadata.parentAgentId } : {}),
+    ...(metadata.taskDescription
+      ? { task_description: metadata.taskDescription }
+      : {}),
+    ...(metadata.parentAgentId
+      ? { parent_agent_id: metadata.parentAgentId }
+      : {}),
     ...(taskType ? { task_type: taskType } : {}),
     ...(workflowName ? { workflow_name: workflowName } : {}),
     ...(prompt ? { prompt } : {}),
@@ -139,12 +190,79 @@ function sdkTaskMetadata(msg: Record<string, unknown>): TaskMetadata | undefined
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
 }
 
-function sdkMessageOriginKind(msg: Record<string, unknown>): string | undefined {
-  const origin = msg.origin && typeof msg.origin === "object" ? (msg.origin as Record<string, unknown>) : null;
+function sdkMessageOriginKind(
+  msg: Record<string, unknown>,
+): string | undefined {
+  const origin =
+    msg.origin && typeof msg.origin === "object"
+      ? (msg.origin as Record<string, unknown>)
+      : null;
   return typeof origin?.kind === "string" ? origin.kind : undefined;
 }
 
-function logSdkMessageOrigin(session: SessionState, msg: Record<string, unknown>): void {
+function externalMessageUpdateFromSdkUser(
+  msg: Record<string, unknown>,
+): Extract<SessionUpdate, { type: "external_message_update" }> | undefined {
+  const origin = asRecordOrNull(msg.origin);
+  if (!origin) {
+    return undefined;
+  }
+  const kind = typeof origin?.kind === "string" ? origin.kind : undefined;
+  if (kind !== "peer" && kind !== "task-notification") {
+    return undefined;
+  }
+  const payload = asRecordOrNull(msg.message);
+  const content = payload?.content;
+  const contentText =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .flatMap((block) => {
+              const record = asRecordOrNull(block);
+              return record?.type === "text" && typeof record.text === "string"
+                ? [record.text]
+                : [];
+            })
+            .join("\n")
+        : "";
+  const text = typeof origin.body === "string" ? origin.body : contentText;
+  if (!text.trim()) {
+    return undefined;
+  }
+  return {
+    type: "external_message_update",
+    content: text,
+    ...(sourceMessageUuid(msg)
+      ? { source_message_uuid: sourceMessageUuid(msg) }
+      : {}),
+    origin: {
+      kind,
+      ...(typeof origin.subkind === "string"
+        ? { subkind: origin.subkind }
+        : {}),
+      ...(typeof origin.from === "string" ? { from: origin.from } : {}),
+      ...(typeof origin.name === "string" ? { name: origin.name } : {}),
+      ...(typeof origin.fromSession === "string"
+        ? { from_session: origin.fromSession }
+        : {}),
+      ...(typeof origin.senderTaskId === "string"
+        ? { sender_task_id: origin.senderTaskId }
+        : {}),
+      ...(typeof origin.verifiedPeerPid === "number" &&
+      Number.isSafeInteger(origin.verifiedPeerPid) &&
+      origin.verifiedPeerPid >= 0
+        ? { verified_peer_pid: origin.verifiedPeerPid }
+        : {}),
+    },
+  };
+}
+
+function logSdkMessageOrigin(
+  session: SessionState,
+  msg: Record<string, unknown>,
+): void {
+  const origin = asRecordOrNull(msg.origin);
   const originKind = sdkMessageOriginKind(msg);
   if (!originKind) {
     return;
@@ -158,6 +276,20 @@ function logSdkMessageOrigin(session: SessionState, msg: Record<string, unknown>
     fields: {
       message_type: typeof msg.type === "string" ? msg.type : undefined,
       origin_kind: originKind,
+      origin_subkind:
+        typeof origin?.subkind === "string" ? origin.subkind : undefined,
+      origin_from_session:
+        typeof origin?.fromSession === "string"
+          ? origin.fromSession
+          : undefined,
+      origin_sender_task_id:
+        typeof origin?.senderTaskId === "string"
+          ? origin.senderTaskId
+          : undefined,
+      origin_verified_peer_pid:
+        typeof origin?.verifiedPeerPid === "number"
+          ? origin.verifiedPeerPid
+          : undefined,
     },
   });
 }
@@ -171,7 +303,11 @@ function emitSystemNoticeUpdate(
   if (!trimmed) {
     return;
   }
-  emitSessionUpdate(session.sessionId, { type: "system_notice_update", severity, message: trimmed });
+  emitSessionUpdate(session.sessionId, {
+    type: "system_notice_update",
+    severity,
+    message: trimmed,
+  });
 }
 
 const MAX_INFORMATIONAL_DEDUP_KEYS = 256;
@@ -200,7 +336,10 @@ function shouldEmitInformationalMessage(
   return true;
 }
 
-function handleInformationalSystemMessage(session: SessionState, msg: Record<string, unknown>): void {
+function handleInformationalSystemMessage(
+  session: SessionState,
+  msg: Record<string, unknown>,
+): void {
   const content = typeof msg.content === "string" ? msg.content.trim() : "";
   if (!content) {
     return;
@@ -241,7 +380,10 @@ function handleInformationalSystemMessage(session: SessionState, msg: Record<str
   }
 }
 
-function trimmedStringField(msg: Record<string, unknown>, field: string): string | undefined {
+function trimmedStringField(
+  msg: Record<string, unknown>,
+  field: string,
+): string | undefined {
   const value = msg[field];
   if (typeof value !== "string") {
     return undefined;
@@ -259,7 +401,8 @@ function ensureSentencePunctuation(value: string): string {
 }
 
 function modelRefusalNoFallbackMessage(msg: Record<string, unknown>): string {
-  const model = trimmedStringField(msg, "original_model") ?? "the selected model";
+  const model =
+    trimmedStringField(msg, "original_model") ?? "the selected model";
   const base = `Could not continue with ${model}: model refused the request and no fallback model is configured.`;
   const explanation = trimmedStringField(msg, "api_refusal_explanation");
   const category = trimmedStringField(msg, "api_refusal_category");
@@ -273,7 +416,10 @@ function modelRefusalNoFallbackMessage(msg: Record<string, unknown>): string {
   return detailSentence ? `${base} ${detailSentence}` : base;
 }
 
-function handleModelRefusalNoFallbackMessage(session: SessionState, msg: Record<string, unknown>): void {
+function handleModelRefusalNoFallbackMessage(
+  session: SessionState,
+  msg: Record<string, unknown>,
+): void {
   const message = modelRefusalNoFallbackMessage(msg);
   emitSystemNoticeUpdate(session, "warning", message);
   bridgeLogger.info({
@@ -286,10 +432,14 @@ function handleModelRefusalNoFallbackMessage(session: SessionState, msg: Record<
     fields: {
       original_model: trimmedStringField(msg, "original_model"),
       api_refusal_category: trimmedStringField(msg, "api_refusal_category"),
-      refused_user_message_uuid: trimmedStringField(msg, "refused_user_message_uuid"),
+      refused_user_message_uuid: trimmedStringField(
+        msg,
+        "refused_user_message_uuid",
+      ),
       sdk_message_uuid: trimmedStringField(msg, "uuid"),
       sdk_message_session_id: trimmedStringField(msg, "session_id"),
-      has_api_refusal_explanation: trimmedStringField(msg, "api_refusal_explanation") !== undefined,
+      has_api_refusal_explanation:
+        trimmedStringField(msg, "api_refusal_explanation") !== undefined,
       has_content: trimmedStringField(msg, "content") !== undefined,
     },
   });
@@ -297,7 +447,9 @@ function handleModelRefusalNoFallbackMessage(session: SessionState, msg: Record<
 
 function workerShutdownMessage(reason: string): string {
   const trimmed = reason.trim();
-  return trimmed ? `Claude worker is shutting down: ${trimmed}` : "Claude worker is shutting down.";
+  return trimmed
+    ? `Claude worker is shutting down: ${trimmed}`
+    : "Claude worker is shutting down.";
 }
 
 function handleWorkerShuttingDownSystemMessage(
@@ -347,7 +499,11 @@ export function flushPendingWorkerShutdown(session: SessionState): void {
   if (!session.connected) {
     return;
   }
-  emitSystemNoticeUpdate(session, "warning", workerShutdownMessage(pending.reason));
+  emitSystemNoticeUpdate(
+    session,
+    "warning",
+    workerShutdownMessage(pending.reason),
+  );
 }
 
 function notificationSeverity(priority: unknown): SystemNoticeSeverity {
@@ -385,10 +541,13 @@ export function contentFromPrompt(
       }
     } else if (chunk.kind === "image") {
       const val =
-        chunk.value && typeof chunk.value === "object" ? (chunk.value as Record<string, unknown>) : null;
+        chunk.value && typeof chunk.value === "object"
+          ? (chunk.value as Record<string, unknown>)
+          : null;
       if (!val) continue;
       const data = typeof val.data === "string" ? val.data : "";
-      const mimeType = typeof val.mime_type === "string" ? val.mime_type : "image/png";
+      const mimeType =
+        typeof val.mime_type === "string" ? val.mime_type : "image/png";
       if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
         bridgeLogger.warn({
           target: LOG_TARGETS.BRIDGE_PROTOCOL,
@@ -439,7 +598,8 @@ export function handleTaskSystemMessage(
   }
 
   const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
-  const explicitToolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
+  const explicitToolUseId =
+    typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
   const messageTaskMetadata = sdkTaskMetadata(msg);
   if (taskId && explicitToolUseId) {
     linkTaskToolUse(session, taskId, explicitToolUseId);
@@ -458,9 +618,11 @@ export function handleTaskSystemMessage(
       explicit_tool_use_id: explicitToolUseId || undefined,
       resolved_tool_use_id: toolUseId || undefined,
       task_status: typeof msg.status === "string" ? msg.status : undefined,
-      has_description: typeof msg.description === "string" && msg.description.length > 0,
+      has_description:
+        typeof msg.description === "string" && msg.description.length > 0,
       has_summary: typeof msg.summary === "string" && msg.summary.length > 0,
-      last_tool_name: typeof msg.last_tool_name === "string" ? msg.last_tool_name : undefined,
+      last_tool_name:
+        typeof msg.last_tool_name === "string" ? msg.last_tool_name : undefined,
     },
   });
   if (subtype === "task_updated") {
@@ -505,26 +667,29 @@ export function handleTaskSystemMessage(
   }
   applyTaskLifecycleState(session, subtype, msg);
   if (toolCall.status === "pending") {
-    emitToolCallUpdate(session, toolUseId, { status: "in_progress" }, "progress");
+    emitToolCallUpdate(
+      session,
+      toolUseId,
+      { status: "in_progress" },
+      "progress",
+    );
   }
 
   if (subtype === "task_started") {
-    const description = typeof msg.description === "string" ? msg.description : "";
+    const description =
+      typeof msg.description === "string" ? msg.description : "";
     if (!description) {
       return true;
     }
     const fields: ToolCallUpdateFields = {
       status: "in_progress",
       raw_output: description,
-      content: [{ type: "content", content: { type: "text", text: description } }],
+      content: [
+        { type: "content", content: { type: "text", text: description } },
+      ],
       ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
     };
-    emitToolCallUpdate(
-      session,
-      toolUseId,
-      fields,
-      "task_started",
-    );
+    emitToolCallUpdate(session, toolUseId, fields, "task_started");
     return true;
   }
 
@@ -539,19 +704,17 @@ export function handleTaskSystemMessage(
       content: [{ type: "content", content: { type: "text", text: progress } }],
       ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
     };
-    emitToolCallUpdate(
-      session,
-      toolUseId,
-      fields,
-      "task_progress",
-    );
+    emitToolCallUpdate(session, toolUseId, fields, "task_progress");
     return true;
   }
 
   if (subtype === "task_updated") {
     const fields = taskUpdatedFields(msg);
     if (messageTaskMetadata) {
-      fields.task_metadata = { ...(fields.task_metadata ?? {}), ...messageTaskMetadata };
+      fields.task_metadata = {
+        ...(fields.task_metadata ?? {}),
+        ...messageTaskMetadata,
+      };
     }
     if (Object.keys(fields).length === 0) {
       return true;
@@ -580,15 +743,25 @@ export function handleTaskSystemMessage(
 
   const status = typeof msg.status === "string" ? msg.status : "";
   const summary = typeof msg.summary === "string" ? msg.summary : "";
-  const finalStatus = status === "completed" ? "completed" : status === "stopped" ? "killed" : "failed";
-  const deferCompletion = finalStatus === "completed" && defersTaskNotificationCompletion(toolCall);
-  const fields: ToolCallUpdateFields = deferCompletion ? {} : { status: finalStatus };
+  const finalStatus =
+    status === "completed"
+      ? "completed"
+      : status === "stopped"
+        ? "killed"
+        : "failed";
+  const deferCompletion =
+    finalStatus === "completed" && defersTaskNotificationCompletion(toolCall);
+  const fields: ToolCallUpdateFields = deferCompletion
+    ? {}
+    : { status: finalStatus };
   if (messageTaskMetadata) {
     fields.task_metadata = messageTaskMetadata;
   }
   if (summary) {
     fields.raw_output = summary;
-    fields.content = [{ type: "content", content: { type: "text", text: summary } }];
+    fields.content = [
+      { type: "content", content: { type: "text", text: summary } },
+    ];
   }
   if (Object.keys(fields).length > 0) {
     emitToolCallUpdate(session, toolUseId, fields, "task_notification");
@@ -606,12 +779,18 @@ type ContentBlockLinkage = {
   sourceMessageUuid?: string;
 };
 
-function stringField(msg: Record<string, unknown>, field: string): string | undefined {
+function stringField(
+  msg: Record<string, unknown>,
+  field: string,
+): string | undefined {
   const value = msg[field];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function nullableStringField(msg: Record<string, unknown>, field: string): string | undefined {
+function nullableStringField(
+  msg: Record<string, unknown>,
+  field: string,
+): string | undefined {
   const value = msg[field];
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -656,10 +835,19 @@ function emitTranscriptRetraction(
     ...(metadata.requestId ? { request_id: metadata.requestId } : {}),
     ...(metadata.trigger ? { trigger: metadata.trigger } : {}),
     ...(metadata.direction ? { direction: metadata.direction } : {}),
-    ...(metadata.originalModel ? { original_model: metadata.originalModel } : {}),
-    ...(metadata.fallbackModel ? { fallback_model: metadata.fallbackModel } : {}),
-    ...(metadata.apiRefusalCategory ? { api_refusal_category: metadata.apiRefusalCategory } : {}),
-    ...(metadata.apiRefusalExplanation ? { api_refusal_explanation: metadata.apiRefusalExplanation } : {}),
+    ...(metadata.originalModel
+      ? { original_model: metadata.originalModel }
+      : {}),
+    ...(metadata.fallbackModel
+      ? { fallback_model: metadata.fallbackModel }
+      : {}),
+    ...(metadata.scope ? { scope: metadata.scope } : {}),
+    ...(metadata.apiRefusalCategory
+      ? { api_refusal_category: metadata.apiRefusalCategory }
+      : {}),
+    ...(metadata.apiRefusalExplanation
+      ? { api_refusal_explanation: metadata.apiRefusalExplanation }
+      : {}),
     ...(metadata.content ? { content: metadata.content } : {}),
   });
   return true;
@@ -682,11 +870,17 @@ function handleFallbackRetractionMessage(
     direction: stringField(msg, "direction"),
     originalModel: stringField(msg, "original_model"),
     fallbackModel: stringField(msg, "fallback_model"),
+    scope: stringField(msg, "scope") ?? "session",
     apiRefusalCategory: nullableStringField(msg, "api_refusal_category"),
     apiRefusalExplanation: nullableStringField(msg, "api_refusal_explanation"),
     content: stringField(msg, "content"),
   };
-  const emitted = emitTranscriptRetraction(session, messageUuids, reason, metadata);
+  const emitted = emitTranscriptRetraction(
+    session,
+    messageUuids,
+    reason,
+    metadata,
+  );
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
     eventName: "sdk_model_fallback_received",
@@ -701,6 +895,7 @@ function handleFallbackRetractionMessage(
       direction: metadata.direction,
       original_model: metadata.originalModel,
       fallback_model: metadata.fallbackModel,
+      scope: metadata.scope,
       api_refusal_category: metadata.apiRefusalCategory,
       has_api_refusal_explanation: metadata.apiRefusalExplanation !== undefined,
       has_content: metadata.content !== undefined,
@@ -762,7 +957,11 @@ function hideToolUse(session: SessionState, toolUseId: string): void {
   }
 }
 
-function isHiddenToolUse(session: SessionState, toolUseId: string, toolName: string): boolean {
+function isHiddenToolUse(
+  session: SessionState,
+  toolUseId: string,
+  toolName: string,
+): boolean {
   if (!toolUseId) {
     return false;
   }
@@ -773,7 +972,11 @@ function isHiddenToolUse(session: SessionState, toolUseId: string, toolName: str
   return session.hiddenToolUseIds.has(toolUseId);
 }
 
-function isHiddenToolResult(session: SessionState, toolUseId: string, blockType: string): boolean {
+function isHiddenToolResult(
+  session: SessionState,
+  toolUseId: string,
+  blockType: string,
+): boolean {
   if (!toolUseId) {
     return false;
   }
@@ -797,7 +1000,9 @@ export function handleContentBlock(
       emitSessionUpdate(session.sessionId, {
         type: "agent_message_chunk",
         content: { type: "text", text },
-        ...(linkage?.sourceMessageUuid ? { source_message_uuid: linkage.sourceMessageUuid } : {}),
+        ...(linkage?.sourceMessageUuid
+          ? { source_message_uuid: linkage.sourceMessageUuid }
+          : {}),
       });
     }
     return;
@@ -809,17 +1014,25 @@ export function handleContentBlock(
       emitSessionUpdate(session.sessionId, {
         type: "agent_thought_chunk",
         content: { type: "text", text },
-        ...(linkage?.sourceMessageUuid ? { source_message_uuid: linkage.sourceMessageUuid } : {}),
+        ...(linkage?.sourceMessageUuid
+          ? { source_message_uuid: linkage.sourceMessageUuid }
+          : {}),
       });
     }
     return;
   }
 
-  if (blockType === "tool_use" || blockType === "server_tool_use" || blockType === "mcp_tool_use") {
+  if (
+    blockType === "tool_use" ||
+    blockType === "server_tool_use" ||
+    blockType === "mcp_tool_use"
+  ) {
     const toolUseId = typeof block.id === "string" ? block.id : "";
     const name = typeof block.name === "string" ? block.name : "Tool";
     const input =
-      block.input && typeof block.input === "object" ? (block.input as Record<string, unknown>) : {};
+      block.input && typeof block.input === "object"
+        ? (block.input as Record<string, unknown>)
+        : {};
     if (!toolUseId) {
       return;
     }
@@ -840,7 +1053,8 @@ export function handleContentBlock(
   }
 
   if (TOOL_RESULT_TYPES.has(blockType)) {
-    const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
+    const toolUseId =
+      typeof block.tool_use_id === "string" ? block.tool_use_id : "";
     if (!toolUseId) {
       return;
     }
@@ -849,7 +1063,14 @@ export function handleContentBlock(
     }
     logContentBlockLinkage(session, blockType, toolUseId, undefined, linkage);
     const isError = Boolean(block.is_error);
-    emitToolResultUpdate(session, toolUseId, isError, block.content, block, linkage?.sourceMessageUuid);
+    emitToolResultUpdate(
+      session,
+      toolUseId,
+      isError,
+      block.content,
+      block,
+      linkage?.sourceMessageUuid,
+    );
   }
 }
 
@@ -863,11 +1084,15 @@ export function handleStreamEvent(
 
   if (eventType === "content_block_start") {
     if (event.content_block && typeof event.content_block === "object") {
-      handleContentBlock(session, event.content_block as Record<string, unknown>, {
-        source: "stream_event",
-        parentToolUseId,
-        sourceMessageUuid,
-      });
+      handleContentBlock(
+        session,
+        event.content_block as Record<string, unknown>,
+        {
+          source: "stream_event",
+          parentToolUseId,
+          sourceMessageUuid,
+        },
+      );
     }
     return;
   }
@@ -884,7 +1109,9 @@ export function handleStreamEvent(
         emitSessionUpdate(session.sessionId, {
           type: "agent_message_chunk",
           content: { type: "text", text },
-          ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+          ...(sourceMessageUuid
+            ? { source_message_uuid: sourceMessageUuid }
+            : {}),
         });
       }
     } else if (deltaType === "thinking_delta") {
@@ -893,14 +1120,19 @@ export function handleStreamEvent(
         emitSessionUpdate(session.sessionId, {
           type: "agent_thought_chunk",
           content: { type: "text", text },
-          ...(sourceMessageUuid ? { source_message_uuid: sourceMessageUuid } : {}),
+          ...(sourceMessageUuid
+            ? { source_message_uuid: sourceMessageUuid }
+            : {}),
         });
       }
     }
   }
 }
 
-export function handleAssistantMessage(session: SessionState, message: Record<string, unknown>): void {
+export function handleAssistantMessage(
+  session: SessionState,
+  message: Record<string, unknown>,
+): void {
   const assistantMessageUuid = sourceMessageUuid(message);
   emitTranscriptRetraction(
     session,
@@ -920,13 +1152,16 @@ export function handleAssistantMessage(session: SessionState, message: Record<st
   if (!messageObject) {
     return;
   }
-  const content = Array.isArray(messageObject.content) ? messageObject.content : [];
+  const content = Array.isArray(messageObject.content)
+    ? messageObject.content
+    : [];
   for (const block of content) {
     if (!block || typeof block !== "object") {
       continue;
     }
     const blockRecord = block as Record<string, unknown>;
-    const blockType = typeof blockRecord.type === "string" ? blockRecord.type : "";
+    const blockType =
+      typeof blockRecord.type === "string" ? blockRecord.type : "";
     if (
       blockType === "tool_use" ||
       blockType === "server_tool_use" ||
@@ -934,7 +1169,9 @@ export function handleAssistantMessage(session: SessionState, message: Record<st
       TOOL_RESULT_TYPES.has(blockType)
     ) {
       const parentToolUseId =
-        typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
+        typeof message.parent_tool_use_id === "string"
+          ? message.parent_tool_use_id
+          : undefined;
       handleContentBlock(session, blockRecord, {
         source: "assistant",
         parentToolUseId,
@@ -955,7 +1192,10 @@ function messageToolUseResult(message: Record<string, unknown>): unknown {
   return undefined;
 }
 
-export function handleUserToolResultBlocks(session: SessionState, message: Record<string, unknown>): boolean {
+export function handleUserToolResultBlocks(
+  session: SessionState,
+  message: Record<string, unknown>,
+): boolean {
   const messageObject =
     message.message && typeof message.message === "object"
       ? (message.message as Record<string, unknown>)
@@ -963,19 +1203,29 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
   if (!messageObject) {
     return false;
   }
-  const content = Array.isArray(messageObject.content) ? messageObject.content : [];
-  const nonExecutionByToolUseId = parseToolNonExecutionMetadata(message.tool_result_meta);
+  const content = Array.isArray(messageObject.content)
+    ? messageObject.content
+    : [];
+  const nonExecutionByToolUseId = parseToolNonExecutionMetadata(
+    message.tool_result_meta,
+  );
   let handled = false;
   for (const block of content) {
     if (!block || typeof block !== "object") {
       continue;
     }
     const blockRecord = block as Record<string, unknown>;
-    const blockType = typeof blockRecord.type === "string" ? blockRecord.type : "";
+    const blockType =
+      typeof blockRecord.type === "string" ? blockRecord.type : "";
     if (TOOL_RESULT_TYPES.has(blockType)) {
       const parentToolUseId =
-        typeof message.parent_tool_use_id === "string" ? message.parent_tool_use_id : undefined;
-      const toolUseId = typeof blockRecord.tool_use_id === "string" ? blockRecord.tool_use_id : "";
+        typeof message.parent_tool_use_id === "string"
+          ? message.parent_tool_use_id
+          : undefined;
+      const toolUseId =
+        typeof blockRecord.tool_use_id === "string"
+          ? blockRecord.tool_use_id
+          : "";
       if (!toolUseId) {
         continue;
       }
@@ -1002,7 +1252,10 @@ export function handleUserToolResultBlocks(session: SessionState, message: Recor
   return handled;
 }
 
-export function handleResultMessage(session: SessionState, message: Record<string, unknown>): void {
+export function handleResultMessage(
+  session: SessionState,
+  message: Record<string, unknown>,
+): void {
   emitFastModeUpdateIfChanged(
     session,
     message.fast_mode_state,
@@ -1023,9 +1276,35 @@ export function handleResultMessage(session: SessionState, message: Record<strin
   }
 
   const errors =
-    Array.isArray(message.errors) && message.errors.every((entry) => typeof entry === "string")
+    Array.isArray(message.errors) &&
+    message.errors.every((entry) => typeof entry === "string")
       ? (message.errors as string[])
       : [];
+  const resumeDropsTurnRefusal = errors.find((entry) =>
+    entry.startsWith("Resume rejected by --resume-drops-turn:"),
+  );
+  if (
+    session.deferConnect &&
+    session.resumeDropsTurn &&
+    resumeDropsTurnRefusal
+  ) {
+    session.initializationReady = false;
+    session.initializationError = resumeDropsTurnRefusal;
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_resume_drops_turn_rejected",
+      message:
+        "guarded resume candidate rejected because the source session changed",
+      outcome: "failure",
+      sessionId: session.sessionId,
+      fields: {
+        drop_turn_id: session.resumeDropsTurn,
+        validation_fence_complete: session.resumeGuardFenceComplete === true,
+        error_message: resumeDropsTurnRefusal,
+      },
+    });
+    return;
+  }
   const assistantError = session.lastAssistantError;
   const authHint = errors.find((entry) => looksLikeAuthRequired(entry));
   if (authHint) {
@@ -1037,7 +1316,11 @@ export function handleResultMessage(session: SessionState, message: Record<strin
   finalizeOpenToolCalls(session, "failed");
   const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
   const fallback = subtype ? `turn failed: ${subtype}` : "turn failed";
-  const apiErrorStatus = numberField(message, "api_error_status", "apiErrorStatus");
+  const apiErrorStatus = numberField(
+    message,
+    "api_error_status",
+    "apiErrorStatus",
+  );
   writeEvent({
     event: "turn_error",
     session_id: session.sessionId,
@@ -1045,7 +1328,9 @@ export function handleResultMessage(session: SessionState, message: Record<strin
     error_kind: errorKind,
     ...(subtype ? { sdk_result_subtype: subtype } : {}),
     ...(assistantError ? { assistant_error: assistantError } : {}),
-    ...(apiErrorStatus !== undefined ? { api_error_status: apiErrorStatus } : {}),
+    ...(apiErrorStatus !== undefined
+      ? { api_error_status: apiErrorStatus }
+      : {}),
     ...(terminalReason ? { terminal_reason: terminalReason } : {}),
   });
   session.lastAssistantError = undefined;
@@ -1078,10 +1363,14 @@ function terminalReasonFromValue(value: unknown): TerminalReason | undefined {
   }
 }
 
-export function handleSdkMessage(session: SessionState, message: SDKMessage): void {
+export function handleSdkMessage(
+  session: SessionState,
+  message: SDKMessage,
+): void {
   const msg = message as unknown as Record<string, unknown>;
   const type = typeof msg.type === "string" ? msg.type : "";
-  const subtype = type === "system" && typeof msg.subtype === "string" ? msg.subtype : "";
+  const subtype =
+    type === "system" && typeof msg.subtype === "string" ? msg.subtype : "";
   if (subtype !== "worker_shutting_down") {
     cancelPendingWorkerShutdown(session);
   }
@@ -1098,7 +1387,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     }
 
     if (subtype === "commands_changed") {
-      updateAvailableCommands(session, "commands_changed", mapSdkSlashCommands(msg.commands));
+      updateAvailableCommands(
+        session,
+        "commands_changed",
+        mapSdkSlashCommands(msg.commands),
+      );
       return;
     }
 
@@ -1134,8 +1427,10 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         sessionId: session.sessionId,
         fields: {
           error_message: error || undefined,
-          project_key: typeof key?.projectKey === "string" ? key.projectKey : undefined,
-          mirror_session_id: typeof key?.sessionId === "string" ? key.sessionId : undefined,
+          project_key:
+            typeof key?.projectKey === "string" ? key.projectKey : undefined,
+          mirror_session_id:
+            typeof key?.sessionId === "string" ? key.sessionId : undefined,
           subpath: typeof key?.subpath === "string" ? key.subpath : undefined,
         },
       });
@@ -1161,7 +1456,11 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       if (status === "failed") {
         const subject = name ? ` ${name}` : "";
         const suffix = error ? `: ${error}` : ".";
-        emitSystemNoticeUpdate(session, "warning", `Plugin install failed${subject}${suffix}`);
+        emitSystemNoticeUpdate(
+          session,
+          "warning",
+          `Plugin install failed${subject}${suffix}`,
+        );
       }
       return;
     }
@@ -1173,14 +1472,22 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         message: "SDK permission denied event received",
         outcome: "denied",
         sessionId: session.sessionId,
-        toolCallId: typeof msg.tool_use_id === "string" ? msg.tool_use_id : undefined,
+        toolCallId:
+          typeof msg.tool_use_id === "string" ? msg.tool_use_id : undefined,
         fields: {
-          tool_name: typeof msg.tool_name === "string" ? msg.tool_name : undefined,
+          tool_name:
+            typeof msg.tool_name === "string" ? msg.tool_name : undefined,
           agent_id: typeof msg.agent_id === "string" ? msg.agent_id : undefined,
           decision_reason_type:
-            typeof msg.decision_reason_type === "string" ? msg.decision_reason_type : undefined,
-          decision_reason: typeof msg.decision_reason === "string" ? msg.decision_reason : undefined,
-          denial_message: typeof msg.message === "string" ? msg.message : undefined,
+            typeof msg.decision_reason_type === "string"
+              ? msg.decision_reason_type
+              : undefined,
+          decision_reason:
+            typeof msg.decision_reason === "string"
+              ? msg.decision_reason
+              : undefined,
+          denial_message:
+            typeof msg.message === "string" ? msg.message : undefined,
         },
       });
       return;
@@ -1195,10 +1502,17 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         sessionId: session.sessionId,
         fields: {
           sdk_subtype: subtype,
-          memory_count: Array.isArray(msg.memories) ? msg.memories.length : undefined,
-          estimated_tokens: typeof msg.estimated_tokens === "number" ? msg.estimated_tokens : undefined,
+          memory_count: Array.isArray(msg.memories)
+            ? msg.memories.length
+            : undefined,
+          estimated_tokens:
+            typeof msg.estimated_tokens === "number"
+              ? msg.estimated_tokens
+              : undefined,
           estimated_tokens_delta:
-            typeof msg.estimated_tokens_delta === "number" ? msg.estimated_tokens_delta : undefined,
+            typeof msg.estimated_tokens_delta === "number"
+              ? msg.estimated_tokens_delta
+              : undefined,
         },
       });
       return;
@@ -1225,13 +1539,18 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
     if (subtype === "init") {
       const previousSessionId = session.sessionId;
-      const incomingSessionId = typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
+      const incomingSessionId =
+        typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
       updateSessionId(session, incomingSessionId);
-      const modelName = typeof msg.model === "string" ? msg.model : session.model;
+      const modelName =
+        typeof msg.model === "string" ? msg.model : session.model;
       session.model = modelName;
       const currentModelChanged = refreshCurrentModel(session, false);
 
-      const incomingMode = typeof msg.permissionMode === "string" ? toPermissionMode(msg.permissionMode) : null;
+      const incomingMode =
+        typeof msg.permissionMode === "string"
+          ? toPermissionMode(msg.permissionMode)
+          : null;
       if (incomingMode) {
         session.mode = incomingMode;
       }
@@ -1277,8 +1596,14 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         );
       }
 
-      if (session.lastAvailableAgentsSignature === undefined && Array.isArray(msg.agents)) {
-        emitAvailableAgentsIfChanged(session, mapAvailableAgentsFromNames(msg.agents));
+      if (
+        session.lastAvailableAgentsSignature === undefined &&
+        Array.isArray(msg.agents)
+      ) {
+        emitAvailableAgentsIfChanged(
+          session,
+          mapAvailableAgentsFromNames(msg.agents),
+        );
       }
 
       void session.query
@@ -1304,16 +1629,27 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
     if (subtype === "status") {
       const mode =
-        typeof msg.permissionMode === "string" ? toPermissionMode(msg.permissionMode) : null;
+        typeof msg.permissionMode === "string"
+          ? toPermissionMode(msg.permissionMode)
+          : null;
       if (mode) {
         session.mode = mode;
         refreshSupportedModesForSession(session);
-        emitSessionUpdate(session.sessionId, { type: "current_mode_update", current_mode_id: mode });
+        emitSessionUpdate(session.sessionId, {
+          type: "current_mode_update",
+          current_mode_id: mode,
+        });
       }
       if (msg.status === "compacting") {
-        emitSessionUpdate(session.sessionId, { type: "compaction_update", phase: "started" });
+        emitSessionUpdate(session.sessionId, {
+          type: "compaction_update",
+          phase: "started",
+        });
       } else if (msg.status === "requesting") {
-        emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "requesting" });
+        emitSessionUpdate(session.sessionId, {
+          type: "session_status_update",
+          status: "requesting",
+        });
       } else if (msg.status === null) {
         if (msg.compact_result === "success") {
           emitSessionUpdate(session.sessionId, {
@@ -1323,18 +1659,23 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
           });
         } else if (msg.compact_result === "failed") {
           const compactError =
-            typeof msg.compact_error === "string" && msg.compact_error.trim().length > 0
+            typeof msg.compact_error === "string" &&
+            msg.compact_error.trim().length > 0
               ? msg.compact_error.trim()
               : undefined;
           emitSessionUpdate(session.sessionId, {
             type: "compaction_update",
             phase: "finished",
             result: "failed",
-            error_code: compactError === "too_few_groups" ? "too_few_groups" : "unknown",
+            error_code:
+              compactError === "too_few_groups" ? "too_few_groups" : "unknown",
             ...(compactError ? { error: compactError } : {}),
           });
         }
-        emitSessionUpdate(session.sessionId, { type: "session_status_update", status: "idle" });
+        emitSessionUpdate(session.sessionId, {
+          type: "session_status_update",
+          status: "idle",
+        });
       }
       emitFastModeUpdateIfChanged(
         session,
@@ -1350,10 +1691,25 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         return;
       }
       const trigger = compactMetadata.trigger;
-      const preTokens = nonNegativeIntegerField(compactMetadata, "pre_tokens", "preTokens");
-      const postTokens = nonNegativeIntegerField(compactMetadata, "post_tokens", "postTokens");
-      const durationMs = nonNegativeIntegerField(compactMetadata, "duration_ms", "durationMs");
-      if ((trigger === "manual" || trigger === "auto") && preTokens !== undefined) {
+      const preTokens = nonNegativeIntegerField(
+        compactMetadata,
+        "pre_tokens",
+        "preTokens",
+      );
+      const postTokens = nonNegativeIntegerField(
+        compactMetadata,
+        "post_tokens",
+        "postTokens",
+      );
+      const durationMs = nonNegativeIntegerField(
+        compactMetadata,
+        "duration_ms",
+        "durationMs",
+      );
+      if (
+        (trigger === "manual" || trigger === "auto") &&
+        preTokens !== undefined
+      ) {
         emitSessionUpdate(session.sessionId, {
           type: "compaction_update",
           phase: "boundary",
@@ -1372,14 +1728,17 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         emitSessionUpdate(session.sessionId, {
           type: "agent_message_chunk",
           content: { type: "text", text: content },
-          ...(sourceMessageUuid(msg) ? { source_message_uuid: sourceMessageUuid(msg) } : {}),
+          ...(sourceMessageUuid(msg)
+            ? { source_message_uuid: sourceMessageUuid(msg) }
+            : {}),
         });
       }
       return;
     }
 
     if (subtype === "elicitation_complete") {
-      const elicitationId = typeof msg.elicitation_id === "string" ? msg.elicitation_id : "";
+      const elicitationId =
+        typeof msg.elicitation_id === "string" ? msg.elicitation_id : "";
       if (!elicitationId) {
         return;
       }
@@ -1388,7 +1747,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
         session_id: session.sessionId,
         completion: {
           elicitation_id: elicitationId,
-          ...(typeof msg.mcp_server_name === "string" ? { server_name: msg.mcp_server_name } : {}),
+          ...(typeof msg.mcp_server_name === "string"
+            ? { server_name: msg.mcp_server_name }
+            : {}),
         },
       });
       return;
@@ -1411,9 +1772,13 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   }
 
   if (type === "prompt_suggestion") {
-    const suggestion = typeof msg.suggestion === "string" ? msg.suggestion.trim() : "";
+    const suggestion =
+      typeof msg.suggestion === "string" ? msg.suggestion.trim() : "";
     if (suggestion) {
-      emitSessionUpdate(session.sessionId, { type: "prompt_suggestion_update", suggestion });
+      emitSessionUpdate(session.sessionId, {
+        type: "prompt_suggestion_update",
+        suggestion,
+      });
     }
     return;
   }
@@ -1430,10 +1795,14 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
 
   if (type === "auth_status") {
     const output = Array.isArray(msg.output)
-      ? msg.output.filter((entry): entry is string => typeof entry === "string").join("\n")
+      ? msg.output
+          .filter((entry): entry is string => typeof entry === "string")
+          .join("\n")
       : "";
     const errorText = typeof msg.error === "string" ? msg.error : "";
-    const combined = [errorText, output].filter((entry) => entry.length > 0).join("\n");
+    const combined = [errorText, output]
+      .filter((entry) => entry.length > 0)
+      .join("\n");
     if (combined && looksLikeAuthRequired(combined)) {
       emitAuthRequired(session, combined);
     }
@@ -1443,7 +1812,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "stream_event") {
     if (msg.event && typeof msg.event === "object") {
       const parentToolUseId =
-        typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : undefined;
+        typeof msg.parent_tool_use_id === "string"
+          ? msg.parent_tool_use_id
+          : undefined;
       handleStreamEvent(
         session,
         msg.event as Record<string, unknown>,
@@ -1455,11 +1826,15 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   }
 
   if (type === "tool_progress") {
-    const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
+    const toolUseId =
+      typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
     const toolName = typeof msg.tool_name === "string" ? msg.tool_name : "Tool";
-    const parentToolUseId = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
+    const parentToolUseId =
+      typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
     const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
-    const taskToolUseId = taskId ? session.taskToolUseIds.get(taskId) ?? "" : "";
+    const taskToolUseId = taskId
+      ? (session.taskToolUseIds.get(taskId) ?? "")
+      : "";
     if (isHiddenToolUse(session, toolUseId, toolName)) {
       return;
     }
@@ -1489,7 +1864,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     });
     if (resolvedToolUseId) {
       const hasSubagentRetry = Object.hasOwn(msg, "subagent_retry");
-      const subagentRetry = hasSubagentRetry ? buildSubagentRetryUpdate(msg) : null;
+      const subagentRetry = hasSubagentRetry
+        ? buildSubagentRetryUpdate(msg)
+        : null;
       if (hasSubagentRetry && !subagentRetry) {
         bridgeLogger.warn({
           target: LOG_TARGETS.APP_TOOL,
@@ -1519,7 +1896,9 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   if (type === "tool_use_summary") {
     const summary = typeof msg.summary === "string" ? msg.summary : "";
     const toolIds = Array.isArray(msg.preceding_tool_use_ids)
-      ? msg.preceding_tool_use_ids.filter((id): id is string => typeof id === "string")
+      ? msg.preceding_tool_use_ids.filter(
+          (id): id is string => typeof id === "string",
+        )
       : [];
     if (summary && toolIds.length > 0) {
       for (const toolUseId of toolIds) {
@@ -1536,9 +1915,13 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
     const rateLimitInfo = asRecordOrNull(msg.rate_limit_info);
     const update = buildRateLimitUpdate(msg.rate_limit_info);
     const rawIsUsingOverage =
-      typeof rateLimitInfo?.isUsingOverage === "boolean" ? rateLimitInfo.isUsingOverage : undefined;
+      typeof rateLimitInfo?.isUsingOverage === "boolean"
+        ? rateLimitInfo.isUsingOverage
+        : undefined;
     const rawOverageInUse =
-      typeof rateLimitInfo?.overageInUse === "boolean" ? rateLimitInfo.overageInUse : undefined;
+      typeof rateLimitInfo?.overageInUse === "boolean"
+        ? rateLimitInfo.overageInUse
+        : undefined;
     if (
       rawIsUsingOverage !== undefined &&
       rawOverageInUse !== undefined &&
@@ -1563,17 +1946,30 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
       outcome: update ? "success" : "dropped",
       sessionId: session.sessionId,
       fields: {
-        raw_status: typeof rateLimitInfo?.status === "string" ? rateLimitInfo.status : undefined,
+        raw_status:
+          typeof rateLimitInfo?.status === "string"
+            ? rateLimitInfo.status
+            : undefined,
         raw_rate_limit_type:
-          typeof rateLimitInfo?.rateLimitType === "string" ? rateLimitInfo.rateLimitType : undefined,
+          typeof rateLimitInfo?.rateLimitType === "string"
+            ? rateLimitInfo.rateLimitType
+            : undefined,
         raw_utilization: numberField(rateLimitInfo ?? {}, "utilization"),
         raw_resets_at: numberField(rateLimitInfo ?? {}, "resetsAt"),
         raw_overage_status:
-          typeof rateLimitInfo?.overageStatus === "string" ? rateLimitInfo.overageStatus : undefined,
-        raw_overage_resets_at: numberField(rateLimitInfo ?? {}, "overageResetsAt"),
+          typeof rateLimitInfo?.overageStatus === "string"
+            ? rateLimitInfo.overageStatus
+            : undefined,
+        raw_overage_resets_at: numberField(
+          rateLimitInfo ?? {},
+          "overageResetsAt",
+        ),
         raw_is_using_overage: rawIsUsingOverage,
         raw_overage_in_use: rawOverageInUse,
-        raw_surpassed_threshold: numberField(rateLimitInfo ?? {}, "surpassedThreshold"),
+        raw_surpassed_threshold: numberField(
+          rateLimitInfo ?? {},
+          "surpassedThreshold",
+        ),
         parsed_status: update?.status,
         parsed_rate_limit_type: update?.rate_limit_type,
         parsed_utilization: update?.utilization,
@@ -1601,9 +1997,14 @@ export function handleSdkMessage(session: SessionState, message: SDKMessage): vo
   }
 
   if (type === "user") {
+    const externalMessageUpdate = externalMessageUpdateFromSdkUser(msg);
+    if (externalMessageUpdate) {
+      emitSessionUpdate(session.sessionId, externalMessageUpdate);
+    }
     const handledBlocks = handleUserToolResultBlocks(session, msg);
 
-    const toolUseId = typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
+    const toolUseId =
+      typeof msg.parent_tool_use_id === "string" ? msg.parent_tool_use_id : "";
     const rawToolUseResult = messageToolUseResult(msg);
     if (!handledBlocks && toolUseId && rawToolUseResult !== undefined) {
       if (session.hiddenToolUseIds.has(toolUseId)) {

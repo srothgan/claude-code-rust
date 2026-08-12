@@ -29,11 +29,27 @@ const MODE_NAMES: Record<PermissionMode, string> = {
 
 const MODE_OPTIONS: ModeInfo[] = [
   { id: "default", name: "Default", description: "Standard permission flow" },
-  { id: "auto", name: "Auto", description: "Model-classified permission approvals" },
-  { id: "acceptEdits", name: "Accept Edits", description: "Auto-approve edit operations" },
+  {
+    id: "auto",
+    name: "Auto",
+    description: "Model-classified permission approvals",
+  },
+  {
+    id: "acceptEdits",
+    name: "Accept Edits",
+    description: "Auto-approve edit operations",
+  },
   { id: "plan", name: "Plan", description: "No tool execution" },
-  { id: "dontAsk", name: "Don't Ask", description: "Reject non-approved tools" },
-  { id: "bypassPermissions", name: "Bypass Permissions", description: "Auto-approve all tools" },
+  {
+    id: "dontAsk",
+    name: "Don't Ask",
+    description: "Reject non-approved tools",
+  },
+  {
+    id: "bypassPermissions",
+    name: "Bypass Permissions",
+    description: "Auto-approve all tools",
+  },
 ];
 
 const BASE_SUPPORTED_MODE_IDS: PermissionMode[] = [
@@ -49,17 +65,19 @@ function currentModelSupportsAutoMode(session: SessionState): boolean {
 }
 
 function modeInfoForId(mode: PermissionMode): ModeInfo {
-  return MODE_OPTIONS.find((entry) => entry.id === mode) ?? {
-    id: mode,
-    name: MODE_NAMES[mode],
-  };
+  return (
+    MODE_OPTIONS.find((entry) => entry.id === mode) ?? {
+      id: mode,
+      name: MODE_NAMES[mode],
+    }
+  );
 }
 
 function uniqueModeIds(modeIds: PermissionMode[]): PermissionMode[] {
   const unique = new Set(modeIds);
-  const ordered = MODE_OPTIONS.map((entry) => entry.id as PermissionMode).filter((mode) =>
-    unique.has(mode),
-  );
+  const ordered = MODE_OPTIONS.map(
+    (entry) => entry.id as PermissionMode,
+  ).filter((mode) => unique.has(mode));
   const extras = Array.from(unique).filter((mode) => !ordered.includes(mode));
   return [...ordered, ...extras];
 }
@@ -81,7 +99,9 @@ function computedSupportedModeIds(session: SessionState): PermissionMode[] {
 export function refreshSupportedModesForSession(session: SessionState): void {
   const computed = computedSupportedModeIds(session);
   session.supportedModeIds = computed.filter(
-    (mode) => mode === session.mode || !session.runtimeUnavailableModeIds.includes(mode),
+    (mode) =>
+      mode === session.mode ||
+      !session.runtimeUnavailableModeIds.includes(mode),
   );
 }
 
@@ -92,7 +112,10 @@ export function markModeUnavailableForSession(
   if (session.runtimeUnavailableModeIds.includes(mode)) {
     return false;
   }
-  session.runtimeUnavailableModeIds = [...session.runtimeUnavailableModeIds, mode];
+  session.runtimeUnavailableModeIds = [
+    ...session.runtimeUnavailableModeIds,
+    mode,
+  ];
   refreshSupportedModesForSession(session);
   return true;
 }
@@ -119,7 +142,11 @@ function asRecord(value: unknown, context: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function expectString(record: Record<string, unknown>, key: string, context: string): string {
+function expectString(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
   const value = record[key];
   if (typeof value !== "string") {
     throw new Error(`${context}.${key} must be a string`);
@@ -140,7 +167,9 @@ function expectEffortLevel(
     value !== "xhigh" &&
     value !== "max"
   ) {
-    throw new Error(`${context}.${key} must be one of low, medium, high, xhigh, max`);
+    throw new Error(
+      `${context}.${key} must be one of low, medium, high, xhigh, max`,
+    );
   }
   return value;
 }
@@ -187,7 +216,10 @@ function optionalString(
   return value;
 }
 
-function optionalMetadata(record: Record<string, unknown>, key: string): Record<string, Json> {
+function optionalMetadata(
+  record: Record<string, unknown>,
+  key: string,
+): Record<string, Json> {
   const value = record[key];
   if (value === undefined || value === null) {
     return {};
@@ -297,14 +329,23 @@ function expectRefusalFallbackPromptChoice(
 ): RefusalFallbackPromptChoice {
   const value = expectString(record, key, context);
   if (value !== "retry_fallback" && value !== "edit_prompt") {
-    throw new Error(`${context}.${key} must be 'retry_fallback' or 'edit_prompt'`);
+    throw new Error(
+      `${context}.${key} must be 'retry_fallback' or 'edit_prompt'`,
+    );
   }
   return value;
 }
 
-export function parseCommandEnvelope(line: string): { requestId?: string; command: BridgeCommand } {
-  const raw = asRecord(JSON.parse(line) as BridgeCommandEnvelope, "command envelope");
-  const requestId = typeof raw.request_id === "string" ? raw.request_id : undefined;
+export function parseCommandEnvelope(line: string): {
+  requestId?: string;
+  command: BridgeCommand;
+} {
+  const raw = asRecord(
+    JSON.parse(line) as BridgeCommandEnvelope,
+    "command envelope",
+  );
+  const requestId =
+    typeof raw.request_id === "string" ? raw.request_id : undefined;
   const commandName = expectString(raw, "command", "command envelope");
 
   const command: BridgeCommand = (() => {
@@ -320,21 +361,48 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           command: "create_session",
           cwd: expectString(raw, "cwd", "create_session"),
           resume: optionalString(raw, "resume", "create_session"),
-          launch_settings: optionalLaunchSettings(raw, "launch_settings", "create_session"),
+          launch_settings: optionalLaunchSettings(
+            raw,
+            "launch_settings",
+            "create_session",
+          ),
           metadata: optionalMetadata(raw, "metadata"),
         };
       case "resume_session":
         return {
           command: "resume_session",
           session_id: expectString(raw, "session_id", "resume_session"),
-          launch_settings: optionalLaunchSettings(raw, "launch_settings", "resume_session"),
+          launch_settings: optionalLaunchSettings(
+            raw,
+            "launch_settings",
+            "resume_session",
+          ),
           metadata: optionalMetadata(raw, "metadata"),
+        };
+      case "resume_session_at":
+        return {
+          command: "resume_session_at",
+          session_id: expectString(raw, "session_id", "resume_session_at"),
+          target_user_message_id: expectString(
+            raw,
+            "target_user_message_id",
+            "resume_session_at",
+          ),
+          launch_settings: optionalLaunchSettings(
+            raw,
+            "launch_settings",
+            "resume_session_at",
+          ),
         };
       case "new_session":
         return {
           command: "new_session",
           cwd: expectString(raw, "cwd", "new_session"),
-          launch_settings: optionalLaunchSettings(raw, "launch_settings", "new_session"),
+          launch_settings: optionalLaunchSettings(
+            raw,
+            "launch_settings",
+            "new_session",
+          ),
         };
       case "prompt":
         return {
@@ -381,7 +449,11 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
         return {
           command: "generate_session_title",
           session_id: expectString(raw, "session_id", "generate_session_title"),
-          description: expectString(raw, "description", "generate_session_title"),
+          description: expectString(
+            raw,
+            "description",
+            "generate_session_title",
+          ),
         };
       case "rename_session":
         return {
@@ -399,6 +471,11 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
           command: "get_context_usage",
           session_id: expectString(raw, "session_id", "get_context_usage"),
         };
+      case "get_usage":
+        return {
+          command: "get_usage",
+          session_id: expectString(raw, "session_id", "get_usage"),
+        };
       case "get_rewind_targets":
         return {
           command: "get_rewind_targets",
@@ -414,7 +491,11 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
             "rewind",
           ),
           restore_mode: expectRewindRestoreMode(raw, "restore_mode", "rewind"),
-          launch_settings: optionalLaunchSettings(raw, "launch_settings", "rewind"),
+          launch_settings: optionalLaunchSettings(
+            raw,
+            "launch_settings",
+            "rewind",
+          ),
         };
       case "reload_plugins":
         return {
@@ -445,33 +526,56 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
         return {
           command: "mcp_set_servers",
           session_id: expectString(raw, "session_id", "mcp_set_servers"),
-          servers: parseMcpServersRecord(raw.servers ?? {}, "mcp_set_servers.servers"),
+          servers: parseMcpServersRecord(
+            raw.servers ?? {},
+            "mcp_set_servers.servers",
+          ),
         };
       case "permission_response": {
         const outcome = asRecord(raw.outcome, "permission_response.outcome");
-        const outcomeType = expectString(outcome, "outcome", "permission_response.outcome");
+        const outcomeType = expectString(
+          outcome,
+          "outcome",
+          "permission_response.outcome",
+        );
         if (outcomeType !== "selected" && outcomeType !== "cancelled") {
-          throw new Error("permission_response.outcome.outcome must be 'selected' or 'cancelled'");
+          throw new Error(
+            "permission_response.outcome.outcome must be 'selected' or 'cancelled'",
+          );
         }
         const parsedOutcome: PermissionOutcome =
           outcomeType === "selected"
             ? {
                 outcome: "selected",
-                option_id: expectString(outcome, "option_id", "permission_response.outcome"),
+                option_id: expectString(
+                  outcome,
+                  "option_id",
+                  "permission_response.outcome",
+                ),
               }
             : { outcome: "cancelled" };
         return {
           command: "permission_response",
           session_id: expectString(raw, "session_id", "permission_response"),
-          tool_call_id: expectString(raw, "tool_call_id", "permission_response"),
+          tool_call_id: expectString(
+            raw,
+            "tool_call_id",
+            "permission_response",
+          ),
           outcome: parsedOutcome,
         };
       }
       case "question_response": {
         const outcome = asRecord(raw.outcome, "question_response.outcome");
-        const outcomeType = expectString(outcome, "outcome", "question_response.outcome");
+        const outcomeType = expectString(
+          outcome,
+          "outcome",
+          "question_response.outcome",
+        );
         if (outcomeType !== "answered" && outcomeType !== "cancelled") {
-          throw new Error("question_response.outcome.outcome must be 'answered' or 'cancelled'");
+          throw new Error(
+            "question_response.outcome.outcome must be 'answered' or 'cancelled'",
+          );
         }
         const parsedOutcome: QuestionOutcome =
           outcomeType === "answered"
@@ -482,9 +586,12 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
                   "selected_option_ids",
                   "question_response.outcome",
                 ),
-                ...(outcome.annotation === undefined || outcome.annotation === null
+                ...(outcome.annotation === undefined ||
+                outcome.annotation === null
                   ? {}
-                  : { annotation: parseQuestionAnnotation(outcome.annotation) }),
+                  : {
+                      annotation: parseQuestionAnnotation(outcome.annotation),
+                    }),
               }
             : { outcome: "cancelled" };
         return {
@@ -496,9 +603,15 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
       }
       case "user_dialog_response": {
         const outcome = asRecord(raw.outcome, "user_dialog_response.outcome");
-        const outcomeType = expectString(outcome, "outcome", "user_dialog_response.outcome");
+        const outcomeType = expectString(
+          outcome,
+          "outcome",
+          "user_dialog_response.outcome",
+        );
         if (outcomeType !== "selected" && outcomeType !== "cancelled") {
-          throw new Error("user_dialog_response.outcome.outcome must be 'selected' or 'cancelled'");
+          throw new Error(
+            "user_dialog_response.outcome.outcome must be 'selected' or 'cancelled'",
+          );
         }
         const parsedOutcome: UserDialogOutcome =
           outcomeType === "selected"
@@ -527,9 +640,19 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
             "elicitation_request_id",
             "elicitation_response",
           ),
-          action: expectElicitationAction(raw, "action", "elicitation_response"),
+          action: expectElicitationAction(
+            raw,
+            "action",
+            "elicitation_response",
+          ),
           ...(optionalJsonObject(raw, "content", "elicitation_response")
-            ? { content: optionalJsonObject(raw, "content", "elicitation_response") }
+            ? {
+                content: optionalJsonObject(
+                  raw,
+                  "content",
+                  "elicitation_response",
+                ),
+              }
             : {}),
         };
       case "mcp_authenticate":
@@ -548,8 +671,16 @@ export function parseCommandEnvelope(line: string): { requestId?: string; comman
         return {
           command: "mcp_oauth_callback_url",
           session_id: expectString(raw, "session_id", "mcp_oauth_callback_url"),
-          server_name: expectString(raw, "server_name", "mcp_oauth_callback_url"),
-          callback_url: expectString(raw, "callback_url", "mcp_oauth_callback_url"),
+          server_name: expectString(
+            raw,
+            "server_name",
+            "mcp_oauth_callback_url",
+          ),
+          callback_url: expectString(
+            raw,
+            "callback_url",
+            "mcp_oauth_callback_url",
+          ),
         };
       case "shutdown":
         return { command: "shutdown" };
@@ -578,10 +709,21 @@ function expectStringArray(
   });
 }
 
-function parseQuestionAnnotation(value: unknown): { preview?: string; notes?: string } {
+function parseQuestionAnnotation(value: unknown): {
+  preview?: string;
+  notes?: string;
+} {
   const record = asRecord(value, "question_response.outcome.annotation");
-  const preview = optionalString(record, "preview", "question_response.outcome.annotation");
-  const notes = optionalString(record, "notes", "question_response.outcome.annotation");
+  const preview = optionalString(
+    record,
+    "preview",
+    "question_response.outcome.annotation",
+  );
+  const notes = optionalString(
+    record,
+    "notes",
+    "question_response.outcome.annotation",
+  );
   return {
     ...(preview !== undefined ? { preview } : {}),
     ...(notes !== undefined ? { notes } : {}),
@@ -605,7 +747,10 @@ export function toPermissionMode(mode: string): PermissionMode | null {
   return null;
 }
 
-export function buildModeState(session: SessionState, mode: PermissionMode): ModeState {
+export function buildModeState(
+  session: SessionState,
+  mode: PermissionMode,
+): ModeState {
   return {
     current_mode_id: mode,
     current_mode_name: MODE_NAMES[mode],

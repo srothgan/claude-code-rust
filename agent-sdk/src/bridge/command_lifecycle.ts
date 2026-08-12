@@ -5,6 +5,7 @@ import {
 import type { BridgeCommand } from "../types.js";
 import {
   currentSessionListOptions,
+  emitSessionResumeFailed,
   emitSessionsList,
   failConnection,
   setSessionListingDir,
@@ -14,10 +15,15 @@ import {
 import { mapSessionMessagesToUpdates } from "./history.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
+  awaitSessionInitialization,
   closeAllSessions,
+  closeSessionWithLogging,
+  commitDeferredSession,
   createSession,
+  detachSessionForClose,
   sessions,
 } from "./session_lifecycle.js";
+import type { RewindConversationPlan } from "../bridge.js";
 
 type LifecycleCommand = Extract<
   BridgeCommand,
@@ -26,6 +32,7 @@ type LifecycleCommand = Extract<
       | "initialize"
       | "create_session"
       | "resume_session"
+      | "resume_session_at"
       | "new_session"
       | "shutdown";
   }
@@ -35,6 +42,12 @@ export async function handleLifecycleCommand(
   command: LifecycleCommand,
   requestId: string | undefined,
   sdkVersionError: string | undefined,
+  deps: {
+    buildRewindConversationPlan: (
+      messages: import("@anthropic-ai/claude-agent-sdk").SessionMessage[],
+      targetUserMessageId: string,
+    ) => RewindConversationPlan | null;
+  },
 ): Promise<void> {
   switch (command.command) {
     case "initialize":
@@ -46,11 +59,112 @@ export async function handleLifecycleCommand(
     case "resume_session":
       await resume(command, requestId);
       return;
+    case "resume_session_at":
+      await resumeAt(command, requestId, deps.buildRewindConversationPlan);
+      return;
     case "new_session":
       await replace(command, requestId);
       return;
     case "shutdown":
       await shutdown(requestId);
+  }
+}
+
+async function resumeAt(
+  command: Extract<LifecycleCommand, { command: "resume_session_at" }>,
+  requestId: string | undefined,
+  buildPlan: (
+    messages: import("@anthropic-ai/claude-agent-sdk").SessionMessage[],
+    targetUserMessageId: string,
+  ) => RewindConversationPlan | null,
+): Promise<void> {
+  if (!requestId) {
+    slashError(
+      command.session_id,
+      "resume before a selected message requires an operation id",
+    );
+    return;
+  }
+  const targetUserMessageId = command.target_user_message_id.trim();
+  if (!targetUserMessageId) {
+    emitSessionResumeFailed(
+      command.session_id,
+      requestId,
+      "resume target cannot be empty",
+    );
+    return;
+  }
+
+  let candidate: import("./session_lifecycle.js").SessionState | undefined;
+  try {
+    const sdkSessions = await listSessions(currentSessionListOptions());
+    const matched = sdkSessions.find(
+      (entry) => entry.sessionId === command.session_id,
+    );
+    if (!matched) {
+      emitSessionResumeFailed(
+        command.session_id,
+        requestId,
+        `unknown session: ${command.session_id}`,
+      );
+      return;
+    }
+    const cwd = matched.cwd ?? process.cwd();
+    setSessionListingDir(cwd);
+    const historyMessages = await getSessionMessages(command.session_id, {
+      dir: cwd,
+      includeSystemMessages: true,
+    });
+    const plan = buildPlan(historyMessages, targetUserMessageId);
+    if (!plan) {
+      throw new Error(
+        `stale or inconsistent resume target: ${targetUserMessageId}`,
+      );
+    }
+
+    const staleSessions = Array.from(sessions.values());
+    const connectEvent =
+      staleSessions.length > 0 ? "session_replaced" : "connected";
+    candidate = plan.resumeSessionAtUuid
+      ? await createSession({
+          cwd,
+          resume: command.session_id,
+          resumeSessionAt: plan.resumeSessionAtUuid,
+          resumeDropsTurn: plan.resumeDropsTurnId,
+          forkSession: true,
+          launchSettings: command.launch_settings,
+          connectEvent,
+          requestId,
+          deferConnect: true,
+          resumeUpdates: plan.resumeUpdates,
+          sessionsToCloseAfterConnect: staleSessions,
+        })
+      : await createSession({
+          cwd,
+          launchSettings: command.launch_settings,
+          connectEvent,
+          requestId,
+          deferConnect: true,
+          sessionsToCloseAfterConnect: staleSessions,
+        });
+
+    await awaitSessionInitialization(candidate);
+    commitDeferredSession(candidate);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (candidate) {
+      detachSessionForClose(candidate);
+      await closeSessionWithLogging(candidate, {
+        reason: "resume_at_candidate_rejected",
+        requestId,
+      });
+    }
+    const userMessage = message.startsWith(
+      "Resume rejected by --resume-drops-turn:",
+    )
+      ? "The session changed while you were selecting a message, so Claude Code refused to discard the newer turn. Reopen Resume and try again."
+      : `Failed to fork before selected message: ${message}`;
+    emitSessionResumeFailed(command.session_id, requestId, userMessage);
   }
 }
 
@@ -137,7 +251,9 @@ async function resume(
   });
   try {
     const sdkSessions = await listSessions(currentSessionListOptions());
-    const matched = sdkSessions.find((entry) => entry.sessionId === command.session_id);
+    const matched = sdkSessions.find(
+      (entry) => entry.sessionId === command.session_id,
+    );
     if (!matched) {
       bridgeLogger.warn({
         target: LOG_TARGETS.APP_SESSION,
@@ -148,7 +264,11 @@ async function resume(
         sessionId: command.session_id,
         fields: { reason: "unknown_session" },
       });
-      slashError(command.session_id, `unknown session: ${command.session_id}`, requestId);
+      slashError(
+        command.session_id,
+        `unknown session: ${command.session_id}`,
+        requestId,
+      );
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
@@ -180,7 +300,9 @@ async function resume(
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
       requestId,
-      ...(hadActiveSession ? { sessionsToCloseAfterConnect: staleSessions } : {}),
+      ...(hadActiveSession
+        ? { sessionsToCloseAfterConnect: staleSessions }
+        : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -193,7 +315,11 @@ async function resume(
       sessionId: command.session_id,
       fields: { error_message: message },
     });
-    slashError(command.session_id, `failed to resume session: ${message}`, requestId);
+    slashError(
+      command.session_id,
+      `failed to resume session: ${message}`,
+      requestId,
+    );
   }
 }
 

@@ -33,7 +33,10 @@ const DEFAULT_MAX_ATTEMPTS = 24;
 const DEFAULT_INITIAL_DELAY_MS = 1_000;
 const DEFAULT_MAX_DELAY_MS = 10_000;
 
-async function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+async function abortableDelay(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
   await delay(delayMs, undefined, { signal, ref: false });
 }
 
@@ -61,7 +64,12 @@ export async function runMcpAuthMonitor({
       }
       lastError = errorMessage(error);
       if (attempt === maxAttempts) {
-        return { outcome: "exhausted", attempts: attempt, reason: "error", lastError };
+        return {
+          outcome: "exhausted",
+          attempts: attempt,
+          reason: "error",
+          lastError,
+        };
       }
       nextDelayMs = Math.min(nextDelayMs * 2, maxDelayMs);
       continue;

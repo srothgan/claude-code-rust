@@ -21,12 +21,18 @@ export async function dispatchCancelTurnCommand(
 ): Promise<void> {
   const session = deps.sessionById(command.session_id);
   if (!session) {
-    deps.slashError(command.session_id, `unknown session: ${command.session_id}`, deps.requestId);
+    deps.slashError(
+      command.session_id,
+      `unknown session: ${command.session_id}`,
+      deps.requestId,
+    );
     return;
   }
   const receipt = await session.query.interrupt();
   const stillQueued = Array.isArray(receipt?.still_queued)
-    ? receipt.still_queued.filter((entry): entry is string => typeof entry === "string")
+    ? receipt.still_queued.filter(
+        (entry): entry is string => typeof entry === "string",
+      )
     : [];
   if (stillQueued.length > 0) {
     bridgeLogger.info({

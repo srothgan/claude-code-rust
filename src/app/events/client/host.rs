@@ -33,6 +33,9 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
                 crate::app::usage::apply_refresh_started(app);
             }
         }
+        ClientEvent::StructuredUsageReceived { session_id: _, snapshot, error } => {
+            crate::app::usage::apply_structured_sdk_result(app, snapshot, error);
+        }
         ClientEvent::UsageSnapshotReceived { epoch, snapshot } => {
             if app.session_runtime.session_scope_epoch == epoch {
                 crate::app::usage::apply_refresh_success(app, snapshot);

@@ -55,6 +55,12 @@ pub enum BridgeCommand {
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         metadata: BTreeMap<String, serde_json::Value>,
     },
+    ResumeSessionAt {
+        session_id: String,
+        target_user_message_id: String,
+        #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
+        launch_settings: SessionLaunchSettings,
+    },
     Prompt {
         session_id: String,
         chunks: Vec<types::PromptChunk>,
@@ -123,6 +129,9 @@ pub enum BridgeCommand {
     GetContextUsage {
         session_id: String,
     },
+    GetUsage {
+        session_id: String,
+    },
     GetRewindTargets {
         session_id: String,
     },
@@ -176,6 +185,7 @@ impl BridgeCommand {
             Self::Initialize { .. } => "initialize",
             Self::CreateSession { .. } => "create_session",
             Self::ResumeSession { .. } => "resume_session",
+            Self::ResumeSessionAt { .. } => "resume_session_at",
             Self::Prompt { .. } => "prompt",
             Self::CancelTurn { .. } => "cancel_turn",
             Self::SetModel { .. } => "set_model",
@@ -192,6 +202,7 @@ impl BridgeCommand {
             Self::ElicitationResponse { .. } => "elicitation_response",
             Self::GetStatusSnapshot { .. } => "get_status_snapshot",
             Self::GetContextUsage { .. } => "get_context_usage",
+            Self::GetUsage { .. } => "get_usage",
             Self::GetRewindTargets { .. } => "get_rewind_targets",
             Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
@@ -210,6 +221,7 @@ impl BridgeCommand {
     pub fn session_id(&self) -> Option<&str> {
         match self {
             Self::ResumeSession { session_id, .. }
+            | Self::ResumeSessionAt { session_id, .. }
             | Self::Prompt { session_id, .. }
             | Self::CancelTurn { session_id }
             | Self::SetModel { session_id, .. }
@@ -225,6 +237,7 @@ impl BridgeCommand {
             | Self::ElicitationResponse { session_id, .. }
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
+            | Self::GetUsage { session_id }
             | Self::GetRewindTargets { session_id }
             | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id }
@@ -248,6 +261,7 @@ impl BridgeCommand {
             Self::Initialize { .. }
             | Self::CreateSession { .. }
             | Self::ResumeSession { .. }
+            | Self::ResumeSessionAt { .. }
             | Self::Prompt { .. }
             | Self::CancelTurn { .. }
             | Self::SetModel { .. }
@@ -262,6 +276,7 @@ impl BridgeCommand {
             | Self::ElicitationResponse { .. }
             | Self::GetStatusSnapshot { .. }
             | Self::GetContextUsage { .. }
+            | Self::GetUsage { .. }
             | Self::GetRewindTargets { .. }
             | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
@@ -363,6 +378,10 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    SessionResumeFailed {
+        session_id: String,
+        message: String,
+    },
     RuntimeReloadCompleted {
         session_id: String,
     },
@@ -396,9 +415,15 @@ pub enum BridgeEvent {
         session_id: String,
         percentage: Option<u8>,
     },
+    UsageSnapshot {
+        session_id: String,
+        snapshot: Option<types::StructuredUsageSnapshot>,
+        error: Option<String>,
+    },
     RewindTargets {
         session_id: String,
         targets: Vec<types::RewindTarget>,
+        error: Option<String>,
     },
     RewindResult {
         session_id: String,
@@ -439,6 +464,7 @@ impl BridgeEvent {
             Self::TurnComplete { .. } => "turn_complete",
             Self::TurnError { .. } => "turn_error",
             Self::SlashError { .. } => "slash_error",
+            Self::SessionResumeFailed { .. } => "session_resume_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SessionReplaced { .. } => "session_replaced",
@@ -446,6 +472,7 @@ impl BridgeEvent {
             Self::SessionsListed { .. } => "sessions_listed",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::ContextUsage { .. } => "context_usage",
+            Self::UsageSnapshot { .. } => "usage_snapshot",
             Self::RewindTargets { .. } => "rewind_targets",
             Self::RewindResult { .. } => "rewind_result",
             Self::McpSnapshot { .. } => "mcp_snapshot",
@@ -468,11 +495,13 @@ impl BridgeEvent {
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::SlashError { session_id, .. }
+            | Self::SessionResumeFailed { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
+            | Self::UsageSnapshot { session_id, .. }
             | Self::RewindTargets { session_id, .. }
             | Self::RewindResult { session_id, .. }
             | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
@@ -503,6 +532,7 @@ impl BridgeEvent {
             | Self::TurnComplete { .. }
             | Self::TurnError { .. }
             | Self::SlashError { .. }
+            | Self::SessionResumeFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SessionReplaced { .. }
@@ -510,6 +540,7 @@ impl BridgeEvent {
             | Self::SessionsListed { .. }
             | Self::StatusSnapshot { .. }
             | Self::ContextUsage { .. }
+            | Self::UsageSnapshot { .. }
             | Self::RewindTargets { .. }
             | Self::RewindResult { .. }
             | Self::McpSnapshot { .. } => None,
@@ -537,6 +568,26 @@ mod tests {
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: CommandEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn session_resume_failed_event_deserializes_with_operation_identity() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "request_id": "resume-at-1",
+            "event": "session_resume_failed",
+            "session_id": "source-session",
+            "message": "resume rejected"
+        }))
+        .expect("deserialize resume failure");
+
+        assert_eq!(decoded.request_id.as_deref(), Some("resume-at-1"));
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SessionResumeFailed {
+                session_id: "source-session".to_owned(),
+                message: "resume rejected".to_owned(),
+            }
+        );
     }
 
     #[test]
@@ -656,6 +707,42 @@ mod tests {
                 "session_id": "s1"
             })
         );
+    }
+
+    #[test]
+    fn structured_usage_event_deserializes_tolerant_snapshot() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "usage_snapshot",
+            "session_id": "session-1",
+            "snapshot": {
+                "rate_limits_available": true,
+                "five_hour": {
+                    "utilization": 42.0,
+                    "resets_at": "2026-08-12T10:00:00Z"
+                },
+                "session": {
+                    "total_cost_usd": 0.125,
+                    "total_lines_added": 12.0,
+                    "model_count": 2
+                },
+                "activity_day": {
+                    "request_count": 4,
+                    "session_count": 2
+                }
+            }
+        }))
+        .expect("deserialize structured usage");
+
+        let BridgeEvent::UsageSnapshot { session_id, snapshot: Some(snapshot), error } =
+            decoded.event
+        else {
+            panic!("expected usage snapshot event");
+        };
+        assert_eq!(session_id, "session-1");
+        assert!(error.is_none());
+        assert_eq!(snapshot.five_hour.map(|window| window.utilization), Some(42.0));
+        assert_eq!(snapshot.session.and_then(|session| session.model_count), Some(2));
+        assert_eq!(snapshot.activity_day.map(|window| window.request_count), Some(4));
     }
 
     #[test]
@@ -940,6 +1027,7 @@ mod tests {
                     "first_text": "second prompt",
                     "input_text": "second prompt",
                     "previous_assistant_uuid": "assistant-1",
+                    "resume_anchor_uuid": "assistant-1",
                     "index": 3
                 },
                 {
@@ -963,6 +1051,7 @@ mod tests {
                         input_text: "second prompt".to_owned(),
                         index: 3,
                         previous_assistant_uuid: Some("assistant-1".to_owned()),
+                        resume_anchor_uuid: Some("assistant-1".to_owned()),
                     },
                     types::RewindTarget {
                         uuid: "user-1".to_owned(),
@@ -970,8 +1059,10 @@ mod tests {
                         input_text: "first prompt".to_owned(),
                         index: 0,
                         previous_assistant_uuid: None,
+                        resume_anchor_uuid: None,
                     },
                 ],
+                error: None,
             }
         );
     }

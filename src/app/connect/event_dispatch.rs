@@ -40,7 +40,8 @@ pub(super) async fn handle_bridge_event(
     resume_requested: bool,
     envelope: EventEnvelope,
 ) {
-    match envelope.event {
+    let EventEnvelope { request_id, event } = envelope;
+    match event {
         crate::agent::wire::BridgeEvent::Connected {
             session_id,
             cwd,
@@ -157,6 +158,21 @@ pub(super) async fn handle_bridge_event(
                 .send(ClientEvent::SlashCommandError { session_id: Some(session_id), message })
                 .await;
         }
+        crate::agent::wire::BridgeEvent::SessionResumeFailed { session_id, message } => {
+            if let Some(operation_id) = request_id {
+                let _ = event_tx
+                    .send(ClientEvent::SessionResumeFailed { session_id, operation_id, message })
+                    .await;
+            } else {
+                tracing::error!(
+                    target: crate::logging::targets::BRIDGE_PROTOCOL,
+                    event_name = "session_resume_failure_missing_request_id",
+                    message = "session resume failure omitted its required request id",
+                    outcome = "failure",
+                    session_id,
+                );
+            }
+        }
         crate::agent::wire::BridgeEvent::RuntimeReloadCompleted { session_id } => {
             let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id }).await;
         }
@@ -209,11 +225,17 @@ pub(super) async fn handle_bridge_event(
             let _ =
                 event_tx.send(ClientEvent::ContextUsageReceived { session_id, percentage }).await;
         }
-        crate::agent::wire::BridgeEvent::RewindTargets { session_id, targets } => {
+        crate::agent::wire::BridgeEvent::UsageSnapshot { session_id, snapshot, error } => {
+            let _ = event_tx
+                .send(ClientEvent::StructuredUsageReceived { session_id, snapshot, error })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::RewindTargets { session_id, targets, error } => {
             let _ = event_tx
                 .send(ClientEvent::RewindTargetsReceived {
                     session_id,
                     targets: map_rewind_targets(targets),
+                    error,
                 })
                 .await;
         }

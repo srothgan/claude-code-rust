@@ -185,6 +185,10 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
+    if tc.background_ends_with_final_response() {
+        badges.push(Span::styled("  [ends with final response]", Style::default().fg(theme::DIM)));
+    }
+
     if matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task") {
         if let Some(retry) = subagent_retry_badge(tc) {
             badges.push(Span::styled(

@@ -945,6 +945,7 @@ fn rewind_argument_candidates_use_cached_targets() {
             input_text: "first prompt".to_owned(),
             index: 0,
             previous_assistant_uuid: None,
+            resume_anchor_uuid: None,
         },
         model::RewindTarget {
             uuid: "user-2".to_owned(),
@@ -952,6 +953,7 @@ fn rewind_argument_candidates_use_cached_targets() {
             input_text: "second prompt".to_owned(),
             index: 3,
             previous_assistant_uuid: Some("assistant-1".to_owned()),
+            resume_anchor_uuid: Some("assistant-1".to_owned()),
         },
     ];
     app.input.set_text("/rewind second");
@@ -985,6 +987,7 @@ fn rewind_argument_candidates_hide_stale_targets() {
         input_text: "first prompt".to_owned(),
         index: 0,
         previous_assistant_uuid: None,
+        resume_anchor_uuid: None,
     }];
 
     let candidates = argument_candidates(&app, "/rewind", 0);
@@ -1053,6 +1056,7 @@ fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result(
         input_text: "first prompt".to_owned(),
         index: 0,
         previous_assistant_uuid: None,
+        resume_anchor_uuid: None,
     }];
     app.input.set_text("/rewind missing");
     let _ = app.input.set_cursor(0, "/rewind missing".chars().count());
@@ -1364,17 +1368,53 @@ fn new_session_command_is_rendered_as_user_message() {
 }
 
 #[test]
-fn resume_with_missing_id_returns_usage() {
+fn resume_without_id_opens_fullscreen_picker() {
     let mut app = App::test_default();
+    let _receiver = attach_test_connection(&mut app);
     let consumed = try_handle_submit(&mut app, "/resume");
     assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
+    assert!(matches!(
+        app.surface_mode,
+        crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::SessionPicker)
+    ));
+    let last = app.transcript.messages.last().expect("resume command message");
+    let MessageBlock::Text(block) = last.blocks.first().expect("text block") else {
         panic!("expected text block");
     };
-    assert_eq!(block.text, "Usage: /resume <session_id>");
+    assert_eq!(block.text, "/resume");
+}
+
+#[test]
+fn resume_picker_preselects_current_session_when_listed() {
+    let mut app = App::test_default();
+    let _receiver = attach_test_connection(&mut app);
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
+    app.recent_sessions = vec![
+        crate::app::RecentSessionInfo {
+            session_id: "other-session".into(),
+            summary: "other".into(),
+            last_modified_ms: 2,
+            file_size_bytes: 1,
+            cwd: None,
+            git_branch: None,
+            custom_title: None,
+            first_prompt: Some("other".into()),
+        },
+        crate::app::RecentSessionInfo {
+            session_id: "current-session".into(),
+            summary: "current".into(),
+            last_modified_ms: 1,
+            file_size_bytes: 1,
+            cwd: None,
+            git_branch: None,
+            custom_title: None,
+            first_prompt: Some("current".into()),
+        },
+    ];
+
+    assert!(try_handle_submit(&mut app, "/resume"));
+
+    assert_eq!(app.session_picker.selected, 1);
 }
 
 #[test]
@@ -1388,7 +1428,7 @@ fn resume_with_extra_args_returns_usage() {
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
-    assert_eq!(block.text, "Usage: /resume <session_id>");
+    assert_eq!(block.text, "Usage: /resume [session_id]");
 }
 
 #[test]
@@ -1416,6 +1456,7 @@ fn rewind_with_cached_target_requires_connection() {
         input_text: "first prompt".to_owned(),
         index: 0,
         previous_assistant_uuid: None,
+        resume_anchor_uuid: None,
     }];
 
     let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
@@ -1442,6 +1483,7 @@ fn rewind_with_cached_target_sends_bridge_command() {
         input_text: "first prompt".to_owned(),
         index: 0,
         previous_assistant_uuid: None,
+        resume_anchor_uuid: None,
     }];
 
     let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
@@ -1491,7 +1533,7 @@ async fn resume_sets_command_pending_when_connected() {
             let consumed = try_handle_submit(&mut app, "/resume abc-123");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.resuming_session_id.as_deref(), Some("abc-123"));
+            assert_eq!(app.pending_session_resume_id(), Some("abc-123"));
 
             tokio::task::yield_now().await;
             assert!(rx.try_recv().is_ok());
@@ -2104,26 +2146,31 @@ fn limits_with_fresh_snapshot_prints_markdown_table_in_chat() {
     app.usage.snapshot = Some(UsageSnapshot {
         source: UsageSourceKind::Oauth,
         fetched_at: SystemTime::now(),
+        subscription_type: None,
         five_hour: Some(UsageWindow {
-            label: "5-hour",
+            label: "5-hour".to_owned(),
             utilization: 47.0,
             resets_at: None,
             reset_description: Some("resets in 2h 14m".to_owned()),
         }),
         seven_day: Some(UsageWindow {
-            label: "7-day",
+            label: "7-day".to_owned(),
             utilization: 62.0,
             resets_at: None,
             reset_description: Some("resets in 4d 11h".to_owned()),
         }),
+        seven_day_oauth_apps: None,
         seven_day_opus: None,
         seven_day_sonnet: None,
+        model_scoped: Vec::new(),
         extra_usage: Some(ExtraUsage {
             monthly_limit: Some(20.0),
             used_credits: Some(12.4),
             utilization: Some(62.0),
             currency: Some("USD".to_owned()),
         }),
+        session: None,
+        activity: None,
     });
 
     let consumed = try_handle_submit(&mut app, "/limits");
@@ -2142,20 +2189,15 @@ fn limits_with_fresh_snapshot_prints_markdown_table_in_chat() {
 }
 
 #[test]
-fn limits_without_fresh_snapshot_prints_loading_message() {
+fn limits_without_fresh_snapshot_waits_for_final_response() {
     let mut app = App::test_default();
+    let message_count = app.transcript.messages.len();
 
     let consumed = try_handle_submit(&mut app, "/limits");
 
     assert!(consumed);
     assert!(app.usage.pending_limits_response);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected loading message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Getting recent usage info.");
+    assert_eq!(app.transcript.messages.len(), message_count);
 }
 
 #[test]

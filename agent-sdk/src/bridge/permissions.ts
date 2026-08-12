@@ -11,20 +11,34 @@ type PermissionSuggestionsByScope = {
 };
 
 const SESSION_PERMISSION_DESTINATIONS = new Set(["session", "cliArg"]);
-const PERSISTENT_PERMISSION_DESTINATIONS = new Set(["userSettings", "projectSettings", "localSettings"]);
+const PERSISTENT_PERMISSION_DESTINATIONS = new Set([
+  "userSettings",
+  "projectSettings",
+  "localSettings",
+]);
 
 function formatPermissionRule(rule: PermissionRuleValue): string {
-  return rule.ruleContent === undefined ? rule.toolName : `${rule.toolName}(${rule.ruleContent})`;
+  return rule.ruleContent === undefined
+    ? rule.toolName
+    : `${rule.toolName}(${rule.ruleContent})`;
 }
 
-export function formatPermissionUpdates(updates: PermissionUpdate[] | undefined): string {
+export function formatPermissionUpdates(
+  updates: PermissionUpdate[] | undefined,
+): string {
   if (!updates || updates.length === 0) {
     return "<none>";
   }
   return updates
     .map((update) => {
-      if (update.type === "addRules" || update.type === "replaceRules" || update.type === "removeRules") {
-        const rules = update.rules.map((rule) => formatPermissionRule(rule)).join(", ");
+      if (
+        update.type === "addRules" ||
+        update.type === "replaceRules" ||
+        update.type === "removeRules"
+      ) {
+        const rules = update.rules
+          .map((rule) => formatPermissionRule(rule))
+          .join(", ");
         return `${update.type}:${update.behavior}:${update.destination}=[${rules}]`;
       }
       if (update.type === "setMode") {
@@ -66,7 +80,9 @@ export function permissionOptionsFromSuggestions(
   const hasPersistentScoped = scoped.persistent.length > 0;
   const sessionOnly = hasSessionScoped && !hasPersistentScoped;
 
-  const options: PermissionOption[] = [{ option_id: "allow_once", name: "Allow once", kind: "allow_once" }];
+  const options: PermissionOption[] = [
+    { option_id: "allow_once", name: "Allow once", kind: "allow_once" },
+  ];
   options.push({
     option_id: sessionOnly ? "allow_session" : "allow_always",
     name: sessionOnly ? "Allow for session" : "Always allow",
@@ -87,7 +103,11 @@ export function permissionResultFromOutcome(
 
   if (outcome.outcome === "selected") {
     if (outcome.option_id === "allow_once") {
-      return { behavior: "allow", updatedInput: inputData, toolUseID: toolCallId };
+      return {
+        behavior: "allow",
+        updatedInput: inputData,
+        toolUseID: toolCallId,
+      };
     }
     if (outcome.option_id === "allow_session") {
       const sessionSuggestions = scopedSuggestions.session;
@@ -137,8 +157,15 @@ export function permissionResultFromOutcome(
         toolUseID: toolCallId,
       };
     }
-    return { behavior: "deny", message: "Permission denied", toolUseID: toolCallId };
+    return {
+      behavior: "deny",
+      message: "Permission denied",
+      toolUseID: toolCallId,
+    };
   }
-  return { behavior: "deny", message: "Permission cancelled", toolUseID: toolCallId };
+  return {
+    behavior: "deny",
+    message: "Permission cancelled",
+    toolUseID: toolCallId,
+  };
 }
-

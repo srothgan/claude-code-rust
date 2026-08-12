@@ -94,6 +94,8 @@ pub enum ClientEvent {
     AuthRequired { method_name: String, method_description: String },
     /// Slash-command execution failed with a user-facing error.
     SlashCommandError { session_id: Option<String>, message: String },
+    /// A request-correlated resume-at operation failed before replacing the active session.
+    SessionResumeFailed { session_id: String, operation_id: String, message: String },
     /// Terminal ownership was handed to a child process.
     TerminalReleasedToChild { reason: ReleaseReason },
     /// Terminal ownership returned from a child process.
@@ -128,8 +130,17 @@ pub enum ClientEvent {
     StatusSnapshotReceived { session_id: String, account: model::AccountInfo },
     /// Session context window usage received from bridge.
     ContextUsageReceived { session_id: String, percentage: Option<u8> },
+    StructuredUsageReceived {
+        session_id: String,
+        snapshot: Option<crate::agent::types::StructuredUsageSnapshot>,
+        error: Option<String>,
+    },
     /// Rewind target candidates loaded from persisted SDK session history.
-    RewindTargetsReceived { session_id: String, targets: Vec<model::RewindTarget> },
+    RewindTargetsReceived {
+        session_id: String,
+        targets: Vec<model::RewindTarget>,
+        error: Option<String>,
+    },
     /// Result of a rewind operation that touched files.
     RewindResultReceived { result: model::RewindResult },
     /// MCP server snapshot received from bridge.
@@ -187,19 +198,21 @@ impl ClientEvent {
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
-            | Self::RewindTargetsReceived { session_id, .. }
+            | Self::StructuredUsageReceived { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),
             Self::Connected { .. }
             | Self::ConnectionFailed(_)
             | Self::AuthRequired { .. }
+            | Self::SessionResumeFailed { .. }
             | Self::McpConfigRemoveSucceeded { .. }
             | Self::McpConfigRemoveFailed { .. }
             | Self::TerminalReleasedToChild { .. }
             | Self::TerminalReturnedFromChild { .. }
             | Self::SessionReplaced { .. }
             | Self::SessionsListed { .. }
+            | Self::RewindTargetsReceived { .. }
             | Self::UpdateAvailable { .. }
             | Self::ServiceStatus { .. }
             | Self::AuthCompleted { .. }

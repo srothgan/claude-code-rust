@@ -3,9 +3,16 @@ import { looksLikeAuthRequired } from "./auth.js";
 import { writeEvent } from "./events.js";
 import { emitSessionUpdate } from "./events.js";
 import type { SessionState } from "./session_lifecycle.js";
-import { parseFastModeDisabledReason, parseFastModeState } from "./state_parsing.js";
+import {
+  parseFastModeDisabledReason,
+  parseFastModeState,
+} from "./state_parsing.js";
 
 export function emitAuthRequired(session: SessionState, detail?: string): void {
+  if (session.deferConnect) {
+    session.deferredAuthRequired = detail ? { detail } : {};
+    return;
+  }
   if (session.authHintSent) {
     return;
   }
