@@ -2,8 +2,8 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::super::{
-    App, ChatMessage, InvalidationLevel, MessageBlock, MessageRole, NoticeBlock, NoticeDedupKey,
-    NoticeStage, SystemSeverity, TurnNoticeLocation, TurnNoticeRef,
+    App, ChatMessage, ChatMessageId, InvalidationLevel, MessageBlock, MessageRole, NoticeBlock,
+    NoticeDedupKey, NoticeStage, SystemSeverity, TurnNoticeLocation, TurnNoticeRef,
 };
 
 #[derive(Clone)]
@@ -14,6 +14,21 @@ struct TurnNoticeTracking {
 
 pub(super) fn emit_system_notice(app: &mut App, severity: SystemSeverity, message: &str) {
     insert_notice(app, severity, message, None);
+}
+
+pub(super) fn emit_system_notice_for_message(
+    app: &mut App,
+    message_id: ChatMessageId,
+    severity: SystemSeverity,
+    message: &str,
+) -> bool {
+    let Some(message_idx) = app.transcript.messages.iter().position(|candidate| {
+        candidate.id == message_id && matches!(candidate.role, MessageRole::Assistant)
+    }) else {
+        return false;
+    };
+    insert_inline_notice(app, message_idx, severity, message, None);
+    true
 }
 
 pub(super) fn upsert_turn_notice(

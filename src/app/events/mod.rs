@@ -15,8 +15,8 @@ mod tool_updates;
 mod turn;
 
 use super::{
-    App, AppStatus, ChatMessage, FullscreenView, InvalidationLevel, MessageBlock, MessageRole,
-    PendingCommandAck, SurfaceMode, SystemSeverity, TerminalSizeChange, TextBlock,
+    App, AppStatus, ChatMessage, ChatMessageId, FullscreenView, InvalidationLevel, MessageBlock,
+    MessageRole, PendingCommandAck, SurfaceMode, SystemSeverity, TerminalSizeChange, TextBlock,
 };
 use crate::agent::model;
 #[cfg(all(test, target_os = "macos"))]
@@ -511,7 +511,7 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
         model::RuntimeSessionState::Idle => {
             if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
                 && !app.turn.compaction.is_active()
-                && app.turn.pending_cancel_origin.is_none()
+                && !app.turn.cancel_requested
             {
                 app.status = AppStatus::Ready;
             }
@@ -544,6 +544,47 @@ pub(crate) fn push_system_message_with_severity(
         None,
     ));
     app.enforce_history_retention_tracked();
+}
+
+pub(crate) fn push_submission_feedback(app: &mut App, severity: SystemSeverity, message: &str) {
+    let owner = submission_feedback_owner(app);
+    push_submission_feedback_for_owner(app, owner, severity, message);
+}
+
+pub(crate) fn submission_feedback_owner(app: &App) -> Option<ChatMessageId> {
+    if !app.is_agent_turn_active() {
+        return None;
+    }
+    app.active_turn_assistant_idx()
+        .and_then(|message_idx| app.transcript.messages.get(message_idx))
+        .map(|message| message.id)
+}
+
+pub(crate) fn push_submission_feedback_for_owner(
+    app: &mut App,
+    owner: Option<ChatMessageId>,
+    severity: SystemSeverity,
+    message: &str,
+) {
+    if owner.is_some_and(|message_id| {
+        notices::emit_system_notice_for_message(app, message_id, severity, message)
+    }) {
+        return;
+    }
+    push_system_message_with_severity(app, Some(severity), message);
+}
+
+pub(crate) fn push_active_turn_submission_blocked_notice(app: &mut App, label: &str) {
+    let message = format!(
+        "{label} can only be submitted between agent turns. Wait for the current turn to finish or cancel it explicitly."
+    );
+    notices::upsert_turn_notice(
+        app,
+        super::NoticeDedupKey::ActiveTurnSubmissionBlocked,
+        super::NoticeStage::Informational,
+        SystemSeverity::Info,
+        &message,
+    );
 }
 
 fn handle_config_option_update(app: &mut App, config: model::ConfigOptionUpdate) {

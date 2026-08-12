@@ -85,14 +85,8 @@ pub struct TurnState {
     /// The first entry is the focused interaction that receives keyboard input.
     /// Up / Down arrow keys cycle focus through the list.
     pub pending_interaction_ids: Vec<String>,
-    /// Set when a cancel notification succeeds; consumed on `TurnComplete`
-    /// to render a red interruption hint in chat.
-    pub cancelled_pending_hint: bool,
-    /// Origin of the in-flight cancellation request, if any.
-    pub pending_cancel_origin: Option<CancelOrigin>,
-    /// Auto-submit the current input draft once cancellation transitions the app
-    /// back to `Ready`.
-    pub pending_auto_submit_after_cancel: bool,
+    /// Whether an explicit cancellation request is awaiting turn exit.
+    pub cancel_requested: bool,
     /// Message index that owns the current main-assistant turn indicators.
     pub assistant_message_idx: Option<usize>,
     /// IDs of root Task/Agent tool calls currently `InProgress`.
@@ -103,12 +97,9 @@ pub struct TurnState {
 }
 
 impl TurnState {
-    /// Clear all cancellation bookkeeping (after a cancel resolves or on
-    /// session reset). Keeps the three cancel flags from drifting apart.
+    /// Clear cancellation bookkeeping after a cancel resolves or on session reset.
     pub fn clear_cancel_state(&mut self) {
-        self.cancelled_pending_hint = false;
-        self.pending_cancel_origin = None;
-        self.pending_auto_submit_after_cancel = false;
+        self.cancel_requested = false;
     }
 
     /// Clear turn-local tracking that must not survive a completed or failed
@@ -119,8 +110,7 @@ impl TurnState {
         self.pending_command_ack = None;
         self.compaction.reset();
         self.pending_interaction_ids.clear();
-        self.cancelled_pending_hint = false;
-        self.pending_cancel_origin = None;
+        self.cancel_requested = false;
         self.assistant_message_idx = None;
         self.active_task_ids.clear();
         self.notice_refs.clear();
@@ -129,6 +119,14 @@ impl TurnState {
     /// Clear all state scoped to the active session/turn lifecycle.
     pub fn reset_for_new_session(&mut self) {
         self.reset_for_turn_exit();
-        self.pending_auto_submit_after_cancel = false;
+    }
+}
+
+impl App {
+    #[must_use]
+    pub(crate) fn is_agent_turn_active(&self) -> bool {
+        matches!(self.status, AppStatus::Thinking | AppStatus::Running)
+            || self.turn.compaction.is_active()
+            || self.turn.cancel_requested
     }
 }

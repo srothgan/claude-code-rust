@@ -18,12 +18,14 @@ use super::{
     dialog::DialogState,
 };
 use crate::agent::model;
-use crate::app::events::push_system_message_with_severity;
+use crate::app::events::push_submission_feedback;
 use std::rc::Rc;
 
 const MAX_CANDIDATES: usize = 50;
 // Re-export public API
-pub(crate) use catalog::{APP_SLASH_COMMANDS, AppSlashCommand, command_spec};
+pub(crate) use catalog::{APP_SLASH_COMMANDS, AppSlashCommand, SubmissionClass, command_spec};
+pub(crate) use executors::try_handle_submission;
+#[cfg(test)]
 pub use executors::try_handle_submit;
 pub use navigation::{
     confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,
@@ -73,6 +75,55 @@ struct ParsedSlash<'a> {
     args: Vec<&'a str>,
 }
 
+#[derive(Debug)]
+pub(crate) enum ResolvedSubmission {
+    Prompt {
+        text: String,
+    },
+    Slash {
+        text: String,
+        name: String,
+        args: Vec<String>,
+        command: Option<AppSlashCommand>,
+        class: SubmissionClass,
+    },
+}
+
+impl ResolvedSubmission {
+    pub(crate) fn resolve(text: String) -> Self {
+        let Some(parsed) = parse(&text) else {
+            return Self::Prompt { text };
+        };
+        let name = parsed.name.to_owned();
+        let command = AppSlashCommand::from_name(&name);
+        let class = command.map_or(SubmissionClass::TurnExclusive, |command| {
+            command.submission_class(&parsed.args)
+        });
+        let args = parsed.args.into_iter().map(str::to_owned).collect();
+        Self::Slash { text, name, args, command, class }
+    }
+
+    pub(crate) fn class(&self) -> SubmissionClass {
+        match self {
+            Self::Prompt { .. } => SubmissionClass::TurnExclusive,
+            Self::Slash { class, .. } => *class,
+        }
+    }
+
+    pub(crate) fn blocked_label(&self) -> String {
+        match self {
+            Self::Prompt { .. } => "New prompts".to_owned(),
+            Self::Slash { name, .. } => format!("`{name}`"),
+        }
+    }
+
+    pub(crate) fn into_text(self) -> String {
+        match self {
+            Self::Prompt { text } | Self::Slash { text, .. } => text,
+        }
+    }
+}
+
 fn parse(text: &str) -> Option<ParsedSlash<'_>> {
     let trimmed = text.trim();
     if !trimmed.starts_with('/') {
@@ -81,10 +132,6 @@ fn parse(text: &str) -> Option<ParsedSlash<'_>> {
     let mut parts = trimmed.split_whitespace();
     let name = parts.next()?;
     Some(ParsedSlash { name, args: parts.collect() })
-}
-
-pub fn is_cancel_command(text: &str) -> bool {
-    parse(text).is_some_and(|parsed| parsed.name == "/cancel")
 }
 
 pub(crate) fn app_owned_command_name(name: &str) -> Option<&'static str> {
@@ -98,7 +145,7 @@ fn normalize_slash_name(name: &str) -> String {
 
 fn push_system_message(app: &mut App, text: impl Into<String>) {
     let text = text.into();
-    push_system_message_with_severity(app, Some(SystemSeverity::Error), &text);
+    push_submission_feedback(app, SystemSeverity::Error, &text);
 }
 
 fn push_user_message(app: &mut App, text: impl Into<String>) {

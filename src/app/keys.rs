@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 use super::paste_burst::CharAction;
-use super::{App, AppStatus, CancelOrigin, FocusOwner, InvalidationLevel, ModeInfo, ModeState};
+use super::{App, AppStatus, FocusOwner, InvalidationLevel, ModeInfo, ModeState};
 #[cfg(not(test))]
 use crate::app::SystemSeverity;
 use crate::app::inline_interactions::{
@@ -461,7 +461,7 @@ fn handle_turn_control(app: &mut App) -> bool {
         app.request_chat_repaint();
     }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
-        && let Err(message) = super::input_submit::request_cancel(app, CancelOrigin::Manual)
+        && let Err(message) = super::input_submit::request_cancel(app)
     {
         tracing::error!(
             target: crate::logging::targets::APP_INPUT,

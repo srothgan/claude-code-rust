@@ -252,7 +252,14 @@ fn compaction_allows_drafting_but_blocks_submit() {
 
     assert!(app.pending_submit.is_none());
     assert_eq!(app.input.text(), "draft!");
-    assert!(app.transcript.messages.is_empty());
+    let [message] = app.transcript.messages.as_slice() else {
+        panic!("expected one active-turn submission notice");
+    };
+    assert!(matches!(message.role, MessageRole::System(Some(SystemSeverity::Info))));
+    let [MessageBlock::Notice(notice)] = message.blocks.as_slice() else {
+        panic!("expected informational notice block");
+    };
+    assert!(notice.text.text.contains("between agent turns"));
     assert!(rx.try_recv().is_err());
 }
 

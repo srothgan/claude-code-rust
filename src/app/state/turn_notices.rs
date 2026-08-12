@@ -5,6 +5,7 @@ use super::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NoticeStage {
+    Informational,
     Warning,
     Rejected,
     PlanLimitTurnError,

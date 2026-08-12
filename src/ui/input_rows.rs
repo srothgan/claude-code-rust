@@ -25,14 +25,11 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         )));
     }
 
-    if app.turn.pending_cancel_origin.is_some() {
+    if app.turn.cancel_requested {
         let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
         rows.push(Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled(
-                "Cancelling current turn... draft will auto-submit when ready.",
-                Style::default().fg(theme::DIM),
-            ),
+            Span::styled("Cancelling current turn...", Style::default().fg(theme::DIM)),
         ]));
     }
 
@@ -91,7 +88,7 @@ pub(crate) fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::{blocked_input_lines, build_composer_hint_rows};
-    use crate::app::{App, AppStatus, CancelOrigin, FocusTarget, LoginHint};
+    use crate::app::{App, AppStatus, FocusTarget, LoginHint};
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
@@ -113,7 +110,7 @@ mod tests {
     #[test]
     fn build_composer_hint_rows_preserves_cancel_and_suggestion_rows() {
         let mut app = App::test_default();
-        app.turn.pending_cancel_origin = Some(CancelOrigin::AutoQueue);
+        app.turn.cancel_requested = true;
         app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
 
         let rows = build_composer_hint_rows(&app);
