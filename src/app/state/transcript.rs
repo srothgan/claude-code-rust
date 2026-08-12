@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use super::messages::ChatMessage;
+use super::messages::{ChatMessage, MessageBlock, MessageRole};
 use super::render_budget;
 
 #[derive(Default)]
@@ -31,5 +31,17 @@ impl Transcript {
     #[must_use]
     pub fn new(messages: Vec<ChatMessage>) -> Self {
         Self { messages, ..Self::default() }
+    }
+
+    #[must_use]
+    pub(crate) fn latest_user_text(&self) -> Option<&str> {
+        self.messages.iter().rev().find_map(|message| {
+            if !matches!(message.role, MessageRole::User) {
+                return None;
+            }
+            message.blocks.iter().rev().find_map(|block| {
+                if let MessageBlock::Text(text) = block { Some(text.text.as_str()) } else { None }
+            })
+        })
     }
 }

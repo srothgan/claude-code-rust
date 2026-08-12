@@ -131,15 +131,15 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveUp),
         id: "input.move_up",
-        label: "Move up",
-        description: "Move the input cursor up, or browse chat history.",
+        label: "Move up / recall latest message",
+        description: "Move the input cursor up, or recall the latest user message when empty.",
         default_contexts: &[KeyContext::ChatInput],
     },
     KeyActionDescriptor {
         action: KeyAction::Input(InputAction::MoveDown),
         id: "input.move_down",
         label: "Move down",
-        description: "Move the input cursor down, or browse chat history.",
+        description: "Move the input cursor down.",
         default_contexts: &[KeyContext::ChatInput],
     },
     KeyActionDescriptor {

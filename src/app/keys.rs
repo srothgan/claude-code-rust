@@ -726,9 +726,32 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn try_move_input_cursor_up(app: &mut App) -> bool {
+    if app.input.is_empty()
+        && let Some(text) = app.transcript.latest_user_text().map(str::to_owned)
+    {
+        app.input.set_text(&remove_recalled_image_badges(&text));
+        return true;
+    }
+
     let before = (app.input.cursor_row(), app.input.cursor_col());
     let _ = app.input.textarea_move_up();
     (app.input.cursor_row(), app.input.cursor_col()) != before
+}
+
+fn remove_recalled_image_badges(text: &str) -> String {
+    text.split('\n')
+        .enumerate()
+        .map(|(row, line)| {
+            let mut recalled_line = line.to_owned();
+            for atom in input_atoms::resolve_line_atoms(row, line).into_iter().rev() {
+                if matches!(atom.kind, InputAtomKind::ImageBadge { .. }) {
+                    recalled_line.replace_range(atom.start_byte..atom.end_byte, "");
+                }
+            }
+            recalled_line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn try_move_input_cursor_down(app: &mut App) -> bool {
@@ -883,8 +906,8 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::FocusTarget;
     use crate::app::keymap::{KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap};
+    use crate::app::{ChatMessage, FocusTarget, MessageBlock, MessageRole, TextBlock};
     use crossterm::event::{KeyCode, KeyModifiers};
     use std::time::{Duration, Instant};
 
@@ -957,6 +980,81 @@ mod tests {
 
         assert_eq!(outcome, KeyOutcome::Handled(true));
         assert_eq!(app.input.cursor_col(), 1);
+    }
+
+    fn user_message(text: &str) -> ChatMessage {
+        ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(text))],
+            None,
+        )
+    }
+
+    #[test]
+    fn up_on_empty_input_recalls_latest_user_message_at_end() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(user_message("older prompt"));
+        app.transcript.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::Text(TextBlock::from_complete("reply"))],
+            None,
+        ));
+        app.transcript.messages.push(user_message("first line\nlatest \u{1F980}"));
+
+        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert_eq!(app.input.text(), "first line\nlatest \u{1F980}");
+        assert_eq!(app.input.cursor(), (1, "latest \u{1F980}".chars().count()));
+    }
+
+    #[test]
+    fn up_on_empty_input_removes_unrecoverable_image_badges() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(user_message("review [Image #1]\n[Image #2] keep [Image #0]"));
+
+        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert_eq!(app.input.text(), "review \n keep [Image #0]");
+        assert_eq!(app.input.cursor(), (1, " keep [Image #0]".chars().count()));
+        assert!(app.pending_images.is_empty());
+    }
+
+    #[test]
+    fn up_on_nonempty_input_moves_cursor_without_recalling_history() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(user_message("history prompt"));
+        app.input.set_text("draft first\ndraft second");
+
+        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert_eq!(app.input.text(), "draft first\ndraft second");
+        assert_eq!(app.input.cursor_row(), 0);
+    }
+
+    #[test]
+    fn up_on_whitespace_input_does_not_recall_history() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(user_message("history prompt"));
+        app.input.set_text(" ");
+
+        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert_eq!(app.input.text(), " ");
+    }
+
+    #[test]
+    fn up_on_empty_input_without_user_history_is_a_noop() {
+        let mut app = App::test_default();
+
+        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+
+        assert_eq!(outcome, KeyOutcome::Handled(true));
+        assert!(app.input.is_empty());
+        assert_eq!(app.input.cursor(), (0, 0));
     }
 
     #[test]
