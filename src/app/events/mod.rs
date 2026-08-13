@@ -79,6 +79,17 @@ impl TerminalEventOutcome {
 }
 
 pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcome {
+    if app.shutdown_requested() {
+        if let Event::Key(key) = event
+            && should_dispatch_key_event(key)
+            && super::keys::is_ctrl_char_shortcut(key, 'c')
+        {
+            app.force_shutdown();
+            return TerminalEventOutcome::handled(true);
+        }
+        return TerminalEventOutcome::ignored();
+    }
+
     if matches!(app.terminal_lifecycle, super::TerminalLifecycleState::ReleasedToChild(_))
         && !matches!(&event, Event::Resize(_, _))
     {
@@ -197,6 +208,13 @@ fn log_resize_classification(app: &App, size_change: TerminalSizeChange, action:
 }
 
 fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> TerminalEventOutcome {
+    if matches!(app.surface_mode, SurfaceMode::Fullscreen(_))
+        && super::keys::is_ctrl_char_shortcut(key, 'c')
+    {
+        super::view::dismiss_fullscreen_on_interrupt(app);
+        return TerminalEventOutcome::handled(true);
+    }
+
     match app.surface_mode {
         SurfaceMode::Chat => {
             app.paste.clear_active_session();

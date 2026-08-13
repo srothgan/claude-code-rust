@@ -579,7 +579,7 @@ fn apply_turn_error_class_side_effects(
                 error_preview = %summary,
             );
             app.exit_error = Some(crate::error::AppError::AuthRequired);
-            app.should_quit = true;
+            app.request_shutdown();
         }
         TurnErrorClass::AccountAccess => {
             tracing::warn!(

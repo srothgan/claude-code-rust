@@ -178,7 +178,7 @@ pub fn create_app(cli: &Cli) -> App {
             Some(Command::Resume { session_id: Some(_) })
         ),
         turn: super::state::TurnState::default(),
-        should_quit: false,
+        shutdown: super::ShutdownState::Running,
         exit_error: None,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
@@ -294,6 +294,24 @@ pub(crate) struct BridgeTask {
     join_handle: tokio::task::JoinHandle<()>,
 }
 
+pub(super) struct ConnectionShutdown {
+    join_handle: tokio::task::JoinHandle<()>,
+}
+
+impl ConnectionShutdown {
+    pub(super) async fn wait(&mut self) {
+        log_bridge_task_join_result((&mut self.join_handle).await);
+    }
+
+    pub(super) async fn force(self) {
+        self.join_handle.abort();
+        match self.join_handle.await {
+            Err(err) if err.is_cancelled() => {}
+            result => log_bridge_task_join_result(result),
+        }
+    }
+}
+
 thread_local! {
     pub static CONN_SLOT: std::cell::RefCell<Option<Rc<std::cell::RefCell<Option<ConnectionSlot>>>>> =
         const { std::cell::RefCell::new(None) };
@@ -304,18 +322,27 @@ pub(super) fn take_connection_slot() -> Option<ConnectionSlot> {
     CONN_SLOT.with(|slot| slot.borrow().as_ref().and_then(|inner| inner.borrow_mut().take()))
 }
 
-pub(super) async fn shutdown_connection(app: &mut App) {
+pub(super) fn begin_shutdown_connection(app: &mut App) -> Option<ConnectionShutdown> {
     app.session_runtime.conn = None;
     let pending_slot = CONN_SLOT.with(|slot| slot.borrow_mut().take());
     if let Some(slot) = pending_slot {
         slot.borrow_mut().take();
     }
 
-    let Some(BridgeTask { shutdown_tx, join_handle }) = app.bridge_task.take() else {
+    let BridgeTask { shutdown_tx, join_handle } = app.bridge_task.take()?;
+    let _ = shutdown_tx.send(());
+    Some(ConnectionShutdown { join_handle })
+}
+
+pub(super) async fn shutdown_connection(app: &mut App) {
+    let Some(mut shutdown) = begin_shutdown_connection(app) else {
         return;
     };
-    let _ = shutdown_tx.send(());
-    if let Err(err) = join_handle.await {
+    shutdown.wait().await;
+}
+
+fn log_bridge_task_join_result(result: Result<(), tokio::task::JoinError>) {
+    if let Err(err) = result {
         tracing::error!(
             target: crate::logging::targets::BRIDGE_LIFECYCLE,
             event_name = "bridge_task_join_failed",

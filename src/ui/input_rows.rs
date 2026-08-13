@@ -54,6 +54,13 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
+    if app.shutdown_requested() {
+        return vec![Line::from(Span::styled(
+            "Shutting down... Press Ctrl+C again to force exit.",
+            Style::default().fg(theme::DIM),
+        ))];
+    }
+
     match app.status {
         AppStatus::Connecting => {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
@@ -189,5 +196,17 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Input disabled due to error"));
         assert!(line_text(&rows[1]).contains("Press Ctrl+Q to quit and try again."));
+    }
+
+    #[test]
+    fn blocked_input_lines_prioritizes_shutdown_status() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Running;
+        app.request_shutdown();
+
+        let rows = blocked_input_lines(&app);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(line_text(&rows[0]), "Shutting down... Press Ctrl+C again to force exit.");
     }
 }

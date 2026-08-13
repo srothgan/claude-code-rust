@@ -37,8 +37,8 @@ pub fn post_trust_surface(app: &App) -> SurfaceMode {
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
-    if is_ctrl(key, 'q') || is_ctrl(key, 'c') {
-        app.should_quit = true;
+    if is_ctrl(key, 'q') {
+        app.request_shutdown();
         return;
     }
 
@@ -91,7 +91,7 @@ fn install(app: &mut App, method_override: Option<InstallMethod>) {
         latest_version: prompt.latest_version.clone(),
         method,
     });
-    app.should_quit = true;
+    app.request_shutdown();
 }
 
 fn skip_now(app: &mut App) {
@@ -210,7 +210,7 @@ mod tests {
 
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(app.should_quit);
+        assert!(app.shutdown_requested());
         assert_eq!(
             app.post_exit_action,
             Some(PostExitAction::InstallUpdate {

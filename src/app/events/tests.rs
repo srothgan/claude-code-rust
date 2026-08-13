@@ -1098,7 +1098,7 @@ fn test_app_defaults() {
     assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat));
     assert!(!app.surface_dirty.fullscreen.redraw);
     assert!(!app.surface_dirty.terminal_mode);
-    assert!(!app.should_quit);
+    assert!(!app.shutdown_requested());
     assert!(app.session_runtime.session_id.is_none());
     assert_eq!(app.files_accessed, 0);
     assert!(app.turn.pending_interaction_ids.is_empty());
@@ -1778,7 +1778,7 @@ fn classified_turn_error_auth_required_sets_exit_error_and_quits() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
     assert_eq!(app.exit_error, Some(crate::error::AppError::AuthRequired));
 }
 
@@ -1798,7 +1798,7 @@ fn classified_turn_error_model_unavailable_suggests_model_switch() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    assert!(!app.should_quit);
+    assert!(!app.shutdown_requested());
     assert_eq!(app.exit_error, None);
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("The selected model is unavailable"));
@@ -1821,7 +1821,7 @@ fn classified_turn_error_account_access_does_not_quit_for_login() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    assert!(!app.should_quit);
+    assert!(!app.shutdown_requested());
     assert_eq!(app.exit_error, None);
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("current account or organization"));
@@ -1844,7 +1844,7 @@ fn classified_turn_error_transient_service_suggests_retry() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    assert!(!app.should_quit);
+    assert!(!app.shutdown_requested());
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("temporarily overloaded or unavailable"));
     assert!(text.contains("retry"));
@@ -1948,7 +1948,7 @@ fn fatal_event_sets_exit_error_and_quits() {
     );
 
     assert!(matches!(app.status, AppStatus::Error));
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
     assert_eq!(app.exit_error, Some(crate::error::AppError::ConnectionFailed));
 }
 
@@ -3315,7 +3315,39 @@ fn ctrl_c_quits() {
         Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
     );
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
+}
+
+#[test]
+fn fullscreen_ctrl_c_returns_to_chat_without_stopping_active_turn() {
+    let mut app = make_test_app();
+    app.status = AppStatus::Running;
+    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
+    app.terminal_lifecycle =
+        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
+
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert_eq!(app.status, AppStatus::Running);
+    assert!(!app.shutdown_requested());
+    assert!(!app.turn.cancel_requested);
+}
+
+#[test]
+fn repeated_ctrl_c_escalates_requested_shutdown() {
+    let mut app = make_test_app();
+    app.request_shutdown();
+
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+
+    assert!(app.shutdown_forced());
 }
 
 #[test]
@@ -3334,7 +3366,7 @@ fn ctrl_c_clears_local_draft_before_quitting() {
         Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
     );
 
-    assert!(!app.should_quit);
+    assert!(!app.shutdown_requested());
     assert!(app.input.is_empty());
     assert!(app.pending_submit.is_none());
     assert!(app.paste.pending_text.is_empty());
@@ -3345,7 +3377,7 @@ fn ctrl_c_clears_local_draft_before_quitting() {
         Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
     );
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }
 
 #[test]
@@ -3357,7 +3389,7 @@ fn ctrl_q_quits() {
         Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
     );
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }
 
 #[test]
@@ -3390,7 +3422,7 @@ fn connecting_state_ctrl_q_quits() {
         Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
     );
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }
 
 #[test]
@@ -3425,7 +3457,7 @@ fn error_state_ctrl_q_quits() {
         Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
     );
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }
 
 #[test]
@@ -3438,7 +3470,7 @@ fn error_state_ctrl_c_quits() {
         Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
     );
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }
 
 #[test]

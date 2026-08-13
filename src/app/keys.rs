@@ -247,7 +247,7 @@ fn execute_key_action(app: &mut App, action: KeyAction, key: KeyEvent) -> KeyOut
 fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
     match action {
         AppAction::Quit => {
-            app.should_quit = true;
+            app.request_shutdown();
             KeyOutcome::Handled(true)
         }
         AppAction::ClearInputOrQuit => clear_input_or_quit(app).into(),
@@ -271,7 +271,7 @@ fn clear_input_or_quit(app: &mut App) -> bool {
         || app.paste.has_pending_text()
         || app.pending_submit.is_some();
     if !has_local_input {
-        app.should_quit = true;
+        app.request_shutdown();
         return true;
     }
 

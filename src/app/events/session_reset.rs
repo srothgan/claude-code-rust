@@ -55,7 +55,6 @@ fn reset_session_identity_state(
     app.session_runtime.runtime_session_state = None;
     app.session_runtime.prompt_suggestion = None;
     app.session_runtime.last_rate_limit_update = None;
-    app.should_quit = false;
     app.files_accessed = 0;
     app.turn.clear_cancel_state();
     app.session_runtime.account_info = None;
@@ -287,5 +286,23 @@ mod tests {
         assert!(app.sdk_inventory.rewind_targets.is_empty());
         assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
         assert!(!app.sdk_inventory.rewind_targets_in_flight);
+    }
+
+    #[test]
+    fn session_reset_does_not_cancel_requested_shutdown() {
+        let mut app = App::test_default();
+        app.request_shutdown();
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("session-2"),
+            model::CurrentModel::new("test", "test", "test").authoritative(true),
+            None,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
+            false,
+            ChatResetRenderMode::DeferTranscriptRender,
+        );
+
+        assert!(app.shutdown_requested());
     }
 }

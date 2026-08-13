@@ -74,5 +74,5 @@ fn ctrl_q_still_quits_from_config() {
         Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
     );
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }

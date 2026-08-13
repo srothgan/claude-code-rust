@@ -141,7 +141,7 @@ fn handle_key_declines_with_n() {
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }
 
 #[test]
@@ -165,5 +165,5 @@ fn handle_key_enter_declines_when_no_is_selected() {
 
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(app.should_quit);
+    assert!(app.shutdown_requested());
 }

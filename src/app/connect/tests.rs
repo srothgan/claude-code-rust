@@ -87,3 +87,37 @@ async fn shutdown_connection_signals_and_awaits_the_owned_bridge_task() {
         })
         .await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn forced_connection_shutdown_aborts_the_owned_bridge_task() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            struct DropMarker(Rc<Cell<bool>>);
+
+            impl Drop for DropMarker {
+                fn drop(&mut self) {
+                    self.0.set(true);
+                }
+            }
+
+            let mut app = crate::app::App::test_default();
+            let dropped = Rc::new(Cell::new(false));
+            let dropped_for_task = Rc::clone(&dropped);
+            let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+            let join_handle = tokio::task::spawn_local(async move {
+                let _marker = DropMarker(dropped_for_task);
+                let _ = shutdown_rx.await;
+                std::future::pending::<()>().await;
+            });
+            tokio::task::yield_now().await;
+            app.bridge_task = Some(super::BridgeTask { shutdown_tx, join_handle });
+
+            let shutdown = super::begin_shutdown_connection(&mut app).expect("shutdown handle");
+            shutdown.force().await;
+
+            assert!(dropped.get());
+            assert!(app.bridge_task.is_none());
+            assert!(app.session_runtime.conn.is_none());
+        })
+        .await;
+}

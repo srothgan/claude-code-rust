@@ -5,6 +5,32 @@ use crate::agent::wire::BridgeCommand;
 use crate::app::{MessageBlock, MessageRole};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
+#[test]
+fn shutdown_preparation_normalizes_ui_and_preserves_resume_identity() {
+    let mut app = App::test_default();
+    app.status = AppStatus::Running;
+    app.session_runtime.activate_session(model::SessionId::new("session-123"));
+    app.input.set_text("draft");
+    app.pending_submit = Some(app.input.snapshot());
+    app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        data: "image".to_owned(),
+        mime_type: "image/png".to_owned(),
+    });
+    view::set_surface_mode(&mut app, SurfaceMode::Fullscreen(FullscreenView::Config));
+
+    prepare_app_shutdown(&mut app);
+
+    assert!(app.shutdown_requested());
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert!(app.input.is_empty());
+    assert!(app.pending_submit.is_none());
+    assert!(app.pending_images.is_empty());
+    assert_eq!(
+        app.session_runtime.resumable_session_id().map(ToString::to_string),
+        Some("session-123".to_owned())
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn event_loop_interval_waits_between_idle_ticks() {
     let mut interval = event_loop_interval();
