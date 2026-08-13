@@ -10,6 +10,10 @@ All notable changes to this project will be documented in this file.
 - **Active-turn commands** (#339, @srothgan): Allow safe commands during active turns and preserve blocked drafts instead of cancelling the turn.
 - **Latest-message recall** (#340, @srothgan): Recall the latest user message with Up when the chat input is empty, while preserving normal multiline cursor movement.
 
+### Fixes
+
+- **Reliable TUI shutdown** (#341, @srothgan): Close fullscreen views without interrupting active turns, support forced cleanup, restore terminal state, and preserve resume guidance.
+
 ## [0.14.3] - 2026-08-01 [Changes][v0.14.3]
 
 ### Features
