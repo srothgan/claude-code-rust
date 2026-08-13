@@ -578,7 +578,7 @@ pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.turn.reset_for_new_session();
     app.exit_error = Some(error);
-    app.should_quit = true;
+    app.request_shutdown();
     app.status = AppStatus::Error;
     app.pending_submit = None;
 }

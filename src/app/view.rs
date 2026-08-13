@@ -56,6 +56,25 @@ pub fn set_chat_surface(app: &mut App) {
     set_surface_mode(app, SurfaceMode::Chat);
 }
 
+pub(crate) fn dismiss_fullscreen_on_interrupt(app: &mut App) {
+    let SurfaceMode::Fullscreen(view) = app.surface_mode else {
+        return;
+    };
+
+    match view {
+        FullscreenView::Config | FullscreenView::Trusted => {}
+        FullscreenView::SessionPicker => {
+            app.startup.resolve_session_picker();
+            app.session_picker.turn_session_id = None;
+        }
+        FullscreenView::Update => {
+            app.update_prompt = None;
+            app.startup.resolve_session_picker();
+        }
+    }
+    set_chat_surface(app);
+}
+
 fn clear_transient_view_state(app: &mut App) {
     app.paste.clear_all_sessions();
     app.pending_submit = None;

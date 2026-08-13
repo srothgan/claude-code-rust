@@ -136,6 +136,24 @@ fn surface_mode_reports_fullscreen_view_only_for_fullscreen_modes() {
 }
 
 #[test]
+fn interrupt_dismisses_every_fullscreen_surface_to_chat() {
+    for fullscreen in [
+        FullscreenView::Config,
+        FullscreenView::Trusted,
+        FullscreenView::SessionPicker,
+        FullscreenView::Update,
+    ] {
+        let mut app = App::test_default();
+        set_surface_mode(&mut app, SurfaceMode::Fullscreen(fullscreen));
+
+        dismiss_fullscreen_on_interrupt(&mut app);
+
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        assert!(!app.shutdown_requested());
+    }
+}
+
+#[test]
 fn set_surface_mode_updates_surface_and_lifecycle_while_running() {
     let mut app = App::test_default();
     app.chat_render.live_region.anchor_valid = true;

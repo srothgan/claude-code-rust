@@ -498,12 +498,13 @@ impl ChatTerminalSession {
         let footer_rows = Vec::from(footer.rows);
         let footer_row_count = u16::try_from(footer_rows.len()).unwrap_or(u16::MAX);
 
-        let editor = if matches!(
-            app.status,
-            crate::app::AppStatus::Connecting
-                | crate::app::AppStatus::CommandPending
-                | crate::app::AppStatus::Error
-        ) {
+        let editor = if app.shutdown_requested()
+            || matches!(
+                app.status,
+                crate::app::AppStatus::Connecting
+                    | crate::app::AppStatus::CommandPending
+                    | crate::app::AppStatus::Error
+            ) {
             ComposerEditor::Rows(blocked_input_lines(app))
         } else {
             let desired_height =

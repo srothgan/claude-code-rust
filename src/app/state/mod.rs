@@ -57,7 +57,7 @@ pub use types::{
     AppStatus, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState,
     MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, PostExitAction,
     RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
-    SessionUsageSummary, ToolCallScope, UpdatePromptAction, UpdatePromptState,
+    SessionUsageSummary, ShutdownState, ToolCallScope, UpdatePromptAction, UpdatePromptState,
     UsageActivitySummary, UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution,
     UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
 };
@@ -79,7 +79,7 @@ mod prelude {
     pub(super) use super::types::{
         AppStatus, HistoryRetentionPolicy, HistoryRetentionStats, McpState, PasteSessionState,
         PendingCommandAck, RecentSessionInfo, RenderCacheBudget, SelectionPoint,
-        SessionPickerState, ToolCallScope, UpdatePromptState, UsageState,
+        SessionPickerState, ShutdownState, ToolCallScope, UpdatePromptState, UsageState,
     };
     pub(super) use crate::agent::events::ClientEvent;
     pub(super) use crate::agent::model;

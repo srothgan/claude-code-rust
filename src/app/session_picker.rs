@@ -22,8 +22,8 @@ pub(crate) fn picker_turn_count(app: &App) -> usize {
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
-    if is_ctrl(key, 'q') || is_ctrl(key, 'c') {
-        app.should_quit = true;
+    if is_ctrl(key, 'q') {
+        app.request_shutdown();
         return;
     }
 

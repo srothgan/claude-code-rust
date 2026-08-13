@@ -298,6 +298,26 @@ pub enum AppStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShutdownState {
+    #[default]
+    Running,
+    Requested,
+    Forced,
+}
+
+impl ShutdownState {
+    #[must_use]
+    pub const fn is_requested(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+
+    #[must_use]
+    pub const fn is_forced(self) -> bool {
+        matches!(self, Self::Forced)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCallScope {
     MainAgent,

@@ -10,7 +10,7 @@ Keyboard shortcuts are context-sensitive. Use `/docs shortcuts` in the app to sh
 | `Ctrl+L` | Redraw. |
 | `Ctrl+Z` on Unix | Suspend the process. |
 
-When the app is blocked before a usable session is available, `Ctrl+C` quits.
+In a fullscreen view, `Ctrl+C` closes the view and returns to chat. After shutdown begins, pressing `Ctrl+C` again forces any remaining cleanup to stop.
 
 ## Chat Input
 

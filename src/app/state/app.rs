@@ -27,7 +27,7 @@ pub struct App {
     pub(crate) pending_session_resume: Option<PendingSessionResume>,
     /// Whether the synthetic session overview is eligible for chat transcript output.
     pub(crate) show_session_overview: bool,
-    pub should_quit: bool,
+    pub(crate) shutdown: ShutdownState,
     /// Optional fatal app error that should be surfaced at CLI boundary.
     pub exit_error: Option<crate::error::AppError>,
     pub(crate) cwd: String,
@@ -115,6 +115,26 @@ pub struct App {
 }
 
 impl App {
+    pub(crate) fn request_shutdown(&mut self) {
+        if matches!(self.shutdown, ShutdownState::Running) {
+            self.shutdown = ShutdownState::Requested;
+        }
+    }
+
+    pub(crate) fn force_shutdown(&mut self) {
+        self.shutdown = ShutdownState::Forced;
+    }
+
+    #[must_use]
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown.is_requested()
+    }
+
+    #[must_use]
+    pub(crate) fn shutdown_forced(&self) -> bool {
+        self.shutdown.is_forced()
+    }
+
     pub(crate) fn set_pending_session_resume(
         &mut self,
         session_id: String,
@@ -195,7 +215,7 @@ impl App {
             pending_session_resume: None,
             show_session_overview: true,
             turn: TurnState::default(),
-            should_quit: false,
+            shutdown: ShutdownState::Running,
             exit_error: None,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),

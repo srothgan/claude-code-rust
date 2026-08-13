@@ -74,7 +74,7 @@ pub use state::{
     MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
     NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, PostExitAction,
     RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
-    SessionUsageSummary, SubagentPermissionContext, SystemSeverity, TerminalSize,
+    SessionUsageSummary, ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize,
     TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
     TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
     UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
@@ -137,8 +137,14 @@ pub async fn run_tui(app: &mut App) -> anyhow::Result<()> {
     let mut terminal_runtime = terminal_runtime::TerminalRuntime::bootstrap(app)?;
     let result = run_tui_loop(app, &mut terminal_runtime).await;
 
-    finish_run_tui(app, &mut terminal_runtime);
-    connect::shutdown_connection(app).await;
+    if result.is_err() {
+        prepare_app_shutdown(app);
+        restore_terminal_after_shutdown(app, &mut terminal_runtime);
+        connect::shutdown_connection(app).await;
+        return result;
+    }
+
+    restore_terminal_after_shutdown(app, &mut terminal_runtime);
 
     result
 }
@@ -181,7 +187,7 @@ async fn run_tui_loop(
                         error_message = %err,
                     );
                 }
-                app.should_quit = true;
+                app.request_shutdown();
             }
             _ = event_loop_interval.tick() => {}
         }
@@ -196,6 +202,10 @@ async fn run_tui_loop(
                     let outcome = events::handle_terminal_event(app, event);
                     handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
                 }
+            }
+
+            if app.shutdown_requested() {
+                break;
             }
 
             if let Ok(event) = app.event_rx.try_recv() {
@@ -213,13 +223,16 @@ async fn run_tui_loop(
             }
         }
 
-        file_index::drain_events(app);
+        if !app.shutdown_requested() {
+            file_index::drain_events(app);
+        }
 
         let now = Instant::now();
         // Tick the burst detector: flush any held/buffered content that
         // has timed out. EmitChar re-inserts a single held character;
         // EmitPaste feeds the accumulated burst into the paste queue.
-        if app.surface_mode == SurfaceMode::Chat
+        if !app.shutdown_requested()
+            && app.surface_mode == SurfaceMode::Chat
             && let Some(action) = app.paste.burst.tick(now)
         {
             match action {
@@ -233,33 +246,42 @@ async fn run_tui_loop(
         }
 
         // Merge and process `Event::Paste` chunks as one paste action.
-        if app.surface_mode == SurfaceMode::Chat && app.paste.has_pending_text() {
+        if !app.shutdown_requested()
+            && app.surface_mode == SurfaceMode::Chat
+            && app.paste.has_pending_text()
+        {
             finalize_pending_paste_event(app);
         }
 
-        app.tick_git_context(now);
-        session_runtime::tick_context_usage_refresh(app, now);
+        if !app.shutdown_requested() {
+            app.tick_git_context(now);
+            session_runtime::tick_context_usage_refresh(app, now);
+        }
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and
         // submit that unchanged draft.
-        if app.surface_mode == SurfaceMode::Chat && app.pending_submit.is_some() {
+        if !app.shutdown_requested()
+            && app.surface_mode == SurfaceMode::Chat
+            && app.pending_submit.is_some()
+        {
             finalize_deferred_submit(app);
+        }
+
+        if app.shutdown_requested() {
+            prepare_app_shutdown(app);
         }
 
         terminal_runtime.sync_surface(app)?;
 
-        if app.should_quit {
-            break;
-        }
-
         // Phase 3: render once (only when something changed)
-        let is_animating = matches!(
-            app.status,
-            AppStatus::Connecting
-                | AppStatus::CommandPending
-                | AppStatus::Thinking
-                | AppStatus::Running
-        ) || app.turn.compaction.is_active();
+        let is_animating = !app.shutdown_requested()
+            && (matches!(
+                app.status,
+                AppStatus::Connecting
+                    | AppStatus::CommandPending
+                    | AppStatus::Thinking
+                    | AppStatus::Running
+            ) || app.turn.compaction.is_active());
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
@@ -291,6 +313,11 @@ async fn run_tui_loop(
                 drop(draw_timer);
                 drop(timer);
             }
+        }
+
+        if app.shutdown_requested() {
+            shutdown_connection_with_interrupts(app, &mut events).await;
+            break;
         }
     }
 
@@ -375,7 +402,20 @@ fn handle_runtime_client_event(
     }
 }
 
-fn finish_run_tui(app: &mut App, terminal_runtime: &mut terminal_runtime::TerminalRuntime) {
+fn prepare_app_shutdown(app: &mut App) {
+    app.request_shutdown();
+    if matches!(app.surface_mode, SurfaceMode::Fullscreen(_)) {
+        view::set_chat_surface(app);
+    }
+    app.input.clear();
+    app.pending_images.clear();
+    app.paste.clear_all_sessions();
+    app.pending_submit = None;
+    app.mention = None;
+    app.slash = None;
+    app.subagent = None;
+    app.request_chat_visible_rebuild();
+
     // Dismiss all pending inline permissions (reject via last option)
     for tool_id in std::mem::take(&mut app.turn.pending_interaction_ids) {
         if let Some((mi, bi)) = app.lookup_tool_call(&tool_id)
@@ -407,10 +447,71 @@ fn finish_run_tui(app: &mut App, terminal_runtime: &mut terminal_runtime::Termin
     {
         let _ = conn.cancel(sid.to_string());
     }
+}
 
-    // Restore terminal
+fn restore_terminal_after_shutdown(
+    app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+) {
     tab_title::restore_tab_title(&app.cwd);
     terminal_runtime.restore(app);
+}
+
+async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut EventStream) {
+    let Some(mut shutdown) = connect::begin_shutdown_connection(app) else {
+        return;
+    };
+    if app.shutdown_forced() {
+        shutdown.force().await;
+        return;
+    }
+
+    let mut terminal_events_open = true;
+    let mut os_shutdown_open = true;
+    let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
+    loop {
+        tokio::select! {
+            () = shutdown.wait() => return,
+            event = events.next(), if terminal_events_open => {
+                match event {
+                    Some(Ok(event)) => {
+                        let _ = events::handle_terminal_event(app, event);
+                    }
+                    Some(Err(err)) => {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "shutdown_terminal_listener_failed",
+                            message = "terminal event listener failed during shutdown",
+                            outcome = "degraded",
+                            error_message = %err,
+                        );
+                        terminal_events_open = false;
+                    }
+                    None => terminal_events_open = false,
+                }
+            }
+            signal = &mut os_shutdown, if os_shutdown_open => {
+                match signal {
+                    Ok(()) => app.force_shutdown(),
+                    Err(err) => {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "shutdown_force_listener_failed",
+                            message = "OS shutdown listener failed during cleanup",
+                            outcome = "degraded",
+                            error_message = %err,
+                        );
+                        os_shutdown_open = false;
+                    }
+                }
+            }
+        }
+
+        if app.shutdown_forced() {
+            shutdown.force().await;
+            return;
+        }
+    }
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {

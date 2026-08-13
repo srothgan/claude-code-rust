@@ -59,8 +59,8 @@ pub fn initialize(app: &mut App) {
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
-    if is_ctrl_shortcut(key, 'q') || is_ctrl_shortcut(key, 'c') {
-        app.should_quit = true;
+    if is_ctrl_shortcut(key, 'q') {
+        app.request_shutdown();
         return;
     }
 
@@ -99,7 +99,7 @@ pub fn accept(app: &mut App) -> Result<(), String> {
 }
 
 pub fn decline(app: &mut App) {
-    app.should_quit = true;
+    app.request_shutdown();
 }
 
 fn activate_selection(app: &mut App) {
