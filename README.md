@@ -2,11 +2,10 @@
 
 A native Rust terminal interface for Claude Code. Drop-in replacement for Anthropic's stock Node.js/React Ink TUI, built for performance and a better user experience.
 
-[![npm version](https://img.shields.io/npm/v/claude-code-rust)](https://www.npmjs.com/package/claude-code-rust)
-[![npm downloads](https://img.shields.io/npm/dm/claude-code-rust)](https://www.npmjs.com/package/claude-code-rust)
+[![Version](https://img.shields.io/github/v/release/srothgan/claude-code-rust?label=version)](https://github.com/srothgan/claude-code-rust/releases/latest)
 [![CI](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml/badge.svg)](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://srothgan.github.io/claude-code-rust/)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
 
 <p align="center">
   <img src="assets/banner.png" alt="Claude Code Rust running a Read tool call with syntax-highlighted output" width="900">
