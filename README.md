@@ -8,7 +8,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](https://www.apache.org/licenses/LICENSE-2.0)
 
 <p align="center">
-  <img src="assets/banner.png" alt="Claude Code Rust running a Read tool call with syntax-highlighted output" width="900">
+  <img src="assets/demo.gif" alt="Claude Code Rust explaining the terminal problems its native Rust interface solves" width="900">
 </p>
 
 ## About
