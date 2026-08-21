@@ -1,0 +1,6 @@
+.git
+benchmarks
+dist-*
+node_modules
+target
+assets/demo.gif

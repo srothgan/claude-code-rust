@@ -2,7 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- ## [Unreleased] -->
+## [Unreleased]
+
+### Documentation
+
+- **Animated README demo** (#348, @srothgan): Replace the static banner with a reproducible terminal recording that highlights Claude Code Rust's terminal improvements.
 
 ## [0.14.4] - 2026-08-13 [Changes][v0.14.4]
 

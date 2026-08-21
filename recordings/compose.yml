@@ -1,0 +1,14 @@
+services:
+  demo:
+    build:
+      context: ..
+      dockerfile: recordings/Dockerfile
+    image: claude-code-rust-recording:local
+    working_dir: /workspace/claude-code-rust
+    volumes:
+      - ..:/workspace/claude-code-rust
+      - ./CLAUDE.md:/workspace/claude-code-rust/CLAUDE.md:ro
+      - ./claude.json:/root/.claude.json:ro
+      - ./settings.json:/root/.claude/settings.json:ro
+      - ${USERPROFILE}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - .:/recording:ro
