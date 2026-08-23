@@ -129,5 +129,7 @@ jobs:
             gh issue create \
               --repo "${REPO}" \
               --title "${issue_title}" \
+              --label "type: dependencies" \
+              --label "area: agent-sdk" \
               --body-file "${issue_file}"
           fi

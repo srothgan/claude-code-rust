@@ -46,6 +46,25 @@ By participating, you agree to uphold this code.
 7. Push to your fork and open a Pull Request against `main`
 8. Fill out the PR summary, validation, and any relevant notes
 
+### Labels
+
+Labels use a `namespace: value` convention so they group visually and filter cleanly.
+Apply at most one `type:` label per issue or pull request.
+
+| Namespace | Values | Meaning |
+| --- | --- | --- |
+| `type:` | `bug`, `fix`, `feature`, `docs`, `refactor`, `security`, `dependencies`, `release` | What kind of work it is. Use `bug` for a reported defect and `fix` for the change that resolves one. |
+| `area:` | `tui`, `core`, `agent-sdk`, `install`, `ci` | Which part of the project it touches. |
+| `status:` | `triage`, `blocked`, `needs-info`, `discussion`, `wontfix` | Where it sits in the workflow. |
+
+`good first issue` and `help wanted` stay unprefixed because GitHub uses them to
+populate the repository contribution page.
+
+Issue templates apply `type:` and `status: triage` automatically, and Dependabot
+applies `type: dependencies` plus the matching `area:` label from
+`.github/dependabot.yml`. Renaming any of those labels requires updating that
+config in the same change.
+
 ## Development Setup
 
 ### Prerequisites
