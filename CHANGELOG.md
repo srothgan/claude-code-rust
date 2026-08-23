@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Agent SDK and Bun migration** (#349, @srothgan): Upgrade to Agent SDK `0.3.239` and Bun `1.4.0`, render SDK-owned `/context`, and expand task and Artifact compatibility.
+
 ### Documentation
 
 - **Animated README demo** (#348, @srothgan): Replace the static banner with a reproducible terminal recording that highlights Claude Code Rust's terminal improvements.
