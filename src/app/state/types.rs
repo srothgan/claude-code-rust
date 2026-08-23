@@ -285,7 +285,8 @@ pub struct CacheBudgetEnforceStats {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum AppStatus {
-    /// Waiting for bridge adapter connection (TUI shown, input disabled).
+    /// Waiting for bridge adapter connection. Draft editing remains available,
+    /// but submission is disabled until a session is established.
     Connecting,
     /// A slash command is in flight (input disabled, spinner shown).
     CommandPending,
@@ -293,6 +294,40 @@ pub enum AppStatus {
     Thinking,
     Running,
     Error,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerBlockReason {
+    CommandPending,
+    Error,
+    Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ComposerAccess {
+    Active,
+    DraftOnly,
+    Blocked(ComposerBlockReason),
+}
+
+impl ComposerAccess {
+    #[must_use]
+    pub const fn can_edit(self) -> bool {
+        matches!(self, Self::Active | Self::DraftOnly)
+    }
+
+    #[must_use]
+    pub const fn can_submit(self) -> bool {
+        matches!(self, Self::Active)
+    }
+
+    #[must_use]
+    pub const fn blocked_reason(self) -> Option<ComposerBlockReason> {
+        match self {
+            Self::Blocked(reason) => Some(reason),
+            Self::Active | Self::DraftOnly => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

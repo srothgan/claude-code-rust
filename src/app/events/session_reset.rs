@@ -5,9 +5,23 @@ use super::super::{App, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ChatResetRenderMode {
-    PreserveInlineViewport,
-    DeferTranscriptRender,
+pub(super) enum ChatResetKind {
+    InitialConnection,
+    Replacement,
+}
+
+impl ChatResetKind {
+    const fn preserves_draft(self) -> bool {
+        matches!(self, Self::InitialConnection)
+    }
+
+    const fn preserves_welcome_tip(self) -> bool {
+        matches!(self, Self::InitialConnection)
+    }
+
+    const fn repaints_inline_viewport(self) -> bool {
+        matches!(self, Self::InitialConnection)
+    }
 }
 
 pub(super) fn reset_for_new_session(
@@ -16,15 +30,14 @@ pub(super) fn reset_for_new_session(
     current_model: model::CurrentModel,
     mode: Option<super::super::ModeState>,
     fast_mode: model::FastModeSnapshot,
-    preserve_current_welcome_tip: bool,
-    render_mode: ChatResetRenderMode,
+    reset_kind: ChatResetKind,
 ) {
     reset_session_identity_state(app, session_id, current_model, mode, fast_mode);
-    reset_messages_for_new_session(app, preserve_current_welcome_tip);
-    reset_input_state_for_new_session(app);
+    reset_messages_for_new_session(app, reset_kind.preserves_welcome_tip());
+    reset_input_state_for_new_session(app, reset_kind);
     reset_interaction_state_for_new_session(app);
     reset_render_state_for_new_session(app);
-    reset_cache_and_footer_state_for_new_session(app, render_mode);
+    reset_cache_and_footer_state_for_new_session(app, reset_kind);
     app.sync_git_context();
 }
 
@@ -73,11 +86,14 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
     app.sync_welcome_snapshot();
 }
 
-fn reset_input_state_for_new_session(app: &mut App) {
-    app.input.clear();
+fn reset_input_state_for_new_session(app: &mut App, reset_kind: ChatResetKind) {
+    if !reset_kind.preserves_draft() {
+        app.input.clear();
+        app.pending_images.clear();
+        app.committed_mentions.clear();
+    }
     app.pending_submit = None;
     app.paste.clear_all_sessions();
-    app.pending_images.clear();
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
@@ -100,13 +116,12 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.subagent = None;
 }
 
-fn reset_cache_and_footer_state_for_new_session(app: &mut App, render_mode: ChatResetRenderMode) {
+fn reset_cache_and_footer_state_for_new_session(app: &mut App, reset_kind: ChatResetKind) {
     app.mcp = super::super::McpState::default();
     crate::app::usage::reset_for_session_change(app);
     crate::app::plugins::reset_for_session_change(app);
-    match render_mode {
-        ChatResetRenderMode::PreserveInlineViewport => app.request_chat_repaint(),
-        ChatResetRenderMode::DeferTranscriptRender => {}
+    if reset_kind.repaints_inline_viewport() {
+        app.request_chat_repaint();
     }
 }
 
@@ -177,7 +192,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatResetRenderMode, reset_for_new_session};
+    use super::{ChatResetKind, reset_for_new_session};
     use crate::agent::model;
     use crate::app::{App, ChatMessage, ChatRebuildKind};
 
@@ -202,8 +217,7 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            false,
-            ChatResetRenderMode::DeferTranscriptRender,
+            ChatResetKind::Replacement,
         );
 
         assert_eq!(app.chat_render.terminal_width, 0);
@@ -226,12 +240,33 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            true,
-            ChatResetRenderMode::PreserveInlineViewport,
+            ChatResetKind::InitialConnection,
         );
 
         assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
         assert!(app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
+    fn startup_session_reset_preserves_connecting_draft_and_images() {
+        let mut app = App::test_default();
+        app.input.set_text("draft while connecting");
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: "image-data".to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("session-2"),
+            model::CurrentModel::new("test", "test", "test").authoritative(true),
+            None,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
+            ChatResetKind::InitialConnection,
+        );
+
+        assert_eq!(app.input.text(), "draft while connecting");
+        assert_eq!(app.pending_images.len(), 1);
     }
 
     #[test]
@@ -252,8 +287,7 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            false,
-            ChatResetRenderMode::DeferTranscriptRender,
+            ChatResetKind::Replacement,
         );
 
         assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
@@ -279,8 +313,7 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            false,
-            ChatResetRenderMode::DeferTranscriptRender,
+            ChatResetKind::Replacement,
         );
 
         assert!(app.sdk_inventory.rewind_targets.is_empty());
@@ -299,8 +332,7 @@ mod tests {
             model::CurrentModel::new("test", "test", "test").authoritative(true),
             None,
             model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            false,
-            ChatResetRenderMode::DeferTranscriptRender,
+            ChatResetKind::Replacement,
         );
 
         assert!(app.shutdown_requested());

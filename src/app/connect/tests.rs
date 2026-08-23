@@ -22,7 +22,7 @@ fn map_session_update_preserves_config_option_update() {
 }
 
 #[test]
-fn create_app_prewarms_file_index_and_routes_untrusted_cwd_to_trust_surface() {
+fn create_app_defers_file_index_and_routes_untrusted_cwd_to_trust_surface() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cli = Cli {
         command: None,
@@ -41,9 +41,9 @@ fn create_app_prewarms_file_index_and_routes_untrusted_cwd_to_trust_surface() {
 
     let app = super::create_app(&cli);
 
-    assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
-    assert!(app.file_index.scan.is_some());
-    assert!(app.file_index.watch.is_some());
+    assert!(app.file_index.root.is_none());
+    assert!(app.file_index.scan.is_none());
+    assert!(app.file_index.watch.is_none());
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
     assert_eq!(app.terminal_lifecycle, TerminalLifecycleState::Bootstrapping);
 }

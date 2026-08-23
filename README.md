@@ -13,7 +13,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 ## About
 
-Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality - tool calls, file editing, terminal commands, and permissions - works unchanged.
+Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality works unchanged, including tool calls, file editing, terminal commands, and permissions.
 
 ## Prerequisite
 
@@ -52,13 +52,13 @@ claude-rs
 Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
 
 > [!NOTE]
-> **Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage — including `claude -p` and third-party apps like this one — still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+> **Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
 ## Why
 
 The stock Claude Code TUI runs on Node.js with React Ink, which renders by redrawing full frames over raw ANSI escape codes. This causes real, widely-reported problems:
 
-- **Flickering**: The whole view is redrawn on every status update, causing constant flicker — bad enough to crash editors' integrated terminals during long sessions
+- **Flickering**: The whole view is redrawn on every status update, causing constant flicker (bad enough to crash editors' integrated terminals during long sessions)
 - **CPU**: Sustained high CPU even when idle, and runaway loops that spawn multiple background processes
 - **Memory**: 200-400MB baseline (and climbing with conversation length) vs ~20-50MB for a native binary
 - **Resize**: Window resizing leaves duplicated frames in scrollback, loses lines when shrinking, and can garble the display
@@ -66,7 +66,7 @@ The stock Claude Code TUI runs on Node.js with React Ink, which renders by redra
 - **Scrollback**: Hijacks the terminal's native scrollback, erasing history you can no longer scroll back to
 - **Paste**: Large pastes can flood stdout and freeze the terminal
 
-Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui -- no full-frame redraws and no React Ink rendering loop.
+Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui, with no full-frame redraws and no React Ink rendering loop.
 
 ## Documentation
 
@@ -96,9 +96,9 @@ This project is licensed under the [Apache License 2.0](LICENSE). Apache-2.0 was
 
 This project is not affiliated with, endorsed by, or supported by Anthropic.
 
-A quick note on where this project stands, since I know people worry about this kind of thing: claude-code-rust is a terminal UI that I wrote from scratch in Rust. It is not a fork, copy or port of the latest Claude Code source leak -- it talks to Anthropic's official [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) as a runtime dependency instead, the same way any other third-party tool would. No Anthropic source code was read or used as reference at any point during development.
+A quick note on where this project stands, since I know people worry about this kind of thing: claude-code-rust is a terminal UI that I wrote from scratch in Rust. It is not a fork, copy or port of the latest Claude Code source leak. It talks to Anthropic's official [Agent SDK](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/agent-sdk) as a runtime dependency instead, the same way any other third-party tool would. No Anthropic source code was read or used as reference at any point during development.
 
-The project authenticates through your existing Claude Code account via the Agent SDK, and the Agent SDK's terms allow building on top of it. Billing, credits, limits, and overage behavior are controlled by Anthropic, including any future changes Anthropic may make to how Agent SDK usage is metered. Other community projects do the same. As far as I can tell, using this project is fine -- but I am a single maintainer, not a lawyer. If anything changes on Anthropic's end, I will update this section and adjust the project accordingly.
+The project authenticates through your existing Claude Code account via the Agent SDK, and the Agent SDK's terms allow building on top of it. Billing, credits, limits, and overage behavior are controlled by Anthropic, including any future changes Anthropic may make to how Agent SDK usage is metered. Other community projects do the same. As far as I can tell, using this project is fine, but I am a single maintainer, not a lawyer. If anything changes on Anthropic's end, I will update this section and adjust the project accordingly.
 
 This project's source code is licensed under [Apache-2.0](LICENSE). The Agent SDK itself is proprietary and governed by [Anthropic's Commercial Terms of Service](https://www.anthropic.com/legal/commercial-terms).
 

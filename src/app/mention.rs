@@ -39,9 +39,11 @@ pub struct CommittedMentionSpan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MentionSearchStatus {
     Hint,
+    WaitingForIndex,
     Searching,
     Ready,
     NoMatches,
+    Limited,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,8 +111,15 @@ impl MentionState {
 
         match self.search_status {
             MentionSearchStatus::Hint => Some("Type a file or folder name after @".to_owned()),
+            MentionSearchStatus::WaitingForIndex => {
+                Some("File search will start when the session is ready".to_owned())
+            }
             MentionSearchStatus::Searching => Some("Searching files...".to_owned()),
             MentionSearchStatus::NoMatches => Some("No matching files or folders".to_owned()),
+            MentionSearchStatus::Limited => Some(format!(
+                "No match in the first {} indexed files or folders",
+                file_index::MAX_INDEX_ENTRIES
+            )),
             MentionSearchStatus::Ready => None,
         }
     }
@@ -331,15 +340,17 @@ pub fn apply_match_result(app: &mut App, result: file_index::MentionMatchResult)
     mention.pending_match_sequence = None;
     let needs_follow_up = mention.refresh_after_pending_match
         || result.index_version < app.file_index.index_version
-        || result.scan_finished != app.file_index.scan_finished;
+        || result.status != app.file_index.status;
     mention.refresh_after_pending_match = false;
     mention.search_status = if mention.candidates.is_empty() {
-        if result.scan_finished {
+        if result.status.is_limited() {
+            MentionSearchStatus::Limited
+        } else if result.status.is_finished() {
             MentionSearchStatus::NoMatches
         } else {
             MentionSearchStatus::Searching
         }
-    } else if result.scan_finished {
+    } else if result.status.is_finished() {
         MentionSearchStatus::Ready
     } else {
         MentionSearchStatus::Searching
@@ -359,8 +370,8 @@ pub fn apply_match_result(app: &mut App, result: file_index::MentionMatchResult)
         sequence = result.sequence,
         query_chars = result.query.chars().count(),
         result_count,
-        result_scan_finished = result.scan_finished,
-        current_scan_finished = app.file_index.scan_finished,
+        result_index_status = ?result.status,
+        current_index_status = ?app.file_index.status,
         follow_up_requested = needs_follow_up,
     );
     true
@@ -377,7 +388,11 @@ fn refresh_query_state(app: &mut App) {
         return;
     }
 
-    file_index::ensure_started(app);
+    if app.file_index.root.is_none() {
+        mention.search_status = MentionSearchStatus::WaitingForIndex;
+        sync_focus(app);
+        return;
+    }
     request_match_for_active_mention(app, MatchRequestMode::UserQuery);
 }
 
@@ -967,19 +982,27 @@ mod tests {
     fn index_paths(app: &mut App, paths: &[&str]) {
         app.file_index.root = Some(PathBuf::from(&app.cwd_raw));
         app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
-        app.file_index.scan_finished = true;
+        app.file_index.status = file_index::FileIndexStatus::Complete;
         for path in paths {
             app.file_index.entries.insert((*path).to_owned(), candidate(path));
         }
+    }
+
+    fn start_session_index(app: &mut App) {
+        file_index::restart(app);
     }
 
     fn run_search(app: &mut App) {
         for _ in 0..200 {
             crate::app::file_index::drain_events(app);
             std::thread::sleep(Duration::from_millis(5));
-            let is_settled = app.mention.as_ref().is_none_or(|mention| {
-                !matches!(mention.search_status, MentionSearchStatus::Searching)
+            let index_is_settled =
+                !matches!(app.file_index.status, file_index::FileIndexStatus::Scanning);
+            let mention_is_settled = app.mention.as_ref().is_none_or(|mention| {
+                mention.pending_match_sequence.is_none()
+                    && !matches!(mention.search_status, MentionSearchStatus::Searching)
             });
+            let is_settled = index_is_settled && mention_is_settled;
             if is_settled {
                 return;
             }
@@ -989,6 +1012,7 @@ mod tests {
     #[test]
     fn sync_with_cursor_activates_inside_existing_mention() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs", "tests/integration.rs"]);
+        start_session_index(&mut app);
         app.input.set_text("open @src/main.rs now");
         let _ = app.input.set_cursor(0, "open @src".chars().count());
 
@@ -1155,6 +1179,7 @@ mod tests {
     #[test]
     fn confirm_selection_replaces_full_existing_token_without_double_space() {
         let (mut app, _tmp) = app_with_temp_files(&["src/lib.rs"]);
+        start_session_index(&mut app);
         app.input.set_text("open @src/lib.txt now");
         let _ = app.input.set_cursor(0, "open @src/lib".chars().count());
 
@@ -1169,6 +1194,7 @@ mod tests {
     #[test]
     fn confirm_selection_at_end_keeps_trailing_space() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
+        start_session_index(&mut app);
         app.input.set_text("@src/mai");
         let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
 
@@ -1182,6 +1208,7 @@ mod tests {
     #[test]
     fn confirming_spaced_candidate_at_end_inserts_trailing_space() {
         let (mut app, _tmp) = app_with_temp_files(&["path with spaces.md"]);
+        start_session_index(&mut app);
         app.input.set_text("@path");
         let _ = app.input.set_cursor(0, "@path".chars().count());
 
@@ -1227,6 +1254,22 @@ mod tests {
             mention.placeholder_message().as_deref(),
             Some("Type a file or folder name after @")
         );
+    }
+
+    #[test]
+    fn activate_waits_for_the_session_index_without_starting_a_scan() {
+        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
+        app.input.set_text("@main");
+        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
+
+        activate(&mut app);
+
+        assert!(app.file_index.root.is_none());
+        assert!(app.file_index.scan.is_none());
+        assert!(matches!(app.file_index.status, file_index::FileIndexStatus::NotStarted));
+        assert!(app.mention.as_ref().is_some_and(|mention| {
+            matches!(mention.search_status, MentionSearchStatus::WaitingForIndex)
+        }));
     }
 
     #[test]
@@ -1375,6 +1418,7 @@ mod tests {
         let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs"]);
         std::fs::create_dir_all(tmp.path().join(".git")).expect("create .git");
         std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").expect("write .gitignore");
+        start_session_index(&mut app);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);
 
@@ -1395,6 +1439,7 @@ mod tests {
             &mut app.config.committed_preferences_document,
             false,
         );
+        start_session_index(&mut app);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);
 
@@ -1414,6 +1459,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".git")).expect("create .git");
         std::fs::write(root.join("src").join(".gitignore"), "hidden.rs\n")
             .expect("write .gitignore");
+        start_session_index(&mut app);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);
 
@@ -1428,6 +1474,7 @@ mod tests {
     #[test]
     fn update_query_loads_candidates_once_threshold_is_reached() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
+        start_session_index(&mut app);
         app.input.set_text("@s");
         let _ = app.input.set_cursor(0, 2);
 
@@ -1445,9 +1492,10 @@ mod tests {
     }
 
     #[test]
-    fn progressive_search_publishes_shallow_matches_before_deeper_levels() {
+    fn completed_search_includes_shallow_and_deep_matches() {
         let (mut app, _tmp) =
             app_with_temp_files(&["root.rs", "src/nested/deep.rs", "src/other.txt"]);
+        start_session_index(&mut app);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);
 
@@ -1466,6 +1514,7 @@ mod tests {
     fn query_change_refilters_from_cache_without_restarting_walk() {
         let (mut app, _tmp) =
             app_with_temp_files(&["root.rs", "src/nested/needle.rs", "src/nested/other.rs"]);
+        start_session_index(&mut app);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);
 
@@ -1491,7 +1540,7 @@ mod tests {
     fn scan_refresh_does_not_starve_pending_query_result() {
         let mut app = App::test_default();
         app.file_index.index_version = 5;
-        app.file_index.scan_finished = false;
+        app.file_index.status = file_index::FileIndexStatus::Scanning;
         let mut state = MentionState::new(0, 0, "web".to_owned(), Vec::new());
         state.next_match_sequence = 1;
         state.pending_match_sequence = Some(1);
@@ -1517,7 +1566,7 @@ mod tests {
                     basename_lower: "web_dev_work".to_owned(),
                     depth: 0,
                 }],
-                scan_finished: false,
+                status: file_index::FileIndexStatus::Scanning,
             },
         );
 
@@ -1533,7 +1582,7 @@ mod tests {
         let mut app = App::test_default();
         app.file_index.root = Some(std::path::PathBuf::from(&app.cwd_raw));
         app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
-        app.file_index.scan_finished = true;
+        app.file_index.status = file_index::FileIndexStatus::Complete;
         app.file_index.entries.insert(
             "docs/guide-rs.txt".to_owned(),
             file_index::FileCandidate {

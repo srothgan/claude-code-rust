@@ -6,7 +6,7 @@ use crate::agent::model;
 use crate::app::slash;
 
 pub(super) fn submit_input(app: &mut App) {
-    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
+    if !app.composer_access().can_submit() {
         return;
     }
 
@@ -134,6 +134,17 @@ mod tests {
         app.session_runtime.conn = Some(std::rc::Rc::new(connection));
         app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
+    }
+
+    #[test]
+    fn connecting_submission_preserves_the_draft() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Connecting;
+        app.input.set_text("draft while connecting");
+
+        submit_input(&mut app);
+
+        assert_eq!(app.input.text(), "draft while connecting");
     }
 
     #[test]

@@ -65,6 +65,7 @@ pub use lifecycle::{
 };
 pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
+pub(crate) use state::ComposerBlockReason;
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
     ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, ChatMessage,

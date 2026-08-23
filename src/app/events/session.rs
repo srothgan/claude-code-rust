@@ -6,7 +6,7 @@ use super::super::state::RecentSessionInfo;
 use super::super::view::{self, FullscreenView};
 use super::super::{App, AppStatus, LoginHint, SystemSeverity};
 use super::push_system_message_with_severity;
-use super::session_reset::{ChatResetRenderMode, load_resume_history, reset_for_new_session};
+use super::session_reset::{ChatResetKind, load_resume_history, reset_for_new_session};
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ServiceStatusSeverity;
 use crate::agent::model;
@@ -63,8 +63,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
         current_model,
         mode,
         model::FastModeSnapshot::new(fast_mode_state, fast_mode_disabled_reason),
-        true,
-        ChatResetRenderMode::PreserveInlineViewport,
+        ChatResetKind::InitialConnection,
     );
     app.sdk_inventory.available_models = available_models;
     app.sync_welcome_snapshot();
@@ -193,7 +192,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     crate::app::usage::reset_for_session_change(app);
     app.clear_pending_session_resume();
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.input.clear();
     app.pending_submit = None;
     app.status = AppStatus::Error;
     app.turn.reset_for_new_session();
@@ -363,8 +361,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         current_model,
         mode,
         model::FastModeSnapshot::new(fast_mode_state, fast_mode_disabled_reason),
-        false,
-        ChatResetRenderMode::DeferTranscriptRender,
+        ChatResetKind::Replacement,
     );
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
@@ -764,7 +761,7 @@ mod tests {
         let mut app = App::test_default();
         app.file_index.generation = 3;
         app.file_index.entries.insert("stale.rs".to_owned(), candidate("stale.rs"));
-        app.file_index.scan_finished = true;
+        app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
 
         handle_connected_client_event(
             &mut app,
@@ -788,7 +785,7 @@ mod tests {
         assert!(app.file_index.entries.is_empty());
         assert!(app.mention.is_none());
         wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished && app.file_index.entries.contains_key("new.rs")
+            app.file_index.status.is_finished() && app.file_index.entries.contains_key("new.rs")
         });
         assert_eq!(
             app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -803,7 +800,7 @@ mod tests {
         let mut app = App::test_default();
         app.file_index.generation = 8;
         app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
-        app.file_index.scan_finished = true;
+        app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
 
         handle_session_replaced_event(
             &mut app,
@@ -828,7 +825,7 @@ mod tests {
         assert!(app.file_index.entries.is_empty());
         assert!(app.mention.is_none());
         wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished && app.file_index.entries.contains_key("after.rs")
+            app.file_index.status.is_finished() && app.file_index.entries.contains_key("after.rs")
         });
         assert_eq!(
             app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
