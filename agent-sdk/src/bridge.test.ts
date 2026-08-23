@@ -2336,6 +2336,48 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
   }
 });
 
+test("buildQueryOptions defaults Todo tools without overriding explicit SDK child env", async () => {
+  for (const explicit of [undefined, "0", "1"] as const) {
+    const input = new AsyncQueue<
+      import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
+    >();
+    const options = buildQueryOptions({
+      cwd: "C:/work",
+      launchSettings: {},
+      provisionalSessionId: `session-todo-${explicit ?? "default"}`,
+      input,
+      canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+      enableSdkDebug: false,
+      enableSpawnDebug: false,
+      sessionIdForLogs: () => "session-todo",
+    });
+    const child = options.spawnClaudeCodeProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.stdout.write(process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS??'missing')",
+      ],
+      cwd: process.cwd(),
+      env:
+        explicit === undefined
+          ? {}
+          : { CLAUDE_CODE_ENABLE_TODO_TOOLS: explicit },
+      signal: new AbortController().signal,
+    });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("exit", resolve);
+    });
+    assert.equal(exitCode, 0);
+    assert.equal(stdout, explicit ?? "1");
+  }
+});
+
 test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
   const input = new AsyncQueue<
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
@@ -2593,6 +2635,35 @@ test("handleTaskSystemMessage preserves blocked and parent agent metadata", () =
       },
     },
   });
+});
+
+test("handleTaskSystemMessage preserves valid task-start background and spawn depth metadata", () => {
+  for (const [spawnDepth, expectedDepth] of [
+    [1, 1],
+    [3, 3],
+    [0, undefined],
+    [-1, undefined],
+    [1.5, undefined],
+    ["2", undefined],
+  ] as const) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      handleTaskSystemMessage(session, "task_started", {
+        task_id: `task-${String(spawnDepth)}`,
+        tool_use_id: `tool-${String(spawnDepth)}`,
+        description: "Inspect nesting",
+        is_backgrounded: false,
+        spawn_depth: spawnDepth,
+      });
+    });
+    const update = events.at(-1)?.update as {
+      tool_call_update?: { fields?: { task_metadata?: Record<string, unknown> } };
+    };
+    assert.deepEqual(update.tool_call_update?.fields?.task_metadata, {
+      is_backgrounded: false,
+      ...(expectedDepth === undefined ? {} : { spawn_depth: expectedDepth }),
+    });
+  }
 });
 
 test("handleTaskSystemMessage keeps Agent completed notification provisional until tool result", () => {
@@ -3213,6 +3284,74 @@ test("handleSdkMessage propagates source UUIDs for stream text and tool results"
       },
     ],
   );
+});
+
+test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "context-assistant-1",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      context_usage: { used_percentage: 42 },
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "## Context usage" },
+          { type: "text", text: "| Category | Tokens |\n| --- | ---: |\n| System | 100 |" },
+        ],
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, [
+    {
+      event: "session_update",
+      session_id: "session-1",
+      update: {
+        type: "agent_message_chunk",
+        content: {
+          type: "text",
+          text: "## Context usage\n\n| Category | Tokens |\n| --- | ---: |\n| System | 100 |",
+        },
+        source_message_uuid: "context-assistant-1",
+      },
+    },
+  ]);
+});
+
+test("handleSdkMessage does not replay ordinary or invalid completed assistant text", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    for (const message of [
+      {
+        type: "assistant",
+        uuid: "ordinary-assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "already streamed" }] },
+      },
+      {
+        type: "assistant",
+        uuid: "malformed-context",
+        context_usage: "invalid",
+        message: { role: "assistant", content: [{ type: "text", text: "not context" }] },
+      },
+      {
+        type: "assistant",
+        uuid: "empty-context",
+        context_usage: {},
+        message: { role: "assistant", content: [{ type: "text", text: "   " }] },
+      },
+    ]) {
+      handleSdkMessage(session, {
+        ...message,
+        session_id: "session-1",
+        parent_tool_use_id: null,
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+  });
+
+  assert.deepEqual(events, []);
 });
 
 test("handleSdkMessage refreshes Grep title when final assistant snapshot carries input", () => {
@@ -5503,6 +5642,7 @@ test("buildApiRetryUpdate maps SDK api_retry messages to wire shape", () => {
     },
   );
   for (const error of [
+    "account_on_hold",
     "model_not_found",
     "oauth_org_not_allowed",
     "overloaded",
@@ -5769,6 +5909,10 @@ test("classifyTurnErrorKind prefers SDK assistant error codes", () => {
   assert.equal(
     classifyTurnErrorKind("error_during_execution", [], "model_not_found"),
     "model_unavailable",
+  );
+  assert.equal(
+    classifyTurnErrorKind("error_during_execution", [], "account_on_hold"),
+    "account_access",
   );
   assert.equal(
     classifyTurnErrorKind(
@@ -6370,6 +6514,7 @@ test("handleSdkMessage renders cross-session peer input with preserved provenanc
         fromSession: "session-peer",
         body: "Decoded peer message",
         verifiedPeerPid: 4242,
+        fromMode: "bypass",
       },
       message: {
         role: "user",
@@ -6392,10 +6537,39 @@ test("handleSdkMessage renders cross-session peer input with preserved provenanc
           name: "Build session",
           from_session: "session-peer",
           verified_peer_pid: 4242,
+          from_mode: "bypass",
         },
       },
     },
   ]);
+});
+
+test("handleSdkMessage preserves only recognized peer permission modes", () => {
+  for (const [fromMode, expected] of [
+    ["prompting", "prompting"],
+    [undefined, undefined],
+    ["future-mode", undefined],
+  ] as const) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      handleSdkMessage(session, {
+        type: "user",
+        uuid: `peer-${fromMode ?? "absent"}`,
+        session_id: "session-1",
+        parent_tool_use_id: null,
+        origin: {
+          kind: "peer",
+          body: "Peer body",
+          ...(fromMode === undefined ? {} : { fromMode }),
+        },
+        message: { role: "user", content: "raw" },
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    });
+    const update = events[0]?.update as {
+      origin?: { from_mode?: string };
+    };
+    assert.equal(update.origin?.from_mode, expected);
+  }
 });
 
 test("handleSdkMessage distinguishes peer-send task notifications from human prompts", () => {
@@ -7136,7 +7310,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.227");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.239");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -7244,6 +7418,26 @@ test("mapSessionMessagesToUpdates maps message content blocks", () => {
   assert.equal(agentChunk?.source_message_uuid, "a1");
   assert.equal(toolCall?.tool_call.source_message_uuid, "a1");
   assert.equal(toolCallUpdate?.tool_call_update.source_message_uuid, "u2");
+});
+
+test("mapSessionMessagesToUpdates does not synthesize context output from persisted local commands", () => {
+  const updates = mapSessionMessagesToUpdates([
+    {
+      type: "system",
+      uuid: "system-context-command",
+      session_id: "s1",
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      message: {
+        type: "system",
+        subtype: "local_command",
+        command: "/context",
+        content: "## Context usage\n\nThis transcript copy must not become a second response.",
+      },
+    },
+  ] as unknown as SessionMessage[]);
+
+  assert.deepEqual(updates, []);
 });
 
 test("mapSessionMessagesToUpdates suppresses ToolSearch history blocks", () => {
@@ -7620,6 +7814,8 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         tool_use_id: "tool-agent",
         description: "Inspect the migration smoke",
         subagent_type: "general-purpose",
+        is_backgrounded: false,
+        spawn_depth: 2,
       },
     },
     {
@@ -7691,6 +7887,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         metadata: {
           subagent_type: "general-purpose",
           is_backgrounded: true,
+          spawn_depth: 2,
         },
         source_tool_call_id: "tool-agent",
       },
@@ -8035,6 +8232,7 @@ test("commitDeferredSession publishes connect before all buffered session-scoped
 
 test("handleResultMessage emits typed turn error classifications for SDK assistant errors", () => {
   const cases = [
+    ["account_on_hold", "account_access"],
     ["model_not_found", "model_unavailable"],
     ["oauth_org_not_allowed", "account_access"],
     ["overloaded", "transient_service"],
@@ -8658,7 +8856,7 @@ test("onUserDialog fails closed on an unknown dialog kind without emitting", asy
         { dialogKind: "some_future_dialog_kind", payload: { anything: true } },
         { signal: new AbortController().signal, requestId: "dialog-unknown-1" },
       );
-      assert.deepEqual(result, { behavior: "cancelled" });
+      assert.equal(result, null);
     });
 
     assert.equal(

@@ -129,6 +129,7 @@ export function parseRuntimeSessionState(
 export function parseApiRetryError(value: unknown): ApiRetryError {
   switch (value) {
     case "authentication_failed":
+    case "account_on_hold":
     case "oauth_org_not_allowed":
     case "billing_error":
     case "rate_limit":

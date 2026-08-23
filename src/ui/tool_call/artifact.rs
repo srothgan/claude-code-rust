@@ -56,6 +56,26 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         if let Some(url) = typed::json_string(input, "url") {
             artifact_fields.push(ToolField::new("URL", url));
         }
+        if let Some(prompt) = typed::json_string(input, "prompt") {
+            artifact_fields.push(ToolField::new("Prompt", prompt));
+        }
+        if let Some(out_dir) = typed::json_string(input, "out_dir") {
+            artifact_fields.push(ToolField::new("Output directory", out_dir));
+        }
+        if let Some(asset_id) = typed::json_string(input, "asset_id") {
+            artifact_fields.push(ToolField::new("Asset ID", asset_id));
+        }
+        if let Some(after) = typed::json_string(input, "after") {
+            artifact_fields.push(ToolField::new("After", after));
+        }
+        if let Some(capabilities) =
+            input.get("capabilities").and_then(typed::non_empty_compact_json)
+        {
+            artifact_fields.push(ToolField::new("Capabilities", capabilities));
+        }
+        if let Some(contract) = typed::json_string(input, "contract") {
+            artifact_fields.push(ToolField::new("Contract", contract));
+        }
         if let Some(additional) = additional_json(
             input,
             &[
@@ -68,6 +88,12 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 "file_path",
                 "favicon",
                 "url",
+                "prompt",
+                "out_dir",
+                "asset_id",
+                "after",
+                "capabilities",
+                "contract",
                 "force",
             ],
         ) {
@@ -90,7 +116,7 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
+fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
     let mut artifact_fields = Vec::new();
     if let Some(scope) = typed::json_string(object, "scope") {
         artifact_fields.push(ToolField::new("Scope", scope));
@@ -112,6 +138,9 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
     }
     if let Some(version) = typed::json_string(object, "version") {
         artifact_fields.push(ToolField::new("Version", version));
+    }
+    if let Some(artifact_id) = typed::json_string(object, "artifact_id") {
+        artifact_fields.push(ToolField::new("Artifact ID", artifact_id));
     }
     if let Some(mcp_dropped) = typed::json_string(object, "mcpDropped") {
         artifact_fields.push(ToolField::new("MCP dropped", mcp_dropped));
@@ -151,6 +180,7 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
             "url",
             "path",
             "version",
+            "artifact_id",
             "mcpDropped",
             "capabilities",
             "stored",
@@ -158,12 +188,39 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
             "contract",
             "updated",
             "liveSubscription",
+            "read",
+            "artifactRead",
+            "asset_upload",
+            "asset_list",
+            "asset_read",
+            "asset_delete",
         ],
     ) {
         artifact_fields.push(ToolField::new("Additional output", additional));
     }
 
-    let mut lines = fields::render_fields(artifact_fields);
+    artifact_fields
+}
+
+fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
+    let mut lines = fields::render_fields(render_output_fields(object));
+    if let Some(read) = object.get("read") {
+        lines.extend(render_read_output(read, object.get("artifactRead")));
+    } else if let Some(artifact_read) = object.get("artifactRead") {
+        lines.extend(render_artifact_read_metadata(artifact_read));
+    }
+    if let Some(asset_upload) = object.get("asset_upload") {
+        lines.extend(render_asset_upload_output(asset_upload));
+    }
+    if let Some(asset_list) = object.get("asset_list") {
+        lines.extend(render_asset_list_output(asset_list));
+    }
+    if let Some(asset_read) = object.get("asset_read") {
+        lines.extend(render_asset_read_output(asset_read));
+    }
+    if let Some(asset_delete) = object.get("asset_delete") {
+        lines.extend(render_asset_delete_output(asset_delete));
+    }
     if let Some(artifacts) = object.get("artifacts").and_then(Value::as_array) {
         for (index, artifact) in artifacts.iter().enumerate() {
             let Some(artifact) = artifact.as_object() else {
@@ -188,6 +245,223 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+fn render_read_output(read: &Value, artifact_read: Option<&Value>) -> Vec<Line<'static>> {
+    let Some(read) = read.as_object() else {
+        return compact_value_field("Read", read);
+    };
+    let mut values = Vec::new();
+    if let Some(url) = typed::json_string(read, "url") {
+        values.push(ToolField::new("Read URL", url));
+    }
+    if let Some(bytes) = typed::json_i64(read, "bytes") {
+        values.push(ToolField::new("Bytes", bytes.to_string()));
+    }
+    if let Some(code) = typed::json_i64(read, "code") {
+        let status = typed::json_string(read, "codeText")
+            .map_or_else(|| code.to_string(), |text| format!("{code} {text}"));
+        values.push(ToolField::new("Status", status));
+    } else if let Some(code_text) = typed::json_string(read, "codeText") {
+        values.push(ToolField::new("Status", code_text));
+    }
+    if let Some(duration_ms) = typed::json_i64(read, "durationMs") {
+        values.push(ToolField::new("Duration", format!("{duration_ms} ms")));
+    }
+    let mut lines = fields::render_fields(values);
+    if let Some(artifact_read) = artifact_read {
+        lines.extend(render_artifact_read_metadata(artifact_read));
+    }
+    if let Some(result) = typed::json_string(read, "result") {
+        lines.extend(fields::render_multiline_field("Result", result));
+    }
+    if let Some(additional) =
+        additional_json(read, &["url", "bytes", "code", "codeText", "result", "durationMs"])
+    {
+        lines.push(fields::render_field("Additional read output", additional));
+    }
+    lines
+}
+
+fn render_artifact_read_metadata(value: &Value) -> Vec<Line<'static>> {
+    let Some(metadata) = value.as_object() else {
+        return compact_value_field("Artifact read", value);
+    };
+    let mut values = Vec::new();
+    if let Some(slug) = typed::json_string(metadata, "slug") {
+        values.push(ToolField::new("Artifact slug", slug));
+    }
+    if let Some(ver) = typed::json_string(metadata, "ver") {
+        values.push(ToolField::new("Artifact version", ver));
+    }
+    if let Some(seeded) = typed::json_bool(metadata, "seeded") {
+        values.push(ToolField::new("Seeded", typed::bool_label(seeded)));
+    }
+    if let Some(additional) = additional_json(metadata, &["slug", "ver", "seeded"]) {
+        values.push(ToolField::new("Additional artifact metadata", additional));
+    }
+    fields::render_fields(values)
+}
+
+fn render_asset_upload_output(value: &Value) -> Vec<Line<'static>> {
+    let Some(asset) = value.as_object() else {
+        return compact_value_field("Asset upload", value);
+    };
+    render_asset_fields(
+        asset,
+        "Uploaded asset",
+        &["id", "url", "file_name", "content_type", "size_bytes", "sha256"],
+    )
+}
+
+fn render_asset_read_output(value: &Value) -> Vec<Line<'static>> {
+    let Some(asset) = value.as_object() else {
+        return compact_value_field("Asset read", value);
+    };
+    render_asset_fields(
+        asset,
+        "Read asset",
+        &["id", "path", "content_type", "size_bytes", "sha256"],
+    )
+}
+
+fn render_asset_fields(
+    asset: &Map<String, Value>,
+    id_label: &'static str,
+    handled: &[&str],
+) -> Vec<Line<'static>> {
+    let mut values = Vec::new();
+    if let Some(id) = typed::json_string(asset, "id") {
+        values.push(ToolField::new(id_label, id));
+    }
+    if let Some(url) = typed::json_string(asset, "url") {
+        values.push(ToolField::new("Asset URL", url));
+    }
+    if let Some(path) = typed::json_string(asset, "path") {
+        values.push(ToolField::new("Saved path", path));
+    }
+    if let Some(file_name) = typed::json_string(asset, "file_name") {
+        values.push(ToolField::new("File name", file_name));
+    }
+    if let Some(content_type) = typed::json_string(asset, "content_type") {
+        values.push(ToolField::new("Content type", content_type));
+    }
+    if let Some(size_bytes) = typed::json_i64(asset, "size_bytes") {
+        values.push(ToolField::new("Size", format!("{size_bytes} bytes")));
+    }
+    if let Some(sha256) = typed::json_string(asset, "sha256") {
+        values.push(ToolField::new("SHA-256", sha256));
+    }
+    if let Some(additional) = additional_json(asset, handled) {
+        values.push(ToolField::new("Additional asset output", additional));
+    }
+    fields::render_fields(values)
+}
+
+fn render_asset_list_output(value: &Value) -> Vec<Line<'static>> {
+    let Some(list) = value.as_object() else {
+        return compact_value_field("Asset list", value);
+    };
+    let mut values = Vec::new();
+    if let Some(url) = typed::json_string(list, "url") {
+        values.push(ToolField::new("Artifact URL", url));
+    }
+    if let Some(assets) = list.get("assets").and_then(Value::as_array) {
+        values.push(ToolField::new("Assets", assets.len().to_string()));
+    }
+    if let Some(next) = typed::json_string(list, "next") {
+        values.push(ToolField::new("Next", next));
+    }
+    let mut lines = fields::render_fields(values);
+    if let Some(assets) = list.get("assets").and_then(Value::as_array) {
+        for (index, asset) in assets.iter().enumerate() {
+            let Some(asset) = asset.as_object() else {
+                lines.extend(compact_value_field(format!("Asset {}", index + 1), asset));
+                continue;
+            };
+            let id = typed::json_string(asset, "id").unwrap_or("<unknown ID>");
+            let url = typed::json_string(asset, "url").unwrap_or("<no URL>");
+            let content_type = typed::json_string(asset, "content_type").unwrap_or("unknown type");
+            let size = typed::json_i64(asset, "size_bytes")
+                .map_or_else(|| "unknown size".to_owned(), |bytes| format!("{bytes} bytes"));
+            let created = typed::json_string(asset, "created_at")
+                .map(|value| format!("; created {value}"))
+                .unwrap_or_default();
+            let sha = typed::json_string(asset, "sha256")
+                .map(|value| format!("; SHA-256 {value}"))
+                .unwrap_or_default();
+            let additional = additional_json(
+                asset,
+                &["id", "url", "content_type", "size_bytes", "sha256", "created_at"],
+            )
+            .map(|value| format!("; additional {value}"))
+            .unwrap_or_default();
+            lines.push(fields::render_dynamic_field(
+                format!("Asset {}", index + 1),
+                format!("{id} — {url} — {content_type}, {size}{created}{sha}{additional}"),
+            ));
+        }
+    }
+    if let Some(usage) = list.get("usage") {
+        lines.extend(render_asset_usage(usage));
+    }
+    if let Some(additional) = additional_json(list, &["url", "assets", "usage", "next"]) {
+        lines.push(fields::render_field("Additional asset-list output", additional));
+    }
+    lines
+}
+
+fn render_asset_usage(value: &Value) -> Vec<Line<'static>> {
+    let Some(usage) = value.as_object() else {
+        return compact_value_field("Asset usage", value);
+    };
+    let files = typed::json_i64(usage, "files");
+    let max_files = typed::json_i64(usage, "max_files");
+    let bytes = typed::json_i64(usage, "bytes");
+    let max_bytes = typed::json_i64(usage, "max_bytes");
+    let file_usage = match (files, max_files) {
+        (Some(files), Some(max)) => Some(format!("{files} / {max} files")),
+        (Some(files), None) => Some(format!("{files} files")),
+        _ => None,
+    };
+    let byte_usage = match (bytes, max_bytes) {
+        (Some(bytes), Some(max)) => Some(format!("{bytes} / {max} bytes")),
+        (Some(bytes), None) => Some(format!("{bytes} bytes")),
+        _ => None,
+    };
+    let mut values = Vec::new();
+    let summary = [file_usage, byte_usage].into_iter().flatten().collect::<Vec<_>>().join("; ");
+    if !summary.is_empty() {
+        values.push(ToolField::new("Asset usage", summary));
+    }
+    if let Some(additional) = additional_json(usage, &["files", "bytes", "max_files", "max_bytes"])
+    {
+        values.push(ToolField::new("Additional asset usage", additional));
+    }
+    fields::render_fields(values)
+}
+
+fn render_asset_delete_output(value: &Value) -> Vec<Line<'static>> {
+    let Some(asset) = value.as_object() else {
+        return compact_value_field("Asset delete", value);
+    };
+    let mut values = Vec::new();
+    if let Some(id) = typed::json_string(asset, "id") {
+        values.push(ToolField::new("Deleted asset", id));
+    }
+    if let Some(deleted) = typed::json_bool(asset, "deleted") {
+        values.push(ToolField::new("Deleted", typed::bool_label(deleted)));
+    }
+    if let Some(additional) = additional_json(asset, &["id", "deleted"]) {
+        values.push(ToolField::new("Additional asset output", additional));
+    }
+    fields::render_fields(values)
+}
+
+fn compact_value_field(label: impl Into<String>, value: &Value) -> Vec<Line<'static>> {
+    typed::non_empty_compact_json(value)
+        .map(|value| vec![fields::render_dynamic_field(label, value)])
+        .unwrap_or_default()
 }
 
 fn additional_json(object: &Map<String, Value>, handled: &[&str]) -> Option<String> {
@@ -260,7 +534,7 @@ mod tests {
                 "futureInput": {"enabled": true}
             }),
             Some(
-                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","path":"C:/work/dashboard.html","version":"v3","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","capabilities":{"persist":true}},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
+                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","path":"C:/work/dashboard.html","version":"v3","artifact_id":"artifact-42","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","capabilities":{"persist":true}},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
             ),
         );
 
@@ -278,6 +552,7 @@ mod tests {
                 "URL: https://artifact.local/dashboard",
                 "Path: C:/work/dashboard.html",
                 "Version: v3",
+                "Artifact ID: artifact-42",
                 "Capabilities: {\"storage\":true}",
                 "Stored contract: artifact-v1",
                 "Stored capabilities: {\"persist\":true}",
@@ -334,6 +609,161 @@ mod tests {
                 "Scope: all",
                 "Found 1 artifact(s) (scope: all):",
                 "- (mine) Dashboard — https://artifact.local/dashboard",
+            ]
+        );
+    }
+
+    #[test]
+    fn renders_read_input_and_multiline_output_with_artifact_metadata() {
+        let tc = artifact_tool_call(
+            json!({
+                "action": "read",
+                "url": "https://artifact.local/dashboard",
+                "prompt": "Summarize the metrics",
+                "out_dir": "C:/work/assets",
+                "asset_id": "0123456789abcdef0123456789abcdef",
+                "after": "page-2",
+                "capabilities": {"storage": true},
+                "contract": "latest"
+            }),
+            Some(
+                r#"{"read":{"url":"https://artifact.local/dashboard","bytes":128,"code":200,"codeText":"OK","result":"First line\nSecond line","durationMs":42,"futureRead":true},"artifactRead":{"slug":"dashboard","ver":"v3","seeded":false,"futureMeta":"kept"},"futureOutput":{"revision":4}}"#,
+            ),
+        );
+
+        assert_eq!(
+            rendered_line_texts(&render_tool_content(&tc)),
+            vec![
+                "Action: read",
+                "URL: https://artifact.local/dashboard",
+                "Prompt: Summarize the metrics",
+                "Output directory: C:/work/assets",
+                "Asset ID: 0123456789abcdef0123456789abcdef",
+                "After: page-2",
+                "Capabilities: {\"storage\":true}",
+                "Contract: latest",
+                "Additional output: {\"futureOutput\":{\"revision\":4}}",
+                "Read URL: https://artifact.local/dashboard",
+                "Bytes: 128",
+                "Status: 200 OK",
+                "Duration: 42 ms",
+                "Artifact slug: dashboard",
+                "Artifact version: v3",
+                "Seeded: no",
+                "Additional artifact metadata: {\"futureMeta\":\"kept\"}",
+                "Result: First line",
+                "        Second line",
+                "Additional read output: {\"futureRead\":true}",
+            ]
+        );
+    }
+
+    #[test]
+    fn renders_uploaded_asset_details() {
+        let tc = artifact_tool_call(
+            json!({"action": "upload_asset", "url": "https://artifact.local/dashboard", "file_path": "C:/work/chart.png"}),
+            Some(
+                r#"{"asset_upload":{"id":"asset-1","url":"https://artifact.local/assets/1","size_bytes":2048,"content_type":"image/png","sha256":"abc123","file_name":"chart.png","future":true}}"#,
+            ),
+        );
+
+        assert_eq!(
+            rendered_line_texts(&render_tool_content(&tc)),
+            vec![
+                "Action: upload_asset",
+                "File path: C:/work/chart.png",
+                "URL: https://artifact.local/dashboard",
+                "Uploaded asset: asset-1",
+                "Asset URL: https://artifact.local/assets/1",
+                "File name: chart.png",
+                "Content type: image/png",
+                "Size: 2048 bytes",
+                "SHA-256: abc123",
+                "Additional asset output: {\"future\":true}",
+            ]
+        );
+    }
+
+    #[test]
+    fn renders_paginated_asset_list_and_usage() {
+        let tc = artifact_tool_call(
+            json!({"action": "list_assets", "url": "https://artifact.local/dashboard", "after": "page-1"}),
+            Some(
+                r#"{"asset_list":{"url":"https://artifact.local/dashboard","assets":[{"id":"asset-1","url":"https://artifact.local/assets/1","content_type":"image/png","size_bytes":2048,"sha256":"abc123","created_at":"2026-08-22T08:00:00Z","future":true}],"usage":{"files":1,"bytes":2048,"max_files":1000,"max_bytes":1048576,"futureUsage":true},"next":"page-2","futureList":true}}"#,
+            ),
+        );
+
+        assert_eq!(
+            rendered_line_texts(&render_tool_content(&tc)),
+            vec![
+                "Action: list_assets",
+                "URL: https://artifact.local/dashboard",
+                "After: page-1",
+                "Artifact URL: https://artifact.local/dashboard",
+                "Assets: 1",
+                "Next: page-2",
+                "Asset 1: asset-1 — https://artifact.local/assets/1 — image/png, 2048 bytes; created 2026-08-22T08:00:00Z; SHA-256 abc123; additional {\"future\":true}",
+                "Asset usage: 1 / 1000 files; 2048 / 1048576 bytes",
+                "Additional asset usage: {\"futureUsage\":true}",
+                "Additional asset-list output: {\"futureList\":true}",
+            ]
+        );
+    }
+
+    #[test]
+    fn renders_read_and_deleted_asset_results() {
+        let read = artifact_tool_call(
+            json!({"action": "read_asset", "url": "https://artifact.local/dashboard", "asset_id": "asset-1", "out_dir": "C:/work/downloads"}),
+            Some(
+                r#"{"asset_read":{"id":"asset-1","path":"C:/work/downloads/asset-1.png","size_bytes":2048,"content_type":"image/png","sha256":"abc123"}}"#,
+            ),
+        );
+        assert_eq!(
+            rendered_line_texts(&render_tool_content(&read)),
+            vec![
+                "Action: read_asset",
+                "URL: https://artifact.local/dashboard",
+                "Output directory: C:/work/downloads",
+                "Asset ID: asset-1",
+                "Read asset: asset-1",
+                "Saved path: C:/work/downloads/asset-1.png",
+                "Content type: image/png",
+                "Size: 2048 bytes",
+                "SHA-256: abc123",
+            ]
+        );
+
+        let delete = artifact_tool_call(
+            json!({"action": "delete_asset", "url": "https://artifact.local/dashboard", "asset_id": "asset-1"}),
+            Some(r#"{"asset_delete":{"id":"asset-1","deleted":true}}"#),
+        );
+        assert_eq!(
+            rendered_line_texts(&render_tool_content(&delete)),
+            vec![
+                "Action: delete_asset",
+                "URL: https://artifact.local/dashboard",
+                "Asset ID: asset-1",
+                "Deleted asset: asset-1",
+                "Deleted: yes",
+            ]
+        );
+    }
+
+    #[test]
+    fn keeps_watch_status_on_forward_compatible_fallback() {
+        let tc = artifact_tool_call(
+            json!({"action": "watch", "url": "https://artifact.local/dashboard"}),
+            Some(
+                r#"{"watch":{"url":"https://artifact.local/dashboard","watching":false,"outcome":"unsupported_here"}}"#,
+            ),
+        );
+
+        assert_eq!(
+            rendered_line_texts(&render_tool_content(&tc)),
+            vec![
+                "Action: watch",
+                "URL: https://artifact.local/dashboard",
+                "Additional output: {\"watch\":{\"outcome\":\"unsupported_here\",\"url\":\"https://artifact.local/dashboard\",\"watching\":false}}",
             ]
         );
     }

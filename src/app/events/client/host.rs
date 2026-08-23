@@ -39,13 +39,11 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::UsageSnapshotReceived { epoch, snapshot } => {
             if app.session_runtime.session_scope_epoch == epoch {
                 crate::app::usage::apply_refresh_success(app, snapshot);
-                crate::app::usage::emit_pending_limits_success(app);
             }
         }
         ClientEvent::UsageRefreshFailed { epoch, message, source } => {
             if app.session_runtime.session_scope_epoch == epoch {
-                crate::app::usage::apply_refresh_failure(app, message.clone(), source);
-                crate::app::usage::emit_pending_limits_failure(app, &message);
+                crate::app::usage::apply_refresh_failure(app, message, source);
             }
         }
         ClientEvent::PluginsInventoryUpdated { cwd_raw, snapshot, claude_path } => {

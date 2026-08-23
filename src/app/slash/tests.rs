@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::app::{App, ExtraUsage, UsageSnapshot, UsageSourceKind, UsageWindow};
+use crate::app::App;
 use serde_json::json;
-use std::time::SystemTime;
 
 // Re-import submodule items needed by tests
 use super::candidates::{
@@ -39,7 +38,7 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
     for input in ["/config", "/help", "/mcp", "/plugins", "/status", "/usage"] {
         assert_eq!(classify(input), SubmissionClass::Fullscreen, "unexpected class for {input}");
     }
-    for input in ["/docs commands", "/limits", "/1m-context status", "/opus-version status"] {
+    for input in ["/docs commands", "/1m-context status", "/opus-version status"] {
         assert_eq!(classify(input), SubmissionClass::Informational, "unexpected class for {input}");
     }
     for input in [
@@ -100,7 +99,6 @@ fn login_logout_appear_in_candidates_as_builtins() {
     assert!(names.iter().any(|n| n == "/1m-context"), "missing /1m-context");
     assert!(names.iter().any(|n| n == "/agent"), "missing /agent");
     assert!(names.iter().any(|n| n == "/config"), "missing /config");
-    assert!(names.iter().any(|n| n == "/limits"), "missing /limits");
     assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
     assert!(names.iter().any(|n| n == "/login"), "missing /login");
     assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
@@ -2181,66 +2179,6 @@ fn usage_opens_config_at_usage_tab() {
 }
 
 #[test]
-fn limits_with_fresh_snapshot_prints_markdown_table_in_chat() {
-    let mut app = App::test_default();
-    app.usage.snapshot = Some(UsageSnapshot {
-        source: UsageSourceKind::Oauth,
-        fetched_at: SystemTime::now(),
-        subscription_type: None,
-        five_hour: Some(UsageWindow {
-            label: "5-hour".to_owned(),
-            utilization: 47.0,
-            resets_at: None,
-            reset_description: Some("resets in 2h 14m".to_owned()),
-        }),
-        seven_day: Some(UsageWindow {
-            label: "7-day".to_owned(),
-            utilization: 62.0,
-            resets_at: None,
-            reset_description: Some("resets in 4d 11h".to_owned()),
-        }),
-        seven_day_oauth_apps: None,
-        seven_day_opus: None,
-        seven_day_sonnet: None,
-        model_scoped: Vec::new(),
-        extra_usage: Some(ExtraUsage {
-            monthly_limit: Some(20.0),
-            used_credits: Some(12.4),
-            utilization: Some(62.0),
-            currency: Some("USD".to_owned()),
-        }),
-        session: None,
-        activity: None,
-    });
-
-    let consumed = try_handle_submit(&mut app, "/limits");
-
-    assert!(consumed);
-    assert_eq!(app.surface_mode, super::super::SurfaceMode::Chat);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected limits summary");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("| 5-hour | 47% | resets in 2h 14m |"));
-    assert!(block.text.contains("| 7-day | 62% | resets in 4d 11h |"));
-    assert!(block.text.contains("| USD | 12.40 / 20.00 |"));
-}
-
-#[test]
-fn limits_without_fresh_snapshot_waits_for_final_response() {
-    let mut app = App::test_default();
-    let message_count = app.transcript.messages.len();
-
-    let consumed = try_handle_submit(&mut app, "/limits");
-
-    assert!(consumed);
-    assert!(app.usage.pending_limits_response);
-    assert_eq!(app.transcript.messages.len(), message_count);
-}
-
-#[test]
 fn status_with_extra_args_returns_usage() {
     let mut app = App::test_default();
 
@@ -2273,22 +2211,6 @@ fn usage_with_extra_args_returns_usage() {
 }
 
 #[test]
-fn limits_with_extra_args_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/limits extra");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /limits");
-}
-
-#[test]
 fn status_appears_in_candidates() {
     let app = App::test_default();
     let names: Vec<String> =
@@ -2302,14 +2224,6 @@ fn usage_appears_in_candidates() {
     let names: Vec<String> =
         supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
     assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
-}
-
-#[test]
-fn limits_appears_in_candidates() {
-    let app = App::test_default();
-    let names: Vec<String> =
-        supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-    assert!(names.iter().any(|n| n == "/limits"), "missing /limits");
 }
 
 #[test]

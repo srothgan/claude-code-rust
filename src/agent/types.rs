@@ -228,6 +228,7 @@ pub enum RateLimitStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ApiRetryError {
     AuthenticationFailed,
+    AccountOnHold,
     OauthOrgNotAllowed,
     BillingError,
     RateLimit,
@@ -272,6 +273,7 @@ pub struct MessageOrigin {
     pub from_session: Option<String>,
     pub sender_task_id: Option<String>,
     pub verified_peer_pid: Option<u64>,
+    pub from_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -441,7 +443,8 @@ pub struct WebFetchOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WebFetchArtifactReadMetadata {
     pub slug: String,
-    pub ver: String,
+    pub ver: Option<String>,
+    pub seeded: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -461,6 +464,7 @@ pub struct TaskMetadata {
     pub total_paused_ms: Option<u64>,
     pub error: Option<String>,
     pub is_backgrounded: Option<bool>,
+    pub spawn_depth: Option<u64>,
     pub request_id: Option<String>,
     pub subagent_type: Option<String>,
     pub task_description: Option<String>,
@@ -1193,6 +1197,7 @@ mod tests {
     #[test]
     fn api_retry_update_deserializes_new_known_errors() {
         for (raw, expected) in [
+            ("account_on_hold", ApiRetryError::AccountOnHold),
             ("model_not_found", ApiRetryError::ModelNotFound),
             ("oauth_org_not_allowed", ApiRetryError::OauthOrgNotAllowed),
             ("overloaded", ApiRetryError::Overloaded),
@@ -1400,6 +1405,8 @@ mod tests {
                 "tool_call_id": "tool-1",
                 "fields": {
                     "task_metadata": {
+                        "is_backgrounded": true,
+                        "spawn_depth": 2,
                         "request_id": "request-1",
                         "subagent_type": "tester",
                         "task_description": "Validate the branch",
@@ -1421,6 +1428,8 @@ mod tests {
             panic!("expected tool call update");
         };
         let metadata = tool_call_update.fields.task_metadata.expect("task metadata");
+        assert_eq!(metadata.is_backgrounded, Some(true));
+        assert_eq!(metadata.spawn_depth, Some(2));
         assert_eq!(metadata.request_id.as_deref(), Some("request-1"));
         assert_eq!(metadata.subagent_type.as_deref(), Some("tester"));
         assert_eq!(metadata.task_description.as_deref(), Some("Validate the branch"));
@@ -1520,11 +1529,52 @@ mod tests {
             .and_then(|web_fetch| web_fetch.artifact_read)
             .expect("artifact read metadata");
         assert_eq!(artifact_read.slug, "dashboard");
-        assert_eq!(artifact_read.ver, "v3");
+        assert_eq!(artifact_read.ver.as_deref(), Some("v3"));
+        assert_eq!(artifact_read.seeded, None);
         assert_eq!(metadata.skill.and_then(|skill| skill.background), Some(true));
         let non_execution = metadata.non_execution.expect("non-execution metadata");
         assert_eq!(non_execution.kind, "user-rejected");
         assert_eq!(non_execution.user_feedback.as_deref(), Some("Use a safer command."));
+    }
+
+    #[test]
+    fn web_fetch_metadata_deserializes_versionless_seeded_artifact() {
+        let metadata: super::ToolOutputMetadata = serde_json::from_value(serde_json::json!({
+            "web_fetch": {
+                "artifact_read": {
+                    "slug": "seeded-dashboard",
+                    "seeded": false
+                }
+            }
+        }))
+        .expect("deserialize versionless artifact metadata");
+
+        let artifact = metadata
+            .web_fetch
+            .and_then(|web_fetch| web_fetch.artifact_read)
+            .expect("artifact metadata");
+        assert_eq!(artifact.slug, "seeded-dashboard");
+        assert_eq!(artifact.ver, None);
+        assert_eq!(artifact.seeded, Some(false));
+    }
+
+    #[test]
+    fn external_message_update_deserializes_peer_permission_mode() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "type": "external_message_update",
+            "content": "Peer message",
+            "source_message_uuid": "peer-message",
+            "origin": {
+                "kind": "peer",
+                "from_mode": "bypass"
+            }
+        }))
+        .expect("deserialize peer provenance");
+
+        let SessionUpdate::ExternalMessageUpdate { origin, .. } = update else {
+            panic!("expected external message update");
+        };
+        assert_eq!(origin.from_mode.as_deref(), Some("bypass"));
     }
 
     #[test]

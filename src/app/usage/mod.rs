@@ -5,11 +5,10 @@ mod oauth;
 use crate::agent::events::ClientEvent;
 use crate::agent::types::StructuredUsageSnapshot;
 use crate::app::{
-    App, ExtraUsage, SessionUsageSummary, SystemSeverity, UsageActivitySummary,
-    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageWindow,
+    App, ExtraUsage, SessionUsageSummary, UsageActivitySummary, UsageActivityWindow,
+    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageWindow,
 };
-use std::fmt::Write as _;
 use std::time::{Duration, SystemTime};
 
 const USAGE_REFRESH_TTL: Duration = Duration::from_secs(30);
@@ -26,18 +25,6 @@ pub(crate) fn request_refresh_if_needed(app: &mut App) {
     if app.usage.snapshot.as_ref().is_some_and(snapshot_is_fresh) {
         return;
     }
-    request_refresh(app);
-}
-
-pub(crate) fn request_limits_summary(app: &mut App) {
-    let feedback_owner = crate::app::events::submission_feedback_owner(app);
-    if app.usage.snapshot.as_ref().is_some_and(snapshot_is_fresh) {
-        push_limits_summary(app, feedback_owner);
-        return;
-    }
-
-    app.usage.pending_limits_response = true;
-    app.usage.pending_limits_feedback_owner = feedback_owner;
     request_refresh(app);
 }
 
@@ -92,7 +79,6 @@ pub(crate) fn apply_structured_sdk_result(
 ) {
     if let Some(snapshot) = snapshot {
         apply_refresh_success(app, map_structured_sdk_snapshot(snapshot));
-        emit_pending_limits_success(app);
         return;
     }
 
@@ -101,7 +87,6 @@ pub(crate) fn apply_structured_sdk_result(
         spawn_host_refresh(app, UsageSourceMode::Auto, Some(message));
     } else {
         apply_refresh_failure(app, message.clone(), UsageSourceKind::Sdk);
-        emit_pending_limits_failure(app, &message);
     }
 }
 
@@ -229,24 +214,6 @@ pub(crate) fn reset_for_session_change(app: &mut App) {
     app.usage.in_flight = false;
     app.usage.last_error = None;
     app.usage.last_attempted_source = None;
-    app.usage.pending_limits_response = false;
-    app.usage.pending_limits_feedback_owner = None;
-}
-
-pub(crate) fn emit_pending_limits_success(app: &mut App) {
-    if !std::mem::take(&mut app.usage.pending_limits_response) {
-        return;
-    }
-    let feedback_owner = app.usage.pending_limits_feedback_owner.take();
-    push_limits_summary(app, feedback_owner);
-}
-
-pub(crate) fn emit_pending_limits_failure(app: &mut App, message: &str) {
-    if !std::mem::take(&mut app.usage.pending_limits_response) {
-        return;
-    }
-    let feedback_owner = app.usage.pending_limits_feedback_owner.take();
-    push_error_message(app, feedback_owner, &format!("Unable to get recent usage info: {message}"));
 }
 
 pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {
@@ -279,94 +246,8 @@ pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {
     if description.is_empty() { None } else { Some(description.to_owned()) }
 }
 
-pub(crate) fn format_limits_summary(snapshot: &UsageSnapshot) -> String {
-    let rows =
-        visible_windows(snapshot).into_iter().map(format_limits_window_row).collect::<Vec<_>>();
-
-    let mut out = String::new();
-    if rows.is_empty() {
-        out.push_str("No usage data available.");
-    } else {
-        out.push_str("| Window | Used | Reset |\n");
-        out.push_str("| --- | ---: | --- |\n");
-        out.push_str(&rows.join("\n"));
-    }
-
-    if let Some(extra_usage) = snapshot.extra_usage.as_ref() {
-        out.push_str("\n\n");
-        out.push_str("| Extra credits | Used |\n");
-        out.push_str("| --- | ---: |\n");
-        let (label, value) = format_extra_usage_row(extra_usage);
-        let _ = write!(out, "| {} | {} |", markdown_cell(&label), markdown_cell(&value));
-    }
-
-    out
-}
-
 fn snapshot_is_fresh(snapshot: &UsageSnapshot) -> bool {
     snapshot.fetched_at.elapsed().is_ok_and(|age| age < USAGE_REFRESH_TTL)
-}
-
-fn push_limits_summary(app: &mut App, feedback_owner: Option<crate::app::ChatMessageId>) {
-    let message = app
-        .usage
-        .snapshot
-        .as_ref()
-        .map_or_else(|| "No usage data available.".to_owned(), format_limits_summary);
-    push_info_message(app, feedback_owner, &message);
-}
-
-fn push_info_message(
-    app: &mut App,
-    feedback_owner: Option<crate::app::ChatMessageId>,
-    message: &str,
-) {
-    crate::app::events::push_submission_feedback_for_owner(
-        app,
-        feedback_owner,
-        SystemSeverity::Info,
-        message,
-    );
-}
-
-fn push_error_message(
-    app: &mut App,
-    feedback_owner: Option<crate::app::ChatMessageId>,
-    message: &str,
-) {
-    crate::app::events::push_submission_feedback_for_owner(
-        app,
-        feedback_owner,
-        SystemSeverity::Error,
-        message,
-    );
-}
-
-fn format_limits_window_row(window: &UsageWindow) -> String {
-    let reset = format_window_reset(window).unwrap_or_else(|| "unavailable".to_owned());
-    format!(
-        "| {} | {:.0}% | {} |",
-        markdown_cell(&window.label),
-        window.utilization,
-        markdown_cell(&reset)
-    )
-}
-
-fn format_extra_usage_row(extra_usage: &ExtraUsage) -> (String, String) {
-    let currency = extra_usage.currency.as_deref().unwrap_or("USD").to_owned();
-    match (extra_usage.used_credits, extra_usage.monthly_limit) {
-        (Some(used), Some(limit)) => (currency, format!("{used:.2} / {limit:.2}")),
-        (Some(used), None) => (currency, format!("{used:.2}")),
-        (None, Some(limit)) => (currency, format!("{limit:.2} limit")),
-        (None, None) => match extra_usage.utilization {
-            Some(utilization) => ("Monthly budget".to_owned(), format!("{utilization:.0}%")),
-            None => ("Status".to_owned(), "available".to_owned()),
-        },
-    }
-}
-
-fn markdown_cell(value: &str) -> String {
-    value.trim().replace('|', "\\|").replace('\r', "").replace('\n', " ")
 }
 
 fn format_remaining_until(target: SystemTime) -> String {

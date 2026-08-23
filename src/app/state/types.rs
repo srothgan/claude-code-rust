@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::messages::ChatMessageId;
 use crate::agent::model;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
@@ -187,8 +186,6 @@ pub struct UsageState {
     pub last_error: Option<String>,
     pub active_source: UsageSourceMode,
     pub last_attempted_source: Option<UsageSourceKind>,
-    pub pending_limits_response: bool,
-    pub pending_limits_feedback_owner: Option<ChatMessageId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

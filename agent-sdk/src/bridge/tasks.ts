@@ -1056,6 +1056,7 @@ function lifecycleMetadata(
   for (const key of [
     "error",
     "is_backgrounded",
+    "spawn_depth",
     "request_id",
     "subagent_type",
     "task_description",

@@ -205,4 +205,51 @@ mod tests {
         assert!(block.has_source_message_uuid("assistant-part-1"));
         assert!(block.has_source_message_uuid("assistant-part-2"));
     }
+
+    #[test]
+    fn sdk_context_markdown_uses_the_active_assistant_rendering_path() {
+        let mut app = App::test_default();
+        app.status = crate::app::AppStatus::Thinking;
+        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant(0);
+        let markdown =
+            "## Context usage\n\n| Category | Tokens |\n| --- | ---: |\n| System | 100 |";
+
+        handle_agent_message_chunk(
+            &mut app,
+            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(markdown)))
+                .source_message_uuid(Some("context-assistant-1".to_owned())),
+        );
+
+        let text_blocks = app.transcript.messages[0]
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                MessageBlock::Text(block) => Some(block),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text_blocks.iter().map(|block| block.text.as_str()).collect::<String>(),
+            markdown
+        );
+        assert!(
+            text_blocks.iter().all(|block| block.has_source_message_uuid("context-assistant-1"))
+        );
+
+        let rendered = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            100,
+            &std::collections::BTreeSet::new(),
+        );
+        let text = rendered
+            .rows()
+            .iter()
+            .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in ["Context usage", "Category", "Tokens", "System", "100"] {
+            assert!(text.contains(expected), "missing rendered context fragment: {expected}");
+        }
+    }
 }

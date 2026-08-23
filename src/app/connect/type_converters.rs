@@ -35,6 +35,7 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
 pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
     match error {
         types::ApiRetryError::AuthenticationFailed => model::ApiRetryError::AuthenticationFailed,
+        types::ApiRetryError::AccountOnHold => model::ApiRetryError::AccountOnHold,
         types::ApiRetryError::OauthOrgNotAllowed => model::ApiRetryError::OauthOrgNotAllowed,
         types::ApiRetryError::BillingError => model::ApiRetryError::BillingError,
         types::ApiRetryError::RateLimit => model::ApiRetryError::RateLimit,
@@ -393,6 +394,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                     from_session: origin.from_session,
                     sender_task_id: origin.sender_task_id,
                     verified_peer_pid: origin.verified_peer_pid,
+                    from_mode: origin.from_mode,
                 },
             }))
         }
@@ -904,7 +906,11 @@ fn convert_tool_output_metadata(
         }))
         .web_fetch(output_metadata.web_fetch.map(|web_fetch| {
             model::WebFetchOutputMetadata::new().artifact_read(web_fetch.artifact_read.map(
-                |artifact| model::WebFetchArtifactReadMetadata::new(artifact.slug, artifact.ver),
+                |artifact| {
+                    model::WebFetchArtifactReadMetadata::new(artifact.slug)
+                        .ver(artifact.ver)
+                        .seeded(artifact.seeded)
+                },
             ))
         }))
         .skill(
@@ -935,6 +941,7 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .total_paused_ms(task_metadata.total_paused_ms)
         .error(task_metadata.error)
         .backgrounded(task_metadata.is_backgrounded)
+        .spawn_depth(task_metadata.spawn_depth)
         .request_id(task_metadata.request_id)
         .subagent_type(task_metadata.subagent_type)
         .task_description(task_metadata.task_description)
@@ -1372,6 +1379,7 @@ mod tests {
                 from_session: Some("session-peer".to_owned()),
                 sender_task_id: Some("task-peer".to_owned()),
                 verified_peer_pid: Some(4242),
+                from_mode: Some("bypass".to_owned()),
             },
         })
         .expect("external update should map");
@@ -1385,6 +1393,7 @@ mod tests {
         assert_eq!(update.origin.name.as_deref(), Some("Build session"));
         assert_eq!(update.origin.from_session.as_deref(), Some("session-peer"));
         assert_eq!(update.origin.verified_peer_pid, Some(4242));
+        assert_eq!(update.origin.from_mode.as_deref(), Some("bypass"));
     }
 
     #[test]
@@ -1587,7 +1596,8 @@ mod tests {
                 web_fetch: Some(types::WebFetchOutputMetadata {
                     artifact_read: Some(types::WebFetchArtifactReadMetadata {
                         slug: "dashboard".to_owned(),
-                        ver: "v2".to_owned(),
+                        ver: Some("v2".to_owned()),
+                        seeded: Some(false),
                     }),
                 }),
                 skill: Some(types::SkillOutputMetadata { background: Some(true) }),
@@ -1618,9 +1628,13 @@ mod tests {
                                 "claude-sonnet-4-7".to_owned(),
                             ])),
                     ))
-                    .web_fetch(Some(model::WebFetchOutputMetadata::new().artifact_read(Some(
-                        model::WebFetchArtifactReadMetadata::new("dashboard", "v2"),
-                    ))))
+                    .web_fetch(Some(
+                        model::WebFetchOutputMetadata::new().artifact_read(Some(
+                            model::WebFetchArtifactReadMetadata::new("dashboard")
+                                .ver(Some("v2".to_owned()))
+                                .seeded(Some(false)),
+                        ))
+                    ))
                     .skill(Some(model::SkillOutputMetadata::new().background(Some(true))))
                     .non_execution(Some(
                         model::ToolNonExecutionMetadata::new("interrupted")
@@ -1677,6 +1691,7 @@ mod tests {
                 total_paused_ms: Some(45),
                 error: Some("Task stopped".to_owned()),
                 is_backgrounded: Some(true),
+                spawn_depth: Some(2),
                 request_id: Some("request-1".to_owned()),
                 subagent_type: Some("tester".to_owned()),
                 task_description: Some("Validate changes".to_owned()),
@@ -1701,6 +1716,7 @@ mod tests {
                     .total_paused_ms(Some(45))
                     .error(Some("Task stopped".to_owned()))
                     .backgrounded(Some(true))
+                    .spawn_depth(Some(2))
                     .request_id(Some("request-1".to_owned()))
                     .subagent_type(Some("tester".to_owned()))
                     .task_description(Some("Validate changes".to_owned()))
@@ -1733,6 +1749,7 @@ mod tests {
                 total_paused_ms: Some(11),
                 error: Some("Task stopped".to_owned()),
                 is_backgrounded: Some(false),
+                spawn_depth: Some(1),
                 request_id: Some("request-2".to_owned()),
                 subagent_type: Some("reviewer".to_owned()),
                 task_description: Some("Review changes".to_owned()),
@@ -1760,6 +1777,7 @@ mod tests {
                     .total_paused_ms(Some(11))
                     .error(Some("Task stopped".to_owned()))
                     .backgrounded(Some(false))
+                    .spawn_depth(Some(1))
                     .request_id(Some("request-2".to_owned()))
                     .subagent_type(Some("reviewer".to_owned()))
                     .task_description(Some("Review changes".to_owned()))

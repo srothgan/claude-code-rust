@@ -82,6 +82,7 @@ pub enum RateLimitStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApiRetryError {
     AuthenticationFailed,
+    AccountOnHold,
     OauthOrgNotAllowed,
     BillingError,
     RateLimit,
@@ -201,6 +202,7 @@ pub struct MessageOrigin {
     pub from_session: Option<String>,
     pub sender_task_id: Option<String>,
     pub verified_peer_pid: Option<u64>,
+    pub from_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

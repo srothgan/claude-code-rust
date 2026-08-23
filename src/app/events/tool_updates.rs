@@ -233,6 +233,9 @@ fn apply_tool_call_task_metadata_update(
     if task_metadata.is_backgrounded.is_some() {
         merged.is_backgrounded = task_metadata.is_backgrounded;
     }
+    if task_metadata.spawn_depth.is_some() {
+        merged.spawn_depth = task_metadata.spawn_depth;
+    }
     if task_metadata.request_id.is_some() {
         merged.request_id.clone_from(&task_metadata.request_id);
     }
@@ -893,6 +896,7 @@ mod tests {
             model::ToolCallUpdateFields::new().task_metadata(
                 model::TaskMetadata::new()
                     .backgrounded(Some(true))
+                    .spawn_depth(Some(2))
                     .request_id(Some("request-1".to_owned()))
                     .subagent_type(Some("reviewer".to_owned()))
                     .task_description(Some("Review branch".to_owned()))
@@ -938,6 +942,7 @@ mod tests {
                     .end_time(Some(1234))
                     .total_paused_ms(Some(250))
                     .backgrounded(Some(true))
+                    .spawn_depth(Some(2))
                     .request_id(Some("request-1".to_owned()))
                     .subagent_type(Some("reviewer".to_owned()))
                     .task_description(Some("Review branch".to_owned()))

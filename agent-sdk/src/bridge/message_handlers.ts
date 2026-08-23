@@ -170,6 +170,12 @@ function sdkTaskMetadata(
     status && typeof msg.summary === "string" && msg.summary.length > 0
       ? msg.summary
       : undefined;
+  const spawnDepth =
+    typeof msg.spawn_depth === "number" &&
+    Number.isSafeInteger(msg.spawn_depth) &&
+    msg.spawn_depth > 0
+      ? msg.spawn_depth
+      : undefined;
   const taskMetadata: TaskMetadata = {
     ...(metadata.requestId ? { request_id: metadata.requestId } : {}),
     ...(metadata.subagentType ? { subagent_type: metadata.subagentType } : {}),
@@ -186,6 +192,10 @@ function sdkTaskMetadata(
     ...(summary ? { summary } : {}),
     ...(status ? { terminal_status: status } : {}),
     ...(typeof msg.blocked === "boolean" ? { blocked: msg.blocked } : {}),
+    ...(typeof msg.is_backgrounded === "boolean"
+      ? { is_backgrounded: msg.is_backgrounded }
+      : {}),
+    ...(spawnDepth !== undefined ? { spawn_depth: spawnDepth } : {}),
   };
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
 }
@@ -254,6 +264,9 @@ function externalMessageUpdateFromSdkUser(
       origin.verifiedPeerPid >= 0
         ? { verified_peer_pid: origin.verifiedPeerPid }
         : {}),
+      ...(origin.fromMode === "bypass" || origin.fromMode === "prompting"
+        ? { from_mode: origin.fromMode }
+        : {}),
     },
   };
 }
@@ -289,6 +302,10 @@ function logSdkMessageOrigin(
       origin_verified_peer_pid:
         typeof origin?.verifiedPeerPid === "number"
           ? origin.verifiedPeerPid
+          : undefined,
+      origin_from_mode:
+        origin?.fromMode === "bypass" || origin?.fromMode === "prompting"
+          ? origin.fromMode
           : undefined,
     },
   });
@@ -1155,6 +1172,27 @@ export function handleAssistantMessage(
   const content = Array.isArray(messageObject.content)
     ? messageObject.content
     : [];
+  if (asRecordOrNull(message.context_usage)) {
+    const markdown = content
+      .flatMap((block) => {
+        const record = asRecordOrNull(block);
+        return record?.type === "text" &&
+          typeof record.text === "string" &&
+          record.text.trim().length > 0
+          ? [record.text]
+          : [];
+      })
+      .join("\n\n");
+    if (markdown.length > 0) {
+      emitSessionUpdate(session.sessionId, {
+        type: "agent_message_chunk",
+        content: { type: "text", text: markdown },
+        ...(assistantMessageUuid
+          ? { source_message_uuid: assistantMessageUuid }
+          : {}),
+      });
+    }
+  }
   for (const block of content) {
     if (!block || typeof block !== "object") {
       continue;
