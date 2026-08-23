@@ -61,7 +61,7 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "type: dependencies"
-      - "javascript"
+      - "area: agent-sdk"
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -84,7 +84,7 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "type: dependencies"
-      - "javascript"
+      - "area: agent-sdk"
     commit-message:
       prefix: "chore"
       include: "scope"
