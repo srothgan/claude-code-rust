@@ -2,7 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- ## [Unreleased] -->
+## [Unreleased]
+
+### Fixes
+
+- **Welcome overview wrapping** (#351, @srothgan): Align wrapped tips and metadata beneath their values and hide Ferris on narrow terminals.
 
 ## [0.14.5] - 2026-08-23 [Changes][v0.14.5]
 
