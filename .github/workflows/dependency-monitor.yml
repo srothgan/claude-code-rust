@@ -123,6 +123,8 @@ jobs:
             gh issue edit "${existing_issue}" \
               --repo "${REPO}" \
               --title "${issue_title}" \
+              --add-label "type: dependencies" \
+              --add-label "area: agent-sdk" \
               --body-file "${issue_file}"
             echo "Updated issue #${existing_issue}."
           else
