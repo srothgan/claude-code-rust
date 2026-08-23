@@ -49,7 +49,9 @@ By participating, you agree to uphold this code.
 ### Labels
 
 Labels use a `namespace: value` convention so they group visually and filter cleanly.
-Apply at most one `type:` label per issue or pull request.
+Apply one `type:` label per issue or pull request. The exception is a dependency
+update that also carries a security fix, which takes `type: dependencies` and
+`type: security` together.
 
 | Namespace | Values | Meaning |
 | --- | --- | --- |
@@ -60,10 +62,11 @@ Apply at most one `type:` label per issue or pull request.
 `good first issue` and `help wanted` stay unprefixed because GitHub uses them to
 populate the repository contribution page.
 
-Issue templates apply `type:` and `status: triage` automatically, and Dependabot
+Issue templates apply `type:` and `status: triage` automatically, Dependabot
 applies `type: dependencies` plus the matching `area:` label from
-`.github/dependabot.yml`. Renaming any of those labels requires updating that
-config in the same change.
+`.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies
+`type: security` to the advisory issue it opens. Renaming any of those labels
+requires updating that config in the same change.
 
 ## Development Setup
 
