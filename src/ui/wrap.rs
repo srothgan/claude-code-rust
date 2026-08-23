@@ -124,24 +124,7 @@ fn wrap_markdown_line_to_physical_rows(
         );
     }
 
-    let body_rows = wrap_styled_chunks(&body, width.saturating_sub(marker_width));
-    let mut rows = Vec::with_capacity(body_rows.len().max(1));
-    let mut body_rows = body_rows.into_iter();
-
-    let mut first_spans =
-        marker.into_iter().map(|chunk| Span::styled(chunk.text, chunk.style)).collect::<Vec<_>>();
-    if let Some(first_body) = body_rows.next() {
-        first_spans.extend(first_body.spans);
-    }
-    rows.push(Line::from(first_spans).style(line.style));
-
-    let continuation_prefix = " ".repeat(marker_width);
-    for body_row in body_rows {
-        let mut spans = vec![Span::styled(continuation_prefix.clone(), line.style)];
-        spans.extend(body_row.spans);
-        rows.push(Line::from(spans).style(line.style));
-    }
-    rows
+    wrap_styled_chunks_with_hanging_prefix(&marker, &body, width, line.style)
 }
 
 #[must_use]
@@ -197,6 +180,53 @@ pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Li
         lines.push(Line::default());
     }
     lines
+}
+
+#[must_use]
+pub(crate) fn wrap_styled_chunks_with_hanging_prefix(
+    prefix: &[StyledChunk],
+    body: &[StyledChunk],
+    width: usize,
+    line_style: Style,
+) -> Vec<Line<'static>> {
+    if width == 0 {
+        return vec![Line::default()];
+    }
+
+    let prefix_width = prefix.iter().map(|chunk| display_width(&chunk.text)).sum::<usize>();
+    if prefix_width == 0 {
+        return wrap_styled_chunks(body, width)
+            .into_iter()
+            .map(|line| line.style(line_style))
+            .collect();
+    }
+    if prefix_width >= width {
+        let mut combined = Vec::with_capacity(prefix.len() + body.len());
+        combined.extend_from_slice(prefix);
+        combined.extend_from_slice(body);
+        return wrap_styled_chunks(&combined, width)
+            .into_iter()
+            .map(|line| line.style(line_style))
+            .collect();
+    }
+
+    let mut body_rows = wrap_styled_chunks(body, width - prefix_width).into_iter();
+    let mut first_spans = prefix
+        .iter()
+        .map(|chunk| Span::styled(chunk.text.clone(), chunk.style))
+        .collect::<Vec<_>>();
+    if let Some(first_body) = body_rows.next() {
+        first_spans.extend(first_body.spans);
+    }
+
+    let mut rows = vec![Line::from(first_spans).style(line_style)];
+    let continuation_prefix = " ".repeat(prefix_width);
+    rows.extend(body_rows.map(|body_row| {
+        let mut spans = vec![Span::styled(continuation_prefix.clone(), line_style)];
+        spans.extend(body_row.spans);
+        Line::from(spans).style(line_style)
+    }));
+    rows
 }
 
 fn split_line_chunks_at_byte(
@@ -291,6 +321,35 @@ pub(crate) fn pad_line_to_width(
 #[must_use]
 pub(crate) fn blank_line(width: usize, style: Style) -> Line<'static> {
     Line::from(Span::styled(" ".repeat(width), style))
+}
+
+#[must_use]
+pub(crate) fn join_column_lines(
+    mut left_lines: Vec<Line<'static>>,
+    mut right_lines: Vec<Line<'static>>,
+    left_width: usize,
+    gap: usize,
+) -> Vec<Line<'static>> {
+    let row_height = left_lines.len().max(right_lines.len()).max(1);
+    while left_lines.len() < row_height {
+        left_lines.push(blank_line(left_width, Style::default()));
+    }
+    while right_lines.len() < row_height {
+        right_lines.push(Line::default());
+    }
+
+    let mut lines = Vec::with_capacity(row_height);
+    for idx in 0..row_height {
+        let mut line =
+            pad_line_to_width(std::mem::take(&mut left_lines[idx]), left_width, Style::default());
+        if gap > 0 {
+            line.spans.push(Span::styled(" ".repeat(gap), Style::default()));
+        }
+        line.spans.extend(std::mem::take(&mut right_lines[idx].spans));
+        lines.push(line);
+    }
+
+    lines
 }
 
 fn tokenize_chunks(chunks: &[StyledChunk]) -> Vec<WrapToken> {
@@ -469,6 +528,36 @@ mod tests {
             32,
         );
         assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn hanging_prefix_wraps_continuations_below_the_body() {
+        let rows = wrap_styled_chunks_with_hanging_prefix(
+            &[StyledChunk { text: "Tips: ".to_owned(), style: Style::default() }],
+            &[StyledChunk { text: "alpha beta gamma delta".to_owned(), style: Style::default() }],
+            17,
+            Style::default(),
+        );
+
+        assert_eq!(
+            rows.into_iter().map(|line| line_text(&line)).collect::<Vec<_>>(),
+            vec!["Tips: alpha beta", "      gamma delta"]
+        );
+    }
+
+    #[test]
+    fn joined_columns_preserve_the_left_offset_on_continuation_rows() {
+        let rows = join_column_lines(
+            vec![Line::from("XX")],
+            vec![Line::from("one"), Line::from("two")],
+            2,
+            1,
+        );
+
+        assert_eq!(
+            rows.into_iter().map(|line| line_text(&line)).collect::<Vec<_>>(),
+            vec!["XX one", "   two"]
+        );
     }
 
     #[test]

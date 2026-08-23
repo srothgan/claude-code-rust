@@ -3,11 +3,19 @@
 
 use crate::app::WelcomeBlock;
 use crate::ui::theme;
+use crate::ui::wrap::{
+    StyledChunk, display_width, join_column_lines, wrap_styled_chunks,
+    wrap_styled_chunks_with_hanging_prefix,
+};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 const FERRIS_ART: &[&str] =
     &[r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
+const FERRIS_LEFT_PADDING: &str = "  ";
+const FERRIS_TEXT_GAP: usize = 2;
+const MIN_INLINE_FIELD_VALUE_WIDTH: usize = 8;
+const WELCOME_FIELD_LABELS: &[&str] = &["Version", "Subscription", "Cwd", "Session ID", "Tips"];
 
 const WELCOME_TIPS: &[&str] = &[
     "Use /mode plan before larger changes, then switch back to code once the plan is clear",
@@ -37,8 +45,13 @@ const WELCOME_TIPS: &[&str] = &[
 pub(crate) fn overview_lines(
     block: &WelcomeBlock,
     loading_status: Option<&str>,
+    width: u16,
 ) -> Vec<Line<'static>> {
-    let pad = "  ";
+    let width = usize::from(width);
+    if width == 0 {
+        return vec![Line::default()];
+    }
+
     let loading = loading_status.unwrap_or("Loading");
     let subscription_missing = welcome_value_missing(&block.subscription);
     let session_missing = welcome_value_missing(&block.session_id);
@@ -50,41 +63,89 @@ pub(crate) fn overview_lines(
     } else {
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
     };
-    let text_rows = vec![
-        welcome_field_line("Version", &block.version, Style::default().fg(theme::DIM)),
-        welcome_field_line("Subscription", &subscription_value, subscription_style),
-        welcome_field_line("Cwd", &block.cwd, Style::default().fg(theme::DIM)),
-        welcome_field_line("Session ID", &session_value, Style::default().fg(theme::DIM)),
-        Line::default(),
-        Line::from(Span::styled(
-            format!("Tips: {}", selected_tip(block)),
-            Style::default().fg(theme::DIM),
-        )),
-    ];
 
-    let art_width = FERRIS_ART.iter().map(|line| line.chars().count()).max().unwrap_or(0);
-    let row_count = FERRIS_ART.len().max(text_rows.len());
-    let mut lines = Vec::with_capacity(row_count + 1);
-    for idx in 0..row_count {
-        let art = FERRIS_ART.get(idx).copied().unwrap_or_default();
-        let mut spans = vec![Span::styled(
-            format!("{pad}{art:<art_width$}{pad}"),
-            Style::default().fg(theme::RUST_ORANGE),
-        )];
-        if let Some(text_row) = text_rows.get(idx) {
-            spans.extend(text_row.spans.clone());
-        }
-        lines.push(Line::from(spans));
-    }
+    let ferris_width = ferris_column_width();
+    let overview_offset = ferris_width.saturating_add(FERRIS_TEXT_GAP);
+    let overview_width = width.saturating_sub(overview_offset);
+    let side_by_side = overview_width >= minimum_overview_width();
+    let text_width = if side_by_side { overview_width } else { width };
+    let text_rows = overview_text_rows(
+        block,
+        &subscription_value,
+        subscription_style,
+        &session_value,
+        text_width,
+    );
+    let mut lines = if side_by_side {
+        join_column_lines(ferris_rows(), text_rows, ferris_width, FERRIS_TEXT_GAP)
+    } else {
+        text_rows
+    };
     lines.push(Line::default());
     lines
 }
 
-fn welcome_field_line(label: &str, value: &str, value_style: Style) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{label}: "), Style::default().fg(theme::DIM)),
-        Span::styled(value.to_owned(), value_style),
-    ])
+fn overview_text_rows(
+    block: &WelcomeBlock,
+    subscription_value: &str,
+    subscription_style: Style,
+    session_value: &str,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme::DIM);
+    let mut rows = Vec::new();
+    rows.extend(welcome_field_lines("Version", &block.version, dim, width));
+    rows.extend(welcome_field_lines("Subscription", subscription_value, subscription_style, width));
+    rows.extend(welcome_field_lines("Cwd", &block.cwd, dim, width));
+    rows.extend(welcome_field_lines("Session ID", session_value, dim, width));
+    rows.push(Line::default());
+    rows.extend(welcome_field_lines("Tips", selected_tip(block), dim, width));
+    rows
+}
+
+fn welcome_field_lines(
+    label: &str,
+    value: &str,
+    value_style: Style,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let prefix =
+        vec![StyledChunk { text: format!("{label}: "), style: Style::default().fg(theme::DIM) }];
+    let body = vec![StyledChunk { text: value.to_owned(), style: value_style }];
+    let prefix_width = prefix.iter().map(|chunk| display_width(&chunk.text)).sum::<usize>();
+    if width.saturating_sub(prefix_width) < MIN_INLINE_FIELD_VALUE_WIDTH {
+        let mut rows = wrap_styled_chunks(&prefix, width);
+        rows.extend(wrap_styled_chunks(&body, width));
+        return rows;
+    }
+
+    wrap_styled_chunks_with_hanging_prefix(&prefix, &body, width, Style::default())
+}
+
+fn ferris_column_width() -> usize {
+    display_width(FERRIS_LEFT_PADDING)
+        .saturating_add(FERRIS_ART.iter().map(|line| display_width(line)).max().unwrap_or(0))
+}
+
+fn ferris_rows() -> Vec<Line<'static>> {
+    FERRIS_ART
+        .iter()
+        .map(|art| {
+            Line::from(Span::styled(
+                format!("{FERRIS_LEFT_PADDING}{art}"),
+                Style::default().fg(theme::RUST_ORANGE),
+            ))
+        })
+        .collect()
+}
+
+fn minimum_overview_width() -> usize {
+    WELCOME_FIELD_LABELS
+        .iter()
+        .map(|label| display_width(&format!("{label}: ")))
+        .max()
+        .unwrap_or(0)
+        .saturating_add(MIN_INLINE_FIELD_VALUE_WIDTH)
 }
 
 fn welcome_value_missing(value: &str) -> bool {
@@ -103,16 +164,22 @@ pub(crate) fn selected_tip(block: &WelcomeBlock) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{WELCOME_TIPS, overview_lines};
+    use super::{Line, WELCOME_TIPS, overview_lines};
     use crate::app::{ChatMessage, MessageBlock};
+    use crate::ui::wrap::line_display_width;
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
 
     #[test]
     fn overview_lines_render_expected_fields() {
-        let message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-");
-        let MessageBlock::Welcome(block) = &message.blocks[0] else {
+        let mut message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-");
+        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
             panic!("expected welcome block");
         };
-        let lines: Vec<String> = overview_lines(block, None)
+        block.tip_seed = 16;
+        let lines: Vec<String> = overview_lines(block, None, 120)
             .into_iter()
             .map(|line| line.spans.into_iter().map(|s| s.content).collect())
             .collect();
@@ -127,5 +194,59 @@ mod tests {
             WELCOME_TIPS.iter().any(|tip| lines.iter().any(|line| line.contains(tip))),
             "expected one welcome tip to be rendered"
         );
+    }
+
+    #[test]
+    fn wide_overview_wraps_tip_below_its_value() {
+        let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
+        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
+            panic!("expected welcome block");
+        };
+        block.tip_seed = 7;
+
+        let lines = overview_lines(block, None, 110);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>();
+        let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
+
+        assert_eq!(text[tip_row].find("Tips:"), Some(20));
+        assert_eq!(text[tip_row + 1].find("noise"), Some(26));
+        assert!(lines.iter().all(|line| line_display_width(line) <= 110));
+    }
+
+    #[test]
+    fn wide_overview_wraps_long_metadata_below_its_value() {
+        let mut message = ChatMessage::welcome(
+            "1.2.3",
+            "Pro",
+            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
+            "session-123",
+        );
+        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
+            panic!("expected welcome block");
+        };
+
+        let text = overview_lines(block, None, 70).iter().map(line_text).collect::<Vec<_>>();
+        let cwd_row = text.iter().position(|line| line.contains("Cwd: alpha")).expect("cwd row");
+
+        assert_eq!(text[cwd_row].find("Cwd:"), Some(20));
+        assert_eq!(text[cwd_row + 1].find("iota"), Some(25));
+    }
+
+    #[test]
+    fn narrow_overview_hides_ferris_and_keeps_hanging_indent() {
+        let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
+        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
+            panic!("expected welcome block");
+        };
+        block.tip_seed = 7;
+
+        let lines = overview_lines(block, None, 36);
+        let text = lines.iter().map(line_text).collect::<Vec<_>>();
+        let tip_row =
+            text.iter().position(|line| line.starts_with("Tips: Start")).expect("tip row");
+
+        assert!(!text.iter().any(|line| line.contains("_~^~^~_")));
+        assert_eq!(text[tip_row + 1].find(|ch: char| !ch.is_whitespace()), Some(6));
+        assert!(lines.iter().all(|line| line_display_width(line) <= 36));
     }
 }
