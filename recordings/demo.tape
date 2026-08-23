@@ -5,7 +5,9 @@ Set FontFamily "DejaVu Sans Mono"
 Set FontSize 18
 Set Width 1200
 Set Height 600
-Set Padding 0
+Set Padding 6
+Set Margin 3
+Set MarginFill "#8b949e"
 Set Framerate 30
 Set TypingSpeed 45ms
 Set CursorBlink false
@@ -25,7 +27,10 @@ Type "What problem does Claude Code Rust solve?"
 Sleep 400ms
 Enter
 Wait+Screen /Agent SDK workflow/
-Sleep 5s
+Sleep 3s
+
+Type "Amazing :) "
+Sleep 3s
 
 Hide
 Ctrl+C

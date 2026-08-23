@@ -117,6 +117,11 @@ impl ToolCallInfo {
     }
 
     #[must_use]
+    pub fn task_spawn_depth(&self) -> Option<u64> {
+        self.task_metadata.as_ref().and_then(|metadata| metadata.spawn_depth)
+    }
+
+    #[must_use]
     pub fn skill_is_backgrounded(&self) -> bool {
         self.output_metadata
             .as_ref()

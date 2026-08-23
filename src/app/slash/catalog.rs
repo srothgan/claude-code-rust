@@ -9,7 +9,6 @@ pub(crate) enum AppSlashCommand {
     Cancel,
     Compact,
     Config,
-    Limits,
     Docs,
     Agent,
     Effort,
@@ -131,14 +130,6 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /config",
         short_description: "Open settings",
         long_description: "Open the fullscreen settings tab.",
-        args: NO_ARGS,
-    },
-    AppSlashCommandSpec {
-        command: AppSlashCommand::Limits,
-        name: "/limits",
-        usage: "Usage: /limits",
-        short_description: "Show usage summary",
-        long_description: "Print recent Claude usage limits into the chat.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -290,7 +281,6 @@ impl AppSlashCommand {
             Self::Cancel => "/cancel",
             Self::Compact => "/compact",
             Self::Config => "/config",
-            Self::Limits => "/limits",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
@@ -327,13 +317,6 @@ impl AppSlashCommand {
             Self::Config | Self::Help | Self::Mcp | Self::Plugins | Self::Status | Self::Usage => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
-                } else {
-                    SubmissionClass::Invalid
-                }
-            }
-            Self::Limits => {
-                if args.is_empty() {
-                    SubmissionClass::Informational
                 } else {
                     SubmissionClass::Invalid
                 }

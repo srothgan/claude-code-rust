@@ -8,6 +8,7 @@ pub struct TaskMetadata {
     pub total_paused_ms: Option<u64>,
     pub error: Option<String>,
     pub is_backgrounded: Option<bool>,
+    pub spawn_depth: Option<u64>,
     pub request_id: Option<String>,
     pub subagent_type: Option<String>,
     pub task_description: Option<String>,
@@ -63,6 +64,12 @@ impl TaskMetadata {
     #[must_use]
     pub fn backgrounded(mut self, is_backgrounded: Option<bool>) -> Self {
         self.is_backgrounded = is_backgrounded;
+        self
+    }
+
+    #[must_use]
+    pub fn spawn_depth(mut self, spawn_depth: Option<u64>) -> Self {
+        self.spawn_depth = spawn_depth;
         self
     }
 

@@ -55,6 +55,7 @@ export function classifyTurnErrorKind(
       return "plan_limit";
     case "authentication_failed":
       return "auth_required";
+    case "account_on_hold":
     case "oauth_org_not_allowed":
       return "account_access";
     case "model_not_found":

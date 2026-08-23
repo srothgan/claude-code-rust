@@ -377,7 +377,8 @@ pub struct WebFetchOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WebFetchArtifactReadMetadata {
     pub slug: String,
-    pub ver: String,
+    pub ver: Option<String>,
+    pub seeded: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -488,7 +489,19 @@ impl WebFetchOutputMetadata {
 
 impl WebFetchArtifactReadMetadata {
     #[must_use]
-    pub fn new(slug: impl Into<String>, ver: impl Into<String>) -> Self {
-        Self { slug: slug.into(), ver: ver.into() }
+    pub fn new(slug: impl Into<String>) -> Self {
+        Self { slug: slug.into(), ver: None, seeded: None }
+    }
+
+    #[must_use]
+    pub fn ver(mut self, ver: Option<String>) -> Self {
+        self.ver = ver;
+        self
+    }
+
+    #[must_use]
+    pub fn seeded(mut self, seeded: Option<bool>) -> Self {
+        self.seeded = seeded;
+        self
     }
 }

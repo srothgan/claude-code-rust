@@ -766,9 +766,14 @@ function extractToolOutputMetadata(
       const artifactRead = asRecordOrNull(candidate.artifactRead);
       const slug = nonEmptyString(artifactRead?.slug);
       const ver = nonEmptyString(artifactRead?.ver);
-      if (slug && ver) {
+      const seeded = artifactRead?.seeded === false ? false : undefined;
+      if (slug) {
         const webFetchMetadata: import("../types.js").WebFetchOutputMetadata = {
-          artifact_read: { slug, ver },
+          artifact_read: {
+            slug,
+            ...(ver ? { ver } : {}),
+            ...(seeded === false ? { seeded } : {}),
+          },
         };
         metadata.web_fetch = webFetchMetadata;
         break;

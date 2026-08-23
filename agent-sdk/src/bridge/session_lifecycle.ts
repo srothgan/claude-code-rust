@@ -1197,11 +1197,15 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       signal: AbortSignal;
     }) => {
       const command = resolveClaudeCodeSpawnCommand(options.command);
-      const spawnOptions = { ...options, command };
+      const env = { ...options.env };
+      if (env.CLAUDE_CODE_ENABLE_TODO_TOOLS === undefined) {
+        env.CLAUDE_CODE_ENABLE_TODO_TOOLS = "1";
+      }
+      const spawnOptions = { ...options, command, env };
       logSdkProcessSpawnStarted(spawnOptions, params.enableSpawnDebug);
       const child = spawnChild(command, options.args, {
         cwd: options.cwd,
-        env: options.env,
+        env,
         signal: options.signal,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
@@ -1363,28 +1367,27 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     // the CLI emits `request_user_dialog` and the host renders the chooser below.
     supportedDialogKinds: [REFUSAL_FALLBACK_DIALOG_KIND],
     // Host policy for `request_user_dialog` control requests. Unknown kinds are
-    // logged and answered `{ behavior: "cancelled" }` (the spec-required answer
-    // for unrecognized kinds). For `refusal_fallback_prompt`, we surface an
+    // logged and left unsettled by returning `null`. For `refusal_fallback_prompt`, we surface an
     // interactive chooser in the TUI and route the user's decision back to the
     // CLI as `{ behavior: "completed", result: <choice> }` (or cancelled on
     // decline/abort/teardown).
     onUserDialog: async (
       request: UserDialogRequest,
       options: { signal: AbortSignal; requestId: string },
-    ): Promise<UserDialogResult> => {
+    ): Promise<UserDialogResult | null> => {
       if (request.dialogKind !== REFUSAL_FALLBACK_DIALOG_KIND) {
         bridgeLogger.warn({
           target: LOG_TARGETS.APP_SESSION,
           eventName: "user_dialog_received",
-          message: "request_user_dialog received for unknown kind; cancelled",
-          outcome: "cancelled",
+          message: "request_user_dialog received for unknown kind; unsupported",
+          outcome: "unsupported",
           sessionId: params.sessionIdForLogs(),
           ...(typeof request.toolUseID === "string"
             ? { toolCallId: request.toolUseID }
             : {}),
           fields: { dialog_kind: request.dialogKind },
         });
-        return { behavior: "cancelled" };
+        return null;
       }
 
       const payload = normalizeRefusalFallbackPayload(request.payload);

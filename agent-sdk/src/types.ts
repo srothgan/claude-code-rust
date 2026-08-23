@@ -114,6 +114,7 @@ export interface RateLimitUpdate {
 
 export type ApiRetryError =
   | "authentication_failed"
+  | "account_on_hold"
   | "oauth_org_not_allowed"
   | "billing_error"
   | "rate_limit"
@@ -141,6 +142,7 @@ export interface MessageOrigin {
   from_session?: string;
   sender_task_id?: string;
   verified_peer_pid?: number;
+  from_mode?: string;
 }
 
 export type ContentBlock =
@@ -179,7 +181,8 @@ export interface AgentOutputMetadata {
 
 export interface WebFetchArtifactReadMetadata {
   slug: string;
-  ver: string;
+  ver?: string;
+  seeded?: false;
 }
 
 export interface WebFetchOutputMetadata {
@@ -220,6 +223,7 @@ export interface TaskMetadata {
   total_paused_ms?: number;
   error?: string;
   is_backgrounded?: boolean;
+  spawn_depth?: number;
   request_id?: string;
   subagent_type?: string;
   task_description?: string;

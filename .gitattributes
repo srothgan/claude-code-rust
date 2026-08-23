@@ -18,6 +18,7 @@
 *.mts text eol=lf
 *.cts text eol=lf
 Cargo.lock text eol=lf
+recordings/git-head text eol=lf
 
 *.bat text eol=crlf
 *.cmd text eol=crlf

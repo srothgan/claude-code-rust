@@ -40,6 +40,7 @@ fn format_api_retry_message(
 fn api_retry_error_label(error: ApiRetryError) -> &'static str {
     match error {
         ApiRetryError::AuthenticationFailed => "authentication failure",
+        ApiRetryError::AccountOnHold => "account on hold",
         ApiRetryError::OauthOrgNotAllowed => "account access not allowed",
         ApiRetryError::BillingError => "billing issue",
         ApiRetryError::RateLimit => "rate limit",
@@ -83,6 +84,10 @@ mod tests {
         assert_eq!(
             format_api_retry_message(1, 4, 250.0, None, ApiRetryError::OauthOrgNotAllowed),
             "API retry 1/4 after account access not allowed, retrying in 250ms",
+        );
+        assert_eq!(
+            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::AccountOnHold),
+            "API retry 1/4 after account on hold, retrying in 250ms",
         );
         assert_eq!(
             format_api_retry_message(1, 4, 250.0, Some(529), ApiRetryError::Overloaded),

@@ -1124,6 +1124,7 @@ test("buildToolResultFields preserves WebFetch artifactRead only as metadata", (
       artifactRead: {
         slug: "dashboard",
         ver: "v3",
+        seeded: false,
       },
     },
     base,
@@ -1136,9 +1137,43 @@ test("buildToolResultFields preserves WebFetch artifactRead only as metadata", (
       artifact_read: {
         slug: "dashboard",
         ver: "v3",
+        seeded: false,
       },
     },
   });
+});
+
+test("buildToolResultFields preserves versionless WebFetch artifacts and rejects malformed metadata", () => {
+  const base = createToolCall("tc-web-fetch-versionless", "WebFetch", {
+    url: "https://artifact.local/dashboard",
+  });
+  assert.deepEqual(
+    buildToolResultFields(
+      false,
+      { result: "Seeded", artifactRead: { slug: "dashboard", seeded: false } },
+      base,
+    ).output_metadata,
+    { web_fetch: { artifact_read: { slug: "dashboard", seeded: false } } },
+  );
+  assert.deepEqual(
+    buildToolResultFields(
+      false,
+      {
+        result: "Unexpected seed value",
+        artifactRead: { slug: "dashboard", ver: "v4", seeded: true },
+      },
+      base,
+    ).output_metadata,
+    { web_fetch: { artifact_read: { slug: "dashboard", ver: "v4" } } },
+  );
+  assert.equal(
+    buildToolResultFields(
+      false,
+      { result: "Malformed", artifactRead: { slug: "", ver: "v4" } },
+      base,
+    ).output_metadata,
+    undefined,
+  );
 });
 
 test("buildToolResultFields marks only structured Skill background launches", () => {
@@ -1380,6 +1415,18 @@ test("unwrapToolUseResult extracts error/content payload", () => {
   });
   assert.equal(parsed.isError, true);
   assert.deepEqual(parsed.content, [{ text: "failure output" }]);
+});
+
+test("unwrapToolUseResult exposes MCP wrapper content without rendering opaque metadata", () => {
+  const parsed = unwrapToolUseResult({
+    content: [{ type: "text", text: "visible MCP output" }],
+    _meta: { privateTrace: "must-not-render" },
+  });
+  assert.equal(parsed.isError, false);
+  assert.deepEqual(parsed.content, [
+    { type: "text", text: "visible MCP output" },
+  ]);
+  assert.equal(JSON.stringify(parsed).includes("privateTrace"), false);
 });
 
 test("buildToolResultFields replaces a structured Read image result with its filename", () => {

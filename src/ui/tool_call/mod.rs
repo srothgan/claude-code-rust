@@ -190,6 +190,12 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     }
 
     if matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task") {
+        if let Some(depth) = tc.task_spawn_depth() {
+            badges.push(Span::styled(
+                format!("  [depth: {depth}]"),
+                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
+            ));
+        }
         if let Some(retry) = subagent_retry_badge(tc) {
             badges.push(Span::styled(
                 format!("  [{retry}]"),

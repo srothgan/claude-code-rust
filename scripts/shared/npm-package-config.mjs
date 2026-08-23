@@ -5,7 +5,7 @@ export const ROOT_PACKAGE_NAME = "claude-code-rust";
 
 export const DIST_NPM_DIR = "dist-npm";
 
-export const BUNDLED_BUN_RUNTIME_VERSION = "1.3.14";
+export const BUNDLED_BUN_RUNTIME_VERSION = "1.4.0";
 
 export const BUN_RUNTIME_MANIFEST_RELATIVE_PATH = "scripts/runtime/bun-runtime-manifest.json";
 

@@ -163,6 +163,33 @@ fn render_tool_call_title_shows_backgrounded_badge() {
 }
 
 #[test]
+fn render_agent_title_shows_spawn_depth_with_background_state() {
+    let mut tc = test_tool_call("tc-depth", "Agent", model::ToolCallStatus::InProgress);
+    tc.task_metadata =
+        Some(model::TaskMetadata::new().spawn_depth(Some(3)).backgrounded(Some(true)));
+
+    let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+    assert!(rendered.contains("[depth: 3]"));
+    assert!(rendered.contains("[backgrounded]"));
+
+    let narrow = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 20, 0);
+    assert!(!narrow.spans.is_empty());
+}
+
+#[test]
+fn render_unrelated_tool_title_omits_task_spawn_depth() {
+    let mut tc = test_tool_call("tc-read-depth", "Read", model::ToolCallStatus::Completed);
+    tc.task_metadata = Some(model::TaskMetadata::new().spawn_depth(Some(4)));
+
+    let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 80, 0);
+    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+    assert!(!rendered.contains("[depth:"));
+}
+
+#[test]
 fn render_skill_title_shows_backgrounded_badge() {
     let mut tc = test_tool_call("tc-skill-bg", "Skill", model::ToolCallStatus::Completed);
     tc.output_metadata = Some(

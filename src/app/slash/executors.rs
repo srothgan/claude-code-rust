@@ -50,7 +50,6 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Cancel => handle_cancel_submit(app),
         AppSlashCommand::Compact => handle_compact_submit(app),
         AppSlashCommand::Config => handle_config_submit(app),
-        AppSlashCommand::Limits => handle_limits_submit(app),
         AppSlashCommand::Docs => handle_docs_submit(app, &args),
         AppSlashCommand::Agent => handle_agent_submit(app, &args),
         AppSlashCommand::Effort => handle_effort_submit(app, &args),
@@ -389,11 +388,6 @@ fn handle_usage_submit(app: &mut App) -> bool {
         return true;
     }
     crate::app::config::activate_tab(app, crate::app::ConfigTab::Usage);
-    true
-}
-
-fn handle_limits_submit(app: &mut App) -> bool {
-    crate::app::usage::request_limits_summary(app);
     true
 }
 

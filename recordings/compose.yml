@@ -8,6 +8,7 @@ services:
     volumes:
       - ..:/workspace/claude-code-rust
       - ./CLAUDE.md:/workspace/claude-code-rust/CLAUDE.md:ro
+      - ./git-head:/workspace/claude-code-rust/.git/HEAD:ro
       - ./claude.json:/root/.claude.json:ro
       - ./settings.json:/root/.claude/settings.json:ro
       - ${USERPROFILE}/.claude/.credentials.json:/root/.claude/.credentials.json:ro

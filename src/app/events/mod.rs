@@ -500,6 +500,9 @@ fn handle_external_message_update(app: &mut App, update: &model::ExternalMessage
     if let Some(pid) = origin.verified_peer_pid {
         let _ = write!(label, " [verified connecting PID {pid}]");
     }
+    if let Some(from_mode) = origin.from_mode.as_deref().filter(|value| !value.is_empty()) {
+        let _ = write!(label, " [sender permission class: {from_mode}]");
+    }
     let rendered = format!("{label}:\n\n{}", update.content);
     push_system_message_with_severity(app, Some(SystemSeverity::Info), &rendered);
     tracing::info!(
@@ -511,6 +514,7 @@ fn handle_external_message_update(app: &mut App, update: &model::ExternalMessage
         origin_subkind = ?origin.subkind,
         source_session = ?origin.from_session,
         verified_peer_pid = ?origin.verified_peer_pid,
+        origin_from_mode = ?origin.from_mode,
         source_message_uuid = ?update.source_message_uuid,
     );
 }

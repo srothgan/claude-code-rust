@@ -11,12 +11,12 @@ use crate::app::{
     ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget, FullscreenView,
     InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason, SurfaceMode,
     TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot,
-    UsageSourceKind, UsageWindow, mention,
+    UsageSourceKind, mention,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
 use std::rc::Rc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 mod client_events;
@@ -3727,6 +3727,7 @@ fn external_claude_message_is_rendered_as_non_human_input_with_provenance() {
                 from_session: Some("session-peer".to_owned()),
                 sender_task_id: None,
                 verified_peer_pid: Some(4242),
+                from_mode: Some("bypass".to_owned()),
             },
         })),
     );
@@ -3739,6 +3740,7 @@ fn external_claude_message_is_rendered_as_non_human_input_with_provenance() {
     assert!(block.text.contains("sender-reported name: Build session"));
     assert!(block.text.contains("session session-peer"));
     assert!(block.text.contains("verified connecting PID 4242"));
+    assert!(block.text.contains("sender permission class: bypass"));
     assert!(block.text.contains("Please inspect the build."));
 }
 
