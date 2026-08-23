@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::wrap::{
-    StyledChunk, blank_line, pad_line_to_width, wrap_styled_chunks, wrapped_line_count,
-};
+use super::wrap::{StyledChunk, join_column_lines, wrap_styled_chunks, wrapped_line_count};
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 
 #[derive(Clone, Debug)]
 pub(crate) struct TwoColumnItem {
@@ -83,34 +81,5 @@ pub(crate) fn render_lines(
     if lines.is_empty() {
         lines.push(Line::default());
     }
-    lines
-}
-
-#[must_use]
-pub(crate) fn join_column_lines(
-    mut left_lines: Vec<Line<'static>>,
-    mut right_lines: Vec<Line<'static>>,
-    left_width: usize,
-    gap: usize,
-) -> Vec<Line<'static>> {
-    let row_height = left_lines.len().max(right_lines.len()).max(1);
-    while left_lines.len() < row_height {
-        left_lines.push(blank_line(left_width, Style::default()));
-    }
-    while right_lines.len() < row_height {
-        right_lines.push(Line::default());
-    }
-
-    let mut lines = Vec::with_capacity(row_height);
-    for idx in 0..row_height {
-        let mut line =
-            pad_line_to_width(std::mem::take(&mut left_lines[idx]), left_width, Style::default());
-        if gap > 0 {
-            line.spans.push(Span::styled(" ".repeat(gap), Style::default()));
-        }
-        line.spans.extend(std::mem::take(&mut right_lines[idx].spans));
-        lines.push(line);
-    }
-
     lines
 }

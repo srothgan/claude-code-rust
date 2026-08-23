@@ -414,13 +414,13 @@ fn serialize_compact_welcome_entry(
     entry: &WelcomeBlock,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(Span::styled(
+    let heading = Line::from(Span::styled(
         "Overview",
         Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    ))];
-    lines.extend(welcome::overview_lines(entry, Some(status_label(app))));
-
-    wrap_lines_to_physical_rows(&lines, width)
+    ));
+    let mut lines = wrap_lines_to_physical_rows(&[heading], width);
+    lines.extend(welcome::overview_lines(entry, Some(status_label(app)), width));
+    lines
 }
 
 fn status_label(app: &App) -> &'static str {
@@ -2182,6 +2182,23 @@ mod tests {
         let text = line_texts(&rows);
 
         assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
+    }
+
+    #[test]
+    fn live_welcome_tip_wraps_below_its_value() {
+        let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
+        let Some(MessageBlock::Welcome(welcome)) = message.blocks.first_mut() else {
+            panic!("expected welcome block");
+        };
+        welcome.tip_seed = 7;
+        let mut app = App::test_default();
+        app.transcript.messages.push(message);
+
+        let text = line_texts(&serialize_live_rows(&mut app, 110));
+        let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
+
+        assert_eq!(text[tip_row].find("Tips:"), Some(20));
+        assert_eq!(text[tip_row + 1].find("noise"), Some(26));
     }
 
     #[test]
