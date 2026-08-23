@@ -80,7 +80,7 @@ pub fn create_app(cli: &Cli) -> App {
     let cwd = resolve_startup_cwd(cli);
 
     let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
-    let (file_index_event_tx, file_index_event_rx) = std::sync::mpsc::channel();
+    let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
     let perf_path = match crate::logging::resolve_perf_path(cli) {
         Ok(path) => path,
         Err(err) => {
@@ -243,7 +243,6 @@ pub fn create_app(cli: &Cli) -> App {
     app.rebuild_render_cache_accounting();
     trust::initialize(&mut app);
     app.sync_git_context();
-    super::file_index::restart(&mut app);
     app
 }
 

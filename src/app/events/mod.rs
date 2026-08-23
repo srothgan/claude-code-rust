@@ -254,10 +254,7 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
 fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
     match app.surface_mode {
         SurfaceMode::Chat => {
-            if !matches!(
-                app.status,
-                AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error
-            ) {
+            if app.composer_access().can_edit() {
                 reclaim_input_from_inline_prompt_if_needed(app);
                 app.queue_paste_text(text);
                 return true;

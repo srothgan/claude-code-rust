@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
+- **Responsive startup and file indexing** (#352, @srothgan): Keep the composer editable while connecting, defer sends until the session is ready, and run one bounded post-connection file index.
 - **Welcome overview wrapping** (#351, @srothgan): Align wrapped tips and metadata beneath their values and hide Ferris on narrow terminals.
 
 ## [0.14.5] - 2026-08-23 [Changes][v0.14.5]

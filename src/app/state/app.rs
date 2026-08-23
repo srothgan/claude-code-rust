@@ -38,7 +38,7 @@ pub struct App {
     pub turn: TurnState,
     pub(crate) event_tx: mpsc::Sender<ClientEvent>,
     pub(crate) event_rx: mpsc::Receiver<ClientEvent>,
-    pub(crate) file_index_event_tx: std_mpsc::Sender<file_index::FileIndexEvent>,
+    pub(crate) file_index_event_tx: std_mpsc::SyncSender<file_index::FileIndexEvent>,
     pub(crate) file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub(crate) spinner_last_advance_at: Option<Instant>,
@@ -115,6 +115,21 @@ pub struct App {
 }
 
 impl App {
+    #[must_use]
+    pub(crate) fn composer_access(&self) -> ComposerAccess {
+        if self.shutdown_requested() {
+            return ComposerAccess::Blocked(ComposerBlockReason::Shutdown);
+        }
+        match self.status {
+            AppStatus::Connecting => ComposerAccess::DraftOnly,
+            AppStatus::CommandPending => {
+                ComposerAccess::Blocked(ComposerBlockReason::CommandPending)
+            }
+            AppStatus::Error => ComposerAccess::Blocked(ComposerBlockReason::Error),
+            AppStatus::Ready | AppStatus::Thinking | AppStatus::Running => ComposerAccess::Active,
+        }
+    }
+
     pub(crate) fn request_shutdown(&mut self) {
         if matches!(self.shutdown, ShutdownState::Running) {
             self.shutdown = ShutdownState::Requested;
@@ -197,7 +212,7 @@ impl App {
     #[allow(clippy::too_many_lines)]
     pub fn test_default() -> Self {
         let (tx, rx) = mpsc::channel(crate::app::connect::CLIENT_EVENT_QUEUE_CAPACITY);
-        let (file_index_tx, file_index_rx) = std_mpsc::channel();
+        let (file_index_tx, file_index_rx) = file_index::event_channel();
         Self {
             surface_mode: SurfaceMode::Chat,
             terminal_lifecycle: TerminalLifecycleState::Running(SurfaceMode::Chat),

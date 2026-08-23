@@ -3285,24 +3285,21 @@ fn second_esc_after_permission_rejection_requests_turn_cancel() {
 }
 
 #[test]
-fn connecting_state_blocks_input_shortcuts_and_tab() {
+fn connecting_state_allows_drafting_but_blocks_submission() {
     let mut app = make_test_app();
     app.status = AppStatus::Connecting;
     app.input.set_text("seed");
-    app.pending_submit = None;
 
-    for key in [
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
-        KeyEvent::new(KeyCode::Char('@'), KeyModifiers::NONE),
-        KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-    ] {
-        handle_terminal_event(&mut app, Event::Key(key));
-    }
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+    );
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    handle_terminal_event(&mut app, Event::Paste(" pasted".into()));
+    crate::app::input_submit::submit_input(&mut app);
 
-    assert_eq!(app.input.text(), "seed");
+    assert_eq!(app.input.text(), "seedx");
+    assert_eq!(app.paste.pending_text, " pasted");
     assert!(app.pending_submit.is_none());
 }
 

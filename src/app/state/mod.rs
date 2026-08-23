@@ -53,6 +53,7 @@ pub use tool_call_info::{
 pub use transcript::Transcript;
 pub use turn::{ActiveCompaction, CompactionState, TurnState};
 pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
+pub(crate) use types::ComposerBlockReason;
 pub use types::{
     AppStatus, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState,
     MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, PostExitAction,
@@ -77,9 +78,10 @@ mod prelude {
     pub(super) use super::turn::TurnState;
     pub(super) use super::turn_notices::TurnNoticeRef;
     pub(super) use super::types::{
-        AppStatus, HistoryRetentionPolicy, HistoryRetentionStats, McpState, PasteSessionState,
-        PendingCommandAck, RecentSessionInfo, RenderCacheBudget, SelectionPoint,
-        SessionPickerState, ShutdownState, ToolCallScope, UpdatePromptState, UsageState,
+        AppStatus, ComposerAccess, ComposerBlockReason, HistoryRetentionPolicy,
+        HistoryRetentionStats, McpState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
+        RenderCacheBudget, SelectionPoint, SessionPickerState, ShutdownState, ToolCallScope,
+        UpdatePromptState, UsageState,
     };
     pub(super) use crate::agent::events::ClientEvent;
     pub(super) use crate::agent::model;

@@ -90,7 +90,7 @@ pub(super) fn is_ctrl_char_shortcut(key: KeyEvent, expected: char) -> bool {
 }
 
 pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> KeyOutcome {
-    if matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending | AppStatus::Error) {
+    if !app.composer_access().can_edit() {
         return handle_keymap_context(app, KeyContext::ChatBlocked, key);
     }
 
@@ -475,6 +475,10 @@ fn handle_turn_control(app: &mut App) -> bool {
 }
 
 fn handle_submit(app: &mut App) -> bool {
+    if !app.composer_access().can_submit() {
+        app.pending_submit = None;
+        return true;
+    }
     let now = Instant::now();
 
     // During an active burst or the post-burst suppression window, Enter

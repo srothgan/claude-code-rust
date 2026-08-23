@@ -8,11 +8,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{
+    self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError,
+};
 use std::time::{Duration, Instant};
 
 const SCAN_BATCH_SIZE: usize = 256;
-const EVENT_DRAIN_BUDGET: usize = 64;
+const EVENT_QUEUE_CAPACITY: usize = 8;
+const MATCHER_INDEX_QUEUE_CAPACITY: usize = 512;
+const WATCH_EVENT_QUEUE_CAPACITY: usize = 256;
+const EVENT_DRAIN_COUNT_BUDGET: usize = 64;
+const EVENT_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(2);
+pub(crate) const MAX_INDEX_ENTRIES: usize = 100_000;
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const WATCH_DEBOUNCE_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_CANDIDATES: usize = 50;
@@ -29,6 +36,27 @@ pub struct FileCandidate {
     pub depth: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileIndexStatus {
+    #[default]
+    NotStarted,
+    Scanning,
+    Complete,
+    Limited,
+}
+
+impl FileIndexStatus {
+    #[must_use]
+    pub const fn is_finished(self) -> bool {
+        matches!(self, Self::Complete | Self::Limited)
+    }
+
+    #[must_use]
+    pub const fn is_limited(self) -> bool {
+        matches!(self, Self::Limited)
+    }
+}
+
 #[derive(Default)]
 pub struct FileIndexState {
     pub root: Option<PathBuf>,
@@ -36,8 +64,7 @@ pub struct FileIndexState {
     pub generation: u64,
     pub index_version: u64,
     pub entries: BTreeMap<String, FileCandidate>,
-    pub scan_finished: bool,
-    pub rebuild_pending: bool,
+    pub status: FileIndexStatus,
     scan_overrides: ScanOverrides,
     pub scan: Option<FileIndexScanHandle>,
     pub watch: Option<FileIndexWatchHandle>,
@@ -53,7 +80,7 @@ pub struct FileIndexWatchHandle {
 }
 
 pub struct FileIndexMatcherHandle {
-    index_tx: Sender<FileIndexMatcherCommand>,
+    index_tx: SyncSender<FileIndexMatcherCommand>,
     query_tx: Sender<MentionMatchRequest>,
 }
 
@@ -89,12 +116,11 @@ pub enum FileIndexChange {
     Upsert(FileCandidate),
     RemoveExact { rel_path: String },
     RemovePrefix { rel_prefix: String },
-    ReplacePrefix { rel_prefix: String, entries: Vec<FileCandidate> },
 }
 
 pub enum FileIndexEvent {
     ScanBatch { generation: u64, entries: Vec<FileCandidate> },
-    ScanFinished { generation: u64 },
+    ScanFinished { generation: u64, limited: bool },
     FsBatch { generation: u64, changes: Vec<FileIndexChange> },
     RebuildRequested { generation: u64 },
     MatchResult(MentionMatchResult),
@@ -115,14 +141,31 @@ pub struct MentionMatchResult {
     pub sequence: u64,
     pub query: String,
     pub candidates: Vec<FileCandidate>,
-    pub scan_finished: bool,
+    pub status: FileIndexStatus,
 }
 
 enum FileIndexMatcherCommand {
-    Reset { generation: u64, index_version: u64, entries: Vec<FileCandidate>, scan_finished: bool },
-    ScanBatch { generation: u64, index_version: u64, entries: Vec<FileCandidate> },
-    ScanFinished { generation: u64, index_version: u64 },
-    FsBatch { generation: u64, index_version: u64, changes: Vec<FileIndexChange> },
+    Reset {
+        generation: u64,
+        index_version: u64,
+        entries: Vec<FileCandidate>,
+        status: FileIndexStatus,
+    },
+    ScanBatch {
+        generation: u64,
+        index_version: u64,
+        entries: Vec<FileCandidate>,
+    },
+    ScanFinished {
+        generation: u64,
+        index_version: u64,
+        status: FileIndexStatus,
+    },
+    FsBatch {
+        generation: u64,
+        index_version: u64,
+        changes: Vec<FileIndexChange>,
+    },
 }
 
 #[derive(Default)]
@@ -149,12 +192,16 @@ pub fn reset(app: &mut App) {
     app.file_index.root = None;
     app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
     app.file_index.entries.clear();
-    app.file_index.scan_finished = false;
-    app.file_index.rebuild_pending = false;
+    app.file_index.status = FileIndexStatus::NotStarted;
     app.file_index.scan_overrides = ScanOverrides::default();
     app.file_index.scan = None;
     app.file_index.watch = None;
     app.file_index.matcher = None;
+}
+
+#[must_use]
+pub(crate) fn event_channel() -> (SyncSender<FileIndexEvent>, Receiver<FileIndexEvent>) {
+    mpsc::sync_channel(EVENT_QUEUE_CAPACITY)
 }
 
 pub fn restart(app: &mut App) {
@@ -180,8 +227,7 @@ pub fn restart(app: &mut App) {
     );
     app.file_index.root = Some(root.clone());
     app.file_index.respect_gitignore = respect_gitignore;
-    app.file_index.scan_finished = false;
-    app.file_index.rebuild_pending = false;
+    app.file_index.status = FileIndexStatus::Scanning;
     app.file_index.scan_overrides = ScanOverrides::default();
     app.file_index.matcher = Some(spawn_matcher(generation, app.file_index_event_tx.clone()));
     send_matcher_command(
@@ -190,7 +236,7 @@ pub fn restart(app: &mut App) {
             generation,
             index_version: app.file_index.index_version,
             entries: Vec::new(),
-            scan_finished: false,
+            status: FileIndexStatus::Scanning,
         },
     );
     app.file_index.scan = Some(spawn_scan(
@@ -201,37 +247,6 @@ pub fn restart(app: &mut App) {
     ));
     app.file_index.watch =
         Some(spawn_watch(&root, generation, respect_gitignore, app.file_index_event_tx.clone()));
-}
-
-pub fn ensure_started(app: &mut App) {
-    let respect_gitignore = app.config.respect_gitignore_effective();
-    let current_root = PathBuf::from(&app.cwd_raw);
-    let root_changed = app.file_index.root.as_ref() != Some(&current_root);
-    let respect_gitignore_changed = app.file_index.respect_gitignore != respect_gitignore;
-    let missing_root = app.file_index.root.is_none();
-    let scan_missing_while_unfinished =
-        !app.file_index.scan_finished && app.file_index.scan.is_none();
-    let needs_restart =
-        root_changed || respect_gitignore_changed || missing_root || scan_missing_while_unfinished;
-    if needs_restart {
-        tracing::debug!(
-            target: crate::logging::targets::APP_FILE_INDEX,
-            event_name = "file_index_ensure_restart",
-            message = "file index ensure_started requested restart",
-            root_changed,
-            respect_gitignore_changed,
-            missing_root,
-            scan_missing_while_unfinished,
-            current_root = %current_root.display(),
-            indexed_root = %app.file_index.root
-                .as_ref()
-                .map_or_else(|| "<none>".to_owned(), |root| root.display().to_string()),
-            generation = app.file_index.generation,
-            entries = app.file_index.entries.len(),
-            scan_finished = app.file_index.scan_finished,
-        );
-        restart(app);
-    }
 }
 
 pub fn request_match(app: &mut App, request: MentionMatchRequest) {
@@ -253,7 +268,9 @@ pub fn drain_events(app: &mut App) {
     let mut handled = 0;
     let mut stats = EventApplyStats::default();
     loop {
-        if handled >= EVENT_DRAIN_BUDGET {
+        if handled >= EVENT_DRAIN_COUNT_BUDGET
+            || (handled > 0 && started_at.elapsed() >= EVENT_DRAIN_TIME_BUDGET)
+        {
             break;
         }
         let event = match app.file_index_event_rx.try_recv() {
@@ -266,7 +283,7 @@ pub fn drain_events(app: &mut App) {
     if stats.index_changed {
         refresh_after_mutation(app, &stats);
     }
-    if stats.index_changed || stats.mention_changed {
+    if stats.mention_changed || (stats.index_changed && app.mention.is_some()) {
         app.request_chat_repaint();
     }
     if handled > 0 {
@@ -284,11 +301,12 @@ pub fn drain_events(app: &mut App) {
             rebuilds = stats.rebuilds,
             scan_finished_event = stats.scan_finished,
             match_results = stats.match_results,
-            budget_hit = handled >= EVENT_DRAIN_BUDGET,
+            count_budget_hit = handled >= EVENT_DRAIN_COUNT_BUDGET,
+            time_budget_hit = started_at.elapsed() >= EVENT_DRAIN_TIME_BUDGET,
             total_entries = app.file_index.entries.len(),
             index_version = app.file_index.index_version,
             generation = app.file_index.generation,
-            scan_finished = app.file_index.scan_finished,
+            index_status = ?app.file_index.status,
             mention_active = app.mention.is_some(),
         );
     }
@@ -363,21 +381,6 @@ impl MatcherEntries {
         before - self.entries.len()
     }
 
-    fn replace_prefix(
-        &mut self,
-        rel_prefix: &str,
-        entries: Vec<FileCandidate>,
-    ) -> (usize, MatcherUpsertStats) {
-        let removed = self.remove_prefix(rel_prefix);
-        let mut stats = MatcherUpsertStats::default();
-        for entry in entries {
-            let upsert_stats = self.upsert(entry);
-            stats.inserted += upsert_stats.inserted;
-            stats.replaced += upsert_stats.replaced;
-        }
-        (removed, stats)
-    }
-
     fn apply_change(&mut self, change: FileIndexChange) -> MatcherChangeStats {
         match change {
             FileIndexChange::Upsert(candidate) => {
@@ -396,10 +399,6 @@ impl MatcherEntries {
                 removed: self.remove_prefix(&rel_prefix),
                 ..MatcherChangeStats::default()
             },
-            FileIndexChange::ReplacePrefix { rel_prefix, entries } => {
-                let (removed, stats) = self.replace_prefix(&rel_prefix, entries);
-                MatcherChangeStats { inserted: stats.inserted, replaced: stats.replaced, removed }
-            }
         }
     }
 
@@ -592,73 +591,12 @@ impl MatcherChangeStats {
 fn apply_event(app: &mut App, event: FileIndexEvent) -> EventApplyStats {
     match event {
         FileIndexEvent::ScanBatch { generation, entries } => {
-            if generation != app.file_index.generation {
-                return EventApplyStats::default();
-            }
-            let scan_entries = entries.len();
-            let mut matcher_entries = Vec::with_capacity(entries.len());
-            for entry in entries {
-                if app.file_index.scan_overrides.blocks(&entry.rel_path) {
-                    continue;
-                }
-                matcher_entries.push(entry.clone());
-                app.file_index.entries.insert(entry.rel_path.clone(), entry);
-            }
-            if matcher_entries.is_empty() {
-                return EventApplyStats { scan_entries, ..EventApplyStats::default() };
-            }
-            let index_version = bump_index_version(app);
-            send_matcher_command(
-                app,
-                FileIndexMatcherCommand::ScanBatch {
-                    generation,
-                    index_version,
-                    entries: matcher_entries,
-                },
-            );
-            EventApplyStats { index_changed: true, scan_entries, ..EventApplyStats::default() }
+            apply_scan_batch(app, generation, entries)
         }
-        FileIndexEvent::ScanFinished { generation } => {
-            if generation != app.file_index.generation {
-                return EventApplyStats::default();
-            }
-            app.file_index.scan_finished = true;
-            app.file_index.scan_overrides = ScanOverrides::default();
-            app.file_index.scan = None;
-            let index_version = bump_index_version(app);
-            send_matcher_command(
-                app,
-                FileIndexMatcherCommand::ScanFinished { generation, index_version },
-            );
-            EventApplyStats {
-                index_changed: true,
-                scan_finished: true,
-                ..EventApplyStats::default()
-            }
+        FileIndexEvent::ScanFinished { generation, limited } => {
+            apply_scan_finished(app, generation, limited)
         }
-        FileIndexEvent::FsBatch { generation, changes } => {
-            if generation != app.file_index.generation {
-                return EventApplyStats::default();
-            }
-            let fs_changes = changes.len();
-            let matcher_changes = changes.clone();
-            for change in changes {
-                if !app.file_index.scan_finished {
-                    app.file_index.scan_overrides.record_change(&change);
-                }
-                apply_change(&mut app.file_index.entries, change);
-            }
-            let index_version = bump_index_version(app);
-            send_matcher_command(
-                app,
-                FileIndexMatcherCommand::FsBatch {
-                    generation,
-                    index_version,
-                    changes: matcher_changes,
-                },
-            );
-            EventApplyStats { index_changed: true, fs_changes, ..EventApplyStats::default() }
-        }
+        FileIndexEvent::FsBatch { generation, changes } => apply_fs_batch(app, generation, changes),
         FileIndexEvent::RebuildRequested { generation } => {
             if generation != app.file_index.generation {
                 return EventApplyStats::default();
@@ -671,6 +609,147 @@ fn apply_event(app: &mut App, event: FileIndexEvent) -> EventApplyStats {
             EventApplyStats { mention_changed, match_results: 1, ..EventApplyStats::default() }
         }
     }
+}
+
+fn apply_scan_batch(
+    app: &mut App,
+    generation: u64,
+    entries: Vec<FileCandidate>,
+) -> EventApplyStats {
+    if generation != app.file_index.generation || app.file_index.status.is_limited() {
+        return EventApplyStats::default();
+    }
+    let scan_entries = entries.len();
+    let mut matcher_entries = Vec::with_capacity(entries.len());
+    let mut limited = false;
+    for entry in entries {
+        if app.file_index.scan_overrides.blocks(&entry.rel_path) {
+            continue;
+        }
+        if !app.file_index.entries.contains_key(&entry.rel_path)
+            && app.file_index.entries.len() >= MAX_INDEX_ENTRIES
+        {
+            limited = true;
+            break;
+        }
+        matcher_entries.push(entry.clone());
+        app.file_index.entries.insert(entry.rel_path.clone(), entry);
+    }
+    if limited {
+        mark_index_limited(app);
+    }
+    if matcher_entries.is_empty() {
+        return EventApplyStats {
+            scan_entries,
+            scan_finished: limited,
+            ..EventApplyStats::default()
+        };
+    }
+    let index_version = bump_index_version(app);
+    send_matcher_command(
+        app,
+        FileIndexMatcherCommand::ScanBatch { generation, index_version, entries: matcher_entries },
+    );
+    if limited {
+        send_limited_status_to_matcher(app, generation, index_version);
+    }
+    EventApplyStats {
+        index_changed: true,
+        scan_entries,
+        scan_finished: limited,
+        ..EventApplyStats::default()
+    }
+}
+
+fn apply_scan_finished(app: &mut App, generation: u64, limited: bool) -> EventApplyStats {
+    if generation != app.file_index.generation {
+        return EventApplyStats::default();
+    }
+    let limited = limited || app.file_index.status.is_limited();
+    app.file_index.status =
+        if limited { FileIndexStatus::Limited } else { FileIndexStatus::Complete };
+    app.file_index.scan_overrides = ScanOverrides::default();
+    app.file_index.scan = None;
+    if limited {
+        app.file_index.watch = None;
+    }
+    let index_version = bump_index_version(app);
+    send_matcher_command(
+        app,
+        FileIndexMatcherCommand::ScanFinished {
+            generation,
+            index_version,
+            status: app.file_index.status,
+        },
+    );
+    EventApplyStats { index_changed: true, scan_finished: true, ..EventApplyStats::default() }
+}
+
+fn apply_fs_batch(
+    app: &mut App,
+    generation: u64,
+    changes: Vec<FileIndexChange>,
+) -> EventApplyStats {
+    if generation != app.file_index.generation || app.file_index.status.is_limited() {
+        return EventApplyStats::default();
+    }
+    let fs_changes = changes.len();
+    let mut matcher_changes = Vec::with_capacity(changes.len());
+    let mut limited = false;
+    for change in changes {
+        if !app.file_index.status.is_finished() {
+            app.file_index.scan_overrides.record_change(&change);
+        }
+        if apply_change(&mut app.file_index.entries, &change) {
+            matcher_changes.push(change);
+        } else {
+            limited = true;
+            break;
+        }
+    }
+    if matcher_changes.is_empty() && !limited {
+        return EventApplyStats { fs_changes, ..EventApplyStats::default() };
+    }
+    if limited {
+        mark_index_limited(app);
+    }
+    let index_version = bump_index_version(app);
+    if !matcher_changes.is_empty() {
+        send_matcher_command(
+            app,
+            FileIndexMatcherCommand::FsBatch {
+                generation,
+                index_version,
+                changes: matcher_changes,
+            },
+        );
+    }
+    if limited {
+        send_limited_status_to_matcher(app, generation, index_version);
+    }
+    EventApplyStats {
+        index_changed: true,
+        fs_changes,
+        scan_finished: limited,
+        ..EventApplyStats::default()
+    }
+}
+
+fn mark_index_limited(app: &mut App) {
+    app.file_index.status = FileIndexStatus::Limited;
+    app.file_index.scan = None;
+    app.file_index.watch = None;
+}
+
+fn send_limited_status_to_matcher(app: &mut App, generation: u64, index_version: u64) {
+    send_matcher_command(
+        app,
+        FileIndexMatcherCommand::ScanFinished {
+            generation,
+            index_version,
+            status: FileIndexStatus::Limited,
+        },
+    );
 }
 
 fn refresh_after_mutation(app: &mut App, stats: &EventApplyStats) {
@@ -688,24 +767,22 @@ fn bump_index_version(app: &mut App) -> u64 {
     app.file_index.index_version
 }
 
-fn apply_change(entries: &mut BTreeMap<String, FileCandidate>, change: FileIndexChange) {
+fn apply_change(entries: &mut BTreeMap<String, FileCandidate>, change: &FileIndexChange) -> bool {
     match change {
         FileIndexChange::Upsert(candidate) => {
-            entries.insert(candidate.rel_path.clone(), candidate);
+            if !entries.contains_key(&candidate.rel_path) && entries.len() >= MAX_INDEX_ENTRIES {
+                return false;
+            }
+            entries.insert(candidate.rel_path.clone(), candidate.clone());
         }
         FileIndexChange::RemoveExact { rel_path } => {
-            entries.remove(&rel_path);
+            entries.remove(rel_path);
         }
         FileIndexChange::RemovePrefix { rel_prefix } => {
-            entries.retain(|path, _| !path.starts_with(&rel_prefix));
-        }
-        FileIndexChange::ReplacePrefix { rel_prefix, entries: next_entries } => {
-            entries.retain(|path, _| !path.starts_with(&rel_prefix));
-            for entry in next_entries {
-                entries.insert(entry.rel_path.clone(), entry);
-            }
+            entries.retain(|path, _| !path.starts_with(rel_prefix));
         }
     }
+    true
 }
 
 fn ensure_matcher(app: &mut App) {
@@ -715,11 +792,11 @@ fn ensure_matcher(app: &mut App) {
     let generation = app.file_index.generation;
     let index_version = app.file_index.index_version;
     let entries = app.file_index.entries.values().cloned().collect();
-    let scan_finished = app.file_index.scan_finished;
+    let status = app.file_index.status;
     app.file_index.matcher = Some(spawn_matcher(generation, app.file_index_event_tx.clone()));
     send_matcher_command(
         app,
-        FileIndexMatcherCommand::Reset { generation, index_version, entries, scan_finished },
+        FileIndexMatcherCommand::Reset { generation, index_version, entries, status },
     );
 }
 
@@ -727,20 +804,24 @@ fn send_matcher_command(app: &mut App, command: FileIndexMatcherCommand) {
     let Some(matcher) = app.file_index.matcher.as_ref() else {
         return;
     };
-    if matcher.index_tx.send(command).is_err() {
-        app.file_index.matcher = None;
-        tracing::warn!(
-            target: crate::logging::targets::APP_FILE_INDEX,
-            event_name = "file_index_matcher_send_failed",
-            message = "file index matcher command channel is closed",
-            generation = app.file_index.generation,
-            index_version = app.file_index.index_version,
-        );
-    }
+    let error_kind = match matcher.index_tx.try_send(command) {
+        Ok(()) => return,
+        Err(TrySendError::Full(_)) => "full",
+        Err(TrySendError::Disconnected(_)) => "disconnected",
+    };
+    app.file_index.matcher = None;
+    tracing::warn!(
+        target: crate::logging::targets::APP_FILE_INDEX,
+        event_name = "file_index_matcher_send_failed",
+        message = "file index matcher command channel is unavailable; matcher will rebuild on demand",
+        error_kind,
+        generation = app.file_index.generation,
+        index_version = app.file_index.index_version,
+    );
 }
 
-fn spawn_matcher(generation: u64, event_tx: Sender<FileIndexEvent>) -> FileIndexMatcherHandle {
-    let (index_tx, index_rx) = mpsc::channel();
+fn spawn_matcher(generation: u64, event_tx: SyncSender<FileIndexEvent>) -> FileIndexMatcherHandle {
+    let (index_tx, index_rx) = mpsc::sync_channel(MATCHER_INDEX_QUEUE_CAPACITY);
     let (query_tx, query_rx) = mpsc::channel();
     std::thread::spawn(move || {
         FileIndexMatcherRuntime::new(generation, index_rx, query_rx, event_tx).run();
@@ -752,10 +833,10 @@ struct FileIndexMatcherRuntime {
     generation: u64,
     index_version: u64,
     matcher: MentionMatcher,
-    scan_finished: bool,
+    status: FileIndexStatus,
     index_rx: Receiver<FileIndexMatcherCommand>,
     query_rx: Receiver<MentionMatchRequest>,
-    event_tx: Sender<FileIndexEvent>,
+    event_tx: SyncSender<FileIndexEvent>,
 }
 
 struct CoalescedQuery {
@@ -768,13 +849,13 @@ impl FileIndexMatcherRuntime {
         generation: u64,
         index_rx: Receiver<FileIndexMatcherCommand>,
         query_rx: Receiver<MentionMatchRequest>,
-        event_tx: Sender<FileIndexEvent>,
+        event_tx: SyncSender<FileIndexEvent>,
     ) -> Self {
         Self {
             generation,
             index_version: 0,
             matcher: MentionMatcher::default(),
-            scan_finished: false,
+            status: FileIndexStatus::Scanning,
             index_rx,
             query_rx,
             event_tx,
@@ -856,19 +937,14 @@ impl FileIndexMatcherRuntime {
 
     fn apply_index_command(&mut self, command: FileIndexMatcherCommand) {
         match command {
-            FileIndexMatcherCommand::Reset {
-                generation,
-                index_version,
-                entries,
-                scan_finished,
-            } => {
-                self.reset(generation, index_version, entries, scan_finished);
+            FileIndexMatcherCommand::Reset { generation, index_version, entries, status } => {
+                self.reset(generation, index_version, entries, status);
             }
             FileIndexMatcherCommand::ScanBatch { generation, index_version, entries: batch } => {
                 self.apply_scan_batch(generation, index_version, batch);
             }
-            FileIndexMatcherCommand::ScanFinished { generation, index_version } => {
-                self.apply_scan_finished(generation, index_version);
+            FileIndexMatcherCommand::ScanFinished { generation, index_version, status } => {
+                self.apply_scan_finished(generation, index_version, status);
             }
             FileIndexMatcherCommand::FsBatch { generation, index_version, changes } => {
                 self.apply_fs_batch(generation, index_version, changes);
@@ -907,7 +983,12 @@ impl FileIndexMatcherRuntime {
         );
     }
 
-    fn apply_scan_finished(&mut self, generation: u64, index_version: u64) {
+    fn apply_scan_finished(
+        &mut self,
+        generation: u64,
+        index_version: u64,
+        status: FileIndexStatus,
+    ) {
         if generation != self.generation {
             self.log_ignored_index_command(
                 "file index matcher ignored stale scan finished",
@@ -919,7 +1000,7 @@ impl FileIndexMatcherRuntime {
             return;
         }
 
-        self.scan_finished = true;
+        self.status = status;
         self.index_version = index_version;
         tracing::debug!(
             target: crate::logging::targets::APP_FILE_INDEX,
@@ -929,6 +1010,7 @@ impl FileIndexMatcherRuntime {
             index_version = self.index_version,
             entries = self.matcher.len(),
             injected_items = self.matcher.injected_items(),
+            index_status = ?self.status,
         );
     }
 
@@ -994,14 +1076,14 @@ impl FileIndexMatcherRuntime {
         generation: u64,
         index_version: u64,
         entries: Vec<FileCandidate>,
-        scan_finished: bool,
+        status: FileIndexStatus,
     ) {
         let entries_before = self.matcher.len();
         let incoming_entries = entries.len();
         self.generation = generation;
         self.index_version = index_version;
         let upserts = self.matcher.reset(entries);
-        self.scan_finished = scan_finished;
+        self.status = status;
         tracing::debug!(
             target: crate::logging::targets::APP_FILE_INDEX,
             event_name = "file_index_matcher_reset",
@@ -1014,7 +1096,7 @@ impl FileIndexMatcherRuntime {
             injected_items = self.matcher.injected_items(),
             inserted = upserts.inserted,
             replaced = upserts.replaced,
-            scan_finished = self.scan_finished,
+            index_status = ?self.status,
         );
     }
 
@@ -1070,7 +1152,7 @@ impl FileIndexMatcherRuntime {
             query_chars = request.query.chars().count(),
             query_bytes = request.query.len(),
             result_count = candidates.len(),
-            scan_finished = self.scan_finished,
+            index_status = ?self.status,
             match_strategy = "nucleo",
             nucleo_ticks = tick_count,
             nucleo_running = status.running,
@@ -1083,7 +1165,7 @@ impl FileIndexMatcherRuntime {
             sequence: request.sequence,
             query: request.query,
             candidates,
-            scan_finished: self.scan_finished,
+            status: self.status,
         };
         self.event_tx.send(FileIndexEvent::MatchResult(result)).is_ok()
     }
@@ -1093,7 +1175,7 @@ fn spawn_scan(
     root: PathBuf,
     generation: u64,
     respect_gitignore: bool,
-    event_tx: Sender<FileIndexEvent>,
+    event_tx: SyncSender<FileIndexEvent>,
 ) -> FileIndexScanHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
@@ -1108,22 +1190,31 @@ fn run_scan(
     generation: u64,
     respect_gitignore: bool,
     cancel: &Arc<AtomicBool>,
-    event_tx: &Sender<FileIndexEvent>,
+    event_tx: &SyncSender<FileIndexEvent>,
+) {
+    run_scan_with_limit(root, generation, respect_gitignore, cancel, event_tx, MAX_INDEX_ENTRIES);
+}
+
+fn run_scan_with_limit(
+    root: &Path,
+    generation: u64,
+    respect_gitignore: bool,
+    cancel: &Arc<AtomicBool>,
+    event_tx: &SyncSender<FileIndexEvent>,
+    max_entries: usize,
 ) {
     let started_at = Instant::now();
-    tracing::info!(
-        target: crate::logging::targets::APP_FILE_INDEX,
-        event_name = "file_index_scan_started",
-        message = "file index scan started",
-        generation,
-        root = %root.display(),
-        respect_gitignore,
-        batch_size = SCAN_BATCH_SIZE,
-    );
+    log_scan_started(root, generation, respect_gitignore, max_entries);
     let mut batch = Vec::with_capacity(SCAN_BATCH_SIZE);
     let mut candidates_seen = 0usize;
     let mut batches_sent = 0usize;
+    let mut limited = false;
+    let mut receiver_dropped = false;
     let mut emit_candidate = |candidate: FileCandidate| {
+        if candidates_seen >= max_entries {
+            limited = true;
+            return false;
+        }
         candidates_seen += 1;
         batch.push(candidate);
         if batch.len() < SCAN_BATCH_SIZE {
@@ -1141,30 +1232,15 @@ fn run_scan(
                 duration_ms = elapsed_ms(started_at),
             );
         }
-        event_tx
+        let sent = event_tx
             .send(FileIndexEvent::ScanBatch { generation, entries: std::mem::take(&mut batch) })
-            .is_ok()
+            .is_ok();
+        receiver_dropped = !sent;
+        sent
     };
-    if !for_each_candidate(
-        root,
-        root,
-        respect_gitignore,
-        Some(1),
-        Some(cancel),
-        &mut emit_candidate,
-    ) {
-        tracing::info!(
-            target: crate::logging::targets::APP_FILE_INDEX,
-            event_name = "file_index_scan_cancelled",
-            message = "file index shallow scan cancelled before completion",
-            generation,
-            candidates_seen,
-            batches_sent,
-            duration_ms = elapsed_ms(started_at),
-        );
-        return;
-    }
-    if !for_each_candidate(root, root, respect_gitignore, None, Some(cancel), &mut emit_candidate) {
+    let scan_complete =
+        for_each_candidate(root, root, respect_gitignore, Some(cancel), &mut emit_candidate);
+    if !scan_complete && !limited {
         tracing::info!(
             target: crate::logging::targets::APP_FILE_INDEX,
             event_name = "file_index_scan_cancelled",
@@ -1174,6 +1250,9 @@ fn run_scan(
             batches_sent,
             duration_ms = elapsed_ms(started_at),
         );
+        return;
+    }
+    if receiver_dropped || cancel.load(AtomicOrdering::Relaxed) {
         return;
     }
     let final_batch_len = batch.len();
@@ -1193,7 +1272,7 @@ fn run_scan(
             return;
         }
     }
-    let _ = event_tx.send(FileIndexEvent::ScanFinished { generation });
+    let _ = event_tx.send(FileIndexEvent::ScanFinished { generation, limited });
     tracing::info!(
         target: crate::logging::targets::APP_FILE_INDEX,
         event_name = "file_index_scan_finished",
@@ -1202,7 +1281,22 @@ fn run_scan(
         candidates_seen,
         batches_sent,
         final_batch_len,
+        limited,
+        max_entries,
         duration_ms = elapsed_ms(started_at),
+    );
+}
+
+fn log_scan_started(root: &Path, generation: u64, respect_gitignore: bool, max_entries: usize) {
+    tracing::info!(
+        target: crate::logging::targets::APP_FILE_INDEX,
+        event_name = "file_index_scan_started",
+        message = "file index scan started",
+        generation,
+        root = %root.display(),
+        respect_gitignore,
+        batch_size = SCAN_BATCH_SIZE,
+        max_entries,
     );
 }
 
@@ -1210,82 +1304,145 @@ fn spawn_watch(
     root: &Path,
     generation: u64,
     respect_gitignore: bool,
-    event_tx: Sender<FileIndexEvent>,
+    event_tx: SyncSender<FileIndexEvent>,
 ) -> FileIndexWatchHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_clone = Arc::clone(&cancel);
     let root_for_thread = root.to_path_buf();
     std::thread::spawn(move || {
-        tracing::info!(
-            target: crate::logging::targets::APP_FILE_INDEX,
-            event_name = "file_index_watch_started",
-            message = "file index watcher thread started",
-            generation,
-            root = %root_for_thread.display(),
-            respect_gitignore,
-            debounce_ms = WATCH_DEBOUNCE_INTERVAL.as_millis(),
-        );
-        let (watch_tx, watch_rx) = mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(move |result| {
-            let _ = watch_tx.send(result);
-        }) {
-            Ok(watcher) => watcher,
-            Err(err) => {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_FILE_INDEX,
-                    event_name = "file_index_watch_setup_failed",
-                    message = "file index watcher setup failed",
-                    generation,
-                    root = %root_for_thread.display(),
-                    error_message = %err,
-                );
-                return;
-            }
-        };
-        if let Err(err) =
-            notify::Watcher::watch(&mut watcher, &root_for_thread, notify::RecursiveMode::Recursive)
-        {
+        run_watch(&root_for_thread, generation, respect_gitignore, &cancel_clone, &event_tx);
+    });
+    FileIndexWatchHandle { cancel }
+}
+
+fn run_watch(
+    root: &Path,
+    generation: u64,
+    respect_gitignore: bool,
+    cancel: &AtomicBool,
+    event_tx: &SyncSender<FileIndexEvent>,
+) {
+    tracing::info!(
+        target: crate::logging::targets::APP_FILE_INDEX,
+        event_name = "file_index_watch_started",
+        message = "file index watcher thread started",
+        generation,
+        root = %root.display(),
+        respect_gitignore,
+        debounce_ms = WATCH_DEBOUNCE_INTERVAL.as_millis(),
+    );
+    let watch_overflowed = Arc::new(AtomicBool::new(false));
+    let watch_overflowed_for_callback = Arc::clone(&watch_overflowed);
+    let (watch_tx, watch_rx) = mpsc::sync_channel(WATCH_EVENT_QUEUE_CAPACITY);
+    let mut watcher = match notify::recommended_watcher(move |result| {
+        if matches!(watch_tx.try_send(result), Err(TrySendError::Full(_))) {
+            watch_overflowed_for_callback.store(true, AtomicOrdering::Relaxed);
+        }
+    }) {
+        Ok(watcher) => watcher,
+        Err(err) => {
             tracing::warn!(
                 target: crate::logging::targets::APP_FILE_INDEX,
-                event_name = "file_index_watch_start_failed",
-                message = "file index watcher start failed",
+                event_name = "file_index_watch_setup_failed",
+                message = "file index watcher setup failed",
                 generation,
-                root = %root_for_thread.display(),
+                root = %root.display(),
                 error_message = %err,
             );
             return;
         }
-
-        let mut pending = Vec::new();
-        while !cancel_clone.load(AtomicOrdering::Relaxed) {
-            let timeout =
-                if pending.is_empty() { WATCH_POLL_INTERVAL } else { WATCH_DEBOUNCE_INTERVAL };
-            match watch_rx.recv_timeout(timeout) {
-                Ok(event) => pending.push(event),
-                Err(RecvTimeoutError::Timeout) if pending.is_empty() => {}
-                Err(RecvTimeoutError::Timeout) => {
-                    if let Some(next_event) = normalize_watch_events(
-                        &root_for_thread,
-                        generation,
-                        respect_gitignore,
-                        pending.drain(..),
-                    ) {
-                        let _ = event_tx.send(next_event);
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
-        }
-        if let Some(next_event) = normalize_watch_events(
-            &root_for_thread,
+    };
+    if let Err(err) = notify::Watcher::watch(&mut watcher, root, notify::RecursiveMode::Recursive) {
+        tracing::warn!(
+            target: crate::logging::targets::APP_FILE_INDEX,
+            event_name = "file_index_watch_start_failed",
+            message = "file index watcher start failed",
             generation,
-            respect_gitignore,
-            pending.drain(..),
-        ) {
-            let _ = event_tx.send(next_event);
+            root = %root.display(),
+            error_message = %err,
+        );
+        return;
+    }
+    run_watch_loop(
+        root,
+        generation,
+        respect_gitignore,
+        cancel,
+        &watch_overflowed,
+        &watch_rx,
+        event_tx,
+    );
+}
+
+fn run_watch_loop(
+    root: &Path,
+    generation: u64,
+    respect_gitignore: bool,
+    cancel: &AtomicBool,
+    watch_overflowed: &AtomicBool,
+    watch_rx: &Receiver<notify::Result<notify::Event>>,
+    event_tx: &SyncSender<FileIndexEvent>,
+) {
+    let mut pending = Vec::new();
+    while !cancel.load(AtomicOrdering::Relaxed) {
+        if watch_overflowed.swap(false, AtomicOrdering::Relaxed) {
+            tracing::warn!(
+                target: crate::logging::targets::APP_FILE_INDEX,
+                event_name = "file_index_watch_overflowed",
+                message = "file index watcher exceeded its event buffer; requesting a bounded rebuild",
+                generation,
+                root = %root.display(),
+                queue_capacity = WATCH_EVENT_QUEUE_CAPACITY,
+            );
+            let _ = event_tx.send(FileIndexEvent::RebuildRequested { generation });
+            return;
         }
-    });
-    FileIndexWatchHandle { cancel }
+        let timeout =
+            if pending.is_empty() { WATCH_POLL_INTERVAL } else { WATCH_DEBOUNCE_INTERVAL };
+        match watch_rx.recv_timeout(timeout) {
+            Ok(event) => {
+                pending.push(event);
+                if pending.len() >= WATCH_EVENT_QUEUE_CAPACITY {
+                    tracing::warn!(
+                        target: crate::logging::targets::APP_FILE_INDEX,
+                        event_name = "file_index_watch_batch_limit_reached",
+                        message = "file index watcher exceeded its debounce batch; requesting a bounded rebuild",
+                        generation,
+                        root = %root.display(),
+                        batch_limit = WATCH_EVENT_QUEUE_CAPACITY,
+                    );
+                    let _ = event_tx.send(FileIndexEvent::RebuildRequested { generation });
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) if pending.is_empty() => {}
+            Err(RecvTimeoutError::Timeout) => {
+                if !send_watch_events(
+                    root,
+                    generation,
+                    respect_gitignore,
+                    pending.drain(..),
+                    event_tx,
+                ) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = send_watch_events(root, generation, respect_gitignore, pending, event_tx);
+}
+
+fn send_watch_events(
+    root: &Path,
+    generation: u64,
+    respect_gitignore: bool,
+    events: impl IntoIterator<Item = notify::Result<notify::Event>>,
+    event_tx: &SyncSender<FileIndexEvent>,
+) -> bool {
+    normalize_watch_events(root, generation, respect_gitignore, events)
+        .into_iter()
+        .all(|event| event_tx.send(event).is_ok())
 }
 
 fn normalize_watch_events(
@@ -1293,7 +1450,7 @@ fn normalize_watch_events(
     generation: u64,
     respect_gitignore: bool,
     events: impl IntoIterator<Item = notify::Result<notify::Event>>,
-) -> Option<FileIndexEvent> {
+) -> Vec<FileIndexEvent> {
     use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
 
     let mut rebuild = false;
@@ -1359,17 +1516,20 @@ fn normalize_watch_events(
             rename_paths = rename_paths.len(),
             remove_paths = remove_paths.len(),
         );
-        return Some(FileIndexEvent::RebuildRequested { generation });
+        return vec![FileIndexEvent::RebuildRequested { generation }];
     }
 
-    let mut changes = Vec::new();
-    changes.extend(collect_rename_changes(root, respect_gitignore, &rename_paths));
-    changes.extend(collect_create_or_modify_changes(
-        root,
-        respect_gitignore,
-        &create_or_modify_paths,
-    ));
+    let Some(mut changes) = collect_rename_changes(root, respect_gitignore, &rename_paths) else {
+        return vec![FileIndexEvent::RebuildRequested { generation }];
+    };
+    let Some(create_or_modify_changes) =
+        collect_create_or_modify_changes(root, respect_gitignore, &create_or_modify_paths)
+    else {
+        return vec![FileIndexEvent::RebuildRequested { generation }];
+    };
+    changes.extend(create_or_modify_changes);
     changes.extend(collect_remove_changes(root, &remove_paths));
+    let events = chunk_fs_changes(generation, changes);
     if raw_events > 0 {
         tracing::debug!(
             target: crate::logging::targets::APP_FILE_INDEX,
@@ -1380,11 +1540,23 @@ fn normalize_watch_events(
             create_or_modify_paths = create_or_modify_paths.len(),
             rename_paths = rename_paths.len(),
             remove_paths = remove_paths.len(),
-            changes = changes.len(),
+            fs_batches = events.len(),
         );
     }
 
-    (!changes.is_empty()).then_some(FileIndexEvent::FsBatch { generation, changes })
+    events
+}
+
+fn chunk_fs_changes(generation: u64, changes: Vec<FileIndexChange>) -> Vec<FileIndexEvent> {
+    let mut changes = changes.into_iter();
+    let mut events = Vec::new();
+    loop {
+        let batch = changes.by_ref().take(SCAN_BATCH_SIZE).collect::<Vec<_>>();
+        if batch.is_empty() {
+            return events;
+        }
+        events.push(FileIndexEvent::FsBatch { generation, changes: batch });
+    }
 }
 
 fn extend_unique_paths(paths: &mut Vec<PathBuf>, next_paths: impl IntoIterator<Item = PathBuf>) {
@@ -1419,13 +1591,11 @@ fn collect_create_or_modify_changes(
     root: &Path,
     respect_gitignore: bool,
     paths: &[PathBuf],
-) -> Vec<FileIndexChange> {
+) -> Option<Vec<FileIndexChange>> {
     let mut changes = Vec::new();
     for path in paths {
         if path.is_dir() {
-            if let Some(change) = replace_subtree_change(root, path, respect_gitignore) {
-                changes.push(change);
-            }
+            return None;
         } else if path.is_file() {
             let mut entries = scan_subtree(root, path, respect_gitignore);
             if let Some(candidate) = entries.pop() {
@@ -1435,7 +1605,7 @@ fn collect_create_or_modify_changes(
             }
         }
     }
-    changes
+    Some(changes)
 }
 
 fn collect_remove_changes(root: &Path, paths: &[PathBuf]) -> Vec<FileIndexChange> {
@@ -1454,60 +1624,35 @@ fn collect_rename_changes(
     root: &Path,
     respect_gitignore: bool,
     paths: &[PathBuf],
-) -> Vec<FileIndexChange> {
-    if paths.len() < 2 {
+) -> Option<Vec<FileIndexChange>> {
+    if paths.is_empty() {
+        return Some(Vec::new());
+    }
+    if paths.len() == 1 {
         // macOS FSEvents emits two separate RenameMode::Any events (one per
         // path) instead of a single paired event. If the path no longer exists
         // it is the "from" side of the rename and should be treated as a remove.
         if paths.first().is_some_and(|p| !p.exists()) {
-            return collect_remove_changes(root, paths);
+            return Some(collect_remove_changes(root, paths));
         }
-        return collect_parent_rescan_changes(root, respect_gitignore, paths);
+        return collect_create_or_modify_changes(root, respect_gitignore, paths);
     }
-    collect_parent_rescan_changes(root, respect_gitignore, paths)
+    if paths.len() != 2 {
+        return None;
+    }
+    let mut changes = collect_remove_changes(root, &paths[..1]);
+    changes.extend(collect_create_or_modify_changes(root, respect_gitignore, &paths[1..])?);
+    Some(changes)
 }
 
 fn scan_subtree(root: &Path, path: &Path, respect_gitignore: bool) -> Vec<FileCandidate> {
     collect_candidates(root, path, respect_gitignore, None)
 }
 
-fn collect_parent_rescan_changes(
-    root: &Path,
-    respect_gitignore: bool,
-    paths: &[PathBuf],
-) -> Vec<FileIndexChange> {
-    let mut changes = Vec::new();
-    let mut seen_prefixes = BTreeSet::new();
-    for path in paths {
-        let Some(parent) = path.parent() else { continue };
-        let Some(change) = replace_subtree_change(root, parent, respect_gitignore) else {
-            continue;
-        };
-        let FileIndexChange::ReplacePrefix { rel_prefix, .. } = &change else {
-            continue;
-        };
-        if seen_prefixes.insert(rel_prefix.clone()) {
-            changes.push(change);
-        }
-    }
-    changes
-}
-
-fn replace_subtree_change(
-    root: &Path,
-    path: &Path,
-    respect_gitignore: bool,
-) -> Option<FileIndexChange> {
-    let rel_prefix = if path == root { String::new() } else { normalized_prefix(root, path)? };
-    let entries = scan_subtree(root, path, respect_gitignore);
-    Some(FileIndexChange::ReplacePrefix { rel_prefix, entries })
-}
-
 fn for_each_candidate(
     root: &Path,
     walk_root: &Path,
     respect_gitignore: bool,
-    max_depth: Option<usize>,
     cancel: Option<&Arc<AtomicBool>>,
     emit: &mut impl FnMut(FileCandidate) -> bool,
 ) -> bool {
@@ -1518,7 +1663,6 @@ fn for_each_candidate(
         .git_global(respect_gitignore)
         .git_exclude(respect_gitignore)
         .sort_by_file_path(std::cmp::Ord::cmp);
-    builder.max_depth(max_depth);
 
     for result in builder.build() {
         if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed)) {
@@ -1541,11 +1685,10 @@ fn collect_candidates(
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Vec<FileCandidate> {
     let mut candidates = Vec::new();
-    let _ =
-        for_each_candidate(root, walk_root, respect_gitignore, None, cancel, &mut |candidate| {
-            candidates.push(candidate);
-            true
-        });
+    let _ = for_each_candidate(root, walk_root, respect_gitignore, cancel, &mut |candidate| {
+        candidates.push(candidate);
+        true
+    });
     candidates
 }
 
@@ -1578,10 +1721,6 @@ fn normalize_relative_path(root: &Path, path: &Path) -> Option<String> {
     (!rel_str.is_empty()).then_some(rel_str)
 }
 
-fn normalized_prefix(root: &Path, path: &Path) -> Option<String> {
-    normalize_relative_path(root, path).map(ensure_dir_suffix)
-}
-
 fn ensure_dir_suffix(mut rel_path: String) -> String {
     if !rel_path.ends_with('/') {
         rel_path.push('/');
@@ -1603,8 +1742,7 @@ impl ScanOverrides {
             FileIndexChange::RemoveExact { rel_path } => {
                 self.exact_paths.insert(rel_path.clone());
             }
-            FileIndexChange::RemovePrefix { rel_prefix }
-            | FileIndexChange::ReplacePrefix { rel_prefix, .. } => {
+            FileIndexChange::RemovePrefix { rel_prefix } => {
                 self.blocked_prefixes.push(rel_prefix.clone());
             }
         }
@@ -1662,14 +1800,42 @@ mod tests {
     }
 
     #[test]
+    fn candidate_walk_respects_root_and_nested_gitignore_files() {
+        let (app, _tmp) = app_with_temp_files(&[
+            ".git/marker",
+            ".gitignore",
+            "ignored.rs",
+            "visible.rs",
+            "src/.gitignore",
+            "src/hidden.rs",
+            "src/visible.rs",
+        ]);
+        let root = PathBuf::from(app.cwd_raw);
+        std::fs::write(root.join(".gitignore"), "ignored.rs\n").expect("write root gitignore");
+        std::fs::write(root.join("src/.gitignore"), "hidden.rs\n").expect("write nested gitignore");
+        let mut paths = Vec::new();
+
+        assert!(for_each_candidate(&root, &root, true, None, &mut |candidate| {
+            paths.push(candidate.rel_path);
+            true
+        },));
+
+        assert!(paths.iter().any(|path| path == "visible.rs"));
+        assert!(paths.iter().any(|path| path == "src/visible.rs"));
+        assert!(!paths.iter().any(|path| path == "ignored.rs"), "paths: {paths:?}");
+        assert!(!paths.iter().any(|path| path == "src/hidden.rs"), "paths: {paths:?}");
+    }
+
+    #[test]
     fn reopening_mention_reuses_existing_generation() {
         let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
+        restart(&mut app);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);
 
         mention::activate(&mut app);
         wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.scan_finished && !app.file_index.entries.is_empty()
+            app.file_index.status.is_finished() && !app.file_index.entries.is_empty()
         });
         let generation = app.file_index.generation;
 
@@ -1707,7 +1873,7 @@ mod tests {
     fn live_remove_blocks_late_scan_entry_from_same_generation() {
         let mut app = App::test_default();
         app.file_index.generation = 7;
-        app.file_index.scan_finished = false;
+        app.file_index.status = FileIndexStatus::Scanning;
 
         app.file_index_event_tx
             .send(FileIndexEvent::FsBatch {
@@ -1747,26 +1913,6 @@ mod tests {
             entries.iter().map(|candidate| candidate.rel_path.as_str()).collect::<Vec<_>>();
         assert_eq!(remaining, vec!["a.rs"]);
         assert_eq!(entries.len(), 1);
-    }
-
-    #[test]
-    fn matcher_entries_replace_prefix_keeps_lookup_consistent() {
-        let mut entries = MatcherEntries::default();
-        entries.upsert(candidate("src/a.rs"));
-        entries.upsert(candidate("src/nested/b.rs"));
-        entries.upsert(candidate("tests/c.rs"));
-
-        let (removed, stats) =
-            entries.replace_prefix("src/", vec![candidate("src/new.rs"), candidate("src/lib.rs")]);
-
-        assert_eq!(removed, 2);
-        assert_eq!(stats.inserted, 2);
-        assert_eq!(stats.replaced, 0);
-        assert!(!entries.remove_exact("src/a.rs"));
-        assert!(entries.remove_exact("src/new.rs"));
-        assert!(entries.remove_exact("src/lib.rs"));
-        assert!(entries.remove_exact("tests/c.rs"));
-        assert_eq!(entries.len(), 0);
     }
 
     fn mention_matcher_paths(matcher: &mut MentionMatcher, query: &str) -> Vec<String> {
@@ -1867,9 +2013,9 @@ mod tests {
     fn matcher_runtime_prioritizes_query_over_pending_scan_batches() {
         let (index_tx, index_rx) = mpsc::channel();
         let (query_tx, query_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         let mut runtime = FileIndexMatcherRuntime::new(1, index_rx, query_rx, event_tx);
-        runtime.reset(1, 1, vec![candidate("target.rs")], false);
+        runtime.reset(1, 1, vec![candidate("target.rs")], FileIndexStatus::Scanning);
         for idx in 0..32 {
             index_tx
                 .send(FileIndexMatcherCommand::ScanBatch {
@@ -1907,7 +2053,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
             std::fs::write(path, "").expect("write file");
         }
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         let _scan = spawn_scan(tmp.path().to_path_buf(), 1, true, tx);
 
         let first = rx.recv_timeout(Duration::from_secs(2)).expect("first scan event");
@@ -1915,7 +2061,72 @@ mod tests {
     }
 
     #[test]
-    fn spawn_scan_emits_root_children_before_deep_subtrees() {
+    fn file_index_event_channel_applies_bounded_backpressure() {
+        let (tx, _rx) = event_channel();
+        for generation in 0..EVENT_QUEUE_CAPACITY {
+            tx.try_send(FileIndexEvent::ScanFinished {
+                generation: generation as u64,
+                limited: false,
+            })
+            .expect("event should fit within configured capacity");
+        }
+
+        assert!(matches!(
+            tx.try_send(FileIndexEvent::ScanFinished { generation: 99, limited: false }),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+    }
+
+    #[test]
+    fn scan_stops_at_the_entry_limit_and_reports_partial_state() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for idx in 0..5 {
+            std::fs::write(tmp.path().join(format!("file-{idx}.rs")), "").expect("write file");
+        }
+        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        run_scan_with_limit(tmp.path(), 7, true, &cancel, &tx, 3);
+
+        let mut entries = Vec::new();
+        let mut limited = false;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                FileIndexEvent::ScanBatch { entries: batch, .. } => entries.extend(batch),
+                FileIndexEvent::ScanFinished { limited: event_limited, .. } => {
+                    limited = event_limited;
+                }
+                FileIndexEvent::FsBatch { .. }
+                | FileIndexEvent::RebuildRequested { .. }
+                | FileIndexEvent::MatchResult(_) => {}
+            }
+        }
+
+        assert_eq!(entries.len(), 3);
+        assert!(limited);
+    }
+
+    #[test]
+    fn background_index_updates_do_not_repaint_without_an_active_mention() {
+        let mut app = App::test_default();
+        app.file_index.generation = 4;
+        app.file_index.status = FileIndexStatus::Scanning;
+        app.surface_dirty.chat.repaint = false;
+        app.file_index_event_tx
+            .send(FileIndexEvent::ScanBatch {
+                generation: 4,
+                entries: vec![candidate("src/main.rs")],
+            })
+            .expect("send scan batch");
+
+        drain_events(&mut app);
+
+        assert!(app.file_index.entries.contains_key("src/main.rs"));
+        assert!(!app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
+    fn spawn_scan_indexes_each_candidate_once_in_a_single_walk() {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(tmp.path().join("aaa_huge")).expect("create huge sibling");
         std::fs::create_dir_all(tmp.path().join("web_dev_work")).expect("create target sibling");
@@ -1923,22 +2134,35 @@ mod tests {
             let path = tmp.path().join("aaa_huge").join(format!("file-{idx}.rs"));
             std::fs::write(path, "").expect("write file");
         }
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
         let _scan = spawn_scan(tmp.path().to_path_buf(), 1, true, tx);
+        let mut paths = Vec::new();
 
-        let first = rx.recv_timeout(Duration::from_secs(2)).expect("first scan event");
-        let FileIndexEvent::ScanBatch { entries, .. } = first else {
-            panic!("expected first scan batch");
-        };
+        loop {
+            match rx.recv_timeout(Duration::from_secs(2)).expect("scan event") {
+                FileIndexEvent::ScanBatch { entries, .. } => {
+                    paths.extend(entries.into_iter().map(|candidate| candidate.rel_path));
+                }
+                FileIndexEvent::ScanFinished { limited, .. } => {
+                    assert!(!limited);
+                    break;
+                }
+                FileIndexEvent::FsBatch { .. }
+                | FileIndexEvent::RebuildRequested { .. }
+                | FileIndexEvent::MatchResult(_) => panic!("unexpected scan event"),
+            }
+        }
 
-        assert!(entries.iter().any(|candidate| candidate.rel_path == "web_dev_work/"));
+        let unique = paths.iter().collect::<BTreeSet<_>>();
+        assert_eq!(unique.len(), paths.len());
+        assert!(paths.iter().any(|path| path == "web_dev_work/"));
     }
 
     #[test]
     fn fs_batch_create_updates_matcher_candidates_without_real_watcher() {
         let mut app = App::test_default();
         app.file_index.generation = 5;
-        app.file_index.scan_finished = true;
+        app.file_index.status = FileIndexStatus::Complete;
         app.file_index.entries.insert("existing.rs".to_owned(), candidate("existing.rs"));
         app.mention = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
 
@@ -1973,7 +2197,7 @@ mod tests {
         let (mut app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
         let root = tmp.path().canonicalize().expect("canonicalize tempdir");
         app.file_index.generation = 9;
-        app.file_index.scan_finished = true;
+        app.file_index.status = FileIndexStatus::Complete;
         app.file_index.root = Some(root.clone());
         app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
         app.file_index.entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
@@ -1982,7 +2206,8 @@ mod tests {
         std::fs::rename(root.join("before.rs"), root.join("after.rs"))
             .expect("rename watched file");
         let changes =
-            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
+            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")])
+                .expect("file rename should not require rebuild");
         app.file_index_event_tx
             .send(FileIndexEvent::FsBatch { generation: 9, changes })
             .expect("send rename fs batch");
@@ -2020,7 +2245,9 @@ mod tests {
             Ok(Event::new(EventKind::Create(CreateKind::File)).add_path(root.join("b.rs"))),
         ];
 
-        let event = normalize_watch_events(&root, 3, true, events).expect("watch event");
+        let mut normalized = normalize_watch_events(&root, 3, true, events);
+        assert_eq!(normalized.len(), 1);
+        let event = normalized.pop().expect("watch event");
 
         let FileIndexEvent::FsBatch { generation, changes } = event else {
             panic!("expected fs batch");
@@ -2036,6 +2263,20 @@ mod tests {
     }
 
     #[test]
+    fn watcher_changes_are_split_into_bounded_batches() {
+        let changes = (0..=SCAN_BATCH_SIZE)
+            .map(|idx| FileIndexChange::Upsert(candidate(&format!("file-{idx}.rs"))))
+            .collect();
+
+        let events = chunk_fs_changes(3, changes);
+
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| {
+            matches!(event, FileIndexEvent::FsBatch { changes, .. } if changes.len() <= SCAN_BATCH_SIZE)
+        }));
+    }
+
+    #[test]
     fn batched_watch_events_prefer_rebuild_for_ignore_semantics_change() {
         use notify::Event;
         use notify::event::{CreateKind, EventKind};
@@ -2047,28 +2288,29 @@ mod tests {
             Ok(Event::new(EventKind::Create(CreateKind::File)).add_path(root.join(".gitignore"))),
         ];
 
-        let event = normalize_watch_events(&root, 5, true, events).expect("watch event");
+        let mut normalized = normalize_watch_events(&root, 5, true, events);
+        assert_eq!(normalized.len(), 1);
+        let event = normalized.pop().expect("watch event");
 
         assert!(matches!(event, FileIndexEvent::RebuildRequested { generation: 5 }));
     }
 
     #[test]
-    fn root_file_rename_rescans_root_subtree() {
+    fn root_file_rename_emits_bounded_remove_and_upsert_changes() {
         let (_app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
         let root = tmp.path().canonicalize().expect("canonicalize tempdir");
         std::fs::rename(root.join("before.rs"), root.join("after.rs"))
             .expect("rename watched file");
 
         let changes =
-            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")]);
+            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")])
+                .expect("file rename should not require rebuild");
 
-        assert_eq!(changes.len(), 1);
-        let FileIndexChange::ReplacePrefix { rel_prefix, entries } = &changes[0] else {
-            panic!("expected replace prefix");
-        };
-        assert_eq!(rel_prefix, "");
-        assert!(entries.iter().any(|candidate| candidate.rel_path == "after.rs"));
-        assert!(entries.iter().any(|candidate| candidate.rel_path == "keep.rs"));
-        assert!(!entries.iter().any(|candidate| candidate.rel_path == "before.rs"));
+        assert!(changes.iter().any(|change| {
+            matches!(change, FileIndexChange::RemoveExact { rel_path } if rel_path == "before.rs")
+        }));
+        assert!(changes.iter().any(|change| {
+            matches!(change, FileIndexChange::Upsert(candidate) if candidate.rel_path == "after.rs")
+        }));
     }
 }

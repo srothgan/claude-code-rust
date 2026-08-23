@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::types::{ComposerAccess, ComposerBlockReason};
 use super::*;
 use crate::agent::model;
 use crate::app::focus::{FocusOwner, FocusTarget};
@@ -7,6 +8,26 @@ use pretty_assertions::assert_eq;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use std::time::Instant;
+
+#[test]
+fn composer_access_is_the_authoritative_status_policy() {
+    let mut app = App::test_default();
+    for (status, expected) in [
+        (AppStatus::Connecting, ComposerAccess::DraftOnly),
+        (AppStatus::CommandPending, ComposerAccess::Blocked(ComposerBlockReason::CommandPending)),
+        (AppStatus::Ready, ComposerAccess::Active),
+        (AppStatus::Thinking, ComposerAccess::Active),
+        (AppStatus::Running, ComposerAccess::Active),
+        (AppStatus::Error, ComposerAccess::Blocked(ComposerBlockReason::Error)),
+    ] {
+        app.status = status;
+        assert_eq!(app.composer_access(), expected);
+    }
+
+    app.status = AppStatus::Ready;
+    app.request_shutdown();
+    assert_eq!(app.composer_access(), ComposerAccess::Blocked(ComposerBlockReason::Shutdown));
+}
 
 // BlockCache
 

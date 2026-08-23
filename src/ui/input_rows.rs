@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use crate::app::{App, AppStatus, FocusOwner};
+use crate::app::{App, ComposerBlockReason, FocusOwner};
 use crate::ui::{autocomplete, theme};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -53,23 +53,9 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     rows
 }
 
-pub(crate) fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
-    if app.shutdown_requested() {
-        return vec![Line::from(Span::styled(
-            "Shutting down... Press Ctrl+C again to force exit.",
-            Style::default().fg(theme::DIM),
-        ))];
-    }
-
-    match app.status {
-        AppStatus::Connecting => {
-            let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
-            vec![Line::from(vec![
-                Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-                Span::styled("Connecting to Claude Code...", Style::default().fg(theme::DIM)),
-            ])]
-        }
-        AppStatus::CommandPending => {
+pub(crate) fn blocked_input_lines(app: &App, reason: ComposerBlockReason) -> Vec<Line<'static>> {
+    match reason {
+        ComposerBlockReason::CommandPending => {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
             let label =
                 app.turn.pending_command_label.as_deref().unwrap_or("Processing command...");
@@ -78,7 +64,7 @@ pub(crate) fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
                 Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
             ])]
         }
-        AppStatus::Error => vec![
+        ComposerBlockReason::Error => vec![
             Line::from(Span::styled(
                 "Input disabled due to error",
                 Style::default().fg(theme::STATUS_ERROR),
@@ -88,14 +74,17 @@ pub(crate) fn blocked_input_lines(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(theme::DIM),
             )),
         ],
-        AppStatus::Ready | AppStatus::Thinking | AppStatus::Running => Vec::new(),
+        ComposerBlockReason::Shutdown => vec![Line::from(Span::styled(
+            "Shutting down... Press Ctrl+C again to force exit.",
+            Style::default().fg(theme::DIM),
+        ))],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{blocked_input_lines, build_composer_hint_rows};
-    use crate::app::{App, AppStatus, FocusTarget, LoginHint};
+    use crate::app::{App, AppStatus, ComposerBlockReason, FocusTarget, LoginHint};
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
@@ -163,24 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn blocked_input_lines_shows_connecting_status() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Connecting;
-        app.spinner_frame = 3;
-
-        let rows = blocked_input_lines(&app);
-
-        assert_eq!(rows.len(), 1);
-        assert!(line_text(&rows[0]).contains("Connecting to Claude Code..."));
-    }
-
-    #[test]
     fn blocked_input_lines_shows_pending_command_label() {
         let mut app = App::test_default();
         app.status = AppStatus::CommandPending;
         app.turn.pending_command_label = Some("Switching model...".to_owned());
 
-        let rows = blocked_input_lines(&app);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending);
 
         assert_eq!(rows.len(), 1);
         assert!(line_text(&rows[0]).contains("Switching model..."));
@@ -191,7 +168,7 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Error;
 
-        let rows = blocked_input_lines(&app);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::Error);
 
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Input disabled due to error"));
@@ -204,7 +181,7 @@ mod tests {
         app.status = AppStatus::Running;
         app.request_shutdown();
 
-        let rows = blocked_input_lines(&app);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::Shutdown);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(line_text(&rows[0]), "Shutting down... Press Ctrl+C again to force exit.");
