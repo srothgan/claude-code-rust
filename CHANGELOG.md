@@ -2,7 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+<!-- ## [Unreleased] -->
+
+## [0.14.6] - 2026-09-02 [Changes][v0.14.6]
 
 ### Features
 
@@ -835,6 +837,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.14.6]: https://github.com/srothgan/claude-code-rust/compare/v0.14.5...v0.14.6
 [v0.14.5]: https://github.com/srothgan/claude-code-rust/compare/v0.14.4...v0.14.5
 [v0.14.4]: https://github.com/srothgan/claude-code-rust/compare/v0.14.3...v0.14.4
 [v0.14.3]: https://github.com/srothgan/claude-code-rust/compare/v0.14.2...v0.14.3
