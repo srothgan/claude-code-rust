@@ -628,6 +628,9 @@ export async function createSession(params: {
       history_update_count: historyUpdateCount,
       stale_session_count: staleSessionCount,
       stale_session_before_register_count: staleSessionBeforeRegisterCount,
+      sdk_debug_enabled: enableSdkDebug,
+      sdk_debug_file_configured: Boolean(sdkDebugFile),
+      sdk_spawn_debug_enabled: enableSpawnDebug,
     },
   });
   try {
@@ -923,7 +926,7 @@ export async function awaitSessionInitialization(
     // the protocol barrier proving that startup messages have reached the SDK; yield
     // once more so the bridge's query consumer can process the already-enqueued result.
     try {
-      await session.query.getContextUsage();
+      await session.query.getContextUsage({ detail: "summary" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       bridgeLogger.warn({
@@ -1146,6 +1149,9 @@ function systemPromptFromLaunchSettings(
     type: "preset",
     preset: "claude_code",
     append: appendLines.join(" "),
+    // Keep the prompt prefix stable across resume. Updated host language or guard text
+    // intentionally takes effect after SDK compaction or in a new session.
+    snapshot: true,
   };
 }
 

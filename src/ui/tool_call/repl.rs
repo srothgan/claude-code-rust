@@ -111,6 +111,12 @@ fn field_label(label: &str) -> Option<&'static str> {
         "Registered tools" | "registeredTools" => Some("Registered tools"),
         "Images" | "images" => Some("Images"),
         "Documents" | "documents" => Some("Documents"),
+        "Images omitted" | "imagesOmitted" => Some("Images omitted"),
+        "Failed image page" | "imagePagesFailed" => Some("Failed image page"),
+        "Failed image pages omitted" | "imagePagesFailedOmitted" => {
+            Some("Failed image pages omitted")
+        }
+        "Documents omitted" | "documentsOmitted" => Some("Documents omitted"),
         _ => None,
     }
 }
@@ -118,7 +124,11 @@ fn field_label(label: &str) -> Option<&'static str> {
 fn field_value(label: &str, value: &str) -> String {
     match label {
         "Registered tools" => registered_tools_value(value),
-        "Images" | "Documents" => media_count_value(value),
+        "Images"
+        | "Documents"
+        | "Images omitted"
+        | "Failed image pages omitted"
+        | "Documents omitted" => media_count_value(value),
         _ => value.to_owned(),
     }
 }
@@ -291,5 +301,26 @@ mod tests {
 
         assert_eq!(body.len(), super::super::TOOL_BODY_MAX_LINES);
         assert!(rendered.iter().any(|line| line.contains("hidden")));
+    }
+
+    #[test]
+    fn omission_and_failed_page_fields_render_as_structured_rows() {
+        let tc = repl_tool_call(
+            json!({}),
+            Some(
+                "Images omitted: 3\nFailed image page: 4 (file manual.pdf: render failed)\nFailed image pages omitted: 2\nDocuments omitted: 1",
+            ),
+            model::ToolCallStatus::Completed,
+        );
+
+        assert_eq!(
+            rendered_line_texts(&render_tool_content(&tc)),
+            vec![
+                "Images omitted: 3",
+                "Failed image page: 4 (file manual.pdf: render failed)",
+                "Failed image pages omitted: 2",
+                "Documents omitted: 1",
+            ]
+        );
     }
 }

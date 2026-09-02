@@ -38,6 +38,8 @@ import {
   resolveTaskToolUseId,
   defersTaskNotificationCompletion,
   toolAcceptsTaskLifecycle,
+  toolAcceptsTerminalTaskNotification,
+  toolPreservesTaskNotificationOutput,
   taskProgressText,
   taskUpdatedFields,
   type ToolCorrelationMetadata,
@@ -83,6 +85,7 @@ import {
 } from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitMcpSnapshotFromStatuses } from "./mcp.js";
+import { appendResourceLinks } from "./resource_links.js";
 
 export function textFromPrompt(
   command: Extract<BridgeCommand, { command: "prompt" }>,
@@ -195,6 +198,7 @@ function sdkTaskMetadata(
     ...(typeof msg.is_backgrounded === "boolean"
       ? { is_backgrounded: msg.is_backgrounded }
       : {}),
+    ...(typeof msg.ambient === "boolean" ? { ambient: msg.ambient } : {}),
     ...(spawnDepth !== undefined ? { spawn_depth: spawnDepth } : {}),
   };
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
@@ -208,6 +212,54 @@ function sdkMessageOriginKind(
       ? (msg.origin as Record<string, unknown>)
       : null;
   return typeof origin?.kind === "string" ? origin.kind : undefined;
+}
+
+function diagnosticToken(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z][a-z0-9_-]{0,63}$/i.test(value)
+    ? value
+    : undefined;
+}
+
+export function sdkMessageDiagnosticFields(
+  msg: Record<string, unknown>,
+): Record<string, unknown> {
+  const event = asRecordOrNull(msg.event);
+  const delta = asRecordOrNull(event?.delta);
+  const uuidFields = Object.fromEntries(
+    Object.entries(msg).filter(
+      ([key, value]) =>
+        key.toLowerCase().includes("uuid") && typeof value === "string",
+    ),
+  );
+  const hasParentToolUseId = Object.hasOwn(msg, "parent_tool_use_id");
+  const parentToolUseId = trimmedStringField(msg, "parent_tool_use_id");
+
+  return {
+    sdk_type: typeof msg.type === "string" ? msg.type : undefined,
+    sdk_subtype: typeof msg.subtype === "string" ? msg.subtype : undefined,
+    sdk_uuid: trimmedStringField(msg, "uuid"),
+    user_message_uuid: trimmedStringField(msg, "user_message_uuid"),
+    parent_tool_use_id: parentToolUseId,
+    parent_tool_use_scope: !hasParentToolUseId
+      ? "absent"
+      : msg.parent_tool_use_id === null
+        ? "root"
+        : parentToolUseId
+          ? "child"
+          : "other",
+    request_id: trimmedStringField(msg, "request_id"),
+    origin_kind: sdkMessageOriginKind(msg),
+    inner_event_type: diagnosticToken(event?.type),
+    inner_delta_type: diagnosticToken(delta?.type),
+    lifecycle_status: diagnosticToken(msg.status),
+    lifecycle_state: diagnosticToken(msg.state),
+    lifecycle_operation: diagnosticToken(msg.operation),
+    lifecycle_reason: diagnosticToken(msg.reason),
+    sdk_keys: Object.keys(msg).sort(),
+    ...(Object.keys(uuidFields).length > 0
+      ? { sdk_uuid_fields: uuidFields }
+      : {}),
+  };
 }
 
 function externalMessageUpdateFromSdkUser(
@@ -676,7 +728,11 @@ export function handleTaskSystemMessage(
   }
 
   const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
-  if (!toolAcceptsTaskLifecycle(toolCall)) {
+  const acceptsLifecycle = toolAcceptsTaskLifecycle(toolCall);
+  const acceptsTerminalNotification =
+    subtype === "task_notification" &&
+    toolAcceptsTerminalTaskNotification(toolCall);
+  if (!acceptsLifecycle && !acceptsTerminalNotification) {
     if (taskId) {
       unlinkTaskToolUse(session, taskId);
     }
@@ -774,11 +830,18 @@ export function handleTaskSystemMessage(
   if (messageTaskMetadata) {
     fields.task_metadata = messageTaskMetadata;
   }
-  if (summary) {
+  if (summary && !toolPreservesTaskNotificationOutput(toolCall)) {
     fields.raw_output = summary;
     fields.content = [
       { type: "content", content: { type: "text", text: summary } },
     ];
+  }
+  const contentWithResourceLinks = appendResourceLinks(
+    fields.content,
+    msg.resource_links,
+  );
+  if (contentWithResourceLinks !== undefined) {
+    fields.content = contentWithResourceLinks;
   }
   if (Object.keys(fields).length > 0) {
     emitToolCallUpdate(session, toolUseId, fields, "task_notification");
@@ -1220,6 +1283,54 @@ export function handleAssistantMessage(
   }
 }
 
+function emitUserMessageStarted(
+  session: SessionState,
+  message: Record<string, unknown>,
+  source: "stream_event" | "assistant" | "result",
+): void {
+  const messageUuid = trimmedStringField(message, "user_message_uuid");
+  if (!messageUuid) {
+    return;
+  }
+  emitUserMessageStartedForUuid(session, messageUuid, source);
+}
+
+function emitUserMessageStartedForUuid(
+  session: SessionState,
+  messageUuid: string,
+  source: "command_lifecycle" | "stream_event" | "assistant" | "result",
+): void {
+  writeEvent({
+    event: "user_message_started",
+    session_id: session.sessionId,
+    message_uuid: messageUuid,
+    source,
+  });
+}
+
+function handleCommandLifecycleMessage(
+  session: SessionState,
+  message: Record<string, unknown>,
+): void {
+  const state = trimmedStringField(message, "state");
+  const commandUuid = trimmedStringField(message, "command_uuid");
+  if (state !== "started") {
+    return;
+  }
+  if (!commandUuid) {
+    bridgeLogger.warn({
+      target: LOG_TARGETS.BRIDGE_SDK,
+      eventName: "sdk_command_lifecycle_start_invalid",
+      message: "SDK command lifecycle start omitted its command UUID",
+      outcome: "ignored",
+      sessionId: session.sessionId,
+      fields: sdkMessageDiagnosticFields(message),
+    });
+    return;
+  }
+  emitUserMessageStartedForUuid(session, commandUuid, "command_lifecycle");
+}
+
 function messageToolUseResult(message: Record<string, unknown>): unknown {
   if (Object.hasOwn(message, "toolUseResult")) {
     return message.toolUseResult;
@@ -1294,12 +1405,19 @@ export function handleResultMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  if (
+    message.parent_tool_use_id === null ||
+    message.parent_tool_use_id === undefined
+  ) {
+    emitUserMessageStarted(session, message, "result");
+  }
   emitFastModeUpdateIfChanged(
     session,
     message.fast_mode_state,
     message.fast_mode_disabled_reason,
   );
   const terminalReason = terminalReasonFromValue(message.terminal_reason);
+  const queuedTurnCount = nonNegativeIntegerField(message, "queued_turn_count");
 
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
   if (subtype === "success") {
@@ -1308,6 +1426,9 @@ export function handleResultMessage(
     writeEvent({
       event: "turn_complete",
       session_id: session.sessionId,
+      ...(queuedTurnCount !== undefined
+        ? { queued_turn_count: queuedTurnCount }
+        : {}),
       ...(terminalReason ? { terminal_reason: terminalReason } : {}),
     });
     return;
@@ -1363,6 +1484,9 @@ export function handleResultMessage(
     event: "turn_error",
     session_id: session.sessionId,
     message: errors.length > 0 ? errors.join("\n") : fallback,
+    ...(queuedTurnCount !== undefined
+      ? { queued_turn_count: queuedTurnCount }
+      : {}),
     error_kind: errorKind,
     ...(subtype ? { sdk_result_subtype: subtype } : {}),
     ...(assistantError ? { assistant_error: assistantError } : {}),
@@ -1848,6 +1972,12 @@ export function handleSdkMessage(
   }
 
   if (type === "stream_event") {
+    if (
+      msg.parent_tool_use_id === null ||
+      msg.parent_tool_use_id === undefined
+    ) {
+      emitUserMessageStarted(session, msg, "stream_event");
+    }
     if (msg.event && typeof msg.event === "object") {
       const parentToolUseId =
         typeof msg.parent_tool_use_id === "string"
@@ -2066,11 +2196,34 @@ export function handleSdkMessage(
     if (msg.error === "authentication_failed") {
       emitAuthRequired(session);
     }
+    if (
+      msg.parent_tool_use_id === null ||
+      msg.parent_tool_use_id === undefined
+    ) {
+      emitUserMessageStarted(session, msg, "assistant");
+    }
     handleAssistantMessage(session, msg);
     return;
   }
 
   if (type === "result") {
     handleResultMessage(session, msg);
+    return;
   }
+
+  // Bundled Claude Code 2.1.258 emits this runtime frame even though the
+  // corresponding SDK 0.3.258 TypeScript union does not declare it.
+  if (type === "command_lifecycle") {
+    handleCommandLifecycleMessage(session, msg);
+    return;
+  }
+
+  bridgeLogger.debug({
+    target: LOG_TARGETS.BRIDGE_SDK,
+    eventName: "sdk_message_unhandled",
+    message: "SDK message ignored by explicit top-level fallback policy",
+    outcome: "ignored",
+    sessionId: session.sessionId,
+    fields: sdkMessageDiagnosticFields(msg),
+  });
 }

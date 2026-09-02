@@ -15,6 +15,7 @@ mod autocomplete;
 mod focus_runtime;
 mod git_runtime;
 mod paste;
+mod pending_messages;
 mod repaint;
 mod sdk_inventory;
 mod session_identity;
@@ -42,6 +43,9 @@ pub use messages::{
     hash_text_block_content, hash_welcome_block_content,
 };
 pub use paste::PasteState;
+pub(crate) use pending_messages::{
+    PendingUserMessage, PendingUserMessageInsertError, PendingUserMessages,
+};
 pub use repaint::LayoutInvalidation as InvalidationLevel;
 pub use repaint::LayoutInvalidation;
 pub use sdk_inventory::SdkInventoryState;
@@ -70,6 +74,7 @@ mod prelude {
     pub(super) use super::chat_render::ChatRenderState;
     pub(super) use super::messages::{ChatMessage, MessageBlock, MessageRole, NoticeDedupKey};
     pub(super) use super::paste::PasteState;
+    pub(super) use super::pending_messages::PendingUserMessages;
     pub(super) use super::repaint::LayoutInvalidation as InvalidationLevel;
     pub(super) use super::sdk_inventory::SdkInventoryState;
     pub(super) use super::session_runtime::SessionRuntimeState;

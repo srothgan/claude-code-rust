@@ -149,14 +149,7 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
         artifact_fields.push(ToolField::new("Capabilities", capabilities));
     }
     if let Some(stored) = object.get("stored").and_then(Value::as_object) {
-        if let Some(contract) = typed::json_string(stored, "contract") {
-            artifact_fields.push(ToolField::new("Stored contract", contract));
-        }
-        if let Some(capabilities) =
-            stored.get("capabilities").and_then(typed::non_empty_compact_json)
-        {
-            artifact_fields.push(ToolField::new("Stored capabilities", capabilities));
-        }
+        artifact_fields.extend(render_stored_output_fields(stored));
     }
     if let Some(warnings) = typed::json_string_array(object.get("warnings")) {
         artifact_fields.push(ToolField::new("Warnings", warnings.join("; ")));
@@ -166,6 +159,9 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
     }
     if let Some(updated) = typed::json_bool(object, "updated") {
         artifact_fields.push(ToolField::new("Updated", typed::bool_label(updated)));
+    }
+    if let Some(audience) = typed::json_string(object, "audience") {
+        artifact_fields.push(ToolField::new("Audience", audience));
     }
     if let Some(live_subscription) = typed::json_string(object, "liveSubscription") {
         artifact_fields.push(ToolField::new("Live subscription", live_subscription));
@@ -187,6 +183,7 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
             "warnings",
             "contract",
             "updated",
+            "audience",
             "liveSubscription",
             "read",
             "artifactRead",
@@ -194,12 +191,43 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
             "asset_list",
             "asset_read",
             "asset_delete",
+            "watch",
+            "unwatch",
+            "watches",
+            "filter_url",
+            "arms",
         ],
     ) {
         artifact_fields.push(ToolField::new("Additional output", additional));
     }
 
     artifact_fields
+}
+
+fn render_stored_output_fields(stored: &Map<String, Value>) -> Vec<ToolField<'_>> {
+    let mut fields = Vec::new();
+    if let Some(contract) = typed::json_string(stored, "contract") {
+        fields.push(ToolField::new("Stored contract", contract));
+    }
+    if let Some(capabilities) = stored.get("capabilities").and_then(typed::non_empty_compact_json) {
+        fields.push(ToolField::new("Stored capabilities", capabilities));
+    }
+    if let Some(preferred_contract) = typed::json_string(stored, "preferredContract") {
+        fields.push(ToolField::new("Preferred contract", preferred_contract));
+    }
+    if let Some(carried) = typed::json_bool(stored, "carried") {
+        fields.push(ToolField::new("Stored state carried", typed::bool_label(carried)));
+    }
+    if let Some(read) = typed::json_string(stored, "read") {
+        fields.push(ToolField::new("Stored read state", read));
+    }
+    if let Some(additional) = additional_json(
+        stored,
+        &["contract", "preferredContract", "capabilities", "carried", "read"],
+    ) {
+        fields.push(ToolField::new("Additional stored output", additional));
+    }
+    fields
 }
 
 fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
@@ -221,6 +249,15 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
     if let Some(asset_delete) = object.get("asset_delete") {
         lines.extend(render_asset_delete_output(asset_delete));
     }
+    if let Some(watch) = object.get("watch") {
+        lines.extend(render_watch_output(watch));
+    }
+    if let Some(unwatch) = object.get("unwatch") {
+        lines.extend(render_unwatch_output(unwatch));
+    }
+    if object.get("watches").is_some() || object.get("arms").is_some() {
+        lines.extend(render_watch_status_output(object));
+    }
     if let Some(artifacts) = object.get("artifacts").and_then(Value::as_array) {
         for (index, artifact) in artifacts.iter().enumerate() {
             let Some(artifact) = artifact.as_object() else {
@@ -235,12 +272,154 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
             let title = typed::json_string(artifact, "title").unwrap_or("<untitled>");
             let url = typed::json_string(artifact, "url").unwrap_or("<no URL>");
             let relation = typed::json_string(artifact, "rel").map(|rel| format!("({rel}) "));
+            let favicon = typed::json_string(artifact, "favicon")
+                .map(|value| format!(" — icon {value}"))
+                .unwrap_or_default();
             let updated = typed::json_string(artifact, "updatedAt")
                 .map(|timestamp| format!(" — updated {timestamp}"))
                 .unwrap_or_default();
+            let additional =
+                additional_json(artifact, &["title", "url", "favicon", "updatedAt", "rel"])
+                    .map(|value| format!(" — additional {value}"))
+                    .unwrap_or_default();
             lines.push(fields::render_dynamic_field(
                 format!("Artifact {}", index + 1),
-                format!("{}{title} — {url}{updated}", relation.unwrap_or_default()),
+                format!(
+                    "{}{title} — {url}{favicon}{updated}{additional}",
+                    relation.unwrap_or_default()
+                ),
+            ));
+        }
+    }
+    lines
+}
+
+fn render_watch_output(value: &Value) -> Vec<Line<'static>> {
+    let Some(watch) = value.as_object() else {
+        return compact_value_field("Watch", value);
+    };
+    let mut values = Vec::new();
+    for (key, label) in [
+        ("url", "Watch URL"),
+        ("outcome", "Watch outcome"),
+        ("reason", "Watch reason"),
+        ("durable_skip_reason", "Durable skip reason"),
+        ("task_id", "Watch task ID"),
+        ("rail", "Watch rail"),
+        ("trigger_id", "Watch trigger ID"),
+        ("durable_since", "Durable since"),
+        ("detail", "Watch detail"),
+        ("note", "Watch note"),
+    ] {
+        if let Some(value) = typed::json_string(watch, key) {
+            values.push(ToolField::new(label, value));
+        }
+    }
+    if let Some(watching) = typed::json_bool(watch, "watching") {
+        values.push(ToolField::new("Watching", typed::bool_label(watching)));
+    }
+    for (key, label) in [
+        ("since", "Watch since"),
+        ("token_expires_at", "Token expires at"),
+        ("status", "Watch status"),
+    ] {
+        if let Some(value) = typed::json_i64(watch, key) {
+            values.push(ToolField::new(label, value.to_string()));
+        }
+    }
+    if let Some(events) = typed::json_string_array(watch.get("events")) {
+        values.push(ToolField::new("Watch events", events.join(", ")));
+    }
+    if let Some(additional) = additional_json(
+        watch,
+        &[
+            "url",
+            "watching",
+            "outcome",
+            "reason",
+            "durable_skip_reason",
+            "task_id",
+            "since",
+            "token_expires_at",
+            "rail",
+            "trigger_id",
+            "durable_since",
+            "status",
+            "detail",
+            "note",
+            "events",
+        ],
+    ) {
+        values.push(ToolField::new("Additional watch output", additional));
+    }
+    fields::render_fields(values)
+}
+
+fn render_unwatch_output(value: &Value) -> Vec<Line<'static>> {
+    let Some(unwatch) = value.as_object() else {
+        return compact_value_field("Unwatch", value);
+    };
+    let mut values = Vec::new();
+    if let Some(url) = typed::json_string(unwatch, "url") {
+        values.push(ToolField::new("Unwatch URL", url));
+    }
+    if let Some(was_watching) = typed::json_bool(unwatch, "was_watching") {
+        values.push(ToolField::new("Was watching", typed::bool_label(was_watching)));
+    }
+    if let Some(additional) = additional_json(unwatch, &["url", "was_watching"]) {
+        values.push(ToolField::new("Additional unwatch output", additional));
+    }
+    fields::render_fields(values)
+}
+
+fn render_watch_status_output(object: &Map<String, Value>) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(filter_url) = typed::json_string(object, "filter_url") {
+        lines.push(fields::render_field("Watch filter", filter_url));
+    }
+    if let Some(watches) = object.get("watches").and_then(Value::as_array) {
+        lines.push(fields::render_field("Watches", watches.len().to_string()));
+        for (index, watch) in watches.iter().enumerate() {
+            lines.extend(compact_value_field(format!("Watcher {}", index + 1), watch));
+        }
+    }
+    if let Some(arms) = object.get("arms").and_then(Value::as_array) {
+        lines.push(fields::render_field("Watch arms", arms.len().to_string()));
+        for (index, arm) in arms.iter().enumerate() {
+            let Some(arm) = arm.as_object() else {
+                lines.extend(compact_value_field(format!("Watch arm {}", index + 1), arm));
+                continue;
+            };
+            let url = typed::json_string(arm, "url").unwrap_or("<no URL>");
+            let state = typed::json_string(arm, "state").unwrap_or("unknown");
+            let server_message = typed::json_string(arm, "server_message")
+                .map(|value| format!("; server message {value}"))
+                .unwrap_or_default();
+            let detail = typed::json_string(arm, "detail")
+                .map(|value| format!("; detail {value}"))
+                .unwrap_or_default();
+            let additional = additional_json(
+                arm,
+                &[
+                    "url",
+                    "state",
+                    "server_message",
+                    "detail",
+                    "rail",
+                    "reconnect",
+                    "failures",
+                    "max_failures",
+                    "next_in_s",
+                    "last_failure",
+                    "reason",
+                    "at",
+                ],
+            )
+            .map(|value| format!("; additional {value}"))
+            .unwrap_or_default();
+            lines.push(fields::render_dynamic_field(
+                format!("Watch arm {}", index + 1),
+                format!("{url} — {state}{server_message}{detail}{additional}"),
             ));
         }
     }
@@ -534,7 +713,7 @@ mod tests {
                 "futureInput": {"enabled": true}
             }),
             Some(
-                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","path":"C:/work/dashboard.html","version":"v3","artifact_id":"artifact-42","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","capabilities":{"persist":true}},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
+                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","path":"C:/work/dashboard.html","version":"v3","artifact_id":"artifact-42","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","preferredContract":"artifact-v2","capabilities":{"persist":true},"carried":true,"read":"v3","futureStored":4},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"audience":"workspace","liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
             ),
         );
 
@@ -556,9 +735,14 @@ mod tests {
                 "Capabilities: {\"storage\":true}",
                 "Stored contract: artifact-v1",
                 "Stored capabilities: {\"persist\":true}",
+                "Preferred contract: artifact-v2",
+                "Stored state carried: yes",
+                "Stored read state: v3",
+                "Additional stored output: {\"futureStored\":4}",
                 "Warnings: legacy contract",
                 "Contract: artifact-v2",
                 "Updated: yes",
+                "Audience: workspace",
                 "Live subscription: subscription-42",
                 "Additional output: {\"futureOutput\":{\"revision\":4}}",
             ]
@@ -570,7 +754,7 @@ mod tests {
         let tc = artifact_tool_call(
             json!({"action": "list", "scope": "all", "limit": 10}),
             Some(
-                r#"{"scope":"all","truncated":false,"artifacts":[{"rel":"mine","title":"Dashboard","url":"https://artifact.local/dashboard","updatedAt":"2026-07-18T10:00:00Z"},{"rel":"shared","title":"Roadmap","url":"https://artifact.local/roadmap"}]}"#,
+                r#"{"scope":"all","truncated":false,"artifacts":[{"rel":"mine","title":"Dashboard","url":"https://artifact.local/dashboard","favicon":"📊","updatedAt":"2026-07-18T10:00:00Z","futureItem":true},{"rel":"shared","title":"Roadmap","url":"https://artifact.local/roadmap"}]}"#,
             ),
         );
 
@@ -585,7 +769,7 @@ mod tests {
                 "Scope: all",
                 "Truncated: no",
                 "Artifacts: 2",
-                "Artifact 1: (mine) Dashboard — https://artifact.local/dashboard — updated 2026-07-18T10:00:00Z",
+                "Artifact 1: (mine) Dashboard — https://artifact.local/dashboard — icon 📊 — updated 2026-07-18T10:00:00Z — additional {\"futureItem\":true}",
                 "Artifact 2: (shared) Roadmap — https://artifact.local/roadmap",
             ]
         );
@@ -754,7 +938,7 @@ mod tests {
         let tc = artifact_tool_call(
             json!({"action": "watch", "url": "https://artifact.local/dashboard"}),
             Some(
-                r#"{"watch":{"url":"https://artifact.local/dashboard","watching":false,"outcome":"unsupported_here"}}"#,
+                r#"{"watch":{"url":"https://artifact.local/dashboard","watching":false,"outcome":"unsupported_here","detail":"runtime unavailable","futureWatch":true}}"#,
             ),
         );
 
@@ -763,8 +947,29 @@ mod tests {
             vec![
                 "Action: watch",
                 "URL: https://artifact.local/dashboard",
-                "Additional output: {\"watch\":{\"outcome\":\"unsupported_here\",\"url\":\"https://artifact.local/dashboard\",\"watching\":false}}",
+                "Watch URL: https://artifact.local/dashboard",
+                "Watch outcome: unsupported_here",
+                "Watch detail: runtime unavailable",
+                "Watching: no",
+                "Additional watch output: {\"futureWatch\":true}",
             ]
         );
+    }
+
+    #[test]
+    fn renders_watcher_status_and_server_details() {
+        let tc = artifact_tool_call(
+            json!({"action": "status"}),
+            Some(
+                r#"{"filter_url":"https://artifact.local/dashboard","watches":[{"url":"https://artifact.local/dashboard","rail":"durable_wake","trigger_id":"trigger-1","since":"2026-09-02","events":["published"],"futureWatcher":true}],"arms":[{"url":"https://artifact.local/dashboard","state":"retrying","server_message":"try later","detail":"connection reset","futureArm":true}]}"#,
+            ),
+        );
+        let rendered = rendered_line_texts(&render_tool_content(&tc));
+
+        assert!(rendered.contains(&"Watch filter: https://artifact.local/dashboard".to_owned()));
+        assert!(rendered.iter().any(|line| line.contains("futureWatcher")));
+        assert!(rendered.iter().any(|line| line.contains("server message try later")));
+        assert!(rendered.iter().any(|line| line.contains("detail connection reset")));
+        assert!(rendered.iter().any(|line| line.contains("futureArm")));
     }
 }

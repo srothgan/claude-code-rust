@@ -1,14 +1,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
 type BridgeEnvelope = Record<string, unknown>;
 
 const bridgePath = join(dirname(fileURLToPath(import.meta.url)), "bridge.js");
+
+function productionTypeScriptFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return productionTypeScriptFiles(path);
+    }
+    return entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")
+      ? [path]
+      : [];
+  });
+}
 
 class SpawnedBridge {
   readonly child: ChildProcessWithoutNullStreams;
@@ -275,5 +288,17 @@ test("bridge process reports actionable session initialization failure", async (
     );
   } finally {
     await bridge.stop();
+  }
+});
+
+test("production bridge source stays on the public main SDK export", () => {
+  const sourceDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../src");
+  const forbiddenDeepImport = /@anthropic-ai\/claude-agent-sdk\/(?:browser|bridge)/;
+  const forbiddenFactory = /\bcreateSdkMcpServer\b/;
+
+  for (const path of productionTypeScriptFiles(sourceDirectory)) {
+    const source = readFileSync(path, "utf8");
+    assert.doesNotMatch(source, forbiddenDeepImport, path);
+    assert.doesNotMatch(source, forbiddenFactory, path);
   }
 });

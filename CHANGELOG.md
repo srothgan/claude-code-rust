@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **Active-turn message queue** (#363, @srothgan): Upgrade to Agent SDK `0.3.258` and queue up to ten messages with correlated chat insertion.
+
 ### Fixes
 
 - **Responsive startup and file indexing** (#352, @srothgan): Keep the composer editable while connecting, defer sends until the session is ready, and run one bounded post-connection file index.

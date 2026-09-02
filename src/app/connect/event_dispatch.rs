@@ -114,12 +114,45 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::McpSetServersResult { session_id, result } => {
             let _ = event_tx.send(ClientEvent::McpSetServersResult { session_id, result }).await;
         }
-        crate::agent::wire::BridgeEvent::TurnComplete { session_id, terminal_reason } => {
-            let _ = event_tx.send(ClientEvent::TurnComplete { session_id, terminal_reason }).await;
+        crate::agent::wire::BridgeEvent::UserMessageQueued { session_id, message_uuid } => {
+            let _ =
+                event_tx.send(ClientEvent::UserMessageQueued { session_id, message_uuid }).await;
+        }
+        crate::agent::wire::BridgeEvent::UserMessageStarted {
+            session_id,
+            message_uuid,
+            source,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::UserMessageStarted { session_id, message_uuid, source })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::UserMessageRejected {
+            session_id,
+            message_uuid,
+            reason,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::UserMessageRejected { session_id, message_uuid, reason })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::TurnInterruptReceipt { session_id, still_queued } => {
+            let _ =
+                event_tx.send(ClientEvent::TurnInterruptReceipt { session_id, still_queued }).await;
+        }
+        crate::agent::wire::BridgeEvent::TurnComplete {
+            session_id,
+            queued_turn_count,
+            terminal_reason,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::TurnComplete { session_id, queued_turn_count, terminal_reason })
+                .await;
         }
         crate::agent::wire::BridgeEvent::TurnError {
             session_id,
             message,
+            queued_turn_count,
             error_kind,
             api_error_status,
             terminal_reason,
@@ -131,6 +164,7 @@ pub(super) async fn handle_bridge_event(
                         session_id,
                         message,
                         class,
+                        queued_turn_count,
                         api_error_status,
                         terminal_reason,
                     })
@@ -140,6 +174,7 @@ pub(super) async fn handle_bridge_event(
                     .send(ClientEvent::TurnError {
                         session_id,
                         message,
+                        queued_turn_count,
                         api_error_status,
                         terminal_reason,
                     })

@@ -489,6 +489,28 @@ fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
     )
 }
 
+#[test]
+fn history_retention_accounts_for_mcp_resource_link_allocations() {
+    let baseline =
+        assistant_tool_message("resource-link-baseline", model::ToolCallStatus::Completed);
+    let baseline_bytes = App::measure_message_bytes(&baseline);
+    let mut linked =
+        assistant_tool_message("resource-link-baseline", model::ToolCallStatus::Completed);
+    let MessageBlock::ToolCall(tool_call) = &mut linked.blocks[0] else {
+        panic!("expected tool call block");
+    };
+    tool_call.content = vec![model::ToolCallContent::ResourceLink(
+        model::McpResourceLink::new("mcp://docs/report.csv", "report.csv")
+            .title(Some("Quarterly report".to_owned()))
+            .annotations(Some(std::collections::BTreeMap::from([(
+                "audience".to_owned(),
+                serde_json::json!(["user"]),
+            )]))),
+    )];
+
+    assert!(App::measure_message_bytes(&linked) > baseline_bytes);
+}
+
 fn pending_user_dialog_message(request_id: &str) -> ChatMessage {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     ChatMessage::new(

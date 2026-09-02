@@ -261,6 +261,9 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
                 }
                 return resource.uri.clone();
             }
+            model::ToolCallContent::ResourceLink(link) => {
+                return link.title.as_deref().unwrap_or(&link.name).to_owned();
+            }
             model::ToolCallContent::Content(c) => {
                 if let model::ContentBlock::Text(text) = &c.content {
                     let stripped = strip_outer_code_fence(&text.text);
@@ -337,6 +340,9 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
             }
             model::ToolCallContent::McpResource(resource) => {
                 lines.extend(render_mcp_resource_content(tc, resource));
+            }
+            model::ToolCallContent::ResourceLink(link) => {
+                lines.extend(render_mcp_resource_link_content(link));
             }
             model::ToolCallContent::Content(c) => {
                 if let model::ContentBlock::Text(text) = &c.content {
@@ -543,6 +549,7 @@ fn renders_only_plan_file_content(tc: &ToolCallInfo) -> bool {
             model::ToolCallContent::Terminal(_) => {}
             model::ToolCallContent::Diff(_)
             | model::ToolCallContent::McpResource(_)
+            | model::ToolCallContent::ResourceLink(_)
             | model::ToolCallContent::Content(_) => return false,
         }
     }
@@ -557,6 +564,8 @@ fn is_read_tool(tc: &ToolCallInfo) -> bool {
 fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) -> usize {
     let mut count = if is_read_tool(tc) {
         READ_BODY_HEAD_LINES
+    } else if matches!(tc.content.first(), Some(model::ToolCallContent::ResourceLink(_))) {
+        2
     } else {
         leading_diff_metadata_line_count(lines)
     }
@@ -844,6 +853,50 @@ fn render_mcp_resource_content(
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(resource.uri.clone(), Style::default().fg(theme::DIM))));
+    }
+    lines
+}
+
+fn render_mcp_resource_link_content(link: &model::McpResourceLink) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Resource: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+        Span::raw(link.title.as_deref().unwrap_or(&link.name).to_owned()),
+    ])];
+    lines.push(Line::from(vec![
+        Span::styled("URI: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+        Span::raw(link.uri.clone()),
+    ]));
+    if let Some(description) = &link.description {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Description: ",
+                Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(description.clone()),
+        ]));
+    }
+    if let Some(mime_type) = &link.mime_type {
+        lines.push(Line::from(vec![
+            Span::styled("Type: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+            Span::raw(mime_type.clone()),
+        ]));
+    }
+    if let Some(size) = link.size {
+        lines.push(Line::from(vec![
+            Span::styled("Size: ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD)),
+            Span::raw(format!("{size} bytes")),
+        ]));
+    }
+    if let Some(annotations) = &link.annotations
+        && let Ok(value) = serde_json::to_string(annotations)
+    {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Annotations: ",
+                Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(value),
+        ]));
     }
     lines
 }

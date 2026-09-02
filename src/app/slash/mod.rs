@@ -110,6 +110,10 @@ impl ResolvedSubmission {
         }
     }
 
+    pub(crate) const fn is_prompt(&self) -> bool {
+        matches!(self, Self::Prompt { .. })
+    }
+
     pub(crate) fn blocked_label(&self) -> String {
         match self {
             Self::Prompt { .. } => "New prompts".to_owned(),

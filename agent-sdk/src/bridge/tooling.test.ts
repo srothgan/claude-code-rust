@@ -676,6 +676,116 @@ test("buildToolResultFields maps structured Write output to diff content", () =>
   ]);
 });
 
+test("buildToolResultFields distinguishes new, unchanged, and unavailable Write diffs", () => {
+  const base = createToolCall("tc-write-cases", "Write", {
+    file_path: "src/main.ts",
+    content: "new",
+  });
+  const created = buildToolResultFields(
+    false,
+    {
+      type: "create",
+      filePath: "src/new.ts",
+      content: "created",
+      originalFile: null,
+      structuredPatch: [],
+    },
+    base,
+  );
+  assert.deepEqual(created.content, [
+    {
+      type: "diff",
+      old_path: "src/new.ts",
+      new_path: "src/new.ts",
+      old: "",
+      new: "created",
+    },
+  ]);
+
+  const unchanged = buildToolResultFields(
+    false,
+    {
+      type: "update",
+      filePath: "src/main.ts",
+      content: "same",
+      originalFile: "same",
+      structuredPatch: [],
+    },
+    base,
+  );
+  assert.equal(unchanged.raw_output, "No changes to src/main.ts.");
+  assert.equal(unchanged.content?.at(0)?.type, "content");
+
+  for (const gitPatch of [undefined, ""]) {
+    const unavailable = buildToolResultFields(
+      false,
+      {
+        type: "update",
+        filePath: "src/huge.ts",
+        content: "replacement",
+        originalFile: null,
+        structuredPatch: [],
+        ...(gitPatch === undefined
+          ? {}
+          : { gitDiff: { patch: gitPatch, status: "modified" } }),
+      },
+      base,
+    );
+    assert.equal(
+      unavailable.raw_output,
+      "Updated src/huge.ts; the previous content was unavailable, so a diff could not be displayed.",
+    );
+    assert.equal(
+      unavailable.content?.some((content) => content.type === "diff"),
+      false,
+    );
+  }
+
+  const ambiguous = buildToolResultFields(
+    false,
+    {
+      filePath: "src/ambiguous.ts",
+      content: "replacement",
+      originalFile: null,
+      structuredPatch: [],
+    },
+    base,
+  );
+  assert.equal(
+    ambiguous.raw_output,
+    "Updated src/ambiguous.ts; the previous content was unavailable, so a diff could not be displayed.",
+  );
+  assert.equal(ambiguous.content?.some((content) => content.type === "diff"), false);
+});
+
+test("buildToolResultFields replays structured Write output from transcript JSON", () => {
+  const base = createToolCall("tc-write-replay", "Write", {
+    file_path: "src/replayed.ts",
+    content: "new",
+  });
+  const fields = buildToolResultFields(
+    false,
+    JSON.stringify({
+      type: "update",
+      filePath: "src/replayed.ts",
+      content: "new",
+      originalFile: "old",
+      structuredPatch: [],
+    }),
+    base,
+  );
+
+  assert.deepEqual(fields.content, [
+    {
+      type: "diff",
+      old_path: "src/replayed.ts",
+      new_path: "src/replayed.ts",
+      old: "old",
+      new: "new",
+    },
+  ]);
+});
+
 test("buildToolResultFields preserves Edit diff content from input and structured repository", () => {
   const base = createToolCall("tc-e", "Edit", {
     file_path: "src/main.ts",
@@ -2182,6 +2292,42 @@ test("buildToolResultFields parses REPL transcript JSON", () => {
   assert.equal(fields.raw_output?.includes('"code"'), false);
   assert.equal(fields.raw_output?.includes("hidden-image"), false);
   assert.equal(fields.raw_output?.includes("hidden-document"), false);
+});
+
+test("buildToolResultFields renders bounded REPL omission and page-failure details", () => {
+  const base = createToolCall("tc-repl-omissions", "REPL", {
+    code: "await readPages()",
+  });
+  const fields = buildToolResultFields(
+    false,
+    {
+      code: "await readPages()",
+      stdout: "",
+      stderr: "",
+      imagesOmitted: 3,
+      imagePagesFailed: Array.from({ length: 22 }, (_, index) => ({
+        page: index + 1,
+        file: "manual.pdf",
+        error: `render failed ${index + 1}`,
+      })),
+      imagePagesFailedOmitted: 2,
+      documentsOmitted: 1,
+    },
+    base,
+  );
+
+  assert.equal(fields.status, "completed");
+  assert.match(fields.raw_output ?? "", /^Images omitted: 3/m);
+  assert.match(
+    fields.raw_output ?? "",
+    /Failed image page: 1 \(file manual\.pdf: render failed 1\)/,
+  );
+  assert.equal(
+    fields.raw_output?.match(/^Failed image page:/gm)?.length,
+    20,
+  );
+  assert.match(fields.raw_output ?? "", /Failed image pages omitted: 4/);
+  assert.match(fields.raw_output ?? "", /Documents omitted: 1/);
 });
 
 test("buildToolResultFields renders Monitor launch output as structured text", () => {

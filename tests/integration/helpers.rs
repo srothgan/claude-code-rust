@@ -22,7 +22,11 @@ pub fn session_update(update: model::SessionUpdate) -> ClientEvent {
 }
 
 pub fn turn_complete() -> ClientEvent {
-    ClientEvent::TurnComplete { session_id: "test-session".to_owned(), terminal_reason: None }
+    ClientEvent::TurnComplete {
+        session_id: "test-session".to_owned(),
+        queued_turn_count: None,
+        terminal_reason: None,
+    }
 }
 
 pub fn permission_request(

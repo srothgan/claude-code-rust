@@ -92,6 +92,19 @@ impl super::App {
                 .saturating_add(
                     resource.blob_saved_to.as_ref().map_or(0, std::path::PathBuf::capacity),
                 ),
+            model::ToolCallContent::ResourceLink(link) => link
+                .uri
+                .capacity()
+                .saturating_add(link.name.capacity())
+                .saturating_add(link.title.as_ref().map_or(0, String::capacity))
+                .saturating_add(link.description.as_ref().map_or(0, String::capacity))
+                .saturating_add(link.mime_type.as_ref().map_or(0, String::capacity))
+                .saturating_add(
+                    link.annotations
+                        .as_ref()
+                        .and_then(|value| serde_json::to_string(value).ok())
+                        .map_or(0, |value| value.len()),
+                ),
             model::ToolCallContent::Terminal(term) => term.terminal_id.capacity(),
         }
     }

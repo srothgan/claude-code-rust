@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use super::content::{Content, ContentBlock, TextContent};
-use super::mcp::McpResource;
+use super::mcp::{McpResource, McpResourceLink};
 use super::tasks::TaskMetadata;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -95,6 +95,7 @@ pub enum ToolCallContent {
     Content(Content),
     Diff(Diff),
     McpResource(McpResource),
+    ResourceLink(McpResourceLink),
     Terminal(TerminalToolCallContent),
 }
 

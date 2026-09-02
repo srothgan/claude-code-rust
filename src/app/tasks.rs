@@ -384,6 +384,26 @@ mod tests {
     }
 
     #[test]
+    fn ambient_inventory_task_does_not_enter_active_subagent_tracking() {
+        let mut app = App::test_default();
+        let mut ambient = background_task("ambient-watch", "watch artifact updates");
+        ambient.metadata = Some(serde_json::json!({
+            "sdk_background_task": true,
+            "ambient": true
+        }));
+
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::BackgroundTasks)
+                .tasks(vec![ambient])
+                .complete_snapshot(true),
+        );
+
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert!(app.turn.active_task_ids.is_empty());
+    }
+
+    #[test]
     fn create_tool_title_uses_numbered_task_state() {
         let mut app = App::test_default();
         insert_tool_call(

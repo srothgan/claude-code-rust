@@ -576,12 +576,13 @@ impl AgentConnection {
     /// Convenience wrapper for text-only prompts. Prefer `prompt_with_images`
     /// for new call sites that may need image support.
     pub fn prompt_text(&self, session_id: String, text: String) -> anyhow::Result<PromptResponse> {
-        self.prompt_with_images(session_id, text, Vec::new())
+        self.prompt_with_images(session_id, uuid::Uuid::new_v4().to_string(), text, Vec::new())
     }
 
     pub fn prompt_with_images(
         &self,
         session_id: String,
+        message_uuid: String,
         text: String,
         images: Vec<crate::app::clipboard_image::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
@@ -612,7 +613,7 @@ impl AgentConnection {
 
         self.send(CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::Prompt { session_id, chunks },
+            command: BridgeCommand::Prompt { session_id, message_uuid, chunks },
         })?;
         Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
     }

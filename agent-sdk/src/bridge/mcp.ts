@@ -540,6 +540,7 @@ export async function handleMcpSetServersCommand(
       `failed to set MCP servers: ${message}`,
       requestId,
     );
+    await handleMcpStatusCommand(session, requestId, "mcp_set_servers");
   }
 }
 

@@ -48,6 +48,7 @@ fn reset_session_identity_state(
     mode: Option<super::super::ModeState>,
     fast_mode: model::FastModeSnapshot,
 ) {
+    app.pending_user_messages.clear();
     app.bump_session_scope_epoch();
     app.session_runtime.activate_session(session_id);
     app.session_runtime.current_model = Some(current_model.clone());
@@ -194,7 +195,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
 mod tests {
     use super::{ChatResetKind, reset_for_new_session};
     use crate::agent::model;
-    use crate::app::{App, ChatMessage, ChatRebuildKind};
+    use crate::app::{App, ChatMessage, ChatRebuildKind, PendingUserMessage};
 
     #[test]
     fn session_reset_clears_chat_render_measurement_state() {
@@ -225,6 +226,33 @@ mod tests {
         assert_eq!(app.chat_render.composer.total_rows, 0);
         assert!(!app.chat_render.live_region.anchor_valid);
         assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
+    }
+
+    #[test]
+    fn replacement_session_reset_discards_old_session_pending_projection() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(PendingUserMessage::sending(
+                    "old-session-message".to_owned(),
+                    "must not cross sessions".to_owned(),
+                    Vec::new(),
+                ))
+                .is_ok()
+        );
+        app.input.set_text("old draft");
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("session-2"),
+            model::CurrentModel::new("test", "test", "test").authoritative(true),
+            None,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
+            ChatResetKind::Replacement,
+        );
+
+        assert!(app.pending_user_messages.is_empty());
+        assert!(app.input.text().is_empty());
     }
 
     #[test]

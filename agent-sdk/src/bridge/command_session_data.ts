@@ -208,7 +208,7 @@ async function getContextUsage(
     return;
   }
   try {
-    const usage = await session.query.getContextUsage();
+    const usage = await session.query.getContextUsage({ detail: "summary" });
     if (typeof usage.model === "string" && usage.model.trim().length > 0) {
       session.resolvedRuntimeModelId = usage.model.trim();
       refreshCurrentModel(session, true);

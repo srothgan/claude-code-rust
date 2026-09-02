@@ -756,7 +756,11 @@ fn stale_turn_completion_cannot_finish_current_turn() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::TurnComplete { session_id: "old-session".to_owned(), terminal_reason: None },
+        ClientEvent::TurnComplete {
+            session_id: "old-session".to_owned(),
+            queued_turn_count: None,
+            terminal_reason: None,
+        },
     );
 
     assert!(matches!(app.status, AppStatus::Running));

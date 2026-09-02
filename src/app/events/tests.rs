@@ -26,7 +26,11 @@ fn session_update(update: model::SessionUpdate) -> ClientEvent {
 }
 
 fn turn_complete(terminal_reason: Option<crate::agent::types::TerminalReason>) -> ClientEvent {
-    ClientEvent::TurnComplete { session_id: "test-session".to_owned(), terminal_reason }
+    ClientEvent::TurnComplete {
+        session_id: "test-session".to_owned(),
+        queued_turn_count: None,
+        terminal_reason,
+    }
 }
 
 fn slash_command_error(message: String) -> ClientEvent {
@@ -1652,6 +1656,7 @@ fn turn_error_clears_manual_compaction_without_success_message() {
         ClientEvent::TurnError {
             session_id: "test-session".to_owned(),
             message: "adapter failed".into(),
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -1695,6 +1700,7 @@ fn turn_error_after_cancel_clears_compaction_without_success() {
         ClientEvent::TurnError {
             session_id: "test-session".to_owned(),
             message: "cancelled".into(),
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -1717,6 +1723,7 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
         ClientEvent::TurnError {
             session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests: max turns exceeded".into(),
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -1745,6 +1752,7 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
             session_id: "test-session".to_owned(),
             message: "turn failed".into(),
             class: TurnErrorClass::PlanLimit,
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -1772,6 +1780,7 @@ fn classified_turn_error_auth_required_sets_exit_error_and_quits() {
             session_id: "test-session".to_owned(),
             message: "auth required".into(),
             class: TurnErrorClass::AuthRequired,
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -1792,6 +1801,7 @@ fn classified_turn_error_model_unavailable_suggests_model_switch() {
             session_id: "test-session".to_owned(),
             message: "model_not_found".into(),
             class: TurnErrorClass::ModelUnavailable,
+            queued_turn_count: None,
             api_error_status: Some(404),
             terminal_reason: None,
         },
@@ -1815,6 +1825,7 @@ fn classified_turn_error_account_access_does_not_quit_for_login() {
             session_id: "test-session".to_owned(),
             message: "oauth_org_not_allowed".into(),
             class: TurnErrorClass::AccountAccess,
+            queued_turn_count: None,
             api_error_status: Some(403),
             terminal_reason: None,
         },
@@ -1838,6 +1849,7 @@ fn classified_turn_error_transient_service_suggests_retry() {
             session_id: "test-session".to_owned(),
             message: "overloaded".into(),
             class: TurnErrorClass::TransientService,
+            queued_turn_count: None,
             api_error_status: Some(529),
             terminal_reason: None,
         },
@@ -1865,6 +1877,7 @@ fn turn_error_clears_tool_scope_tracking() {
         ClientEvent::TurnError {
             session_id: "test-session".to_owned(),
             message: "boom".into(),
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -2303,6 +2316,7 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
             session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests".to_owned(),
             class: TurnErrorClass::PlanLimit,
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -2348,6 +2362,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
             session_id: "test-session".to_owned(),
             message: "HTTP 429 Too Many Requests".to_owned(),
             class: TurnErrorClass::PlanLimit,
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -2476,6 +2491,7 @@ fn turn_error_after_cancel_shows_interrupted_hint_instead_of_error_block() {
         ClientEvent::TurnError {
             session_id: "test-session".to_owned(),
             message: "Error: Request was aborted.\n    at stack line".into(),
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },

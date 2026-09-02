@@ -63,6 +63,7 @@ pub enum BridgeCommand {
     },
     Prompt {
         session_id: String,
+        message_uuid: String,
         chunks: Vec<types::PromptChunk>,
     },
     CancelTurn {
@@ -358,14 +359,36 @@ pub enum BridgeEvent {
         session_id: String,
         result: types::McpSetServersResult,
     },
+    UserMessageQueued {
+        session_id: String,
+        message_uuid: String,
+    },
+    UserMessageStarted {
+        session_id: String,
+        message_uuid: String,
+        source: types::UserMessageStartSource,
+    },
+    UserMessageRejected {
+        session_id: String,
+        message_uuid: String,
+        reason: String,
+    },
+    TurnInterruptReceipt {
+        session_id: String,
+        still_queued: Vec<String>,
+    },
     TurnComplete {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queued_turn_count: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         terminal_reason: Option<types::TerminalReason>,
     },
     TurnError {
         session_id: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queued_turn_count: Option<usize>,
         error_kind: Option<String>,
         sdk_result_subtype: Option<String>,
         assistant_error: Option<String>,
@@ -461,6 +484,10 @@ impl BridgeEvent {
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
             Self::McpSetServersResult { .. } => "mcp_set_servers_result",
+            Self::UserMessageQueued { .. } => "user_message_queued",
+            Self::UserMessageStarted { .. } => "user_message_started",
+            Self::UserMessageRejected { .. } => "user_message_rejected",
+            Self::TurnInterruptReceipt { .. } => "turn_interrupt_receipt",
             Self::TurnComplete { .. } => "turn_complete",
             Self::TurnError { .. } => "turn_error",
             Self::SlashError { .. } => "slash_error",
@@ -492,6 +519,10 @@ impl BridgeEvent {
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::McpSetServersResult { session_id, .. }
+            | Self::UserMessageQueued { session_id, .. }
+            | Self::UserMessageStarted { session_id, .. }
+            | Self::UserMessageRejected { session_id, .. }
+            | Self::TurnInterruptReceipt { session_id, .. }
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::SlashError { session_id, .. }
@@ -529,6 +560,10 @@ impl BridgeEvent {
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
             | Self::McpSetServersResult { .. }
+            | Self::UserMessageQueued { .. }
+            | Self::UserMessageStarted { .. }
+            | Self::UserMessageRejected { .. }
+            | Self::TurnInterruptReceipt { .. }
             | Self::TurnComplete { .. }
             | Self::TurnError { .. }
             | Self::SlashError { .. }
@@ -568,6 +603,104 @@ mod tests {
         let json = serde_json::to_string(&env).expect("serialize");
         let decoded: CommandEnvelope = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, env);
+    }
+
+    #[test]
+    fn prompt_command_serializes_host_message_uuid() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::Prompt {
+                session_id: "s1".to_owned(),
+                message_uuid: "message-1".to_owned(),
+                chunks: vec![types::PromptChunk {
+                    kind: "text".to_owned(),
+                    value: serde_json::json!("next"),
+                }],
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(env).expect("serialize"),
+            serde_json::json!({
+                "command": "prompt",
+                "session_id": "s1",
+                "message_uuid": "message-1",
+                "chunks": [{ "kind": "text", "value": "next" }]
+            })
+        );
+    }
+
+    #[test]
+    fn queued_user_message_lifecycle_events_deserialize() {
+        let queued: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "user_message_queued",
+            "session_id": "s1",
+            "message_uuid": "message-1"
+        }))
+        .expect("deserialize queued receipt");
+        assert_eq!(
+            queued.event,
+            BridgeEvent::UserMessageQueued {
+                session_id: "s1".to_owned(),
+                message_uuid: "message-1".to_owned(),
+            }
+        );
+
+        let started: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "user_message_started",
+            "session_id": "s1",
+            "message_uuid": "message-1",
+            "source": "command_lifecycle"
+        }))
+        .expect("deserialize start receipt");
+        assert_eq!(
+            started.event,
+            BridgeEvent::UserMessageStarted {
+                session_id: "s1".to_owned(),
+                message_uuid: "message-1".to_owned(),
+                source: types::UserMessageStartSource::CommandLifecycle,
+            }
+        );
+
+        let interrupt: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "turn_interrupt_receipt",
+            "session_id": "s1",
+            "still_queued": ["message-1"]
+        }))
+        .expect("deserialize interrupt receipt");
+        assert_eq!(
+            interrupt.event,
+            BridgeEvent::TurnInterruptReceipt {
+                session_id: "s1".to_owned(),
+                still_queued: vec!["message-1".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn turn_result_events_deserialize_queued_turn_count() {
+        let complete: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "turn_complete",
+            "session_id": "s1",
+            "queued_turn_count": 2
+        }))
+        .expect("deserialize completion count");
+        let BridgeEvent::TurnComplete { queued_turn_count, .. } = complete.event else {
+            panic!("expected completion event");
+        };
+        assert_eq!(queued_turn_count, Some(2));
+
+        let error: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "turn_error",
+            "session_id": "s1",
+            "message": "failed",
+            "queued_turn_count": 1
+        }))
+        .expect("deserialize error count");
+        let BridgeEvent::TurnError { queued_turn_count, .. } = error.event else {
+            panic!("expected error event");
+        };
+        assert_eq!(queued_turn_count, Some(1));
     }
 
     #[test]
@@ -883,6 +1016,7 @@ mod tests {
             request_id: None,
             event: BridgeEvent::TurnComplete {
                 session_id: "session-1".to_owned(),
+                queued_turn_count: None,
                 terminal_reason: Some(types::TerminalReason::Completed),
             },
         };

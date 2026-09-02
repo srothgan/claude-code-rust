@@ -1,4 +1,5 @@
 import type { BridgeCommand } from "../types.js";
+import { writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 
 type CancelTurnCommand = Extract<BridgeCommand, { command: "cancel_turn" }>;
@@ -34,6 +35,14 @@ export async function dispatchCancelTurnCommand(
         (entry): entry is string => typeof entry === "string",
       )
     : [];
+  writeEvent(
+    {
+      event: "turn_interrupt_receipt",
+      session_id: command.session_id,
+      still_queued: stillQueued,
+    },
+    deps.requestId,
+  );
   if (stillQueued.length > 0) {
     bridgeLogger.info({
       target: LOG_TARGETS.APP_SESSION,

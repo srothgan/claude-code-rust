@@ -10,6 +10,7 @@ const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
     '\u{2807}', '\u{280F}',
 ];
+const MAX_PENDING_MESSAGE_PREVIEW_ROWS: usize = 3;
 
 pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
@@ -31,6 +32,27 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled("Cancelling current turn...", Style::default().fg(theme::DIM)),
         ]));
+    }
+
+    if !app.pending_user_messages.is_empty() {
+        let count = app.pending_user_messages.len();
+        rows.push(Line::from(Span::styled(
+            format!("Queued Messages ({count}) · Esc interrupt & continue"),
+            Style::default().fg(theme::DIM),
+        )));
+        let hidden = count.saturating_sub(MAX_PENDING_MESSAGE_PREVIEW_ROWS);
+        for (index, pending) in app
+            .pending_user_messages
+            .iter()
+            .skip(hidden)
+            .take(MAX_PENDING_MESSAGE_PREVIEW_ROWS)
+            .enumerate()
+        {
+            rows.push(Line::from(Span::styled(
+                format!("  {}. {}", hidden + index + 1, pending.first_line()),
+                Style::default().fg(theme::DIM),
+            )));
+        }
     }
 
     if autocomplete::is_active(app) {
@@ -84,7 +106,9 @@ pub(crate) fn blocked_input_lines(app: &App, reason: ComposerBlockReason) -> Vec
 #[cfg(test)]
 mod tests {
     use super::{blocked_input_lines, build_composer_hint_rows};
-    use crate::app::{App, AppStatus, ComposerBlockReason, FocusTarget, LoginHint};
+    use crate::app::{
+        App, AppStatus, ComposerBlockReason, FocusTarget, LoginHint, PendingUserMessage,
+    };
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
@@ -113,6 +137,59 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Cancelling current turn"));
         assert!(line_text(&rows[1]).contains("Suggestion: Write tests"));
+    }
+
+    #[test]
+    fn pending_message_rows_show_dimmed_summary_and_preview() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(PendingUserMessage::sending(
+                    "one".to_owned(),
+                    "first line\nsecond line".to_owned(),
+                    Vec::new(),
+                ))
+                .is_ok()
+        );
+
+        let rows = build_composer_hint_rows(&app);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(line_text(&rows[0]), "Queued Messages (1) · Esc interrupt & continue");
+        assert_eq!(line_text(&rows[1]), "  1. first line");
+        assert!(
+            rows.iter()
+                .flat_map(|row| row.spans.iter())
+                .all(|span| span.style.fg == Some(crate::ui::theme::DIM))
+        );
+    }
+
+    #[test]
+    fn pending_message_rows_show_only_latest_three_previews_with_stable_numbers() {
+        let mut app = App::test_default();
+        for index in 1..=5 {
+            assert!(
+                app.pending_user_messages
+                    .try_push_sending(PendingUserMessage::sending(
+                        format!("message-{index}"),
+                        format!("preview {index}"),
+                        Vec::new(),
+                    ))
+                    .is_ok()
+            );
+        }
+
+        let rows = build_composer_hint_rows(&app);
+
+        assert_eq!(
+            rows.iter().map(line_text).collect::<Vec<_>>(),
+            [
+                "Queued Messages (5) · Esc interrupt & continue",
+                "  3. preview 3",
+                "  4. preview 4",
+                "  5. preview 5",
+            ]
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub struct TaskMetadata {
     pub terminal_status: Option<String>,
     pub blocked: Option<bool>,
     pub parent_agent_id: Option<String>,
+    pub ambient: Option<bool>,
     pub subagent_retry: Option<SubagentRetryUpdate>,
 }
 
@@ -136,6 +137,12 @@ impl TaskMetadata {
     #[must_use]
     pub fn parent_agent_id(mut self, parent_agent_id: Option<String>) -> Self {
         self.parent_agent_id = parent_agent_id;
+        self
+    }
+
+    #[must_use]
+    pub const fn ambient(mut self, ambient: Option<bool>) -> Self {
+        self.ambient = ambient;
         self
     }
 

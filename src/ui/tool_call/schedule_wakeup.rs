@@ -31,6 +31,10 @@ fn render_input_content(tc: &ToolCallInfo, include_requested_delay: bool) -> Vec
     let mut wakeup_fields = Vec::new();
 
     if let Some(input) = input {
+        if typed::json_bool(input, "stop") == Some(true) {
+            wakeup_fields.push(ToolField::new("Stop", "yes"));
+            return fields::render_fields(wakeup_fields);
+        }
         if include_requested_delay
             && let Some(delay_seconds) = typed::json_i64(input, "delaySeconds")
         {
@@ -44,6 +48,9 @@ fn render_input_content(tc: &ToolCallInfo, include_requested_delay: bool) -> Vec
         }
         if let Some(prompt) = typed::json_string(input, "prompt") {
             wakeup_fields.push(ToolField::new("Prompt", prompt));
+        }
+        if let Some(noop) = typed::json_bool(input, "noop") {
+            wakeup_fields.push(ToolField::new("No changes", typed::bool_label(noop)));
         }
     }
 
@@ -85,6 +92,8 @@ fn field_label(label: &str) -> Option<&'static str> {
         "Clamped" | "wasClamped" => Some("Clamped"),
         "Reason" => Some("Reason"),
         "Prompt" => Some("Prompt"),
+        "Stop" | "stop" => Some("Stop"),
+        "No changes" | "noop" => Some("No changes"),
         _ => None,
     }
 }
@@ -94,7 +103,9 @@ fn field_value(label: &str, value: &str) -> String {
         "Actual delay" => {
             value.parse::<i64>().map_or_else(|_| value.to_owned(), typed::format_duration_seconds)
         }
-        "Clamped" => typed::bool_text_label(value).unwrap_or(value).to_owned(),
+        "Clamped" | "Stop" | "No changes" => {
+            typed::bool_text_label(value).unwrap_or(value).to_owned()
+        }
         _ => value.to_owned(),
     }
 }
@@ -190,5 +201,38 @@ mod tests {
 
         assert!(rendered.iter().any(|line| line.contains("Requested delay: 1h")));
         assert!(rendered.iter().any(|line| line.contains("Could not schedule wakeup")));
+    }
+
+    #[test]
+    fn input_body_renders_noop_changed_and_stop_states() {
+        for (noop, expected) in [(true, "yes"), (false, "no")] {
+            let tc = schedule_wakeup_tool_call(
+                json!({
+                    "delaySeconds": 60,
+                    "reason": "Check again",
+                    "prompt": "/loop continue",
+                    "noop": noop
+                }),
+                None,
+                model::ToolCallStatus::InProgress,
+            );
+            assert!(
+                rendered_line_texts(&render_tool_content(&tc))
+                    .contains(&format!("No changes: {expected}"))
+            );
+        }
+
+        let stopped = schedule_wakeup_tool_call(
+            json!({
+                "stop": true,
+                "delaySeconds": 60,
+                "reason": "ignored",
+                "prompt": "ignored",
+                "noop": true
+            }),
+            None,
+            model::ToolCallStatus::InProgress,
+        );
+        assert_eq!(rendered_line_texts(&render_tool_content(&stopped)), vec!["Stop: yes"]);
     }
 }

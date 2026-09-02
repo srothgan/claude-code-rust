@@ -59,11 +59,14 @@ import {
   emitMcpSnapshotEvent,
   emitMcpSnapshotFromStatuses,
   handleMcpAuthenticateCommand,
+  handleMcpReconnectCommand,
   handleMcpSetServersCommand,
+  handleMcpToggleCommand,
   startMcpAuthSnapshotMonitor,
 } from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
+  awaitSessionInitialization,
   beginSessionClose,
   closeAllSessions,
   handleUserDialogResponse,
@@ -99,9 +102,15 @@ import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import {
   flushPendingWorkerShutdown,
   handleResultMessage,
+  handleUserToolResultBlocks,
+  sdkMessageDiagnosticFields,
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
-import { normalizeStructuredUsage } from "./bridge/command_session_data.js";
+import { handleSessionControlCommand } from "./bridge/command_session_control.js";
+import {
+  handleSessionDataCommand,
+  normalizeStructuredUsage,
+} from "./bridge/command_session_data.js";
 import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
@@ -149,6 +158,20 @@ function makeSessionState(): SessionState {
     mcpAuthMonitors: new Map(),
     hiddenToolUseIds: new Set(),
     authHintSent: false,
+  };
+}
+
+function promptControlDeps(): Parameters<
+  typeof handleSessionControlCommand
+>[2] {
+  return {
+    buildPromptUserMessage,
+    applySessionEffort,
+    applySessionAgent,
+    applySessionFastMode,
+    emitEffortConfigOptionUpdate,
+    emitAgentConfigOptionUpdate,
+    handleReloadPluginsCommand,
   };
 }
 
@@ -531,6 +554,108 @@ test("parseCommandEnvelope validates initialize command", () => {
     throw new Error("unexpected command variant");
   }
   assert.equal(parsed.command.cwd, "C:/work");
+});
+
+test("parseCommandEnvelope requires and preserves prompt message UUID", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "prompt",
+      session_id: "session-123",
+      message_uuid: "018f4fd3-2c8a-7a0e-a9a0-8f459f44d971",
+      chunks: [{ kind: "text", value: "next" }],
+    }),
+  );
+
+  assert.deepEqual(parsed.command, {
+    command: "prompt",
+    session_id: "session-123",
+    message_uuid: "018f4fd3-2c8a-7a0e-a9a0-8f459f44d971",
+    chunks: [{ kind: "text", value: "next" }],
+  });
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "prompt",
+          session_id: "session-123",
+          chunks: [{ kind: "text", value: "next" }],
+        }),
+      ),
+    /message_uuid/,
+  );
+});
+
+test("AsyncQueue reports closed-input rejection without silently dropping an item", async () => {
+  const input = new AsyncQueue<string>();
+  assert.equal(input.enqueue("accepted"), true);
+  input.close();
+  assert.equal(input.enqueue("rejected"), false);
+  const iterator = input[Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), { value: "accepted", done: false });
+  assert.deepEqual(await iterator.next(), { value: undefined, done: true });
+});
+
+test("prompt control emits a local queue receipt and preserves UUID on SDK input", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  sessions.set(session.sessionId, session);
+  const messageUuid = "018f4fd3-2c8a-7a0e-a9a0-8f459f44d971";
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleSessionControlCommand(
+      {
+        command: "prompt",
+        session_id: session.sessionId,
+        message_uuid: messageUuid,
+        chunks: [{ kind: "text", value: "queued prompt" }],
+      },
+      "request-prompt",
+      promptControlDeps(),
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "request-prompt",
+      event: "user_message_queued",
+      session_id: "session-1",
+      message_uuid: messageUuid,
+    },
+  ]);
+  const sdkMessage = await session.input[Symbol.asyncIterator]().next();
+  assert.equal(sdkMessage.done, false);
+  assert.equal(sdkMessage.value?.uuid, messageUuid);
+  sessions.clear();
+});
+
+test("prompt control emits an explicit rejection when SDK input is closed", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  session.input.close();
+  sessions.set(session.sessionId, session);
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleSessionControlCommand(
+      {
+        command: "prompt",
+        session_id: session.sessionId,
+        message_uuid: "closed-message",
+        chunks: [{ kind: "text", value: "restore me" }],
+      },
+      undefined,
+      promptControlDeps(),
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      event: "user_message_rejected",
+      session_id: "session-1",
+      message_uuid: "closed-message",
+      reason: "session input is closed",
+    },
+  ]);
+  sessions.clear();
 });
 
 test("parseCommandEnvelope validates resume_session command without cwd", () => {
@@ -961,6 +1086,62 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
   ]);
 });
 
+test("MCP failed-add status remains authoritative when the SDK result reports the server as added", async () => {
+  const session = makeSessionState();
+  session.query = {
+    setMcpServers: async () => ({
+      added: ["throws-on-connect"],
+      removed: [],
+      errors: {},
+    }),
+    mcpServerStatus: async () => [
+      {
+        name: "throws-on-connect",
+        scope: "dynamic",
+        status: "failed",
+        error: "connection threw during initialization",
+        tools: [],
+      },
+    ],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleMcpSetServersCommand(
+      session,
+      {
+        command: "mcp_set_servers",
+        session_id: "session-1",
+        servers: {
+          "throws-on-connect": {
+            type: "stdio",
+            command: "missing-mcp-server",
+          },
+        },
+      },
+      "req-mcp-failed-add",
+    );
+  });
+
+  const result = events.find((event) => event.event === "mcp_set_servers_result");
+  assert.deepEqual(result && "result" in result ? result.result : undefined, {
+    added: ["throws-on-connect"],
+    removed: [],
+    errors: {},
+  });
+  const snapshot = events.find((event) => event.event === "mcp_snapshot") as
+    | { servers?: Array<{ name: string; status: string; error?: string }> }
+    | undefined;
+  assert.deepEqual(snapshot?.servers, [
+    {
+      name: "throws-on-connect",
+      scope: "dynamic",
+      status: "failed",
+      error: "connection threw during initialization",
+      tools: [],
+    },
+  ]);
+});
+
 test("handleMcpAuthenticateCommand emits a structured error when the runtime method is absent", async () => {
   const session = makeSessionState();
 
@@ -1024,11 +1205,30 @@ test("handleMcpAuthenticateCommand emits a structured error for an incompatible 
   ]);
 });
 
-test("handleMcpSetServersCommand emits MCP operation error on failure", async () => {
+test("failed MCP server updates publish the authoritative follow-up snapshot without conflating names", async () => {
   const session = makeSessionState();
+  const controls: Array<[string, string, boolean?]> = [];
   session.query = {
     setMcpServers: async () => {
       throw new Error("dynamic update failed");
+    },
+    mcpServerStatus: async () => [
+      { name: "docs", scope: "local", status: "connected", tools: [] },
+      { name: "docs", scope: "project", status: "disabled", tools: [] },
+      { name: "foo", scope: "dynamic", status: "connected", tools: [] },
+      {
+        name: "foo__bar",
+        scope: "dynamic",
+        status: "failed",
+        error: "connection threw",
+        tools: [],
+      },
+    ],
+    reconnectMcpServer: async (name: string) => {
+      controls.push(["reconnect", name]);
+    },
+    toggleMcpServer: async (name: string, enabled: boolean) => {
+      controls.push(["toggle", name, enabled]);
     },
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
@@ -1042,9 +1242,28 @@ test("handleMcpSetServersCommand emits MCP operation error on failure", async ()
       },
       "req-mcp-set",
     );
+    await handleMcpReconnectCommand(
+      session,
+      {
+        command: "mcp_reconnect",
+        session_id: "session-1",
+        server_name: "foo__bar",
+      },
+      "req-mcp-reconnect",
+    );
+    await handleMcpToggleCommand(
+      session,
+      {
+        command: "mcp_toggle",
+        session_id: "session-1",
+        server_name: "foo",
+        enabled: false,
+      },
+      "req-mcp-toggle",
+    );
   });
 
-  assert.deepEqual(events, [
+  assert.deepEqual(events.slice(0, 2), [
     {
       request_id: "req-mcp-set",
       event: "mcp_operation_error",
@@ -1060,6 +1279,36 @@ test("handleMcpSetServersCommand emits MCP operation error on failure", async ()
       session_id: "session-1",
       message: "failed to set MCP servers: dynamic update failed",
     },
+  ]);
+  const snapshot = events.find((event) => event.event === "mcp_snapshot");
+  assert.equal(snapshot?.source, "mcp_set_servers");
+  const snapshotServers = (
+    snapshot as
+      | {
+          servers?: Array<{
+            name: string;
+            scope?: string;
+            status: string;
+          }>;
+        }
+      | undefined
+  )?.servers;
+  assert.deepEqual(
+    (snapshotServers ?? []).map((server) => [
+      server.name,
+      server.scope,
+      server.status,
+    ]),
+    [
+      ["docs", "local", "connected"],
+      ["docs", "project", "disabled"],
+      ["foo", "dynamic", "connected"],
+      ["foo__bar", "dynamic", "failed"],
+    ],
+  );
+  assert.deepEqual(controls, [
+    ["reconnect", "foo__bar"],
+    ["toggle", "foo", false],
   ]);
 });
 
@@ -1327,6 +1576,38 @@ test("parseCommandEnvelope validates get_context_usage command", () => {
   });
 });
 
+test("get_context_usage requests the SDK summary detail", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  const calls: unknown[] = [];
+  session.query = {
+    getContextUsage: async (options: unknown) => {
+      calls.push(options);
+      return { percentage: 42.4 };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+
+  try {
+    await captureBridgeEventsAsync(async () => {
+      await handleSessionDataCommand(
+        { command: "get_context_usage", session_id: session.sessionId },
+        "request-context-summary",
+        {
+          generatePersistedSessionTitle: async () => "unused",
+          buildSessionMutationOptions: () => undefined,
+          rewindTargetsFromSessionMessages: () => [],
+          handleRewind: async () => undefined,
+        },
+      );
+    });
+
+    assert.deepEqual(calls, [{ detail: "summary" }]);
+  } finally {
+    sessions.clear();
+  }
+});
+
 test("parseCommandEnvelope validates get_usage command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({ command: "get_usage", session_id: "session-usage" }),
@@ -1420,6 +1701,50 @@ test("normalizeStructuredUsage keeps stable fields and tolerates malformed optio
       mcp_servers: [{ name: "github", pct: 10 }],
     },
   });
+});
+
+test("managed model inventory and pricing remain SDK-owned aggregate flows", () => {
+  const session = makeSessionState();
+  session.availableModels = mapAvailableModels([
+    {
+      value: "managed-sonnet",
+      resolvedModel: "claude-sonnet-managed",
+      displayName: "Organization Sonnet",
+      description: "Selected by managed modelPicker settings",
+      supportsEffort: true,
+    },
+  ]);
+
+  const connected = buildConnectBridgeEvent(session, "connected");
+  assert.equal(connected.event, "connected");
+  assert.deepEqual(connected.available_models, [
+    {
+      id: "managed-sonnet",
+      resolved_model: "claude-sonnet-managed",
+      display_name: "Organization Sonnet",
+      description: "Selected by managed modelPicker settings",
+      supports_effort: true,
+      supported_effort_levels: [],
+    },
+  ]);
+
+  assert.deepEqual(
+    normalizeStructuredUsage({
+      session: {
+        total_cost_usd: 1.75,
+        model_usage: {
+          "claude-sonnet-managed": {
+            inputTokens: 10,
+            outputTokens: 5,
+            costUSD: 1.75,
+            thinkingTokens: 2,
+            costBasis: "managed-model-pricing",
+          },
+        },
+      },
+    }).session,
+    { total_cost_usd: 1.75, model_count: 1 },
+  );
 });
 
 test("normalizeStructuredUsage isolates an incompatible root as an empty snapshot", () => {
@@ -1927,6 +2252,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     type: "preset",
     preset: "claude_code",
     append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
+    snapshot: true,
   });
   const _systemPrompt: NonNullable<Options["systemPrompt"]> =
     options.systemPrompt;
@@ -1972,6 +2298,12 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   assert.equal(options.resumeDropsTurn, "user-2");
   assert.equal(options.forkSession, true);
   assert.equal(options.sessionId, "session-1");
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append: BRIDGE_RUNTIME_GUARD_PROMPT,
+    snapshot: true,
+  });
 });
 
 test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {
@@ -2131,6 +2463,7 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
     type: "preset",
     preset: "claude_code",
     append: BRIDGE_RUNTIME_GUARD_PROMPT,
+    snapshot: true,
   });
   assert.equal("agentProgressSummaries" in options, false);
   assert.deepEqual(options.settings, { feedbackDrafts: "off" });
@@ -2174,31 +2507,41 @@ test("dispatchCancelTurnCommand interrupts the matching session query", async ()
     requestId?: string;
   }> = [];
 
-  await dispatchCancelTurnCommand(
-    { command: "cancel_turn", session_id: "session-1" },
-    {
-      requestId: "request-1",
-      sessionById: (sessionId) =>
-        sessionId === "session-1"
-          ? {
-              query: {
-                interrupt: async () => {
-                  interruptCount += 1;
-                  receiptReturned = true;
-                  return { still_queued: ["user-message-1"] };
+  const events = await captureBridgeEventsAsync(async () => {
+    await dispatchCancelTurnCommand(
+      { command: "cancel_turn", session_id: "session-1" },
+      {
+        requestId: "request-1",
+        sessionById: (sessionId) =>
+          sessionId === "session-1"
+            ? {
+                query: {
+                  interrupt: async () => {
+                    interruptCount += 1;
+                    receiptReturned = true;
+                    return { still_queued: ["user-message-1"] };
+                  },
                 },
-              },
-            }
-          : undefined,
-      slashError: (sessionId, message, requestId) => {
-        slashErrors.push({ sessionId, message, requestId });
+              }
+            : undefined,
+        slashError: (sessionId, message, requestId) => {
+          slashErrors.push({ sessionId, message, requestId });
+        },
       },
-    },
-  );
+    );
+  });
 
   assert.equal(interruptCount, 1);
   assert.equal(receiptReturned, true);
   assert.deepEqual(slashErrors, []);
+  assert.deepEqual(events, [
+    {
+      request_id: "request-1",
+      event: "turn_interrupt_receipt",
+      session_id: "session-1",
+      still_queued: ["user-message-1"],
+    },
+  ]);
 });
 
 test("dispatchCancelTurnCommand emits slash error for unknown session", async () => {
@@ -2657,7 +3000,9 @@ test("handleTaskSystemMessage preserves valid task-start background and spawn de
       });
     });
     const update = events.at(-1)?.update as {
-      tool_call_update?: { fields?: { task_metadata?: Record<string, unknown> } };
+      tool_call_update?: {
+        fields?: { task_metadata?: Record<string, unknown> };
+      };
     };
     assert.deepEqual(update.tool_call_update?.fields?.task_metadata, {
       is_backgrounded: false,
@@ -2767,7 +3112,7 @@ test("emitToolResultUpdate finalizes deferred Agent completion and unlinks lifec
   assert.equal(session.taskIdsByToolUseId.has("tool-1"), false);
 });
 
-test("handleTaskSystemMessage ignores lifecycle content for concrete output tools", () => {
+test("task notifications close Bash without replacing concrete tool output", () => {
   const session = makeSessionState();
   const protectedTools = [
     createToolCall("tool-bash", "Bash", { command: "git status" }),
@@ -2801,10 +3146,21 @@ test("handleTaskSystemMessage ignores lifecycle content for concrete output tool
     }
   });
 
-  assert.deepEqual(events, []);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.event === "session_update" &&
+        (event.update as { type?: unknown } | undefined)?.type ===
+          "tool_call_update",
+    ).length,
+    1,
+  );
   for (const toolCall of protectedTools) {
     const stored = session.toolCalls.get(toolCall.tool_call_id);
-    assert.equal(stored?.status, "in_progress");
+    assert.equal(
+      stored?.status,
+      toolCall.tool_call_id === "tool-bash" ? "completed" : "in_progress",
+    );
     assert.equal(
       stored?.raw_output,
       `actual output for ${toolCall.tool_call_id}`,
@@ -3286,6 +3642,377 @@ test("handleSdkMessage propagates source UUIDs for stream text and tool results"
   );
 });
 
+test("handleSdkMessage emits main-thread user-message start before streamed content", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-stream",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      user_message_uuid: "user-message-1",
+      event: {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: "partial" },
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.equal(events[0]?.event, "user_message_started");
+  assert.deepEqual(events[0], {
+    event: "user_message_started",
+    session_id: "session-1",
+    message_uuid: "user-message-1",
+    source: "stream_event",
+  });
+  assert.equal(events[1]?.event, "session_update");
+});
+
+test("direct user MCP result appends resource links without replacing text", () => {
+  const session = makeSessionState();
+  const toolCall = createToolCall("tool-mcp", "mcp__docs__export", {});
+  toolCall.status = "in_progress";
+  session.toolCalls.set(toolCall.tool_call_id, toolCall);
+
+  const events = captureBridgeEvents(() => {
+    assert.equal(
+      handleUserToolResultBlocks(session, {
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-mcp",
+              content: "Export complete",
+            },
+          ],
+        },
+        toolUseResult: {
+          resourceLinks: [
+            {
+              uri: "mcp://docs/report.csv",
+              name: "report.csv",
+              mimeType: "text/csv",
+              size: 42,
+            },
+          ],
+          _meta: {
+            resourceLinks: [
+              { uri: "mcp://private", name: "must-not-leak" },
+            ],
+          },
+        },
+      }),
+      true,
+    );
+  });
+
+  const update = events.at(-1)?.update as {
+    tool_call_update?: { fields?: { content?: unknown[] } };
+  };
+  assert.deepEqual(update.tool_call_update?.fields?.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Export complete" },
+    },
+    {
+      type: "resource_link",
+      uri: "mcp://docs/report.csv",
+      name: "report.csv",
+      mime_type: "text/csv",
+      size: 42,
+    },
+  ]);
+});
+
+test("task notification appends resource links with or without a summary", () => {
+  for (const summary of ["Export complete", undefined]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      handleTaskSystemMessage(session, "task_started", {
+        task_id: "task-mcp",
+        tool_use_id: "tool-mcp",
+        description: "Export report",
+      });
+      handleTaskSystemMessage(session, "task_notification", {
+        task_id: "task-mcp",
+        tool_use_id: "tool-mcp",
+        status: "completed",
+        ...(summary ? { summary } : {}),
+        resource_links: [
+          { uri: "mcp://docs/report.csv", name: "report.csv" },
+          { uri: "", name: "malformed" },
+        ],
+      });
+    });
+
+    const update = events.at(-1)?.update as {
+      tool_call_update?: { fields?: { content?: unknown[] } };
+    };
+    assert.deepEqual(update.tool_call_update?.fields?.content, [
+      ...(summary
+        ? [
+            {
+              type: "content",
+              content: { type: "text", text: summary },
+            },
+          ]
+        : []),
+      {
+        type: "resource_link",
+        uri: "mcp://docs/report.csv",
+        name: "report.csv",
+      },
+    ]);
+  }
+});
+
+test("repeated background MCP resource-link delivery replaces content idempotently", () => {
+  const session = makeSessionState();
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-mcp-repeat", "mcp__docs__export", {});
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      handleTaskSystemMessage(session, "task_notification", {
+        task_id: "task-mcp-repeat",
+        tool_use_id: "tool-mcp-repeat",
+        status: "completed",
+        summary: "Export complete",
+        resource_links: [
+          { uri: "mcp://docs/report.csv", name: "report.csv" },
+        ],
+      });
+    }
+  });
+
+  assert.deepEqual(session.toolCalls.get("tool-mcp-repeat")?.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Export complete" },
+    },
+    {
+      type: "resource_link",
+      uri: "mcp://docs/report.csv",
+      name: "report.csv",
+    },
+  ]);
+  assert.equal(session.toolCalls.get("tool-mcp-repeat")?.status, "completed");
+});
+
+test("background Bash remains open across turn interruption until its final task notification", () => {
+  const session = makeSessionState();
+
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-bash-background", "Bash", {
+      command: "npm run watch",
+    });
+    emitToolResultUpdate(session, "tool-bash-background", false, {
+      stdout: "watching",
+      stderr: "",
+      interrupted: false,
+      backgroundTaskId: "bash-task-1",
+      backgroundedByUser: true,
+    });
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["Interrupted by user"],
+    });
+  });
+
+  assert.equal(
+    session.toolCalls.get("tool-bash-background")?.status,
+    "in_progress",
+  );
+  assert.equal(
+    session.taskToolUseIds.get("bash-task-1"),
+    "tool-bash-background",
+  );
+
+  captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "bash-task-1",
+      status: "stopped",
+      summary: "Background command stopped",
+    });
+  });
+
+  const toolCall = session.toolCalls.get("tool-bash-background");
+  assert.equal(toolCall?.status, "killed");
+  assert.match(toolCall?.raw_output ?? "", /watching/);
+  assert.equal(session.taskToolUseIds.has("bash-task-1"), false);
+  assert.equal(session.taskIdsByToolUseId.has("tool-bash-background"), false);
+});
+
+test("handleSdkMessage maps command lifecycle start to the submitted message UUID", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    for (const [state, uuid] of [
+      ["queued", "lifecycle-queued"],
+      ["started", "lifecycle-started"],
+      ["completed", "lifecycle-completed"],
+    ] as const) {
+      handleSdkMessage(session, {
+        type: "command_lifecycle",
+        state,
+        command_uuid: "user-message-active-turn",
+        uuid,
+        session_id: "session-1",
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+  });
+
+  assert.deepEqual(events, [
+    {
+      event: "user_message_started",
+      session_id: "session-1",
+      message_uuid: "user-message-active-turn",
+      source: "command_lifecycle",
+    },
+  ]);
+});
+
+test("handleSdkMessage ignores command lifecycle starts without a command UUID", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "command_lifecycle",
+      state: "started",
+      uuid: "lifecycle-started",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("handleSdkMessage uses assistant and result as correlation fallbacks and forwards queue count", () => {
+  const assistantSession = makeSessionState();
+  const assistantEvents = captureBridgeEvents(() => {
+    handleSdkMessage(assistantSession, {
+      type: "assistant",
+      uuid: "assistant-complete",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      user_message_uuid: "user-message-2",
+      message: { role: "assistant", content: [] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(assistantEvents[0], {
+    event: "user_message_started",
+    session_id: "session-1",
+    message_uuid: "user-message-2",
+    source: "assistant",
+  });
+
+  const resultSession = makeSessionState();
+  const resultEvents = captureBridgeEvents(() => {
+    handleSdkMessage(resultSession, {
+      type: "result",
+      subtype: "success",
+      uuid: "result-1",
+      session_id: "session-1",
+      user_message_uuid: "user-message-3",
+      queued_turn_count: 2,
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(resultEvents, [
+    {
+      event: "user_message_started",
+      session_id: "session-1",
+      message_uuid: "user-message-3",
+      source: "result",
+    },
+    {
+      event: "turn_complete",
+      session_id: "session-1",
+      queued_turn_count: 2,
+    },
+  ]);
+});
+
+test("handleSdkMessage does not correlate subagent reply frames", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-child",
+      session_id: "session-1",
+      parent_tool_use_id: "task-1",
+      user_message_uuid: "must-not-start",
+      event: { type: "message_start" },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-child-complete",
+      session_id: "session-1",
+      parent_tool_use_id: "task-1",
+      user_message_uuid: "must-not-start",
+      message: { role: "assistant", content: [] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.equal(
+    events.some((event) => event.event === "user_message_started"),
+    false,
+  );
+});
+
+test("SDK envelope diagnostics retain lifecycle metadata without content", () => {
+  const fields = sdkMessageDiagnosticFields({
+    type: "command_lifecycle",
+    status: "absorbed",
+    reason: "absorbed_mid_turn",
+    uuid: "lifecycle-1",
+    source_uuid: "user-message-1",
+    parent_tool_use_id: null,
+    prompt: "do not log this prompt",
+    content: "do not log this content",
+    message: { role: "user", content: "do not log this message" },
+  });
+
+  assert.deepEqual(fields, {
+    sdk_type: "command_lifecycle",
+    sdk_subtype: undefined,
+    sdk_uuid: "lifecycle-1",
+    user_message_uuid: undefined,
+    parent_tool_use_id: undefined,
+    parent_tool_use_scope: "root",
+    request_id: undefined,
+    origin_kind: undefined,
+    inner_event_type: undefined,
+    inner_delta_type: undefined,
+    lifecycle_status: "absorbed",
+    lifecycle_state: undefined,
+    lifecycle_operation: undefined,
+    lifecycle_reason: "absorbed_mid_turn",
+    sdk_keys: [
+      "content",
+      "message",
+      "parent_tool_use_id",
+      "prompt",
+      "reason",
+      "source_uuid",
+      "status",
+      "type",
+      "uuid",
+    ],
+    sdk_uuid_fields: {
+      uuid: "lifecycle-1",
+      source_uuid: "user-message-1",
+    },
+  });
+  assert.equal(JSON.stringify(fields).includes("do not log"), false);
+});
+
+test("SDK envelope diagnostics omit free-form lifecycle reasons", () => {
+  const fields = sdkMessageDiagnosticFields({
+    type: "future_message",
+    reason: "user supplied text must stay private",
+  });
+
+  assert.equal(fields.lifecycle_reason, undefined);
+});
+
 test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -3299,7 +4026,10 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
         role: "assistant",
         content: [
           { type: "text", text: "## Context usage" },
-          { type: "text", text: "| Category | Tokens |\n| --- | ---: |\n| System | 100 |" },
+          {
+            type: "text",
+            text: "| Category | Tokens |\n| --- | ---: |\n| System | 100 |",
+          },
         ],
       },
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
@@ -3328,19 +4058,28 @@ test("handleSdkMessage does not replay ordinary or invalid completed assistant t
       {
         type: "assistant",
         uuid: "ordinary-assistant",
-        message: { role: "assistant", content: [{ type: "text", text: "already streamed" }] },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "already streamed" }],
+        },
       },
       {
         type: "assistant",
         uuid: "malformed-context",
         context_usage: "invalid",
-        message: { role: "assistant", content: [{ type: "text", text: "not context" }] },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "not context" }],
+        },
       },
       {
         type: "assistant",
         uuid: "empty-context",
         context_usage: {},
-        message: { role: "assistant", content: [{ type: "text", text: "   " }] },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "   " }],
+        },
       },
     ]) {
       handleSdkMessage(session, {
@@ -4693,6 +5432,70 @@ test("handleSdkMessage emits MCP snapshot from init status payload", () => {
   });
 });
 
+test("the next per-turn init reports the live mode after a mode switch", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  const permissionModeCalls: string[] = [];
+  session.mode = "default";
+  session.query = {
+    setPermissionMode: async (mode: string) => {
+      permissionModeCalls.push(mode);
+    },
+    supportedCommands: async () => [],
+    supportedAgents: async () => [],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      await handleSessionControlCommand(
+        {
+          command: "set_mode",
+          session_id: session.sessionId,
+          mode: "plan",
+        },
+        "req-mode-switch",
+        promptControlDeps(),
+      );
+      handleSdkMessage(session, {
+        type: "system",
+        subtype: "init",
+        session_id: session.sessionId,
+        model: "haiku",
+        permissionMode: "plan",
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    });
+
+    assert.deepEqual(permissionModeCalls, ["plan"]);
+    assert.equal(session.mode, "plan");
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === "session_update")
+        .flatMap((event) => {
+          const update = event.update as
+            | {
+                type?: string;
+                current_mode_id?: string;
+                mode?: { current_mode_id?: string };
+              }
+            | undefined;
+          if (update?.type === "current_mode_update") {
+            return update.current_mode_id ? [update.current_mode_id] : [];
+          }
+          if (update?.type === "mode_state_update") {
+            return update.mode?.current_mode_id
+              ? [update.mode.current_mode_id]
+              : [];
+          }
+          return [];
+        }),
+      ["plan", "plan"],
+    );
+  } finally {
+    sessions.clear();
+  }
+});
+
 test("authority snapshots publish fast mode set during initialization", () => {
   const session = makeSessionState();
   assert.equal(
@@ -5096,6 +5899,7 @@ test("buildQueryOptions trims language before appending system prompt", () => {
     type: "preset",
     preset: "claude_code",
     append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
+    snapshot: true,
   });
 });
 
@@ -6732,6 +7536,100 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
   );
 });
 
+test("ambient task lifecycle stays in inventory without creating a visible tool call", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "ambient-watch",
+      description: "Watch artifact updates",
+      task_type: "artifact_watch",
+      ambient: true,
+    });
+  });
+
+  assert.equal(session.toolCalls.size, 0);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "task_state_update",
+        source: "task_lifecycle",
+        tasks: [
+          {
+            task_id: "ambient-watch",
+            subject: "Watch artifact updates",
+            description: "Watch artifact updates",
+            status: "in_progress",
+            blocks: [],
+            blocked_by: [],
+            metadata: { task_type: "artifact_watch", ambient: true },
+          },
+        ],
+        removed_task_ids: [],
+        is_complete_snapshot: false,
+      },
+    ],
+  );
+});
+
+test("background task replacement preserves ambient inventory metadata", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: [
+        {
+          task_id: "ambient-watch",
+          task_type: "artifact_watch",
+          description: "Watch artifact updates",
+          ambient: true,
+        },
+        {
+          task_id: "user-task",
+          task_type: "agent",
+          description: "Run checks",
+          ambient: false,
+        },
+      ],
+      uuid: "12345678-1234-1234-1234-123456789abc",
+      session_id: "session-1",
+    } as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const update = events.at(-1)?.update as {
+    tasks?: Array<{ task_id: string; metadata?: Record<string, unknown> }>;
+  };
+  assert.deepEqual(update.tasks, [
+    {
+      task_id: "ambient-watch",
+      subject: "Watch artifact updates",
+      description: "Watch artifact updates",
+      status: "in_progress",
+      blocks: [],
+      blocked_by: [],
+      metadata: {
+        sdk_background_task: true,
+        task_type: "artifact_watch",
+        ambient: true,
+      },
+    },
+    {
+      task_id: "user-task",
+      subject: "Run checks",
+      description: "Run checks",
+      status: "in_progress",
+      blocks: [],
+      blocked_by: [],
+      metadata: {
+        sdk_background_task: true,
+        task_type: "agent",
+        ambient: false,
+      },
+    },
+  ]);
+});
+
 test("parseCommandEnvelope validates set_effort command", () => {
   for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
     const parsed = parseCommandEnvelope(
@@ -6942,12 +7840,14 @@ test("buildPromptUserMessage attributes keyboard text input to a human", () => {
       {
         command: "prompt",
         session_id: "session-1",
+        message_uuid: "00000000-0000-4000-8000-000000000001",
         chunks: [{ kind: "text", value: "hello" }],
       },
       "session-1",
     ),
     {
       type: "user",
+      uuid: "00000000-0000-4000-8000-000000000001",
       session_id: "session-1",
       parent_tool_use_id: null,
       origin: { kind: "human" },
@@ -6964,6 +7864,7 @@ test("buildPromptUserMessage attributes structured keyboard input to a human", (
     {
       command: "prompt",
       session_id: "session-1",
+      message_uuid: "00000000-0000-4000-8000-000000000002",
       chunks: [
         { kind: "text", value: "inspect this" },
         {
@@ -7310,7 +8211,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.239");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.258");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -7432,7 +8333,8 @@ test("mapSessionMessagesToUpdates does not synthesize context output from persis
         type: "system",
         subtype: "local_command",
         command: "/context",
-        content: "## Context usage\n\nThis transcript copy must not become a second response.",
+        content:
+          "## Context usage\n\nThis transcript copy must not become a second response.",
       },
     },
   ] as unknown as SessionMessage[]);
@@ -8158,6 +9060,27 @@ test("handleResultMessage captures resumeDropsTurn refusal before candidate comm
   assert.deepEqual(events, []);
   assert.equal(session.initializationReady, false);
   assert.equal(session.initializationError, refusal);
+});
+
+test("awaitSessionInitialization uses summary context usage as the guarded-resume fence", async () => {
+  const session = makeSessionState();
+  const calls: unknown[] = [];
+  session.connected = false;
+  session.deferConnect = true;
+  session.resumeDropsTurn = "user-2";
+  session.initializationReady = true;
+  session.initializationTask = Promise.resolve();
+  session.query = {
+    getContextUsage: async (options: unknown) => {
+      calls.push(options);
+      return { percentage: 1 };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await awaitSessionInitialization(session);
+
+  assert.deepEqual(calls, [{ detail: "summary" }]);
+  assert.equal(session.resumeGuardFenceComplete, true);
 });
 
 test("commitDeferredSession requires the guarded-resume validation fence", () => {

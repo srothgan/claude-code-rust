@@ -165,6 +165,16 @@ export type ToolCallContent =
       mime_type?: string;
       text?: string;
       blob_saved_to?: string;
+    }
+  | {
+      type: "resource_link";
+      uri: string;
+      name: string;
+      title?: string;
+      description?: string;
+      mime_type?: string;
+      size?: number;
+      annotations?: Record<string, Json>;
     };
 
 export interface BashOutputMetadata {
@@ -235,6 +245,7 @@ export interface TaskMetadata {
   terminal_status?: string;
   blocked?: boolean;
   parent_agent_id?: string;
+  ambient?: boolean;
   subagent_retry?: SubagentRetryUpdate;
 }
 
@@ -788,6 +799,7 @@ export type BridgeCommand =
   | {
       command: "prompt";
       session_id: string;
+      message_uuid: string;
       chunks: PromptChunk[];
     }
   | {
@@ -1005,14 +1017,38 @@ export type BridgeEvent =
       result: McpSetServersResult;
     }
   | {
+      event: "user_message_queued";
+      session_id: string;
+      message_uuid: string;
+    }
+  | {
+      event: "user_message_started";
+      session_id: string;
+      message_uuid: string;
+      source: "command_lifecycle" | "stream_event" | "assistant" | "result";
+    }
+  | {
+      event: "user_message_rejected";
+      session_id: string;
+      message_uuid: string;
+      reason: string;
+    }
+  | {
+      event: "turn_interrupt_receipt";
+      session_id: string;
+      still_queued: string[];
+    }
+  | {
       event: "turn_complete";
       session_id: string;
+      queued_turn_count?: number;
       terminal_reason?: TerminalReason;
     }
   | {
       event: "turn_error";
       session_id: string;
       message: string;
+      queued_turn_count?: number;
       error_kind?: TurnErrorKind;
       sdk_result_subtype?: string;
       assistant_error?: ApiRetryError;

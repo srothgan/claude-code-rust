@@ -155,6 +155,7 @@ pub(super) fn handle_auth_required_event(
     method_name: String,
     method_description: String,
 ) {
+    super::turn::recover_all_pending_user_messages(app);
     let method_name_for_log = method_name.clone();
     clear_pending_command(app);
     app.status = AppStatus::Ready;
@@ -181,6 +182,7 @@ pub(super) fn handle_auth_required_event(
 }
 
 pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
+    super::turn::recover_all_pending_user_messages(app);
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::compaction::reset(app);
@@ -666,7 +668,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 mod tests {
     use super::*;
     use crate::app::file_index::FileCandidate;
-    use crate::app::{App, MessageRole};
+    use crate::app::{App, MessageRole, PendingUserMessage};
     use std::time::{Duration, Instant};
 
     fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
@@ -722,6 +724,27 @@ mod tests {
             rewind_result_message(&successful_rewind(Some(2))),
             "Restored tracked code for 1 file (2 insertions, 1 deletions), but 2 unsafe linked paths were skipped."
         );
+    }
+
+    #[test]
+    fn connection_failure_recovers_pending_user_messages_into_composer() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(PendingUserMessage::sending(
+                    "message-1".to_owned(),
+                    "queued message".to_owned(),
+                    Vec::new(),
+                ))
+                .is_ok()
+        );
+        app.input.set_text("newer draft");
+
+        handle_connection_failed_event(&mut app, "bridge stopped");
+
+        assert!(app.pending_user_messages.is_empty());
+        assert_eq!(app.input.text(), "queued message\nnewer draft");
+        assert_eq!(app.status, AppStatus::Error);
     }
 
     #[test]
