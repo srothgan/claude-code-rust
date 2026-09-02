@@ -82,6 +82,7 @@ pub use state::{
     UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
+pub(crate) use state::{PendingUserMessage, PendingUserMessageInsertError};
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
 pub(crate) use update_prompt::actions_for as update_prompt_actions;

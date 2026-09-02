@@ -34,6 +34,7 @@ const HIGHLIGHT_IMAGE_BADGE_PRIORITY: u8 = 10;
 const LOGIN_HINT_LINES: u16 = 2;
 const CANCEL_HINT_LINES: u16 = 1;
 const PROMPT_SUGGESTION_HINT_LINES: u16 = 1;
+const MAX_PENDING_MESSAGE_PREVIEW_ROWS: usize = 3;
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputRenderGeometry {
@@ -66,7 +67,13 @@ pub(crate) fn hint_line_count(app: &App) -> u16 {
     let cancel = if has_cancel_hint(app) { CANCEL_HINT_LINES } else { 0 };
     let autocomplete = autocomplete::composer_hint_height(app);
     let suggestion = if has_prompt_suggestion_hint(app) { PROMPT_SUGGESTION_HINT_LINES } else { 0 };
-    login + cancel + autocomplete + suggestion
+    let pending_messages = if app.pending_user_messages.is_empty() {
+        0
+    } else {
+        1 + u16::try_from(app.pending_user_messages.len().min(MAX_PENDING_MESSAGE_PREVIEW_ROWS))
+            .unwrap_or(u16::MAX)
+    };
+    login + cancel + pending_messages + autocomplete + suggestion
 }
 
 pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRenderGeometry {
@@ -288,6 +295,24 @@ mod tests {
         let mut app = App::test_default();
         app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
         assert_eq!(visual_line_count(&mut app, 80), PROMPT_SUGGESTION_HINT_LINES + 1);
+    }
+
+    #[test]
+    fn visual_line_count_includes_bounded_pending_message_rows() {
+        let mut app = App::test_default();
+        for index in 0..5 {
+            assert!(
+                app.pending_user_messages
+                    .try_push_sending(crate::app::PendingUserMessage::sending(
+                        format!("message-{index}"),
+                        format!("preview {index}"),
+                        Vec::new(),
+                    ))
+                    .is_ok()
+            );
+        }
+
+        assert_eq!(visual_line_count(&mut app, 80), 5);
     }
 
     #[test]

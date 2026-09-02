@@ -100,8 +100,10 @@ import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import {
   flushPendingWorkerShutdown,
   handleResultMessage,
+  sdkMessageDiagnosticFields,
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
+import { handleSessionControlCommand } from "./bridge/command_session_control.js";
 import {
   handleSessionDataCommand,
   normalizeStructuredUsage,
@@ -153,6 +155,20 @@ function makeSessionState(): SessionState {
     mcpAuthMonitors: new Map(),
     hiddenToolUseIds: new Set(),
     authHintSent: false,
+  };
+}
+
+function promptControlDeps(): Parameters<
+  typeof handleSessionControlCommand
+>[2] {
+  return {
+    buildPromptUserMessage,
+    applySessionEffort,
+    applySessionAgent,
+    applySessionFastMode,
+    emitEffortConfigOptionUpdate,
+    emitAgentConfigOptionUpdate,
+    handleReloadPluginsCommand,
   };
 }
 
@@ -535,6 +551,108 @@ test("parseCommandEnvelope validates initialize command", () => {
     throw new Error("unexpected command variant");
   }
   assert.equal(parsed.command.cwd, "C:/work");
+});
+
+test("parseCommandEnvelope requires and preserves prompt message UUID", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "prompt",
+      session_id: "session-123",
+      message_uuid: "018f4fd3-2c8a-7a0e-a9a0-8f459f44d971",
+      chunks: [{ kind: "text", value: "next" }],
+    }),
+  );
+
+  assert.deepEqual(parsed.command, {
+    command: "prompt",
+    session_id: "session-123",
+    message_uuid: "018f4fd3-2c8a-7a0e-a9a0-8f459f44d971",
+    chunks: [{ kind: "text", value: "next" }],
+  });
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "prompt",
+          session_id: "session-123",
+          chunks: [{ kind: "text", value: "next" }],
+        }),
+      ),
+    /message_uuid/,
+  );
+});
+
+test("AsyncQueue reports closed-input rejection without silently dropping an item", async () => {
+  const input = new AsyncQueue<string>();
+  assert.equal(input.enqueue("accepted"), true);
+  input.close();
+  assert.equal(input.enqueue("rejected"), false);
+  const iterator = input[Symbol.asyncIterator]();
+  assert.deepEqual(await iterator.next(), { value: "accepted", done: false });
+  assert.deepEqual(await iterator.next(), { value: undefined, done: true });
+});
+
+test("prompt control emits a local queue receipt and preserves UUID on SDK input", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  sessions.set(session.sessionId, session);
+  const messageUuid = "018f4fd3-2c8a-7a0e-a9a0-8f459f44d971";
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleSessionControlCommand(
+      {
+        command: "prompt",
+        session_id: session.sessionId,
+        message_uuid: messageUuid,
+        chunks: [{ kind: "text", value: "queued prompt" }],
+      },
+      "request-prompt",
+      promptControlDeps(),
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "request-prompt",
+      event: "user_message_queued",
+      session_id: "session-1",
+      message_uuid: messageUuid,
+    },
+  ]);
+  const sdkMessage = await session.input[Symbol.asyncIterator]().next();
+  assert.equal(sdkMessage.done, false);
+  assert.equal(sdkMessage.value?.uuid, messageUuid);
+  sessions.clear();
+});
+
+test("prompt control emits an explicit rejection when SDK input is closed", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  session.input.close();
+  sessions.set(session.sessionId, session);
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleSessionControlCommand(
+      {
+        command: "prompt",
+        session_id: session.sessionId,
+        message_uuid: "closed-message",
+        chunks: [{ kind: "text", value: "restore me" }],
+      },
+      undefined,
+      promptControlDeps(),
+    );
+  });
+
+  assert.deepEqual(events, [
+    {
+      event: "user_message_rejected",
+      session_id: "session-1",
+      message_uuid: "closed-message",
+      reason: "session input is closed",
+    },
+  ]);
+  sessions.clear();
 });
 
 test("parseCommandEnvelope validates resume_session command without cwd", () => {
@@ -2218,31 +2336,41 @@ test("dispatchCancelTurnCommand interrupts the matching session query", async ()
     requestId?: string;
   }> = [];
 
-  await dispatchCancelTurnCommand(
-    { command: "cancel_turn", session_id: "session-1" },
-    {
-      requestId: "request-1",
-      sessionById: (sessionId) =>
-        sessionId === "session-1"
-          ? {
-              query: {
-                interrupt: async () => {
-                  interruptCount += 1;
-                  receiptReturned = true;
-                  return { still_queued: ["user-message-1"] };
+  const events = await captureBridgeEventsAsync(async () => {
+    await dispatchCancelTurnCommand(
+      { command: "cancel_turn", session_id: "session-1" },
+      {
+        requestId: "request-1",
+        sessionById: (sessionId) =>
+          sessionId === "session-1"
+            ? {
+                query: {
+                  interrupt: async () => {
+                    interruptCount += 1;
+                    receiptReturned = true;
+                    return { still_queued: ["user-message-1"] };
+                  },
                 },
-              },
-            }
-          : undefined,
-      slashError: (sessionId, message, requestId) => {
-        slashErrors.push({ sessionId, message, requestId });
+              }
+            : undefined,
+        slashError: (sessionId, message, requestId) => {
+          slashErrors.push({ sessionId, message, requestId });
+        },
       },
-    },
-  );
+    );
+  });
 
   assert.equal(interruptCount, 1);
   assert.equal(receiptReturned, true);
   assert.deepEqual(slashErrors, []);
+  assert.deepEqual(events, [
+    {
+      request_id: "request-1",
+      event: "turn_interrupt_receipt",
+      session_id: "session-1",
+      still_queued: ["user-message-1"],
+    },
+  ]);
 });
 
 test("dispatchCancelTurnCommand emits slash error for unknown session", async () => {
@@ -2701,7 +2829,9 @@ test("handleTaskSystemMessage preserves valid task-start background and spawn de
       });
     });
     const update = events.at(-1)?.update as {
-      tool_call_update?: { fields?: { task_metadata?: Record<string, unknown> } };
+      tool_call_update?: {
+        fields?: { task_metadata?: Record<string, unknown> };
+      };
     };
     assert.deepEqual(update.tool_call_update?.fields?.task_metadata, {
       is_backgrounded: false,
@@ -3330,6 +3460,203 @@ test("handleSdkMessage propagates source UUIDs for stream text and tool results"
   );
 });
 
+test("handleSdkMessage emits main-thread user-message start before streamed content", () => {
+  const session = makeSessionState();
+
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-stream",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      user_message_uuid: "user-message-1",
+      event: {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: "partial" },
+      },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.equal(events[0]?.event, "user_message_started");
+  assert.deepEqual(events[0], {
+    event: "user_message_started",
+    session_id: "session-1",
+    message_uuid: "user-message-1",
+    source: "stream_event",
+  });
+  assert.equal(events[1]?.event, "session_update");
+});
+
+test("handleSdkMessage maps command lifecycle start to the submitted message UUID", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    for (const [state, uuid] of [
+      ["queued", "lifecycle-queued"],
+      ["started", "lifecycle-started"],
+      ["completed", "lifecycle-completed"],
+    ] as const) {
+      handleSdkMessage(session, {
+        type: "command_lifecycle",
+        state,
+        command_uuid: "user-message-active-turn",
+        uuid,
+        session_id: "session-1",
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+  });
+
+  assert.deepEqual(events, [
+    {
+      event: "user_message_started",
+      session_id: "session-1",
+      message_uuid: "user-message-active-turn",
+      source: "command_lifecycle",
+    },
+  ]);
+});
+
+test("handleSdkMessage ignores command lifecycle starts without a command UUID", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "command_lifecycle",
+      state: "started",
+      uuid: "lifecycle-started",
+      session_id: "session-1",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events, []);
+});
+
+test("handleSdkMessage uses assistant and result as correlation fallbacks and forwards queue count", () => {
+  const assistantSession = makeSessionState();
+  const assistantEvents = captureBridgeEvents(() => {
+    handleSdkMessage(assistantSession, {
+      type: "assistant",
+      uuid: "assistant-complete",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      user_message_uuid: "user-message-2",
+      message: { role: "assistant", content: [] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(assistantEvents[0], {
+    event: "user_message_started",
+    session_id: "session-1",
+    message_uuid: "user-message-2",
+    source: "assistant",
+  });
+
+  const resultSession = makeSessionState();
+  const resultEvents = captureBridgeEvents(() => {
+    handleSdkMessage(resultSession, {
+      type: "result",
+      subtype: "success",
+      uuid: "result-1",
+      session_id: "session-1",
+      user_message_uuid: "user-message-3",
+      queued_turn_count: 2,
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(resultEvents, [
+    {
+      event: "user_message_started",
+      session_id: "session-1",
+      message_uuid: "user-message-3",
+      source: "result",
+    },
+    {
+      event: "turn_complete",
+      session_id: "session-1",
+      queued_turn_count: 2,
+    },
+  ]);
+});
+
+test("handleSdkMessage does not correlate subagent reply frames", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "stream_event",
+      uuid: "assistant-child",
+      session_id: "session-1",
+      parent_tool_use_id: "task-1",
+      user_message_uuid: "must-not-start",
+      event: { type: "message_start" },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-child-complete",
+      session_id: "session-1",
+      parent_tool_use_id: "task-1",
+      user_message_uuid: "must-not-start",
+      message: { role: "assistant", content: [] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.equal(
+    events.some((event) => event.event === "user_message_started"),
+    false,
+  );
+});
+
+test("SDK envelope diagnostics retain lifecycle metadata without content", () => {
+  const fields = sdkMessageDiagnosticFields({
+    type: "command_lifecycle",
+    status: "absorbed",
+    reason: "absorbed_mid_turn",
+    uuid: "lifecycle-1",
+    source_uuid: "user-message-1",
+    parent_tool_use_id: null,
+    prompt: "do not log this prompt",
+    content: "do not log this content",
+    message: { role: "user", content: "do not log this message" },
+  });
+
+  assert.deepEqual(fields, {
+    sdk_type: "command_lifecycle",
+    sdk_subtype: undefined,
+    sdk_uuid: "lifecycle-1",
+    user_message_uuid: undefined,
+    parent_tool_use_id: undefined,
+    parent_tool_use_scope: "root",
+    request_id: undefined,
+    origin_kind: undefined,
+    inner_event_type: undefined,
+    inner_delta_type: undefined,
+    lifecycle_status: "absorbed",
+    lifecycle_state: undefined,
+    lifecycle_operation: undefined,
+    lifecycle_reason: "absorbed_mid_turn",
+    sdk_keys: [
+      "content",
+      "message",
+      "parent_tool_use_id",
+      "prompt",
+      "reason",
+      "source_uuid",
+      "status",
+      "type",
+      "uuid",
+    ],
+    sdk_uuid_fields: {
+      uuid: "lifecycle-1",
+      source_uuid: "user-message-1",
+    },
+  });
+  assert.equal(JSON.stringify(fields).includes("do not log"), false);
+});
+
+test("SDK envelope diagnostics omit free-form lifecycle reasons", () => {
+  const fields = sdkMessageDiagnosticFields({
+    type: "future_message",
+    reason: "user supplied text must stay private",
+  });
+
+  assert.equal(fields.lifecycle_reason, undefined);
+});
+
 test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
@@ -3343,7 +3670,10 @@ test("handleSdkMessage emits SDK-owned context Markdown exactly once", () => {
         role: "assistant",
         content: [
           { type: "text", text: "## Context usage" },
-          { type: "text", text: "| Category | Tokens |\n| --- | ---: |\n| System | 100 |" },
+          {
+            type: "text",
+            text: "| Category | Tokens |\n| --- | ---: |\n| System | 100 |",
+          },
         ],
       },
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
@@ -3372,19 +3702,28 @@ test("handleSdkMessage does not replay ordinary or invalid completed assistant t
       {
         type: "assistant",
         uuid: "ordinary-assistant",
-        message: { role: "assistant", content: [{ type: "text", text: "already streamed" }] },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "already streamed" }],
+        },
       },
       {
         type: "assistant",
         uuid: "malformed-context",
         context_usage: "invalid",
-        message: { role: "assistant", content: [{ type: "text", text: "not context" }] },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "not context" }],
+        },
       },
       {
         type: "assistant",
         uuid: "empty-context",
         context_usage: {},
-        message: { role: "assistant", content: [{ type: "text", text: "   " }] },
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "   " }],
+        },
       },
     ]) {
       handleSdkMessage(session, {
@@ -6987,12 +7326,14 @@ test("buildPromptUserMessage attributes keyboard text input to a human", () => {
       {
         command: "prompt",
         session_id: "session-1",
+        message_uuid: "00000000-0000-4000-8000-000000000001",
         chunks: [{ kind: "text", value: "hello" }],
       },
       "session-1",
     ),
     {
       type: "user",
+      uuid: "00000000-0000-4000-8000-000000000001",
       session_id: "session-1",
       parent_tool_use_id: null,
       origin: { kind: "human" },
@@ -7009,6 +7350,7 @@ test("buildPromptUserMessage attributes structured keyboard input to a human", (
     {
       command: "prompt",
       session_id: "session-1",
+      message_uuid: "00000000-0000-4000-8000-000000000002",
       chunks: [
         { kind: "text", value: "inspect this" },
         {
@@ -7477,7 +7819,8 @@ test("mapSessionMessagesToUpdates does not synthesize context output from persis
         type: "system",
         subtype: "local_command",
         command: "/context",
-        content: "## Context usage\n\nThis transcript copy must not become a second response.",
+        content:
+          "## Context usage\n\nThis transcript copy must not become a second response.",
       },
     },
   ] as unknown as SessionMessage[]);

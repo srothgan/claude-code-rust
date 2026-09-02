@@ -450,7 +450,7 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
     app.sync_git_context();
 
     let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
-    if exit.cancel_requested {
+    if exit.cancel_requested && app.pending_user_messages.is_empty() {
         push_interrupted_hint(app);
     }
     if removed_tail_assistant.is_none() && (exit.turn_was_active || exit.cancel_requested) {
@@ -461,8 +461,10 @@ fn finish_ready_turn_exit(app: &mut App, exit: TurnExitState, tool_status: model
 
 pub(super) fn handle_turn_complete_event(
     app: &mut App,
+    queued_turn_count: Option<usize>,
     terminal_reason: Option<crate::agent::types::TerminalReason>,
 ) {
+    log_queued_turn_count(app, queued_turn_count, "success");
     let exit = begin_turn_exit(app, true);
     let turn_was_active = exit.turn_was_active;
     if let Some(reason) = terminal_reason {
@@ -494,9 +496,11 @@ pub(super) fn handle_turn_error_event(
     app: &mut App,
     msg: &str,
     classified: Option<TurnErrorClass>,
+    queued_turn_count: Option<usize>,
     api_error_status: Option<u16>,
     terminal_reason: Option<crate::agent::types::TerminalReason>,
 ) {
+    log_queued_turn_count(app, queued_turn_count, "error");
     let exit = begin_turn_exit(app, false);
 
     if exit.cancel_requested {
@@ -550,6 +554,129 @@ pub(super) fn handle_turn_error_event(
     app.turn.reset_for_turn_exit();
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
+}
+
+pub(super) fn handle_user_message_queued_event(app: &mut App, message_uuid: &str) {
+    let transitioned = app.pending_user_messages.mark_queued(message_uuid);
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "user_message_locally_accepted",
+        message = "bridge accepted user message into the SDK input path",
+        outcome = if transitioned { "queued" } else { "ignored" },
+        message_uuid,
+        pending_message_count = app.pending_user_messages.len(),
+    );
+}
+
+pub(super) fn handle_user_message_started_event(
+    app: &mut App,
+    message_uuid: &str,
+    source: crate::agent::types::UserMessageStartSource,
+) {
+    let started = app.pending_user_messages.take_started_prefix(message_uuid);
+    if started.is_empty() {
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "user_message_start_ignored",
+            message = "user message start acknowledgement did not match a pending host message",
+            outcome = "ignored",
+            message_uuid,
+            source = ?source,
+        );
+        return;
+    }
+
+    let coalesced_message_count = started.len();
+    for message in started {
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete(&message.text))],
+            None,
+        ));
+        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        app.bind_active_turn_assistant_to_tail();
+        app.status = AppStatus::Thinking;
+        app.enforce_history_retention_tracked();
+    }
+    tracing::info!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "user_message_started",
+        message = "SDK began a correlated pending user turn",
+        outcome = "started",
+        message_uuid,
+        source = ?source,
+        coalesced_message_count,
+        pending_message_count = app.pending_user_messages.len(),
+    );
+}
+
+pub(super) fn handle_user_message_rejected_event(app: &mut App, message_uuid: &str, reason: &str) {
+    let Some(message) = app.pending_user_messages.remove(message_uuid) else {
+        tracing::debug!(
+            target: crate::logging::targets::APP_INPUT,
+            event_name = "user_message_rejection_ignored",
+            message = "user message rejection did not match a pending host message",
+            outcome = "ignored",
+            message_uuid,
+            reason,
+        );
+        return;
+    };
+    restore_pending_user_messages(app, vec![message]);
+    super::notices::emit_system_notice(
+        app,
+        SystemSeverity::Error,
+        &format!("Queued message was not accepted and has been restored: {reason}"),
+    );
+}
+
+pub(super) fn handle_turn_interrupt_receipt_event(app: &mut App, still_queued: &[String]) {
+    let matched = app.pending_user_messages.reconcile_interrupt_survivors(still_queued);
+    tracing::info!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "turn_interrupt_queue_reconciled",
+        message = "interrupt receipt reconciled queued user messages",
+        outcome = "success",
+        receipt_message_count = still_queued.len(),
+        matched_message_count = matched,
+        pending_message_count = app.pending_user_messages.len(),
+    );
+}
+
+pub(super) fn recover_all_pending_user_messages(app: &mut App) {
+    let messages = app.pending_user_messages.drain();
+    restore_pending_user_messages(app, messages);
+}
+
+fn restore_pending_user_messages(app: &mut App, messages: Vec<super::super::PendingUserMessage>) {
+    if messages.is_empty() {
+        return;
+    }
+    let current_text = app.input.text();
+    let mut text_parts: Vec<String> = messages.iter().map(|message| message.text.clone()).collect();
+    if !current_text.trim().is_empty() {
+        text_parts.push(current_text);
+    }
+    let mut images = messages.into_iter().flat_map(|message| message.images).collect::<Vec<_>>();
+    images.append(&mut app.pending_images);
+    app.input.set_text(&text_parts.join("\n"));
+    app.pending_images = images;
+    app.input.renumber_image_badges();
+    app.request_active_surface_repaint();
+}
+
+fn log_queued_turn_count(app: &App, queued_turn_count: Option<usize>, outcome: &str) {
+    let Some(queued_turn_count) = queued_turn_count else {
+        return;
+    };
+    tracing::debug!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "sdk_queued_turn_count_observed",
+        message = "SDK result reported its queued user-send count",
+        outcome,
+        queued_turn_count,
+        host_pending_message_count = app.pending_user_messages.len(),
+    );
 }
 
 fn apply_turn_error_class_side_effects(
@@ -772,6 +899,28 @@ mod tests {
         )
     }
 
+    fn pending_message(
+        uuid: &str,
+        text: &str,
+        images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    ) -> crate::app::PendingUserMessage {
+        crate::app::PendingUserMessage::sending(uuid.to_owned(), text.to_owned(), images)
+    }
+
+    fn image(data: &str) -> crate::app::clipboard_image::ImageAttachment {
+        crate::app::clipboard_image::ImageAttachment {
+            data: data.to_owned(),
+            mime_type: "image/png".to_owned(),
+        }
+    }
+
+    fn message_text(message: &ChatMessage) -> Option<&str> {
+        let MessageBlock::Text(text) = message.blocks.first()? else {
+            return None;
+        };
+        Some(text.text.as_str())
+    }
+
     fn tool_call_info(
         id: &str,
         title: &str,
@@ -870,10 +1019,157 @@ mod tests {
         app.transcript.messages.push(user_message("hello"));
         app.transcript.messages.push(empty_assistant_message());
 
-        handle_turn_complete_event(&mut app, None);
+        handle_turn_complete_event(&mut app, None, None);
 
         assert_eq!(app.transcript.messages.len(), 1);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+    }
+
+    #[test]
+    fn queued_receipt_is_uuid_keyed_and_idempotent() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("one", "first", Vec::new()))
+                .is_ok()
+        );
+
+        handle_user_message_queued_event(&mut app, "one");
+        handle_user_message_queued_event(&mut app, "one");
+        handle_user_message_queued_event(&mut app, "unknown");
+
+        assert!(!app.pending_user_messages.mark_queued("one"));
+        assert_eq!(app.pending_user_messages.len(), 1);
+    }
+
+    #[test]
+    fn correlated_start_commits_each_message_in_the_coalesced_prefix_once() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("one", "first", Vec::new()))
+                .is_ok()
+        );
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("two", "second", Vec::new()))
+                .is_ok()
+        );
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("three", "third", Vec::new()))
+                .is_ok()
+        );
+
+        handle_user_message_started_event(
+            &mut app,
+            "two",
+            crate::agent::types::UserMessageStartSource::CommandLifecycle,
+        );
+
+        assert_eq!(app.pending_user_messages.len(), 1);
+        assert_eq!(
+            app.pending_user_messages.iter().next().map(|message| message.uuid.as_str()),
+            Some("three")
+        );
+        assert_eq!(app.transcript.messages.len(), 4);
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+        assert_eq!(message_text(&app.transcript.messages[0]), Some("first"));
+        assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
+        assert_eq!(message_text(&app.transcript.messages[2]), Some("second"));
+        assert!(matches!(app.transcript.messages[3].role, MessageRole::Assistant));
+        assert_eq!(app.active_turn_assistant_idx(), Some(3));
+        assert_eq!(app.status, AppStatus::Thinking);
+
+        handle_user_message_started_event(
+            &mut app,
+            "two",
+            crate::agent::types::UserMessageStartSource::Result,
+        );
+        handle_user_message_started_event(
+            &mut app,
+            "unknown",
+            crate::agent::types::UserMessageStartSource::Assistant,
+        );
+        assert_eq!(
+            app.transcript.messages.len(),
+            4,
+            "duplicate and unknown acknowledgements must be inert"
+        );
+        assert_eq!(app.pending_user_messages.len(), 1);
+    }
+
+    #[test]
+    fn rejected_message_restores_ordered_payload_before_newer_draft() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message(
+                    "one",
+                    "old [Image #7]",
+                    vec![image("old-image")],
+                ))
+                .is_ok()
+        );
+        app.input.set_text("new [Image #4]");
+        app.pending_images.push(image("new-image"));
+
+        handle_user_message_rejected_event(&mut app, "one", "session input is closed");
+
+        assert!(app.pending_user_messages.is_empty());
+        assert_eq!(app.input.text(), "old [Image #1]\nnew [Image #2]");
+        assert_eq!(app.pending_images, vec![image("old-image"), image("new-image")]);
+        let Some(MessageBlock::Notice(notice)) =
+            app.transcript.messages.last().and_then(|message| message.blocks.last())
+        else {
+            panic!("expected rejection notice");
+        };
+        assert!(notice.text.text.contains("has been restored"));
+        assert!(notice.text.text.contains("session input is closed"));
+    }
+
+    #[test]
+    fn interrupt_receipt_marks_only_known_survivors_without_evicting_pending_messages() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("one", "first", Vec::new()))
+                .is_ok()
+        );
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("two", "second", Vec::new()))
+                .is_ok()
+        );
+
+        handle_turn_interrupt_receipt_event(&mut app, &["two".to_owned(), "unknown".to_owned()]);
+
+        assert_eq!(app.pending_user_messages.len(), 2);
+        assert!(app.pending_user_messages.mark_queued("one"));
+        assert!(!app.pending_user_messages.mark_queued("two"));
+    }
+
+    #[test]
+    fn recovering_all_pending_messages_preserves_fifo_text_and_image_order() {
+        let mut app = App::test_default();
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("one", "first [Image #9]", vec![image("one")],))
+                .is_ok()
+        );
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("two", "second [Image #8]", vec![image("two")],))
+                .is_ok()
+        );
+        app.input.set_text("draft [Image #3]");
+        app.pending_images.push(image("draft"));
+
+        recover_all_pending_user_messages(&mut app);
+
+        assert!(app.pending_user_messages.is_empty());
+        assert_eq!(app.input.text(), "first [Image #1]\nsecond [Image #2]\ndraft [Image #3]");
+        assert_eq!(app.pending_images, vec![image("one"), image("two"), image("draft")]);
     }
 
     #[test]
@@ -884,7 +1180,7 @@ mod tests {
         app.transcript.messages.push(user_message("hello"));
         app.transcript.messages.push(empty_assistant_message());
 
-        handle_turn_error_event(&mut app, "cancelled", None, None, None);
+        handle_turn_error_event(&mut app, "cancelled", None, None, None, None);
 
         assert_eq!(app.transcript.messages.len(), 2);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
@@ -895,13 +1191,33 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_turn_with_pending_message_suppresses_interrupted_hint() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Thinking;
+        app.turn.cancel_requested = true;
+        app.transcript.messages.push(user_message("hello"));
+        app.transcript.messages.push(empty_assistant_message());
+        assert!(
+            app.pending_user_messages
+                .try_push_sending(pending_message("queued", "continue with this", Vec::new(),))
+                .is_ok()
+        );
+
+        handle_turn_error_event(&mut app, "cancelled", None, None, None, None);
+
+        assert_eq!(app.transcript.messages.len(), 1);
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+        assert_eq!(app.pending_user_messages.len(), 1);
+    }
+
+    #[test]
     fn turn_error_removes_empty_tail_assistant_before_error_message() {
         let mut app = App::test_default();
         app.status = AppStatus::Thinking;
         app.transcript.messages.push(user_message("hello"));
         app.transcript.messages.push(empty_assistant_message());
 
-        handle_turn_error_event(&mut app, "boom", None, None, None);
+        handle_turn_error_event(&mut app, "boom", None, None, None, None);
 
         assert_eq!(app.transcript.messages.len(), 2);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
@@ -920,7 +1236,7 @@ mod tests {
         ));
         app.bind_active_turn_assistant(1);
 
-        handle_turn_complete_event(&mut app, None);
+        handle_turn_complete_event(&mut app, None, None);
 
         assert_eq!(app.status, AppStatus::Ready);
         assert_eq!(app.active_turn_assistant_idx(), None);
@@ -946,7 +1262,7 @@ mod tests {
         app.bind_active_turn_assistant(1);
         app.chat_render.mark_resize_purge_replay_during_turn();
 
-        handle_turn_complete_event(&mut app, None);
+        handle_turn_complete_event(&mut app, None, None);
 
         assert_eq!(
             app.surface_dirty.chat.rebuild,

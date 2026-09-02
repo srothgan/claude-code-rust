@@ -935,6 +935,15 @@ pub struct PromptChunk {
     pub value: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserMessageStartSource {
+    CommandLifecycle,
+    StreamEvent,
+    Assistant,
+    Result,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountInfo {
     pub email: Option<String>,

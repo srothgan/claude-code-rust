@@ -183,6 +183,10 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "mcp_auth_redirect":
     case "mcp_operation_error":
     case "mcp_set_servers_result":
+    case "user_message_queued":
+    case "user_message_started":
+    case "user_message_rejected":
+    case "turn_interrupt_receipt":
     case "turn_complete":
     case "turn_error":
     case "slash_error":
@@ -238,6 +242,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "elicitation_request":
     case "elicitation_complete":
     case "mcp_auth_redirect":
+    case "user_message_started":
     case "turn_complete":
       return "trace";
     case "sessions_listed":
@@ -248,6 +253,9 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "rewind_result":
     case "runtime_reload_completed":
     case "mcp_set_servers_result":
+    case "user_message_queued":
+    case "user_message_rejected":
+    case "turn_interrupt_receipt":
     case "mcp_snapshot":
       return "debug";
   }

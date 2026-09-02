@@ -11,16 +11,17 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
   private readonly waiters: Array<(result: IteratorResult<T>) => void> = [];
   private closed = false;
 
-  enqueue(item: T): void {
+  enqueue(item: T): boolean {
     if (this.closed) {
-      return;
+      return false;
     }
     const waiter = this.waiters.shift();
     if (waiter) {
       waiter({ value: item, done: false });
-      return;
+      return true;
     }
     this.items.push(item);
+    return true;
   }
 
   close(): void {

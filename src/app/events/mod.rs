@@ -44,7 +44,7 @@ pub(crate) fn handle_local_cancel_enqueued(app: &mut App) {
 /// backend events.
 pub(crate) fn handle_local_prompt_dispatch_error(app: &mut App, message: &str) {
     app.request_active_surface_repaint();
-    turn::handle_turn_error_event(app, message, None, None, None);
+    turn::handle_turn_error_event(app, message, None, None, None, None);
 }
 
 /// Surface a synchronous slash-command dispatch failure without injecting a

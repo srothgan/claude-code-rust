@@ -61,6 +61,10 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::PermissionRequest { .. }
         | ClientEvent::QuestionRequest { .. }
         | ClientEvent::UserDialogRequest { .. }
+        | ClientEvent::UserMessageQueued { .. }
+        | ClientEvent::UserMessageStarted { .. }
+        | ClientEvent::UserMessageRejected { .. }
+        | ClientEvent::TurnInterruptReceipt { .. }
         | ClientEvent::TurnComplete { .. }
         | ClientEvent::TurnError { .. }
         | ClientEvent::TurnErrorClassified { .. }

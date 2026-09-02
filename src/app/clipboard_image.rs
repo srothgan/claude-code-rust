@@ -11,7 +11,7 @@ pub const SUPPORTED_IMAGE_MIME_TYPES: &[&str] =
     &["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// A pending image attachment: base64-encoded data and its MIME type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageAttachment {
     pub data: String,
     pub mime_type: String,

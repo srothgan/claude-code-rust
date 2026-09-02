@@ -628,6 +628,9 @@ export async function createSession(params: {
       history_update_count: historyUpdateCount,
       stale_session_count: staleSessionCount,
       stale_session_before_register_count: staleSessionBeforeRegisterCount,
+      sdk_debug_enabled: enableSdkDebug,
+      sdk_debug_file_configured: Boolean(sdkDebugFile),
+      sdk_spawn_debug_enabled: enableSpawnDebug,
     },
   });
   try {

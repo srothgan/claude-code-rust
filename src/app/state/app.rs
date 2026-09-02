@@ -79,6 +79,8 @@ pub struct App {
     /// consumed on submit. No cap on count — this is a developer tool, so
     /// users are trusted to attach as many images as they need.
     pub(crate) pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    /// Session-scoped projection of user messages accepted locally while an agent turn is active.
+    pub pending_user_messages: PendingUserMessages,
     /// Git repo context used by footer/status rendering and live branch tracking.
     pub(crate) git_context: GitContextState,
     /// Update prompt state for the startup fullscreen surface.
@@ -256,6 +258,7 @@ impl App {
             pending_submit: None,
             paste: PasteState::default(),
             pending_images: Vec::new(),
+            pending_user_messages: PendingUserMessages::default(),
             git_context: GitContextState::default(),
             update_prompt: None,
             post_exit_action: None,

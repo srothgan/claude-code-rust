@@ -408,6 +408,7 @@ export function parseCommandEnvelope(line: string): {
         return {
           command: "prompt",
           session_id: expectString(raw, "session_id", "prompt"),
+          message_uuid: expectString(raw, "message_uuid", "prompt"),
           chunks: parsePromptChunks(raw, "prompt"),
         };
       case "cancel_turn":

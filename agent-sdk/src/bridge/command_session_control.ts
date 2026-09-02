@@ -9,7 +9,7 @@ import {
 } from "./commands.js";
 import { dispatchCancelTurnCommand } from "./command_dispatch.js";
 import { emitFastModeUpdate } from "./error_classification.js";
-import { emitSessionUpdate, slashError } from "./events.js";
+import { emitSessionUpdate, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
   emitCurrentModelUpdate,
@@ -102,12 +102,50 @@ function handlePrompt(
 ): void {
   const session = requireSession(command.session_id, requestId);
   if (!session) {
+    writeEvent(
+      {
+        event: "user_message_rejected",
+        session_id: command.session_id,
+        message_uuid: command.message_uuid,
+        reason: "unknown session",
+      },
+      requestId,
+    );
     return;
   }
   const message = deps.buildPromptUserMessage(command, session.sessionId);
-  if (message) {
-    session.input.enqueue(message);
+  if (!message) {
+    writeEvent(
+      {
+        event: "user_message_rejected",
+        session_id: session.sessionId,
+        message_uuid: command.message_uuid,
+        reason: "prompt contained no supported content",
+      },
+      requestId,
+    );
+    return;
   }
+  if (!session.input.enqueue(message)) {
+    writeEvent(
+      {
+        event: "user_message_rejected",
+        session_id: session.sessionId,
+        message_uuid: command.message_uuid,
+        reason: "session input is closed",
+      },
+      requestId,
+    );
+    return;
+  }
+  writeEvent(
+    {
+      event: "user_message_queued",
+      session_id: session.sessionId,
+      message_uuid: command.message_uuid,
+    },
+    requestId,
+  );
 }
 
 async function setModel(

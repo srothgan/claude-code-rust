@@ -23,7 +23,15 @@ pub(super) fn submit_input(app: &mut App) {
     app.session_runtime.prompt_suggestion = None;
 
     let submission = slash::ResolvedSubmission::resolve(text);
-    if app.is_agent_turn_active() && submission.class().requires_idle_turn() {
+    let has_active_or_queued_turn = matches!(app.status, AppStatus::Thinking | AppStatus::Running)
+        || !app.pending_user_messages.is_empty();
+    if has_active_or_queued_turn && submission.is_prompt() {
+        dispatch_active_turn_prompt(app, submission.into_text());
+        return;
+    }
+    if (app.is_agent_turn_active() || !app.pending_user_messages.is_empty())
+        && submission.class().requires_idle_turn()
+    {
         let label = submission.blocked_label();
         crate::app::events::push_active_turn_submission_blocked_notice(app, &label);
         tracing::debug!(
@@ -87,6 +95,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     };
     let input_chars = text.chars().count();
     let session_id = sid.to_string();
+    let message_uuid = uuid::Uuid::new_v4().to_string();
 
     // Take pending images for this turn.
     let images = std::mem::take(&mut app.pending_images);
@@ -102,7 +111,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 
     // The text already contains [Image #N] badges from the textarea,
     // so the model can correlate user references with image attachments.
-    match conn.prompt_with_images(sid.to_string(), text, images) {
+    match conn.prompt_with_images(sid.to_string(), message_uuid.clone(), text, images) {
         Ok(resp) => {
             crate::app::session_runtime::request_context_usage_refresh(app);
             tracing::info!(
@@ -111,12 +120,75 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
                 message = "prompt dispatched to the bridge",
                 outcome = "success",
                 session_id = %session_id,
+                message_uuid = %message_uuid,
                 input_chars,
                 stop_reason = ?resp.stop_reason,
             );
         }
         Err(e) => {
             crate::app::events::handle_local_prompt_dispatch_error(app, &e.to_string());
+        }
+    }
+}
+
+fn dispatch_active_turn_prompt(app: &mut App, text: String) {
+    let Some(conn) = app.session_runtime.conn.clone() else {
+        return;
+    };
+    let Some(session_id) = app.session_runtime.session_id.clone() else {
+        return;
+    };
+    let message_uuid = uuid::Uuid::new_v4().to_string();
+    let images = app.pending_images.clone();
+    let pending =
+        super::PendingUserMessage::sending(message_uuid.clone(), text.clone(), images.clone());
+    match app.pending_user_messages.try_push_sending(pending) {
+        Ok(()) => {}
+        Err(super::PendingUserMessageInsertError::AtCapacity(_)) => return,
+        Err(super::PendingUserMessageInsertError::DuplicateUuid(_)) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "active_turn_prompt_duplicate_uuid",
+                message = "newly generated active-turn prompt UUID already exists",
+                outcome = "ignored",
+                session_id = %session_id,
+                message_uuid = %message_uuid,
+            );
+            return;
+        }
+    }
+
+    match conn.prompt_with_images(session_id.to_string(), message_uuid.clone(), text, images) {
+        Ok(_) => {
+            app.input.clear();
+            app.pending_images.clear();
+            app.request_active_surface_repaint();
+            tracing::info!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "active_turn_prompt_dispatched",
+                message = "active-turn prompt dispatched to the bridge",
+                outcome = "sending",
+                session_id = %session_id,
+                message_uuid = %message_uuid,
+                pending_message_count = app.pending_user_messages.len(),
+            );
+        }
+        Err(error) => {
+            let _ = app.pending_user_messages.remove(&message_uuid);
+            crate::app::events::push_submission_feedback(
+                app,
+                super::SystemSeverity::Error,
+                &format!("Queued message could not be sent: {error}"),
+            );
+            tracing::warn!(
+                target: crate::logging::targets::APP_INPUT,
+                event_name = "active_turn_prompt_dispatch_failed",
+                message = "active-turn prompt could not enter the bridge command queue",
+                outcome = "failure",
+                session_id = %session_id,
+                message_uuid = %message_uuid,
+                error = %error,
+            );
         }
     }
 }
@@ -148,36 +220,78 @@ mod tests {
     }
 
     #[test]
-    fn submit_input_while_running_preserves_prompt_and_does_not_cancel() {
+    fn submit_input_while_running_queues_full_payload_without_touching_active_turn() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
-        app.input.set_text("next prompt");
+        app.input.set_text("next prompt [Image #1]");
         app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
-            data: "image-data".to_owned(),
+            data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         });
-        let before = app.input.snapshot();
 
         submit_input(&mut app);
 
-        assert_eq!(app.input.snapshot(), before);
-        assert_eq!(app.pending_images.len(), 1);
-        assert_eq!(app.pending_images[0].data, "image-data");
-        assert_eq!(app.pending_images[0].mime_type, "image/png");
+        assert!(app.input.text().is_empty());
+        assert!(app.pending_images.is_empty());
         assert!(!app.turn.cancel_requested);
         assert!(matches!(app.status, AppStatus::Running));
-        assert!(rx.try_recv().is_err(), "rejected prompt must not dispatch or cancel");
-        let [MessageBlock::Notice(notice)] = app.transcript.messages[0].blocks.as_slice() else {
-            panic!("expected inline active-turn notice");
+        assert_eq!(
+            app.transcript.messages.len(),
+            1,
+            "pending input must not enter the transcript before its correlated start"
+        );
+        assert_eq!(app.pending_user_messages.len(), 1);
+        let pending = app.pending_user_messages.iter().next().expect("one pending user message");
+        assert_eq!(pending.text, "next prompt [Image #1]");
+        assert_eq!(pending.images.len(), 1);
+        assert_eq!(pending.images[0].data, "aGVsbG8=");
+        let envelope = rx.try_recv().expect("active-turn prompt should be sent");
+        let BridgeCommand::Prompt { session_id, message_uuid, chunks } = envelope.command else {
+            panic!("expected prompt command");
         };
-        assert!(notice.text.text.contains("New prompts"));
-        assert_eq!(notice.severity, super::super::SystemSeverity::Info);
+        assert_eq!(session_id, "session-1");
+        assert_eq!(message_uuid, pending.uuid);
+        assert_eq!(chunks.len(), 2);
+        assert!(rx.try_recv().is_err(), "active-turn prompt must not cancel the current turn");
     }
 
     #[test]
-    fn repeated_active_turn_rejections_update_one_inline_notice() {
+    fn active_turn_prompt_at_capacity_preserves_composer_without_dispatch_or_notice() {
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        for index in 0..crate::app::state::PendingUserMessages::CAPACITY {
+            app.pending_user_messages
+                .try_push_sending(super::super::PendingUserMessage::sending(
+                    format!("queued-{index}"),
+                    format!("queued message {index}"),
+                    Vec::new(),
+                ))
+                .expect("queue slot should be available");
+        }
+        app.input.set_text("keep this draft [Image #1]");
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: "aGVsbG8=".to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+        let input_before = app.input.snapshot();
+        let images_before = app.pending_images.clone();
+
+        submit_input(&mut app);
+
+        assert_eq!(app.input.snapshot(), input_before);
+        assert_eq!(app.pending_images, images_before);
+        assert_eq!(
+            app.pending_user_messages.len(),
+            crate::app::state::PendingUserMessages::CAPACITY
+        );
+        assert!(app.transcript.messages.is_empty());
+        assert!(rx.try_recv().is_err(), "capacity rejection must not reach the bridge");
+    }
+
+    #[test]
+    fn active_turn_prompt_does_not_change_slash_command_blocking() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
@@ -195,7 +309,41 @@ mod tests {
         };
         assert!(notice.text.text.contains("`/resume`"));
         assert_eq!(app.turn.notice_refs.len(), 1);
-        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            rx.try_recv().expect("plain prompt should be queued").command,
+            BridgeCommand::Prompt { .. }
+        ));
+        assert!(rx.try_recv().is_err(), "blocked slash command must not be dispatched");
+    }
+
+    #[test]
+    fn active_turn_prompt_send_failure_preserves_exact_draft_and_images() {
+        let (mut app, rx) = app_with_connection();
+        drop(rx);
+        app.status = AppStatus::Running;
+        app.input.set_text("retry [Image #1]");
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: "aGVsbG8=".to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+        let before = app.input.snapshot();
+        let images_before = app.pending_images.clone();
+
+        submit_input(&mut app);
+
+        assert_eq!(app.input.snapshot(), before);
+        assert_eq!(app.pending_images, images_before);
+        assert!(app.pending_user_messages.is_empty());
+        assert!(matches!(app.status, AppStatus::Running));
+        let message = app.transcript.messages.last().expect("send failure message");
+        assert!(matches!(
+            message.role,
+            MessageRole::System(Some(super::super::SystemSeverity::Error))
+        ));
+        let Some(MessageBlock::Text(text)) = message.blocks.last() else {
+            panic!("expected send failure text");
+        };
+        assert!(text.text.contains("could not be sent"));
     }
 
     #[test]
@@ -354,7 +502,7 @@ mod tests {
         assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
         let envelope = rx.try_recv().expect("advertised slash command should be sent");
         match envelope.command {
-            BridgeCommand::Prompt { session_id, chunks } => {
+            BridgeCommand::Prompt { session_id, chunks, .. } => {
                 assert_eq!(session_id, "session-1");
                 assert_eq!(chunks.len(), 1);
                 assert_eq!(chunks[0].kind, "text");
@@ -422,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn rejected_prompt_is_not_submitted_when_the_active_turn_completes() {
+    fn queued_prompt_is_not_redispatched_when_the_active_turn_completes() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
         app.input.set_text("submit manually later");
@@ -430,14 +578,62 @@ mod tests {
         submit_input(&mut app);
         crate::app::events::handle_client_event(
             &mut app,
-            ClientEvent::TurnComplete { session_id: "session-1".to_owned(), terminal_reason: None },
+            ClientEvent::TurnComplete {
+                session_id: "session-1".to_owned(),
+                queued_turn_count: None,
+                terminal_reason: None,
+            },
         );
 
-        assert_eq!(app.input.text(), "submit manually later");
+        assert!(app.input.text().is_empty());
+        assert_eq!(app.pending_user_messages.len(), 1);
         assert!(matches!(app.status, AppStatus::Ready));
-        while let Ok(envelope) = rx.try_recv() {
-            assert!(!matches!(envelope.command, BridgeCommand::Prompt { .. }));
-        }
+        let commands = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|envelope| matches!(envelope.command, BridgeCommand::Prompt { .. }))
+                .count(),
+            1,
+            "turn completion must not redispatch queued input"
+        );
+    }
+
+    #[test]
+    fn prompt_submitted_between_queued_turns_joins_pending_projection() {
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input.set_text("second turn");
+        submit_input(&mut app);
+        crate::app::events::handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete {
+                session_id: "session-1".to_owned(),
+                queued_turn_count: Some(1),
+                terminal_reason: None,
+            },
+        );
+        app.input.set_text("third turn");
+
+        submit_input(&mut app);
+
+        assert!(app.input.text().is_empty());
+        assert_eq!(
+            app.pending_user_messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>(),
+            ["second turn", "third turn"]
+        );
+        assert!(matches!(app.status, AppStatus::Ready));
+        let commands = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|envelope| matches!(envelope.command, BridgeCommand::Prompt { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]

@@ -317,6 +317,7 @@ export function buildPromptUserMessage(
   }
   return {
     type: "user",
+    uuid: command.message_uuid as import("@anthropic-ai/claude-agent-sdk").SDKUserMessage["uuid"],
     session_id: sessionId,
     parent_tool_use_id: null,
     origin: { kind: "human" },

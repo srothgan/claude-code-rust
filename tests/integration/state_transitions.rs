@@ -132,6 +132,7 @@ async fn error_then_new_turn_recovers() {
         ClientEvent::TurnError {
             session_id: "test-session".to_owned(),
             message: "timeout".into(),
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },
@@ -378,6 +379,7 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
         ClientEvent::TurnError {
             session_id: "test-session".to_owned(),
             message: "crashed".into(),
+            queued_turn_count: None,
             api_error_status: None,
             terminal_reason: None,
         },

@@ -48,6 +48,18 @@ pub enum ClientEvent {
     McpOperationError { session_id: String, error: crate::agent::types::McpOperationError },
     /// Dynamic MCP server replacement completed through the SDK.
     McpSetServersResult { session_id: String, result: crate::agent::types::McpSetServersResult },
+    /// The bridge accepted a UUID-stamped prompt into its local SDK input iterable.
+    UserMessageQueued { session_id: String, message_uuid: String },
+    /// The SDK correlated command start, a main-thread reply, or a result with a prompt UUID.
+    UserMessageStarted {
+        session_id: String,
+        message_uuid: String,
+        source: crate::agent::types::UserMessageStartSource,
+    },
+    /// The bridge proved that a submitted prompt cannot enter the SDK input stream.
+    UserMessageRejected { session_id: String, message_uuid: String, reason: String },
+    /// Snapshot of UUID-stamped messages that will survive an interrupt.
+    TurnInterruptReceipt { session_id: String, still_queued: Vec<String> },
     /// Claude CLI removed an MCP server from a persisted config scope.
     McpConfigRemoveSucceeded {
         cwd_raw: String,
@@ -60,12 +72,14 @@ pub enum ClientEvent {
     /// A prompt turn completed successfully.
     TurnComplete {
         session_id: String,
+        queued_turn_count: Option<usize>,
         terminal_reason: Option<crate::agent::types::TerminalReason>,
     },
     /// A prompt turn failed with an error.
     TurnError {
         session_id: String,
         message: String,
+        queued_turn_count: Option<usize>,
         api_error_status: Option<u16>,
         terminal_reason: Option<crate::agent::types::TerminalReason>,
     },
@@ -74,6 +88,7 @@ pub enum ClientEvent {
         session_id: String,
         message: String,
         class: TurnErrorClass,
+        queued_turn_count: Option<usize>,
         api_error_status: Option<u16>,
         terminal_reason: Option<crate::agent::types::TerminalReason>,
     },
@@ -191,6 +206,10 @@ impl ClientEvent {
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::McpSetServersResult { session_id, .. }
+            | Self::UserMessageQueued { session_id, .. }
+            | Self::UserMessageStarted { session_id, .. }
+            | Self::UserMessageRejected { session_id, .. }
+            | Self::TurnInterruptReceipt { session_id, .. }
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::TurnErrorClassified { session_id, .. }
