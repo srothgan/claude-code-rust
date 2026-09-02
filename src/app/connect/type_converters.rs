@@ -953,6 +953,7 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .terminal_status(task_metadata.terminal_status)
         .blocked(task_metadata.blocked)
         .parent_agent_id(task_metadata.parent_agent_id)
+        .ambient(task_metadata.ambient)
         .subagent_retry(task_metadata.subagent_retry.map(convert_subagent_retry_update))
 }
 
@@ -998,6 +999,22 @@ fn convert_tool_call_content(
                     .blob_saved_to(blob_saved_to),
             ))
         }
+        types::ToolCallContent::ResourceLink {
+            uri,
+            name,
+            title,
+            description,
+            mime_type,
+            size,
+            annotations,
+        } => Some(model::ToolCallContent::ResourceLink(
+            model::McpResourceLink::new(uri, name)
+                .title(title)
+                .description(description)
+                .mime_type(mime_type)
+                .size(size)
+                .annotations(annotations),
+        )),
     }
 }
 
@@ -1703,6 +1720,7 @@ mod tests {
                 terminal_status: Some("completed".to_owned()),
                 blocked: Some(true),
                 parent_agent_id: Some("agent-parent".to_owned()),
+                ambient: Some(true),
                 subagent_retry: None,
             }),
             ..types::ToolCallUpdateFields::default()
@@ -1727,7 +1745,8 @@ mod tests {
                     .summary(Some("Validation complete".to_owned()))
                     .terminal_status(Some("completed".to_owned()))
                     .blocked(Some(true))
-                    .parent_agent_id(Some("agent-parent".to_owned())),
+                    .parent_agent_id(Some("agent-parent".to_owned()))
+                    .ambient(Some(true)),
             )
         );
     }
@@ -1761,6 +1780,7 @@ mod tests {
                 terminal_status: Some("killed".to_owned()),
                 blocked: Some(false),
                 parent_agent_id: Some("agent-root".to_owned()),
+                ambient: Some(false),
                 subagent_retry: None,
             }),
             locations: Vec::new(),
@@ -1788,7 +1808,8 @@ mod tests {
                     .summary(Some("Review stopped".to_owned()))
                     .terminal_status(Some("killed".to_owned()))
                     .blocked(Some(false))
-                    .parent_agent_id(Some("agent-root".to_owned())),
+                    .parent_agent_id(Some("agent-root".to_owned()))
+                    .ambient(Some(false)),
             )
         );
     }
@@ -1861,6 +1882,48 @@ mod tests {
                             .to_owned(),
                     ))
                     .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
+            )]
+        );
+    }
+
+    #[test]
+    fn convert_tool_call_preserves_mcp_resource_link_metadata() {
+        let annotations = std::collections::BTreeMap::from([(
+            "audience".to_owned(),
+            serde_json::json!(["user"]),
+        )]);
+        let tool_call = convert_tool_call(types::ToolCall {
+            tool_call_id: "tool-link".to_owned(),
+            title: "Export report".to_owned(),
+            kind: "other".to_owned(),
+            status: "completed".to_owned(),
+            source_message_uuid: None,
+            content: vec![types::ToolCallContent::ResourceLink {
+                uri: "mcp://docs/report.csv".to_owned(),
+                name: "report.csv".to_owned(),
+                title: Some("Quarterly report".to_owned()),
+                description: Some("Generated report".to_owned()),
+                mime_type: Some("text/csv".to_owned()),
+                size: Some(42),
+                annotations: Some(annotations.clone()),
+            }],
+            raw_input: None,
+            raw_output: None,
+            output_metadata: None,
+            task_metadata: None,
+            locations: Vec::new(),
+            meta: None,
+        });
+
+        assert_eq!(
+            tool_call.content,
+            vec![model::ToolCallContent::ResourceLink(
+                model::McpResourceLink::new("mcp://docs/report.csv", "report.csv")
+                    .title(Some("Quarterly report".to_owned()))
+                    .description(Some("Generated report".to_owned()))
+                    .mime_type(Some("text/csv".to_owned()))
+                    .size(Some(42))
+                    .annotations(Some(annotations)),
             )]
         );
     }

@@ -1074,6 +1074,42 @@ fn mcp_resource_body_avoids_duplicate_saved_path_hint_when_text_already_mentions
 }
 
 #[test]
+fn mcp_resource_links_render_summary_and_bounded_body_at_narrow_and_wide_widths() {
+    let mut tc =
+        test_tool_call("tc-resource-link", "mcp__docs__export", model::ToolCallStatus::Completed);
+    tc.content = vec![model::ToolCallContent::ResourceLink(
+        model::McpResourceLink::new("mcp://docs/report.csv", "report.csv")
+            .title(Some("Quarterly report".to_owned()))
+            .description(Some("A generated report for the current quarter".to_owned()))
+            .mime_type(Some("text/csv".to_owned()))
+            .size(Some(42))
+            .annotations(Some(std::collections::BTreeMap::from([(
+                "audience".to_owned(),
+                serde_json::json!(["user"]),
+            )]))),
+    )];
+
+    assert_eq!(standard::content_summary(&tc), "Quarterly report");
+    for width in [24, 120] {
+        let body = standard::render_tool_call_body(&tc, width);
+        let rendered_lines = rendered_line_texts(&body);
+        let rendered = rendered_lines.join("\n");
+        let compact = rendered_lines
+            .iter()
+            .flat_map(|line| line.chars().skip(5))
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(compact.contains("Resource:Quarterlyreport"), "{rendered}");
+        assert!(compact.contains("URI:mcp://docs/report.csv"), "{rendered}");
+        if width == 120 {
+            assert!(rendered.contains("text/csv"));
+            assert!(rendered.contains("42 bytes"));
+        }
+        assert!(body.len() <= TOOL_BODY_MAX_LINES);
+    }
+}
+
+#[test]
 fn read_tool_renders_head_hidden_marker_and_tail() {
     let mut tc = test_tool_call("tc-read-body", "Read", model::ToolCallStatus::Completed);
     tc.content = vec![model::ToolCallContent::from(

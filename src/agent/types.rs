@@ -476,6 +476,7 @@ pub struct TaskMetadata {
     pub terminal_status: Option<String>,
     pub blocked: Option<bool>,
     pub parent_agent_id: Option<String>,
+    pub ambient: Option<bool>,
     pub subagent_retry: Option<SubagentRetryUpdate>,
 }
 
@@ -511,6 +512,15 @@ pub enum ToolCallContent {
         mime_type: Option<String>,
         text: Option<String>,
         blob_saved_to: Option<String>,
+    },
+    ResourceLink {
+        uri: String,
+        name: String,
+        title: Option<String>,
+        description: Option<String>,
+        mime_type: Option<String>,
+        size: Option<u64>,
+        annotations: Option<std::collections::BTreeMap<String, serde_json::Value>>,
     },
 }
 

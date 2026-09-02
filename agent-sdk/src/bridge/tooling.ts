@@ -1023,53 +1023,99 @@ function editDiffFromInput(rawInput: Json | undefined): ToolCall["content"] {
   ];
 }
 
-function writeDiffFromResult(rawContent: unknown): ToolCall["content"] {
-  const candidates = Array.isArray(rawContent) ? rawContent : [rawContent];
+type WriteResultPresentation =
+  | { kind: "diff"; content: ToolCall["content"] }
+  | { kind: "text"; text: string };
+
+function boundedDisplayText(value: string, maxCharacters = 240): string {
+  return value.length > maxCharacters
+    ? `${value.slice(0, maxCharacters - 3)}...`
+    : value;
+}
+
+function writeResultPresentation(
+  rawContent: unknown,
+): WriteResultPresentation | undefined {
+  const candidates = resultRecordCandidates(rawContent, undefined);
+  const parsed = parseJsonCandidate(rawContent);
+  if (parsed !== undefined) {
+    candidates.push(...resultRecordCandidates(parsed, undefined));
+  }
   for (const candidate of candidates) {
-    const record = asRecordOrNull(candidate);
-    if (!record) {
-      continue;
-    }
+    const record = candidate;
     const filePath =
       typeof record.filePath === "string"
         ? record.filePath
         : typeof record.file_path === "string"
           ? record.file_path
           : "";
-    const content = typeof record.content === "string" ? record.content : "";
+    const content =
+      typeof record.content === "string" ? record.content : undefined;
     const originalRaw =
       "originalFile" in record
         ? record.originalFile
         : "original_file" in record
           ? record.original_file
           : undefined;
-    const gitDiff = asRecordOrNull(record.gitDiff);
+    const gitDiff = asRecordOrNull(record.gitDiff ?? record.git_diff);
     const repository =
       typeof gitDiff?.repository === "string" &&
       gitDiff.repository.trim().length > 0
         ? gitDiff.repository.trim()
         : undefined;
-    if (!filePath || !content || originalRaw === undefined) {
+    if (!filePath || originalRaw === undefined) {
       continue;
     }
-    const original =
-      typeof originalRaw === "string"
-        ? originalRaw
-        : originalRaw === null
-          ? ""
-          : "";
-    return [
-      {
-        type: "diff",
-        old_path: filePath,
-        new_path: filePath,
-        old: original,
-        new: content,
-        ...(repository ? { repository } : {}),
-      },
-    ];
+    if (originalRaw === null) {
+      if (record.type === "create" && content !== undefined) {
+        return {
+          kind: "diff",
+          content: [
+            {
+              type: "diff",
+              old_path: filePath,
+              new_path: filePath,
+              old: "",
+              new: content,
+              ...(repository ? { repository } : {}),
+            },
+          ],
+        };
+      }
+      return {
+        kind: "text",
+        text:
+          record.type === "create"
+            ? `Created ${boundedDisplayText(filePath)}; the written content was unavailable, so a diff could not be displayed.`
+            : `Updated ${boundedDisplayText(filePath)}; the previous content was unavailable, so a diff could not be displayed.`,
+      };
+    }
+    if (content === undefined) {
+      continue;
+    }
+    if (typeof originalRaw === "string") {
+      if (originalRaw === content) {
+        return {
+          kind: "text",
+          text: `No changes to ${boundedDisplayText(filePath)}.`,
+        };
+      }
+      return {
+        kind: "diff",
+        content: [
+          {
+            type: "diff",
+            old_path: filePath,
+            new_path: filePath,
+            old: originalRaw,
+            new: content,
+            ...(repository ? { repository } : {}),
+          },
+        ],
+      };
+    }
   }
-  return [];
+  return undefined;
 }
 
 function editDiffFromResult(
@@ -2158,7 +2204,11 @@ function hasConcreteReplField(record: Record<string, unknown>): boolean {
     "stderr" in record ||
     "registeredTools" in record ||
     "images" in record ||
-    "documents" in record
+    "documents" in record ||
+    "imagesOmitted" in record ||
+    "imagePagesFailed" in record ||
+    "imagePagesFailedOmitted" in record ||
+    "documentsOmitted" in record
   );
 }
 
@@ -2233,6 +2283,50 @@ function replResultFields(
     }
     if (Array.isArray(candidate.documents) && candidate.documents.length > 0) {
       lines.push(`Documents: ${candidate.documents.length}`);
+    }
+    const imagesOmitted = nonNegativeInteger(candidate.imagesOmitted);
+    if (imagesOmitted !== undefined && imagesOmitted > 0) {
+      lines.push(`Images omitted: ${imagesOmitted}`);
+    }
+    const failedPages = Array.isArray(candidate.imagePagesFailed)
+      ? candidate.imagePagesFailed
+      : [];
+    const failedPageLimit = 20;
+    let renderedFailedPages = 0;
+    let locallyOmittedFailedPages = 0;
+    for (const value of failedPages) {
+      const failedPage = asRecordOrNull(value);
+      const page = nonNegativeInteger(failedPage?.page);
+      if (!failedPage || page === undefined) {
+        continue;
+      }
+      if (renderedFailedPages >= failedPageLimit) {
+        locallyOmittedFailedPages += 1;
+        continue;
+      }
+      const file = nonEmptyString(failedPage.file);
+      const error = nonEmptyString(failedPage.error);
+      const context = [
+        file ? `file ${boundedDisplayText(file)}` : undefined,
+        error ? boundedDisplayText(error) : undefined,
+      ]
+        .filter((value): value is string => value !== undefined)
+        .join(": ");
+      lines.push(
+        `Failed image page: ${page}${context ? ` (${context})` : ""}`,
+      );
+      renderedFailedPages += 1;
+    }
+    const upstreamFailedPagesOmitted =
+      nonNegativeInteger(candidate.imagePagesFailedOmitted) ?? 0;
+    const failedPagesOmitted =
+      upstreamFailedPagesOmitted + locallyOmittedFailedPages;
+    if (failedPagesOmitted > 0) {
+      lines.push(`Failed image pages omitted: ${failedPagesOmitted}`);
+    }
+    const documentsOmitted = nonNegativeInteger(candidate.documentsOmitted);
+    if (documentsOmitted !== undefined && documentsOmitted > 0) {
+      lines.push(`Documents omitted: ${documentsOmitted}`);
     }
 
     return { output: lines.length > 0 ? lines.join("\n") : undefined, failed };
@@ -2492,6 +2586,21 @@ function backgroundLaunchResultFields(
   rawResult: unknown,
   rawContent: unknown,
 ): BackgroundLaunchResult | undefined {
+  if (isShellToolName(toolName)) {
+    const record = findShellResultRecord(rawResult, rawContent);
+    const taskId =
+      typeof record?.backgroundTaskId === "string"
+        ? record.backgroundTaskId.trim()
+        : "";
+    if (record && taskId) {
+      return {
+        output: buildShellDisplayOutput(record),
+        taskId,
+        failed: false,
+        keepRunning: true,
+      };
+    }
+  }
   return (
     monitorResultFields(toolName, rawResult, rawContent) ??
     workflowResultFields(toolName, rawResult, rawContent)
@@ -2880,9 +2989,16 @@ export function buildToolResultFields(
   }
 
   if (!isError && toolName === "Write") {
-    const structuredDiff = writeDiffFromResult(rawContent);
-    if (structuredDiff.length > 0) {
-      fields.content = structuredDiff;
+    const presentation = writeResultPresentation(rawContent);
+    if (presentation?.kind === "diff") {
+      fields.content = presentation.content;
+      return fields;
+    }
+    if (presentation?.kind === "text") {
+      fields.raw_output = presentation.text;
+      fields.content = [
+        { type: "content", content: { type: "text", text: presentation.text } },
+      ];
       return fields;
     }
     const inputDiff = writeDiffFromInput(base?.raw_input);

@@ -15,6 +15,7 @@ import {
   buildToolResultFields,
   createToolCall,
 } from "./tooling.js";
+import { appendResourceLinks } from "./resource_links.js";
 
 type ToolUpdateKind =
   | "initial"
@@ -104,6 +105,24 @@ export function toolUsesSummaryOutput(base: ToolCall | undefined): boolean {
 export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
   const baseToolName = toolName(base);
   return Boolean(baseToolName && TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName));
+}
+
+export function toolAcceptsTerminalTaskNotification(
+  base: ToolCall | undefined,
+): boolean {
+  const baseToolName = toolName(base);
+  return Boolean(
+    baseToolName &&
+      (TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName) ||
+        baseToolName === "Bash" ||
+        baseToolName.startsWith("mcp__")),
+  );
+}
+
+export function toolPreservesTaskNotificationOutput(
+  base: ToolCall | undefined,
+): boolean {
+  return toolName(base) === "Bash";
 }
 
 export function defersTaskNotificationCompletion(
@@ -530,6 +549,14 @@ export function emitToolResultUpdate(
       asRecordOrNull(base?.raw_input) ?? {},
     ),
   );
+  const resultRecord = asRecordOrNull(rawResult);
+  const contentWithResourceLinks = appendResourceLinks(
+    fields.content,
+    resultRecord?.resourceLinks,
+  );
+  if (contentWithResourceLinks !== undefined) {
+    fields.content = contentWithResourceLinks;
+  }
   applyToolNonExecutionMetadata(fields, nonExecutionMetadata);
   if (!isError && !nonExecutionMetadata) {
     const taskId = backgroundToolLaunchTaskIdFromResult(
@@ -566,7 +593,7 @@ export function finalizeOpenToolCalls(
       continue;
     }
     if (
-      toolAcceptsTaskLifecycle(toolCall) &&
+      toolAcceptsTerminalTaskNotification(toolCall) &&
       activeTaskIdForToolUse(session, toolUseId)
     ) {
       continue;

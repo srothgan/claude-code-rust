@@ -165,6 +165,16 @@ export type ToolCallContent =
       mime_type?: string;
       text?: string;
       blob_saved_to?: string;
+    }
+  | {
+      type: "resource_link";
+      uri: string;
+      name: string;
+      title?: string;
+      description?: string;
+      mime_type?: string;
+      size?: number;
+      annotations?: Record<string, Json>;
     };
 
 export interface BashOutputMetadata {
@@ -235,6 +245,7 @@ export interface TaskMetadata {
   terminal_status?: string;
   blocked?: boolean;
   parent_agent_id?: string;
+  ambient?: boolean;
   subagent_retry?: SubagentRetryUpdate;
 }
 

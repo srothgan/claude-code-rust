@@ -12,6 +12,62 @@ pub struct McpResource {
     pub blob_saved_to: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpResourceLink {
+    pub uri: String,
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+    pub size: Option<u64>,
+    pub annotations: Option<BTreeMap<String, serde_json::Value>>,
+}
+
+impl McpResourceLink {
+    #[must_use]
+    pub fn new(uri: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            uri: uri.into(),
+            name: name.into(),
+            title: None,
+            description: None,
+            mime_type: None,
+            size: None,
+            annotations: None,
+        }
+    }
+
+    #[must_use]
+    pub fn title(mut self, title: Option<String>) -> Self {
+        self.title = title.filter(|value| !value.trim().is_empty());
+        self
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: Option<String>) -> Self {
+        self.description = description.filter(|value| !value.trim().is_empty());
+        self
+    }
+
+    #[must_use]
+    pub fn mime_type(mut self, mime_type: Option<String>) -> Self {
+        self.mime_type = mime_type.filter(|value| !value.trim().is_empty());
+        self
+    }
+
+    #[must_use]
+    pub const fn size(mut self, size: Option<u64>) -> Self {
+        self.size = size;
+        self
+    }
+
+    #[must_use]
+    pub fn annotations(mut self, annotations: Option<BTreeMap<String, serde_json::Value>>) -> Self {
+        self.annotations = annotations;
+        self
+    }
+}
+
 impl McpResource {
     #[must_use]
     pub fn new(uri: impl Into<String>) -> Self {

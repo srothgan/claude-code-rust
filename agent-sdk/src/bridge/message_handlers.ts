@@ -38,6 +38,8 @@ import {
   resolveTaskToolUseId,
   defersTaskNotificationCompletion,
   toolAcceptsTaskLifecycle,
+  toolAcceptsTerminalTaskNotification,
+  toolPreservesTaskNotificationOutput,
   taskProgressText,
   taskUpdatedFields,
   type ToolCorrelationMetadata,
@@ -83,6 +85,7 @@ import {
 } from "./session_lifecycle.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitMcpSnapshotFromStatuses } from "./mcp.js";
+import { appendResourceLinks } from "./resource_links.js";
 
 export function textFromPrompt(
   command: Extract<BridgeCommand, { command: "prompt" }>,
@@ -195,6 +198,7 @@ function sdkTaskMetadata(
     ...(typeof msg.is_backgrounded === "boolean"
       ? { is_backgrounded: msg.is_backgrounded }
       : {}),
+    ...(typeof msg.ambient === "boolean" ? { ambient: msg.ambient } : {}),
     ...(spawnDepth !== undefined ? { spawn_depth: spawnDepth } : {}),
   };
   return Object.keys(taskMetadata).length > 0 ? taskMetadata : undefined;
@@ -724,7 +728,11 @@ export function handleTaskSystemMessage(
   }
 
   const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
-  if (!toolAcceptsTaskLifecycle(toolCall)) {
+  const acceptsLifecycle = toolAcceptsTaskLifecycle(toolCall);
+  const acceptsTerminalNotification =
+    subtype === "task_notification" &&
+    toolAcceptsTerminalTaskNotification(toolCall);
+  if (!acceptsLifecycle && !acceptsTerminalNotification) {
     if (taskId) {
       unlinkTaskToolUse(session, taskId);
     }
@@ -822,11 +830,18 @@ export function handleTaskSystemMessage(
   if (messageTaskMetadata) {
     fields.task_metadata = messageTaskMetadata;
   }
-  if (summary) {
+  if (summary && !toolPreservesTaskNotificationOutput(toolCall)) {
     fields.raw_output = summary;
     fields.content = [
       { type: "content", content: { type: "text", text: summary } },
     ];
+  }
+  const contentWithResourceLinks = appendResourceLinks(
+    fields.content,
+    msg.resource_links,
+  );
+  if (contentWithResourceLinks !== undefined) {
+    fields.content = contentWithResourceLinks;
   }
   if (Object.keys(fields).length > 0) {
     emitToolCallUpdate(session, toolUseId, fields, "task_notification");

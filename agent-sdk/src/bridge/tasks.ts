@@ -1069,6 +1069,7 @@ function lifecycleMetadata(
     "total_paused_ms",
     "blocked",
     "parent_agent_id",
+    "ambient",
   ]) {
     copyValue(msg, key);
     copyValue(patch, key);
@@ -1156,6 +1157,7 @@ export function applyBackgroundTasksChanged(
       }
       const taskType = nonEmptyString(task.task_type);
       const description = nonEmptyString(task.description);
+      const ambient = typeof task.ambient === "boolean" ? task.ambient : undefined;
       return {
         task_id: taskId,
         subject: description ?? taskType ?? taskId,
@@ -1166,6 +1168,7 @@ export function applyBackgroundTasksChanged(
         metadata: {
           [BACKGROUND_TASK_METADATA_KEY]: true,
           ...(taskType ? { task_type: taskType } : {}),
+          ...(ambient !== undefined ? { ambient } : {}),
         },
       };
     })

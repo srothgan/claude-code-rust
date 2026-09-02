@@ -59,7 +59,9 @@ import {
   emitMcpSnapshotEvent,
   emitMcpSnapshotFromStatuses,
   handleMcpAuthenticateCommand,
+  handleMcpReconnectCommand,
   handleMcpSetServersCommand,
+  handleMcpToggleCommand,
   startMcpAuthSnapshotMonitor,
 } from "./bridge/mcp.js";
 import {
@@ -100,6 +102,7 @@ import { requestAskUserQuestionAnswers } from "./bridge/user_interaction.js";
 import {
   flushPendingWorkerShutdown,
   handleResultMessage,
+  handleUserToolResultBlocks,
   sdkMessageDiagnosticFields,
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
@@ -1083,6 +1086,62 @@ test("handleMcpSetServersCommand emits SDK result", async () => {
   ]);
 });
 
+test("MCP failed-add status remains authoritative when the SDK result reports the server as added", async () => {
+  const session = makeSessionState();
+  session.query = {
+    setMcpServers: async () => ({
+      added: ["throws-on-connect"],
+      removed: [],
+      errors: {},
+    }),
+    mcpServerStatus: async () => [
+      {
+        name: "throws-on-connect",
+        scope: "dynamic",
+        status: "failed",
+        error: "connection threw during initialization",
+        tools: [],
+      },
+    ],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleMcpSetServersCommand(
+      session,
+      {
+        command: "mcp_set_servers",
+        session_id: "session-1",
+        servers: {
+          "throws-on-connect": {
+            type: "stdio",
+            command: "missing-mcp-server",
+          },
+        },
+      },
+      "req-mcp-failed-add",
+    );
+  });
+
+  const result = events.find((event) => event.event === "mcp_set_servers_result");
+  assert.deepEqual(result && "result" in result ? result.result : undefined, {
+    added: ["throws-on-connect"],
+    removed: [],
+    errors: {},
+  });
+  const snapshot = events.find((event) => event.event === "mcp_snapshot") as
+    | { servers?: Array<{ name: string; status: string; error?: string }> }
+    | undefined;
+  assert.deepEqual(snapshot?.servers, [
+    {
+      name: "throws-on-connect",
+      scope: "dynamic",
+      status: "failed",
+      error: "connection threw during initialization",
+      tools: [],
+    },
+  ]);
+});
+
 test("handleMcpAuthenticateCommand emits a structured error when the runtime method is absent", async () => {
   const session = makeSessionState();
 
@@ -1146,11 +1205,30 @@ test("handleMcpAuthenticateCommand emits a structured error for an incompatible 
   ]);
 });
 
-test("handleMcpSetServersCommand emits MCP operation error on failure", async () => {
+test("failed MCP server updates publish the authoritative follow-up snapshot without conflating names", async () => {
   const session = makeSessionState();
+  const controls: Array<[string, string, boolean?]> = [];
   session.query = {
     setMcpServers: async () => {
       throw new Error("dynamic update failed");
+    },
+    mcpServerStatus: async () => [
+      { name: "docs", scope: "local", status: "connected", tools: [] },
+      { name: "docs", scope: "project", status: "disabled", tools: [] },
+      { name: "foo", scope: "dynamic", status: "connected", tools: [] },
+      {
+        name: "foo__bar",
+        scope: "dynamic",
+        status: "failed",
+        error: "connection threw",
+        tools: [],
+      },
+    ],
+    reconnectMcpServer: async (name: string) => {
+      controls.push(["reconnect", name]);
+    },
+    toggleMcpServer: async (name: string, enabled: boolean) => {
+      controls.push(["toggle", name, enabled]);
     },
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
@@ -1164,9 +1242,28 @@ test("handleMcpSetServersCommand emits MCP operation error on failure", async ()
       },
       "req-mcp-set",
     );
+    await handleMcpReconnectCommand(
+      session,
+      {
+        command: "mcp_reconnect",
+        session_id: "session-1",
+        server_name: "foo__bar",
+      },
+      "req-mcp-reconnect",
+    );
+    await handleMcpToggleCommand(
+      session,
+      {
+        command: "mcp_toggle",
+        session_id: "session-1",
+        server_name: "foo",
+        enabled: false,
+      },
+      "req-mcp-toggle",
+    );
   });
 
-  assert.deepEqual(events, [
+  assert.deepEqual(events.slice(0, 2), [
     {
       request_id: "req-mcp-set",
       event: "mcp_operation_error",
@@ -1182,6 +1279,36 @@ test("handleMcpSetServersCommand emits MCP operation error on failure", async ()
       session_id: "session-1",
       message: "failed to set MCP servers: dynamic update failed",
     },
+  ]);
+  const snapshot = events.find((event) => event.event === "mcp_snapshot");
+  assert.equal(snapshot?.source, "mcp_set_servers");
+  const snapshotServers = (
+    snapshot as
+      | {
+          servers?: Array<{
+            name: string;
+            scope?: string;
+            status: string;
+          }>;
+        }
+      | undefined
+  )?.servers;
+  assert.deepEqual(
+    (snapshotServers ?? []).map((server) => [
+      server.name,
+      server.scope,
+      server.status,
+    ]),
+    [
+      ["docs", "local", "connected"],
+      ["docs", "project", "disabled"],
+      ["foo", "dynamic", "connected"],
+      ["foo__bar", "dynamic", "failed"],
+    ],
+  );
+  assert.deepEqual(controls, [
+    ["reconnect", "foo__bar"],
+    ["toggle", "foo", false],
   ]);
 });
 
@@ -1574,6 +1701,50 @@ test("normalizeStructuredUsage keeps stable fields and tolerates malformed optio
       mcp_servers: [{ name: "github", pct: 10 }],
     },
   });
+});
+
+test("managed model inventory and pricing remain SDK-owned aggregate flows", () => {
+  const session = makeSessionState();
+  session.availableModels = mapAvailableModels([
+    {
+      value: "managed-sonnet",
+      resolvedModel: "claude-sonnet-managed",
+      displayName: "Organization Sonnet",
+      description: "Selected by managed modelPicker settings",
+      supportsEffort: true,
+    },
+  ]);
+
+  const connected = buildConnectBridgeEvent(session, "connected");
+  assert.equal(connected.event, "connected");
+  assert.deepEqual(connected.available_models, [
+    {
+      id: "managed-sonnet",
+      resolved_model: "claude-sonnet-managed",
+      display_name: "Organization Sonnet",
+      description: "Selected by managed modelPicker settings",
+      supports_effort: true,
+      supported_effort_levels: [],
+    },
+  ]);
+
+  assert.deepEqual(
+    normalizeStructuredUsage({
+      session: {
+        total_cost_usd: 1.75,
+        model_usage: {
+          "claude-sonnet-managed": {
+            inputTokens: 10,
+            outputTokens: 5,
+            costUSD: 1.75,
+            thinkingTokens: 2,
+            costBasis: "managed-model-pricing",
+          },
+        },
+      },
+    }).session,
+    { total_cost_usd: 1.75, model_count: 1 },
+  );
 });
 
 test("normalizeStructuredUsage isolates an incompatible root as an empty snapshot", () => {
@@ -2941,7 +3112,7 @@ test("emitToolResultUpdate finalizes deferred Agent completion and unlinks lifec
   assert.equal(session.taskIdsByToolUseId.has("tool-1"), false);
 });
 
-test("handleTaskSystemMessage ignores lifecycle content for concrete output tools", () => {
+test("task notifications close Bash without replacing concrete tool output", () => {
   const session = makeSessionState();
   const protectedTools = [
     createToolCall("tool-bash", "Bash", { command: "git status" }),
@@ -2975,10 +3146,21 @@ test("handleTaskSystemMessage ignores lifecycle content for concrete output tool
     }
   });
 
-  assert.deepEqual(events, []);
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.event === "session_update" &&
+        (event.update as { type?: unknown } | undefined)?.type ===
+          "tool_call_update",
+    ).length,
+    1,
+  );
   for (const toolCall of protectedTools) {
     const stored = session.toolCalls.get(toolCall.tool_call_id);
-    assert.equal(stored?.status, "in_progress");
+    assert.equal(
+      stored?.status,
+      toolCall.tool_call_id === "tool-bash" ? "completed" : "in_progress",
+    );
     assert.equal(
       stored?.raw_output,
       `actual output for ${toolCall.tool_call_id}`,
@@ -3485,6 +3667,180 @@ test("handleSdkMessage emits main-thread user-message start before streamed cont
     source: "stream_event",
   });
   assert.equal(events[1]?.event, "session_update");
+});
+
+test("direct user MCP result appends resource links without replacing text", () => {
+  const session = makeSessionState();
+  const toolCall = createToolCall("tool-mcp", "mcp__docs__export", {});
+  toolCall.status = "in_progress";
+  session.toolCalls.set(toolCall.tool_call_id, toolCall);
+
+  const events = captureBridgeEvents(() => {
+    assert.equal(
+      handleUserToolResultBlocks(session, {
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-mcp",
+              content: "Export complete",
+            },
+          ],
+        },
+        toolUseResult: {
+          resourceLinks: [
+            {
+              uri: "mcp://docs/report.csv",
+              name: "report.csv",
+              mimeType: "text/csv",
+              size: 42,
+            },
+          ],
+          _meta: {
+            resourceLinks: [
+              { uri: "mcp://private", name: "must-not-leak" },
+            ],
+          },
+        },
+      }),
+      true,
+    );
+  });
+
+  const update = events.at(-1)?.update as {
+    tool_call_update?: { fields?: { content?: unknown[] } };
+  };
+  assert.deepEqual(update.tool_call_update?.fields?.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Export complete" },
+    },
+    {
+      type: "resource_link",
+      uri: "mcp://docs/report.csv",
+      name: "report.csv",
+      mime_type: "text/csv",
+      size: 42,
+    },
+  ]);
+});
+
+test("task notification appends resource links with or without a summary", () => {
+  for (const summary of ["Export complete", undefined]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      handleTaskSystemMessage(session, "task_started", {
+        task_id: "task-mcp",
+        tool_use_id: "tool-mcp",
+        description: "Export report",
+      });
+      handleTaskSystemMessage(session, "task_notification", {
+        task_id: "task-mcp",
+        tool_use_id: "tool-mcp",
+        status: "completed",
+        ...(summary ? { summary } : {}),
+        resource_links: [
+          { uri: "mcp://docs/report.csv", name: "report.csv" },
+          { uri: "", name: "malformed" },
+        ],
+      });
+    });
+
+    const update = events.at(-1)?.update as {
+      tool_call_update?: { fields?: { content?: unknown[] } };
+    };
+    assert.deepEqual(update.tool_call_update?.fields?.content, [
+      ...(summary
+        ? [
+            {
+              type: "content",
+              content: { type: "text", text: summary },
+            },
+          ]
+        : []),
+      {
+        type: "resource_link",
+        uri: "mcp://docs/report.csv",
+        name: "report.csv",
+      },
+    ]);
+  }
+});
+
+test("repeated background MCP resource-link delivery replaces content idempotently", () => {
+  const session = makeSessionState();
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-mcp-repeat", "mcp__docs__export", {});
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      handleTaskSystemMessage(session, "task_notification", {
+        task_id: "task-mcp-repeat",
+        tool_use_id: "tool-mcp-repeat",
+        status: "completed",
+        summary: "Export complete",
+        resource_links: [
+          { uri: "mcp://docs/report.csv", name: "report.csv" },
+        ],
+      });
+    }
+  });
+
+  assert.deepEqual(session.toolCalls.get("tool-mcp-repeat")?.content, [
+    {
+      type: "content",
+      content: { type: "text", text: "Export complete" },
+    },
+    {
+      type: "resource_link",
+      uri: "mcp://docs/report.csv",
+      name: "report.csv",
+    },
+  ]);
+  assert.equal(session.toolCalls.get("tool-mcp-repeat")?.status, "completed");
+});
+
+test("background Bash remains open across turn interruption until its final task notification", () => {
+  const session = makeSessionState();
+
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-bash-background", "Bash", {
+      command: "npm run watch",
+    });
+    emitToolResultUpdate(session, "tool-bash-background", false, {
+      stdout: "watching",
+      stderr: "",
+      interrupted: false,
+      backgroundTaskId: "bash-task-1",
+      backgroundedByUser: true,
+    });
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "error_during_execution",
+      errors: ["Interrupted by user"],
+    });
+  });
+
+  assert.equal(
+    session.toolCalls.get("tool-bash-background")?.status,
+    "in_progress",
+  );
+  assert.equal(
+    session.taskToolUseIds.get("bash-task-1"),
+    "tool-bash-background",
+  );
+
+  captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "bash-task-1",
+      status: "stopped",
+      summary: "Background command stopped",
+    });
+  });
+
+  const toolCall = session.toolCalls.get("tool-bash-background");
+  assert.equal(toolCall?.status, "killed");
+  assert.match(toolCall?.raw_output ?? "", /watching/);
+  assert.equal(session.taskToolUseIds.has("bash-task-1"), false);
+  assert.equal(session.taskIdsByToolUseId.has("tool-bash-background"), false);
 });
 
 test("handleSdkMessage maps command lifecycle start to the submitted message UUID", () => {
@@ -5074,6 +5430,70 @@ test("handleSdkMessage emits MCP snapshot from init status payload", () => {
       },
     ],
   });
+});
+
+test("the next per-turn init reports the live mode after a mode switch", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  const permissionModeCalls: string[] = [];
+  session.mode = "default";
+  session.query = {
+    setPermissionMode: async (mode: string) => {
+      permissionModeCalls.push(mode);
+    },
+    supportedCommands: async () => [],
+    supportedAgents: async () => [],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      await handleSessionControlCommand(
+        {
+          command: "set_mode",
+          session_id: session.sessionId,
+          mode: "plan",
+        },
+        "req-mode-switch",
+        promptControlDeps(),
+      );
+      handleSdkMessage(session, {
+        type: "system",
+        subtype: "init",
+        session_id: session.sessionId,
+        model: "haiku",
+        permissionMode: "plan",
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    });
+
+    assert.deepEqual(permissionModeCalls, ["plan"]);
+    assert.equal(session.mode, "plan");
+    assert.deepEqual(
+      events
+        .filter((event) => event.event === "session_update")
+        .flatMap((event) => {
+          const update = event.update as
+            | {
+                type?: string;
+                current_mode_id?: string;
+                mode?: { current_mode_id?: string };
+              }
+            | undefined;
+          if (update?.type === "current_mode_update") {
+            return update.current_mode_id ? [update.current_mode_id] : [];
+          }
+          if (update?.type === "mode_state_update") {
+            return update.mode?.current_mode_id
+              ? [update.mode.current_mode_id]
+              : [];
+          }
+          return [];
+        }),
+      ["plan", "plan"],
+    );
+  } finally {
+    sessions.clear();
+  }
 });
 
 test("authority snapshots publish fast mode set during initialization", () => {
@@ -7114,6 +7534,100 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
       },
     ],
   );
+});
+
+test("ambient task lifecycle stays in inventory without creating a visible tool call", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "ambient-watch",
+      description: "Watch artifact updates",
+      task_type: "artifact_watch",
+      ambient: true,
+    });
+  });
+
+  assert.equal(session.toolCalls.size, 0);
+  assert.deepEqual(
+    events.map((event) => event.update),
+    [
+      {
+        type: "task_state_update",
+        source: "task_lifecycle",
+        tasks: [
+          {
+            task_id: "ambient-watch",
+            subject: "Watch artifact updates",
+            description: "Watch artifact updates",
+            status: "in_progress",
+            blocks: [],
+            blocked_by: [],
+            metadata: { task_type: "artifact_watch", ambient: true },
+          },
+        ],
+        removed_task_ids: [],
+        is_complete_snapshot: false,
+      },
+    ],
+  );
+});
+
+test("background task replacement preserves ambient inventory metadata", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "background_tasks_changed",
+      tasks: [
+        {
+          task_id: "ambient-watch",
+          task_type: "artifact_watch",
+          description: "Watch artifact updates",
+          ambient: true,
+        },
+        {
+          task_id: "user-task",
+          task_type: "agent",
+          description: "Run checks",
+          ambient: false,
+        },
+      ],
+      uuid: "12345678-1234-1234-1234-123456789abc",
+      session_id: "session-1",
+    } as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const update = events.at(-1)?.update as {
+    tasks?: Array<{ task_id: string; metadata?: Record<string, unknown> }>;
+  };
+  assert.deepEqual(update.tasks, [
+    {
+      task_id: "ambient-watch",
+      subject: "Watch artifact updates",
+      description: "Watch artifact updates",
+      status: "in_progress",
+      blocks: [],
+      blocked_by: [],
+      metadata: {
+        sdk_background_task: true,
+        task_type: "artifact_watch",
+        ambient: true,
+      },
+    },
+    {
+      task_id: "user-task",
+      subject: "Run checks",
+      description: "Run checks",
+      status: "in_progress",
+      blocks: [],
+      blocked_by: [],
+      metadata: {
+        sdk_background_task: true,
+        task_type: "agent",
+        ambient: false,
+      },
+    },
+  ]);
 });
 
 test("parseCommandEnvelope validates set_effort command", () => {

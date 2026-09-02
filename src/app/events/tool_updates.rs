@@ -269,6 +269,9 @@ fn apply_tool_call_task_metadata_update(
     if task_metadata.parent_agent_id.is_some() {
         merged.parent_agent_id.clone_from(&task_metadata.parent_agent_id);
     }
+    if task_metadata.ambient.is_some() {
+        merged.ambient = task_metadata.ambient;
+    }
     match &task_metadata.subagent_retry {
         Some(model::SubagentRetryUpdate::Waiting { .. }) => {
             merged.subagent_retry.clone_from(&task_metadata.subagent_retry);
