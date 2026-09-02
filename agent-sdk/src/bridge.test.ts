@@ -64,6 +64,7 @@ import {
 } from "./bridge/mcp.js";
 import {
   emitCurrentModelUpdate,
+  awaitSessionInitialization,
   beginSessionClose,
   closeAllSessions,
   handleUserDialogResponse,
@@ -101,7 +102,10 @@ import {
   handleResultMessage,
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
-import { normalizeStructuredUsage } from "./bridge/command_session_data.js";
+import {
+  handleSessionDataCommand,
+  normalizeStructuredUsage,
+} from "./bridge/command_session_data.js";
 import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
@@ -1327,6 +1331,38 @@ test("parseCommandEnvelope validates get_context_usage command", () => {
   });
 });
 
+test("get_context_usage requests the SDK summary detail", async () => {
+  sessions.clear();
+  const session = makeSessionState();
+  const calls: unknown[] = [];
+  session.query = {
+    getContextUsage: async (options: unknown) => {
+      calls.push(options);
+      return { percentage: 42.4 };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+
+  try {
+    await captureBridgeEventsAsync(async () => {
+      await handleSessionDataCommand(
+        { command: "get_context_usage", session_id: session.sessionId },
+        "request-context-summary",
+        {
+          generatePersistedSessionTitle: async () => "unused",
+          buildSessionMutationOptions: () => undefined,
+          rewindTargetsFromSessionMessages: () => [],
+          handleRewind: async () => undefined,
+        },
+      );
+    });
+
+    assert.deepEqual(calls, [{ detail: "summary" }]);
+  } finally {
+    sessions.clear();
+  }
+});
+
 test("parseCommandEnvelope validates get_usage command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({ command: "get_usage", session_id: "session-usage" }),
@@ -1927,6 +1963,7 @@ test("buildQueryOptions maps launch settings into sdk query options", () => {
     type: "preset",
     preset: "claude_code",
     append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
+    snapshot: true,
   });
   const _systemPrompt: NonNullable<Options["systemPrompt"]> =
     options.systemPrompt;
@@ -1972,6 +2009,12 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   assert.equal(options.resumeDropsTurn, "user-2");
   assert.equal(options.forkSession, true);
   assert.equal(options.sessionId, "session-1");
+  assert.deepEqual(options.systemPrompt, {
+    type: "preset",
+    preset: "claude_code",
+    append: BRIDGE_RUNTIME_GUARD_PROMPT,
+    snapshot: true,
+  });
 });
 
 test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {
@@ -2131,6 +2174,7 @@ test("buildQueryOptions omits optional startup overrides but keeps bridge guard 
     type: "preset",
     preset: "claude_code",
     append: BRIDGE_RUNTIME_GUARD_PROMPT,
+    snapshot: true,
   });
   assert.equal("agentProgressSummaries" in options, false);
   assert.deepEqual(options.settings, { feedbackDrafts: "off" });
@@ -5096,6 +5140,7 @@ test("buildQueryOptions trims language before appending system prompt", () => {
     type: "preset",
     preset: "claude_code",
     append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
+    snapshot: true,
   });
 });
 
@@ -7310,7 +7355,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.239");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.258");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -8158,6 +8203,27 @@ test("handleResultMessage captures resumeDropsTurn refusal before candidate comm
   assert.deepEqual(events, []);
   assert.equal(session.initializationReady, false);
   assert.equal(session.initializationError, refusal);
+});
+
+test("awaitSessionInitialization uses summary context usage as the guarded-resume fence", async () => {
+  const session = makeSessionState();
+  const calls: unknown[] = [];
+  session.connected = false;
+  session.deferConnect = true;
+  session.resumeDropsTurn = "user-2";
+  session.initializationReady = true;
+  session.initializationTask = Promise.resolve();
+  session.query = {
+    getContextUsage: async (options: unknown) => {
+      calls.push(options);
+      return { percentage: 1 };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await awaitSessionInitialization(session);
+
+  assert.deepEqual(calls, [{ detail: "summary" }]);
+  assert.equal(session.resumeGuardFenceComplete, true);
 });
 
 test("commitDeferredSession requires the guarded-resume validation fence", () => {

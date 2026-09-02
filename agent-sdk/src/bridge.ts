@@ -357,7 +357,7 @@ export function emitAgentConfigOptionUpdate(
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.239";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.258";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
