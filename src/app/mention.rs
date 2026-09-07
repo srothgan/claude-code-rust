@@ -947,6 +947,11 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    /// Budget for the background walk and matcher to settle before a test reads
+    /// mention state. Sized for the slowest CI runner, not local hardware.
+    const SEARCH_SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+    const SEARCH_SETTLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
     fn app_with_temp_files(files: &[&str]) -> (App, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         for file in files {
@@ -992,20 +997,32 @@ mod tests {
         file_index::restart(app);
     }
 
+    /// Drives the background file index until the mention search settles, and
+    /// fails loudly if it does not. Returning silently on timeout would let a
+    /// test assert against a half-scanned index and report a candidate
+    /// mismatch instead of the timeout that actually caused it.
     fn run_search(app: &mut App) {
-        for _ in 0..200 {
+        let deadline = Instant::now() + SEARCH_SETTLE_TIMEOUT;
+        loop {
             crate::app::file_index::drain_events(app);
-            std::thread::sleep(Duration::from_millis(5));
             let index_is_settled =
                 !matches!(app.file_index.status, file_index::FileIndexStatus::Scanning);
             let mention_is_settled = app.mention.as_ref().is_none_or(|mention| {
                 mention.pending_match_sequence.is_none()
                     && !matches!(mention.search_status, MentionSearchStatus::Searching)
             });
-            let is_settled = index_is_settled && mention_is_settled;
-            if is_settled {
+            if index_is_settled && mention_is_settled {
                 return;
             }
+            assert!(
+                Instant::now() < deadline,
+                "mention search did not settle within {SEARCH_SETTLE_TIMEOUT:?}: \
+                 index_status={:?}, search_status={:?}, pending_match_sequence={:?}",
+                app.file_index.status,
+                app.mention.as_ref().map(|mention| mention.search_status),
+                app.mention.as_ref().and_then(|mention| mention.pending_match_sequence),
+            );
+            std::thread::sleep(SEARCH_SETTLE_POLL_INTERVAL);
         }
     }
 
