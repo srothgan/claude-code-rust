@@ -21,7 +21,7 @@ pub struct MentionState {
     pub dialog: DialogState,
     search_status: MentionSearchStatus,
     next_match_sequence: u64,
-    pending_match_sequence: Option<u64>,
+    pending_match: Option<PendingMatch>,
     refresh_after_pending_match: bool,
     last_scan_batch_request_at: Option<Instant>,
     last_scan_batch_request_version: u64,
@@ -34,6 +34,19 @@ pub struct CommittedMentionSpan {
     pub start_col: usize,
     pub end_col: usize,
     pub text: String,
+}
+
+/// An in-flight match request, tagged with the file index generation it was
+/// issued against.
+///
+/// The generation is part of the identity because a restart voids every request
+/// belonging to the previous one: the matcher drops stale-generation requests
+/// without replying, so a request from a dead generation will never be answered
+/// and must not be mistaken for one that is still live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingMatch {
+    sequence: u64,
+    generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,7 +108,7 @@ impl MentionState {
             dialog: DialogState::default(),
             search_status,
             next_match_sequence: 0,
-            pending_match_sequence: None,
+            pending_match: None,
             refresh_after_pending_match: false,
             last_scan_batch_request_at: None,
             last_scan_batch_request_version: 0,
@@ -132,7 +145,7 @@ impl MentionState {
     fn mark_hint(&mut self) {
         self.candidates.clear();
         self.search_status = MentionSearchStatus::Hint;
-        self.pending_match_sequence = None;
+        self.pending_match = None;
         self.refresh_after_pending_match = false;
         self.dialog.clamp(0, AUTOCOMPLETE_VISIBLE_ROWS);
     }
@@ -313,9 +326,16 @@ pub fn apply_match_result(app: &mut App, result: file_index::MentionMatchResult)
         return false;
     };
 
+    // The pending request must match on both identities. Sequence alone is not
+    // enough, because a result from a dead generation can still match a pending
+    // request recorded under that same dead generation.
+    let matches_pending = mention.pending_match.is_some_and(|pending| {
+        pending.generation == result.generation && pending.sequence == result.sequence
+    });
+
     if result.generation != app.file_index.generation
         || result.query != mention.query
-        || mention.pending_match_sequence != Some(result.sequence)
+        || !matches_pending
     {
         tracing::debug!(
             target: crate::logging::targets::APP_FILE_INDEX,
@@ -326,7 +346,8 @@ pub fn apply_match_result(app: &mut App, result: file_index::MentionMatchResult)
             result_index_version = result.index_version,
             current_index_version = app.file_index.index_version,
             sequence = result.sequence,
-            pending_sequence = mention.pending_match_sequence,
+            pending_sequence = mention.pending_match.map(|pending| pending.sequence),
+            pending_generation = mention.pending_match.map(|pending| pending.generation),
             result_query_chars = result.query.chars().count(),
             current_query_chars = mention.query.chars().count(),
             query_matches = result.query == mention.query,
@@ -337,7 +358,7 @@ pub fn apply_match_result(app: &mut App, result: file_index::MentionMatchResult)
 
     let result_count = result.candidates.len();
     mention.candidates = result.candidates;
-    mention.pending_match_sequence = None;
+    mention.pending_match = None;
     let needs_follow_up = mention.refresh_after_pending_match
         || result.index_version < app.file_index.index_version
         || result.status != app.file_index.status;
@@ -431,7 +452,11 @@ fn request_match_for_active_mention(app: &mut App, mode: MatchRequestMode) {
     let Some(mention) = app.mention.as_mut() else {
         return;
     };
-    if mention.pending_match_sequence.is_some() && !matches!(mode, MatchRequestMode::UserQuery) {
+    // Only a request belonging to the current generation can still be answered,
+    // so only that one may hold off another refresh.
+    let has_live_pending =
+        mention.pending_match.is_some_and(|pending| pending.generation == generation);
+    if has_live_pending && !matches!(mode, MatchRequestMode::UserQuery) {
         mention.refresh_after_pending_match = true;
         tracing::debug!(
             target: crate::logging::targets::APP_FILE_INDEX,
@@ -440,14 +465,14 @@ fn request_match_for_active_mention(app: &mut App, mode: MatchRequestMode) {
             generation,
             index_version,
             mode = mode.as_str(),
-            pending_sequence = mention.pending_match_sequence,
+            pending_sequence = mention.pending_match.map(|pending| pending.sequence),
             query_chars = query.chars().count(),
         );
         return;
     }
     mention.next_match_sequence = mention.next_match_sequence.saturating_add(1);
     let sequence = mention.next_match_sequence;
-    mention.pending_match_sequence = Some(sequence);
+    mention.pending_match = Some(PendingMatch { sequence, generation });
     mention.refresh_after_pending_match = false;
     mention.last_scan_batch_request_at = Some(Instant::now());
     mention.last_scan_batch_request_version = index_version;
@@ -1008,7 +1033,7 @@ mod tests {
             let index_is_settled =
                 !matches!(app.file_index.status, file_index::FileIndexStatus::Scanning);
             let mention_is_settled = app.mention.as_ref().is_none_or(|mention| {
-                mention.pending_match_sequence.is_none()
+                mention.pending_match.is_none()
                     && !matches!(mention.search_status, MentionSearchStatus::Searching)
             });
             if index_is_settled && mention_is_settled {
@@ -1017,10 +1042,10 @@ mod tests {
             assert!(
                 Instant::now() < deadline,
                 "mention search did not settle within {SEARCH_SETTLE_TIMEOUT:?}: \
-                 index_status={:?}, search_status={:?}, pending_match_sequence={:?}",
+                 index_status={:?}, search_status={:?}, pending_match={:?}",
                 app.file_index.status,
                 app.mention.as_ref().map(|mention| mention.search_status),
-                app.mention.as_ref().and_then(|mention| mention.pending_match_sequence),
+                app.mention.as_ref().and_then(|mention| mention.pending_match),
             );
             std::thread::sleep(SEARCH_SETTLE_POLL_INTERVAL);
         }
@@ -1554,19 +1579,61 @@ mod tests {
     }
 
     #[test]
+    fn index_restart_replaces_a_request_left_pending_by_the_previous_generation() {
+        let (mut app, _tmp) = app_with_temp_files(&["root.rs", "src/nested/needle.rs"]);
+        start_session_index(&mut app);
+        app.input.set_text("@rs");
+        let _ = app.input.set_cursor(0, 3);
+        activate(&mut app);
+        run_search(&mut app);
+
+        // Leave a request in flight, then restart the index underneath it. This is
+        // what a watcher-driven rebuild does when a `.gitignore` changes while the
+        // mention menu is open: the matcher drops the stale-generation request
+        // without replying, so nothing will ever answer this sequence.
+        request_match_for_active_mention(&mut app, MatchRequestMode::UserQuery);
+        let stale = app
+            .mention
+            .as_ref()
+            .and_then(|mention| mention.pending_match)
+            .expect("a request should be in flight");
+        assert_eq!(stale.generation, app.file_index.generation);
+
+        file_index::restart(&mut app);
+        assert_ne!(app.file_index.generation, stale.generation);
+
+        // The dead request must not hold off the refresh that follows the restart.
+        refresh_from_file_index(&mut app);
+        let pending = app
+            .mention
+            .as_ref()
+            .and_then(|mention| mention.pending_match)
+            .expect("the restart should have issued a fresh request");
+        assert_eq!(pending.generation, app.file_index.generation);
+        assert_ne!(pending.sequence, stale.sequence);
+
+        run_search(&mut app);
+        let mention = app.mention.as_ref().expect("mention should remain active");
+        assert_eq!(mention.pending_match, None);
+        assert!(!matches!(mention.search_status, MentionSearchStatus::Searching));
+        assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs"));
+    }
+
+    #[test]
     fn scan_refresh_does_not_starve_pending_query_result() {
         let mut app = App::test_default();
         app.file_index.index_version = 5;
         app.file_index.status = file_index::FileIndexStatus::Scanning;
         let mut state = MentionState::new(0, 0, "web".to_owned(), Vec::new());
         state.next_match_sequence = 1;
-        state.pending_match_sequence = Some(1);
+        state.pending_match =
+            Some(PendingMatch { sequence: 1, generation: app.file_index.generation });
         app.mention = Some(state);
 
         refresh_from_file_index_after_scan_batch(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should remain active");
-        assert_eq!(mention.pending_match_sequence, Some(1));
+        assert_eq!(mention.pending_match.map(|pending| pending.sequence), Some(1));
         assert!(mention.refresh_after_pending_match);
 
         let generation = app.file_index.generation;
@@ -1590,7 +1657,7 @@ mod tests {
         let mention = app.mention.as_ref().expect("mention should remain active");
         assert!(applied);
         assert_eq!(mention.candidates[0].rel_path, "web_dev_work/");
-        assert_eq!(mention.pending_match_sequence, Some(2));
+        assert_eq!(mention.pending_match.map(|pending| pending.sequence), Some(2));
         assert!(!mention.refresh_after_pending_match);
     }
 
