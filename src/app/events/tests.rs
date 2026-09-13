@@ -1118,6 +1118,7 @@ fn resize_marks_chat_surface_dirty_when_running_chat() {
     let mut app = make_test_app();
     app.surface_dirty = crate::app::SurfaceDirtyState::default();
     app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
     seed_resize_measurements(&mut app);
 
     handle_terminal_event(&mut app, Event::Resize(120, 40));
@@ -1128,6 +1129,7 @@ fn resize_marks_chat_surface_dirty_when_running_chat() {
         ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
     );
     assert!(app.surface_dirty.chat.repaint);
+    assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
     assert_resize_measurements_cleared(&app, 120, 40);
 }
 
@@ -1152,6 +1154,7 @@ fn resize_marks_fullscreen_surface_dirty_when_running_fullscreen() {
     app.surface_dirty = crate::app::SurfaceDirtyState::default();
     app.terminal_lifecycle =
         TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
+    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
     seed_resize_measurements(&mut app);
 
     handle_terminal_event(&mut app, Event::Resize(120, 40));
@@ -1160,6 +1163,7 @@ fn resize_marks_fullscreen_surface_dirty_when_running_fullscreen() {
     assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
     assert!(!app.surface_dirty.chat.repaint);
     assert!(app.chat_render.resize_purge_replay_on_chat_return);
+    assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
     assert_resize_measurements_cleared(&app, 120, 40);
 }
 
@@ -3335,6 +3339,7 @@ fn ctrl_c_quits() {
 fn fullscreen_ctrl_c_returns_to_chat_without_stopping_active_turn() {
     let mut app = make_test_app();
     app.status = AppStatus::Running;
+    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
     app.terminal_lifecycle =
         TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
@@ -3346,6 +3351,7 @@ fn fullscreen_ctrl_c_returns_to_chat_without_stopping_active_turn() {
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.status, AppStatus::Running);
+    assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
     assert!(!app.shutdown_requested());
     assert!(!app.turn.cancel_requested);
 }

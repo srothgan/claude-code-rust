@@ -20,7 +20,6 @@ pub(super) fn submit_input(app: &mut App) {
     if text.trim().is_empty() {
         return;
     }
-    app.session_runtime.prompt_suggestion = None;
 
     let submission = slash::ResolvedSubmission::resolve(text);
     let has_active_or_queued_turn = matches!(app.status, AppStatus::Thinking | AppStatus::Running)
@@ -113,6 +112,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     // so the model can correlate user references with image attachments.
     match conn.prompt_with_images(sid.to_string(), message_uuid.clone(), text, images) {
         Ok(resp) => {
+            app.session_runtime.prompt_suggestion = None;
             crate::app::session_runtime::request_context_usage_refresh(app);
             tracing::info!(
                 target: crate::logging::targets::APP_INPUT,
@@ -160,6 +160,7 @@ fn dispatch_active_turn_prompt(app: &mut App, text: String) {
 
     match conn.prompt_with_images(session_id.to_string(), message_uuid.clone(), text, images) {
         Ok(_) => {
+            app.session_runtime.prompt_suggestion = None;
             app.input.clear();
             app.pending_images.clear();
             app.request_active_surface_repaint();
@@ -223,6 +224,7 @@ mod tests {
     fn submit_input_while_running_queues_full_payload_without_touching_active_turn() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
+        app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
         app.input.set_text("next prompt [Image #1]");
@@ -235,6 +237,7 @@ mod tests {
 
         assert!(app.input.text().is_empty());
         assert!(app.pending_images.is_empty());
+        assert!(app.session_runtime.prompt_suggestion.is_none());
         assert!(!app.turn.cancel_requested);
         assert!(matches!(app.status, AppStatus::Running));
         assert_eq!(
@@ -261,6 +264,7 @@ mod tests {
     fn active_turn_prompt_at_capacity_preserves_composer_without_dispatch_or_notice() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
+        app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         for index in 0..crate::app::state::PendingUserMessages::CAPACITY {
             app.pending_user_messages
                 .try_push_sending(super::super::PendingUserMessage::sending(
@@ -282,6 +286,7 @@ mod tests {
 
         assert_eq!(app.input.snapshot(), input_before);
         assert_eq!(app.pending_images, images_before);
+        assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("previous suggestion"));
         assert_eq!(
             app.pending_user_messages.len(),
             crate::app::state::PendingUserMessages::CAPACITY
@@ -321,6 +326,7 @@ mod tests {
         let (mut app, rx) = app_with_connection();
         drop(rx);
         app.status = AppStatus::Running;
+        app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         app.input.set_text("retry [Image #1]");
         app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
             data: "aGVsbG8=".to_owned(),
@@ -333,6 +339,7 @@ mod tests {
 
         assert_eq!(app.input.snapshot(), before);
         assert_eq!(app.pending_images, images_before);
+        assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("previous suggestion"));
         assert!(app.pending_user_messages.is_empty());
         assert!(matches!(app.status, AppStatus::Running));
         let message = app.transcript.messages.last().expect("send failure message");
@@ -489,6 +496,7 @@ mod tests {
     #[test]
     fn supported_advertised_slash_submit_falls_through_to_prompt_turn() {
         let (mut app, mut rx) = app_with_connection();
+        app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         app.sdk_inventory.available_commands =
             vec![model::AvailableCommand::new("/remote-command", "Remote command")];
         app.input.set_text("/remote-command");
@@ -496,6 +504,7 @@ mod tests {
         submit_input(&mut app);
 
         assert!(app.input.text().is_empty());
+        assert!(app.session_runtime.prompt_suggestion.is_none());
         assert!(matches!(app.status, AppStatus::Thinking));
         assert_eq!(app.transcript.messages.len(), 2);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
@@ -516,11 +525,12 @@ mod tests {
     }
 
     #[test]
-    fn config_slash_submit_opens_config_without_prompt_turn() {
+    fn config_slash_submit_preserves_prompt_suggestion_across_fullscreen_return() {
         let (mut app, mut rx) = app_with_connection();
         let dir = tempfile::tempdir().expect("tempdir");
         app.settings_home_override = Some(dir.path().to_path_buf());
         app.cwd_raw = dir.path().to_string_lossy().to_string();
+        app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
         app.input.set_text("/config");
 
         submit_input(&mut app);
@@ -528,7 +538,18 @@ mod tests {
         assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
         assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
+
+        crate::app::view::set_chat_surface(&mut app);
+
+        let hint_rows = crate::ui::input_rows::build_composer_hint_rows(&app);
+        let hint_text = hint_rows
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(hint_text.contains("Suggestion: Write focused tests"));
     }
 
     #[test]
@@ -685,11 +706,13 @@ mod tests {
         let mut app = App::test_default();
         let (connection, _rx) = crate::agent::client::AgentConnection::test_channel();
         app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+        app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         app.status = AppStatus::Ready;
 
         dispatch_prompt_turn(&mut app, "hello".into());
 
         assert!(app.transcript.messages.is_empty());
+        assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("previous suggestion"));
         assert!(matches!(app.status, AppStatus::Ready));
     }
 }
