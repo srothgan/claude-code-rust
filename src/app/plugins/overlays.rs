@@ -258,7 +258,7 @@ pub(super) fn open_confirmation_overlay(
         cancel_label: "Cancel".to_owned(),
         selected_index: 0,
         action,
-        previous: Box::new(previous),
+        previous: Some(Box::new(previous)),
     }));
 }
 

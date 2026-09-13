@@ -168,7 +168,7 @@ fn open_mcp_clear_auth_confirmation(app: &mut App, overlay: super::mcp::McpDetai
         cancel_label: "Cancel".to_owned(),
         selected_index: 0,
         action: ConfirmationAction::McpClearAuth,
-        previous: Box::new(ConfigOverlayState::McpDetails(overlay)),
+        previous: Some(Box::new(ConfigOverlayState::McpDetails(overlay))),
     }));
 }
 
@@ -197,7 +197,7 @@ fn open_mcp_remove_confirmation(
         cancel_label: "Cancel".to_owned(),
         selected_index: 0,
         action: ConfirmationAction::McpRemoveConfig,
-        previous: Box::new(ConfigOverlayState::McpDetails(overlay)),
+        previous: Some(Box::new(ConfigOverlayState::McpDetails(overlay))),
     }));
 }
 

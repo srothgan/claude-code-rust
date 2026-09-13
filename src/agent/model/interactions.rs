@@ -213,6 +213,8 @@ pub struct PermissionDisplay {
     pub title: Option<String>,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    pub default_to_no: bool,
+    pub suppress_always_allow_rule: bool,
 }
 
 impl PermissionDisplay {
@@ -240,10 +242,24 @@ impl PermissionDisplay {
     }
 
     #[must_use]
+    pub fn default_to_no(mut self, default_to_no: bool) -> Self {
+        self.default_to_no = default_to_no;
+        self
+    }
+
+    #[must_use]
+    pub fn suppress_always_allow_rule(mut self, suppress: bool) -> Self {
+        self.suppress_always_allow_rule = suppress;
+        self
+    }
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.title.as_ref().is_none_or(|value| value.trim().is_empty())
             && self.display_name.as_ref().is_none_or(|value| value.trim().is_empty())
             && self.description.as_ref().is_none_or(|value| value.trim().is_empty())
+            && !self.default_to_no
+            && !self.suppress_always_allow_rule
     }
 }
 

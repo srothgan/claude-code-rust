@@ -72,6 +72,7 @@ import {
   buildSubagentRetryUpdate,
   normalizeSettingsParseErrors,
   nonNegativeIntegerField,
+  nonNegativeNumberField,
   numberField,
   parseApiRetryError,
   parseRuntimeSessionState,
@@ -239,6 +240,9 @@ export function sdkMessageDiagnosticFields(
     sdk_subtype: typeof msg.subtype === "string" ? msg.subtype : undefined,
     sdk_uuid: trimmedStringField(msg, "uuid"),
     user_message_uuid: trimmedStringField(msg, "user_message_uuid"),
+    ...(userMessageUuids(msg).length > 0
+      ? { user_message_uuids: userMessageUuids(msg) }
+      : {}),
     parent_tool_use_id: parentToolUseId,
     parent_tool_use_scope: !hasParentToolUseId
       ? "absent"
@@ -255,6 +259,15 @@ export function sdkMessageDiagnosticFields(
     lifecycle_state: diagnosticToken(msg.state),
     lifecycle_operation: diagnosticToken(msg.operation),
     lifecycle_reason: diagnosticToken(msg.reason),
+    ...(diagnosticToken(msg.resume_reason)
+      ? { resume_reason: diagnosticToken(msg.resume_reason) }
+      : {}),
+    ...(nonNegativeIntegerField(msg, "result_index") !== undefined
+      ? { result_index: nonNegativeIntegerField(msg, "result_index") }
+      : {}),
+    ...(boundedDiagnosticString(msg.local_command)
+      ? { local_command: boundedDiagnosticString(msg.local_command) }
+      : {}),
     sdk_keys: Object.keys(msg).sort(),
     ...(Object.keys(uuidFields).length > 0
       ? { sdk_uuid_fields: uuidFields }
@@ -459,6 +472,14 @@ function trimmedStringField(
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function boundedDiagnosticString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 1_024) : undefined;
 }
 
 function ensureSentencePunctuation(value: string): string {
@@ -1288,11 +1309,83 @@ function emitUserMessageStarted(
   message: Record<string, unknown>,
   source: "stream_event" | "assistant" | "result",
 ): void {
-  const messageUuid = trimmedStringField(message, "user_message_uuid");
-  if (!messageUuid) {
-    return;
+  for (const messageUuid of userMessageUuids(message)) {
+    emitUserMessageStartedForUuid(session, messageUuid, source);
   }
-  emitUserMessageStartedForUuid(session, messageUuid, source);
+}
+
+const MAX_USER_MESSAGE_UUIDS = 64;
+
+export function userMessageUuids(message: Record<string, unknown>): string[] {
+  const uuids: string[] = [];
+  const seen = new Set<string>();
+  const rawUuids = message.user_message_uuids;
+  if (Array.isArray(rawUuids)) {
+    for (const value of rawUuids) {
+      if (typeof value !== "string") {
+        continue;
+      }
+      const uuid = value.trim();
+      if (!uuid || seen.has(uuid)) {
+        continue;
+      }
+      seen.add(uuid);
+      uuids.push(uuid);
+      if (uuids.length >= MAX_USER_MESSAGE_UUIDS) {
+        break;
+      }
+    }
+  }
+  if (uuids.length === 0) {
+    const fallback = trimmedStringField(message, "user_message_uuid");
+    if (fallback) {
+      uuids.push(fallback);
+    }
+  }
+  return uuids;
+}
+
+function reconcileResultPermissionDenials(
+  session: SessionState,
+  message: Record<string, unknown>,
+): void {
+  const denials = Array.isArray(message.permission_denials)
+    ? message.permission_denials.slice(0, 256)
+    : [];
+  const seen = new Set<string>();
+  let reconciled = 0;
+  for (const value of denials) {
+    const denial = asRecordOrNull(value);
+    const toolUseId = denial
+      ? trimmedStringField(denial, "tool_use_id")
+      : undefined;
+    if (!toolUseId || seen.has(toolUseId)) {
+      continue;
+    }
+    seen.add(toolUseId);
+    const toolCall = session.toolCalls.get(toolUseId);
+    if (
+      !toolCall ||
+      toolCall.status === "completed" ||
+      toolCall.status === "failed" ||
+      toolCall.status === "killed"
+    ) {
+      continue;
+    }
+    emitToolCallUpdate(session, toolUseId, { status: "failed" }, "finalize");
+    reconciled += 1;
+  }
+  if (denials.length > 0) {
+    bridgeLogger.info({
+      target: LOG_TARGETS.BRIDGE_PERMISSION,
+      eventName: "sdk_result_permission_denials_reconciled",
+      message: "SDK result permission denials reconciled with open tool calls",
+      outcome: "handled",
+      sessionId: session.sessionId,
+      count: reconciled,
+      fields: { denial_count: denials.length },
+    });
+  }
 }
 
 function emitUserMessageStartedForUuid(
@@ -1416,6 +1509,22 @@ export function handleResultMessage(
     message.fast_mode_state,
     message.fast_mode_disabled_reason,
   );
+  reconcileResultPermissionDenials(session, message);
+  const replyDiagnostics = sdkMessageDiagnosticFields(message);
+  if (
+    replyDiagnostics.resume_reason !== undefined ||
+    replyDiagnostics.result_index !== undefined ||
+    replyDiagnostics.local_command !== undefined
+  ) {
+    bridgeLogger.debug({
+      target: LOG_TARGETS.BRIDGE_SDK,
+      eventName: "sdk_result_diagnostics",
+      message: "SDK result diagnostic metadata received",
+      outcome: "observed",
+      sessionId: session.sessionId,
+      fields: replyDiagnostics,
+    });
+  }
   const terminalReason = terminalReasonFromValue(message.terminal_reason);
   const queuedTurnCount = nonNegativeIntegerField(message, "queued_turn_count");
 
@@ -1675,12 +1784,31 @@ export function handleSdkMessage(
             typeof msg.estimated_tokens_delta === "number"
               ? msg.estimated_tokens_delta
               : undefined,
+          user_message_uuid: trimmedStringField(msg, "user_message_uuid"),
         },
       });
       return;
     }
 
     if (subtype === "api_retry") {
+      const noResponse = asRecordOrNull(msg.no_response);
+      if (noResponse) {
+        bridgeLogger.debug({
+          target: LOG_TARGETS.BRIDGE_SDK,
+          eventName: "sdk_api_retry_no_response",
+          message: "SDK API retry included no-response timing metadata",
+          outcome: "observed",
+          sessionId: session.sessionId,
+          fields: {
+            waited_ms: nonNegativeNumberField(noResponse, "waited_ms", "waitedMs"),
+            retry_wait_ms: nonNegativeNumberField(
+              noResponse,
+              "retry_wait_ms",
+              "retryWaitMs",
+            ),
+          },
+        });
+      }
       const update = buildApiRetryUpdate(msg);
       if (update) {
         emitSessionUpdate(session.sessionId, update);

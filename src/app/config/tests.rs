@@ -1965,7 +1965,7 @@ fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
     let envelope = rx.try_recv().expect("runtime reload command");
     assert_eq!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned() }
+        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
     );
     assert!(app.mcp.in_flight);
     assert!(rx.try_recv().is_err());
@@ -2430,7 +2430,7 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     let envelope = rx.try_recv().expect("runtime reload command");
     assert_eq!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned() }
+        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
     );
     let envelope = rx.try_recv().expect("mcp snapshot command");
     assert_eq!(

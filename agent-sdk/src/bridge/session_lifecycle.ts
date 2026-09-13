@@ -108,13 +108,25 @@ function permissionDisplayFromCanUseOptions(
     typeof options.displayName === "string" ? options.displayName.trim() : "";
   const description =
     typeof options.description === "string" ? options.description.trim() : "";
-  if (!title && !displayName && !description) {
+  const defaultToNo = options.defaultToNo === true;
+  const suppressAlwaysAllowRule = options.suppressAlwaysAllowRule === true;
+  if (
+    !title &&
+    !displayName &&
+    !description &&
+    !defaultToNo &&
+    !suppressAlwaysAllowRule
+  ) {
     return undefined;
   }
   return {
     ...(title ? { title } : {}),
     ...(displayName ? { display_name: displayName } : {}),
     ...(description ? { description } : {}),
+    ...(defaultToNo ? { default_to_no: true } : {}),
+    ...(suppressAlwaysAllowRule
+      ? { suppress_always_allow_rule: true }
+      : {}),
   };
 }
 
@@ -569,7 +581,10 @@ export async function createSession(params: {
     const display = permissionDisplayFromCanUseOptions(options);
     const request: PermissionRequest = {
       tool_call: existing,
-      options: permissionOptionsFromSuggestions(options.suggestions),
+      options: permissionOptionsFromSuggestions(
+        options.suggestions,
+        options.suppressAlwaysAllowRule === true,
+      ),
       ...(display ? { display } : {}),
     };
     bridgeLogger.info({
@@ -1161,8 +1176,6 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );
-  const shouldPassCanUseTool =
-    permissionModeOptions.permissionMode !== "bypassPermissions";
   const settings = normalizedSettingsFromLaunchSettings(params.launchSettings);
   return {
     cwd: params.cwd,
@@ -1204,9 +1217,6 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     }) => {
       const command = resolveClaudeCodeSpawnCommand(options.command);
       const env = { ...options.env };
-      if (env.CLAUDE_CODE_ENABLE_TODO_TOOLS === undefined) {
-        env.CLAUDE_CODE_ENABLE_TODO_TOOLS = "1";
-      }
       const spawnOptions = { ...options, command, env };
       logSdkProcessSpawnStarted(spawnOptions, params.enableSpawnDebug);
       const child = spawnChild(command, options.args, {
@@ -1251,7 +1261,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     ...(params.forkSession
       ? { forkSession: true, sessionId: params.provisionalSessionId }
       : {}),
-    ...(shouldPassCanUseTool ? { canUseTool: params.canUseTool } : {}),
+    canUseTool: params.canUseTool,
     onElicitation: async (
       request: {
         mode?: string;

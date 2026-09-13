@@ -394,6 +394,7 @@ impl TextBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RateLimitIncidentKey {
     pub rate_limit_type: Option<String>,
+    pub limit_scope: Option<String>,
     pub resets_at_bucket: Option<u64>,
 }
 

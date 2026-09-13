@@ -22,7 +22,7 @@ export function numberField(
   return undefined;
 }
 
-function nonNegativeNumberField(
+export function nonNegativeNumberField(
   record: Record<string, unknown>,
   ...keys: string[]
 ): number | undefined {
@@ -137,6 +137,8 @@ export function parseApiRetryError(value: unknown): ApiRetryError {
     case "invalid_request":
     case "model_not_found":
     case "server_error":
+    case "verification_required":
+    case "cloud_credential_error":
     case "max_output_tokens":
       return value;
     default:
@@ -178,6 +180,14 @@ export function buildRateLimitUpdate(
 
   if (typeof info.rateLimitType === "string" && info.rateLimitType.length > 0) {
     update.rate_limit_type = info.rateLimitType;
+  }
+
+  if (
+    info.limitScope === "service" ||
+    info.limitScope === "channel" ||
+    info.limitScope === "group_pool"
+  ) {
+    update.limit_scope = info.limitScope;
   }
 
   const overageStatus = parseRateLimitStatus(info.overageStatus);

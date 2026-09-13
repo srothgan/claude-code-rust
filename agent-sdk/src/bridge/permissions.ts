@@ -74,20 +74,29 @@ function splitPermissionSuggestionsByScope(
 
 export function permissionOptionsFromSuggestions(
   suggestions: PermissionUpdate[] | undefined,
+  suppressAlwaysAllowRule = false,
 ): PermissionOption[] {
   const scoped = splitPermissionSuggestionsByScope(suggestions);
   const hasSessionScoped = scoped.session.length > 0;
   const hasPersistentScoped = scoped.persistent.length > 0;
-  const sessionOnly = hasSessionScoped && !hasPersistentScoped;
 
   const options: PermissionOption[] = [
     { option_id: "allow_once", name: "Allow once", kind: "allow_once" },
   ];
-  options.push({
-    option_id: sessionOnly ? "allow_session" : "allow_always",
-    name: sessionOnly ? "Allow for session" : "Always allow",
-    kind: sessionOnly ? "allow_session" : "allow_always",
-  });
+  if (hasSessionScoped) {
+    options.push({
+      option_id: "allow_session",
+      name: "Allow for session",
+      kind: "allow_session",
+    });
+  }
+  if (!suppressAlwaysAllowRule && (!hasSessionScoped || hasPersistentScoped)) {
+    options.push({
+      option_id: "allow_always",
+      name: "Always allow",
+      kind: "allow_always",
+    });
+  }
   options.push({ option_id: "reject_once", name: "Deny", kind: "reject_once" });
   return options;
 }

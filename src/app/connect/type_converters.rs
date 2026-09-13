@@ -22,6 +22,7 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
         resets_at: update.resets_at,
         utilization: update.utilization,
         rate_limit_type: update.rate_limit_type,
+        limit_scope: update.limit_scope,
         overage_status: update.overage_status.map(map_rate_limit_status),
         overage_resets_at: update.overage_resets_at,
         overage_disabled_reason: update.overage_disabled_reason,
@@ -43,6 +44,8 @@ pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetr
         types::ApiRetryError::InvalidRequest => model::ApiRetryError::InvalidRequest,
         types::ApiRetryError::ModelNotFound => model::ApiRetryError::ModelNotFound,
         types::ApiRetryError::ServerError => model::ApiRetryError::ServerError,
+        types::ApiRetryError::VerificationRequired => model::ApiRetryError::VerificationRequired,
+        types::ApiRetryError::CloudCredentialError => model::ApiRetryError::CloudCredentialError,
         types::ApiRetryError::MaxOutputTokens => model::ApiRetryError::MaxOutputTokens,
         types::ApiRetryError::Unknown => model::ApiRetryError::Unknown,
     }
@@ -461,6 +464,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             resets_at,
             utilization,
             rate_limit_type,
+            limit_scope,
             overage_status,
             overage_resets_at,
             overage_disabled_reason,
@@ -475,6 +479,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 resets_at,
                 utilization,
                 rate_limit_type,
+                limit_scope,
                 overage_status,
                 overage_resets_at,
                 overage_disabled_reason,
@@ -892,6 +897,7 @@ fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
     model::ToolOutputMetadata::new()
+        .staged(output_metadata.staged)
         .bash(output_metadata.bash.map(|bash| {
             model::BashOutputMetadata::new()
                 .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
@@ -931,7 +937,9 @@ fn convert_permission_display(
     let mapped = model::PermissionDisplay::new()
         .title(display.title)
         .display_name(display.display_name)
-        .description(display.description);
+        .description(display.description)
+        .default_to_no(display.default_to_no)
+        .suppress_always_allow_rule(display.suppress_always_allow_rule);
     (!mapped.is_empty()).then_some(mapped)
 }
 
@@ -1421,6 +1429,7 @@ mod tests {
             resets_at: None,
             utilization: None,
             rate_limit_type: None,
+            limit_scope: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,
@@ -1496,6 +1505,8 @@ mod tests {
                     title: Some("Claude wants to run tests".to_owned()),
                     display_name: Some("Run tests".to_owned()),
                     description: Some("This command reads project files".to_owned()),
+                    default_to_no: false,
+                    suppress_always_allow_rule: false,
                 }),
             },
         );
@@ -1597,6 +1608,7 @@ mod tests {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
+                staged: false,
                 bash: Some(types::BashOutputMetadata {
                     assistant_auto_backgrounded: Some(true),
                     timed_out_after_ms: Some(10_000),

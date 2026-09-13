@@ -676,6 +676,25 @@ test("buildToolResultFields maps structured Write output to diff content", () =>
   ]);
 });
 
+test("buildToolResultFields preserves staged Write and Edit results", () => {
+  for (const [toolName, input, result] of [
+    [
+      "Write",
+      { file_path: "src/main.ts", content: "new" },
+      { type: "update", filePath: "src/main.ts", content: "new", originalFile: "old", structuredPatch: [], staged: true },
+    ],
+    [
+      "Edit",
+      { file_path: "src/main.ts", old_string: "old", new_string: "new" },
+      { filePath: "src/main.ts", oldString: "old", newString: "new", replaceAll: false, staged: true },
+    ],
+  ] as const) {
+    const fields = buildToolResultFields(false, result, createToolCall(`tc-${toolName}`, toolName, input));
+    assert.equal(fields.status, "completed");
+    assert.equal(fields.output_metadata?.staged, true);
+  }
+});
+
 test("buildToolResultFields distinguishes new, unchanged, and unavailable Write diffs", () => {
   const base = createToolCall("tc-write-cases", "Write", {
     file_path: "src/main.ts",

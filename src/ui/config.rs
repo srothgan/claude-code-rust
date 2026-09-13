@@ -763,9 +763,9 @@ mod tests {
                 cancel_label: "Cancel".to_owned(),
                 selected_index: 0,
                 action: crate::app::config::ConfirmationAction::MarketplaceRemove,
-                previous: Box::new(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
-                    selected: OutputStyle::Default,
-                })),
+                previous: Some(Box::new(ConfigOverlayState::OutputStyle(
+                    OutputStyleOverlayState { selected: OutputStyle::Default },
+                ))),
             },
         ));
 
@@ -788,9 +788,9 @@ mod tests {
                 cancel_label: "Cancel".to_owned(),
                 selected_index: 0,
                 action: crate::app::config::ConfirmationAction::MarketplaceRemove,
-                previous: Box::new(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
-                    selected: OutputStyle::Default,
-                })),
+                previous: Some(Box::new(ConfigOverlayState::OutputStyle(
+                    OutputStyleOverlayState { selected: OutputStyle::Default },
+                ))),
             },
         ));
 

@@ -53,6 +53,9 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         if let Some(favicon) = typed::json_string(input, "favicon") {
             artifact_fields.push(ToolField::new("Favicon", favicon));
         }
+        if let Some(icon) = typed::json_string(input, "icon") {
+            artifact_fields.push(ToolField::new("Icon", icon));
+        }
         if let Some(url) = typed::json_string(input, "url") {
             artifact_fields.push(ToolField::new("URL", url));
         }
@@ -87,6 +90,7 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 "description",
                 "file_path",
                 "favicon",
+                "icon",
                 "url",
                 "prompt",
                 "out_dir",
@@ -166,6 +170,7 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
     if let Some(live_subscription) = typed::json_string(object, "liveSubscription") {
         artifact_fields.push(ToolField::new("Live subscription", live_subscription));
     }
+    render_publish_state_fields(object, &mut artifact_fields);
     if let Some(additional) = additional_json(
         object,
         &[
@@ -185,6 +190,11 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
             "updated",
             "audience",
             "liveSubscription",
+            "publishesRemaining",
+            "publishesResetAt",
+            "seq",
+            "unchanged",
+            "written",
             "read",
             "artifactRead",
             "asset_upload",
@@ -202,6 +212,24 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
     }
 
     artifact_fields
+}
+
+fn render_publish_state_fields<'a>(
+    object: &'a Map<String, Value>,
+    artifact_fields: &mut Vec<ToolField<'a>>,
+) {
+    if let Some(remaining) = typed::json_i64(object, "publishesRemaining") {
+        artifact_fields.push(ToolField::new("Publishes remaining", remaining.to_string()));
+    }
+    if let Some(reset_at) = typed::json_i64(object, "publishesResetAt") {
+        artifact_fields.push(ToolField::new("Publish limit resets at", reset_at.to_string()));
+    }
+    if let Some(sequence) = typed::json_i64(object, "seq") {
+        artifact_fields.push(ToolField::new("Publish sequence", sequence.to_string()));
+    }
+    if let Some(unchanged) = typed::json_bool(object, "unchanged") {
+        artifact_fields.push(ToolField::new("Unchanged", typed::bool_label(unchanged)));
+    }
 }
 
 fn render_stored_output_fields(stored: &Map<String, Value>) -> Vec<ToolField<'_>> {
@@ -232,6 +260,9 @@ fn render_stored_output_fields(stored: &Map<String, Value>) -> Vec<ToolField<'_>
 
 fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
     let mut lines = fields::render_fields(render_output_fields(object));
+    if let Some(written) = object.get("written") {
+        lines.extend(render_written_output(written));
+    }
     if let Some(read) = object.get("read") {
         lines.extend(render_read_output(read, object.get("artifactRead")));
     } else if let Some(artifact_read) = object.get("artifactRead") {
@@ -292,6 +323,20 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+fn render_written_output(value: &Value) -> Vec<Line<'static>> {
+    let Some(written) = value.as_object() else {
+        return compact_value_field("Written artifact", value);
+    };
+    let mut values = Vec::new();
+    if let Some(url) = typed::json_string(written, "url") {
+        values.push(ToolField::new("Written artifact", url));
+    }
+    if let Some(additional) = additional_json(written, &["url"]) {
+        values.push(ToolField::new("Additional written output", additional));
+    }
+    fields::render_fields(values)
 }
 
 fn render_watch_output(value: &Value) -> Vec<Line<'static>> {
@@ -500,7 +545,7 @@ fn render_asset_read_output(value: &Value) -> Vec<Line<'static>> {
     render_asset_fields(
         asset,
         "Read asset",
-        &["id", "path", "content_type", "size_bytes", "sha256"],
+        &["id", "path", "content_type", "size_bytes", "sha256", "cowritten", "foreign"],
     )
 }
 
@@ -531,6 +576,12 @@ fn render_asset_fields(
     if let Some(sha256) = typed::json_string(asset, "sha256") {
         values.push(ToolField::new("SHA-256", sha256));
     }
+    if let Some(cowritten) = typed::json_bool(asset, "cowritten") {
+        values.push(ToolField::new("Co-written", typed::bool_label(cowritten)));
+    }
+    if let Some(foreign) = typed::json_bool(asset, "foreign") {
+        values.push(ToolField::new("Foreign shared asset", typed::bool_label(foreign)));
+    }
     if let Some(additional) = additional_json(asset, handled) {
         values.push(ToolField::new("Additional asset output", additional));
     }
@@ -550,6 +601,9 @@ fn render_asset_list_output(value: &Value) -> Vec<Line<'static>> {
     }
     if let Some(next) = typed::json_string(list, "next") {
         values.push(ToolField::new("Next", next));
+    }
+    if let Some(cowritten) = typed::json_bool(list, "cowritten") {
+        values.push(ToolField::new("Co-written artifact", typed::bool_label(cowritten)));
     }
     let mut lines = fields::render_fields(values);
     if let Some(assets) = list.get("assets").and_then(Value::as_array) {
@@ -584,7 +638,9 @@ fn render_asset_list_output(value: &Value) -> Vec<Line<'static>> {
     if let Some(usage) = list.get("usage") {
         lines.extend(render_asset_usage(usage));
     }
-    if let Some(additional) = additional_json(list, &["url", "assets", "usage", "next"]) {
+    if let Some(additional) =
+        additional_json(list, &["url", "assets", "usage", "next", "cowritten"])
+    {
         lines.push(fields::render_field("Additional asset-list output", additional));
     }
     lines
@@ -747,6 +803,33 @@ mod tests {
                 "Additional output: {\"futureOutput\":{\"revision\":4}}",
             ]
         );
+    }
+
+    #[test]
+    fn renders_latest_publish_and_asset_ownership_fields() {
+        let publish = artifact_tool_call(
+            json!({"action": "publish", "icon": "chart"}),
+            Some(
+                r#"{"url":"https://artifact.local/a","path":"a.html","publishesRemaining":3,"publishesResetAt":1234,"seq":7,"unchanged":true}"#,
+            ),
+        );
+        let publish_lines = rendered_line_texts(&render_tool_content(&publish));
+        assert!(publish_lines.contains(&"Icon: chart".to_owned()));
+        assert!(publish_lines.contains(&"Publishes remaining: 3".to_owned()));
+        assert!(publish_lines.contains(&"Publish limit resets at: 1234".to_owned()));
+        assert!(publish_lines.contains(&"Publish sequence: 7".to_owned()));
+        assert!(publish_lines.contains(&"Unchanged: yes".to_owned()));
+
+        let asset = artifact_tool_call(
+            json!({"action": "read_asset", "url": "https://artifact.local/a", "asset_id": "asset-1"}),
+            Some(
+                r#"{"written":{"url":"https://artifact.local/a"},"asset_read":{"id":"asset-1","path":"asset.png","size_bytes":4,"content_type":"image/png","sha256":"abc","cowritten":true,"foreign":true}}"#,
+            ),
+        );
+        let asset_lines = rendered_line_texts(&render_tool_content(&asset));
+        assert!(asset_lines.contains(&"Written artifact: https://artifact.local/a".to_owned()));
+        assert!(asset_lines.contains(&"Co-written: yes".to_owned()));
+        assert!(asset_lines.contains(&"Foreign shared asset: yes".to_owned()));
     }
 
     #[test]

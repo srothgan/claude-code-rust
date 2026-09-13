@@ -48,6 +48,8 @@ fn api_retry_error_label(error: ApiRetryError) -> &'static str {
         ApiRetryError::InvalidRequest => "invalid request",
         ApiRetryError::ModelNotFound => "model unavailable",
         ApiRetryError::ServerError => "server error",
+        ApiRetryError::VerificationRequired => "verification required",
+        ApiRetryError::CloudCredentialError => "cloud provider credentials",
         ApiRetryError::MaxOutputTokens => "max output tokens",
         ApiRetryError::Unknown => "connection error",
     }

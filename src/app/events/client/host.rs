@@ -20,6 +20,12 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::RuntimeReloadCompleted { session_id: _ } => {
             crate::app::plugins::apply_runtime_reload_success(app);
         }
+        ClientEvent::RuntimeReloadHeld { session_id: _, cache_impact } => {
+            crate::app::plugins::apply_runtime_reload_held(app, &cache_impact);
+            if app.mcp.in_flight {
+                app.mcp.in_flight = false;
+            }
+        }
         ClientEvent::RuntimeReloadFailed { session_id: _, message } => {
             crate::app::plugins::apply_runtime_reload_failure(app, &message);
             if app.mcp.in_flight {

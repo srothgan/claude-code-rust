@@ -13,6 +13,14 @@ pub(crate) enum RuntimeReloadRequestOutcome {
 }
 
 pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutcome {
+    request_runtime_reload_with_force(app, false)
+}
+
+pub(crate) fn request_forced_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutcome {
+    request_runtime_reload_with_force(app, true)
+}
+
+fn request_runtime_reload_with_force(app: &mut App, force: bool) -> RuntimeReloadRequestOutcome {
     let Some(conn) = app.session_runtime.conn.as_ref() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
@@ -20,7 +28,7 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
         return RuntimeReloadRequestOutcome::Unavailable;
     };
     let session_id = sid.to_string();
-    match conn.reload_plugins(session_id.clone()) {
+    match conn.reload_plugins(session_id.clone(), force) {
         Ok(()) => {
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
@@ -28,6 +36,7 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
                 message = "session runtime plugin reload requested",
                 outcome = "start",
                 session_id = %session_id,
+                force,
             );
             RuntimeReloadRequestOutcome::Requested
         }
@@ -38,6 +47,7 @@ pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutco
                 message = "failed to request session runtime plugin reload",
                 outcome = "failure",
                 session_id = %session_id,
+                force,
                 error_message = %error,
             );
             RuntimeReloadRequestOutcome::Failed
@@ -165,8 +175,9 @@ fn clear_context_usage_refresh_state(app: &mut App) {
 mod tests {
     use super::{
         CONTEXT_USAGE_REFRESH_INTERVAL, RuntimeReloadRequestOutcome, apply_context_usage_snapshot,
-        request_context_usage_refresh, request_context_usage_refresh_at, request_runtime_reload,
-        request_status_snapshot_refresh, tick_context_usage_refresh,
+        request_context_usage_refresh, request_context_usage_refresh_at,
+        request_forced_runtime_reload, request_runtime_reload, request_status_snapshot_refresh,
+        tick_context_usage_refresh,
     };
     use crate::agent::model;
     use crate::agent::wire::BridgeCommand;
@@ -204,7 +215,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope.command,
-            BridgeCommand::ReloadPlugins { session_id } if session_id == "session-1"
+            BridgeCommand::ReloadPlugins { session_id, force: false } if session_id == "session-1"
         ));
     }
 
@@ -215,6 +226,22 @@ mod tests {
         assert!(matches!(
             request_runtime_reload(&mut app),
             RuntimeReloadRequestOutcome::Unavailable
+        ));
+    }
+
+    #[test]
+    fn forced_runtime_reload_sets_explicit_command_flag() {
+        let (mut app, mut rx) = app_with_connection();
+
+        assert!(matches!(
+            request_forced_runtime_reload(&mut app),
+            RuntimeReloadRequestOutcome::Requested
+        ));
+
+        let envelope = rx.try_recv().expect("forced reload command");
+        assert!(matches!(
+            envelope.command,
+            BridgeCommand::ReloadPlugins { session_id, force: true } if session_id == "session-1"
         ));
     }
 

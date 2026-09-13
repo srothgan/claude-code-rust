@@ -711,6 +711,15 @@ function extractToolOutputMetadata(
   const candidates = collectResultCandidates(rawResult, rawContent);
   const metadata: import("../types.js").ToolOutputMetadata = {};
 
+  if (toolName === "Edit" || toolName === "Write") {
+    for (const candidate of candidates) {
+      if (candidate.staged === true) {
+        metadata.staged = true;
+        break;
+      }
+    }
+  }
+
   if (toolName === "Bash") {
     for (const candidate of candidates) {
       const hasAssistantAutoBackgrounded =
@@ -790,7 +799,11 @@ function extractToolOutputMetadata(
     }
   }
 
-  return metadata.bash || metadata.agent || metadata.web_fetch || metadata.skill
+  return metadata.staged ||
+    metadata.bash ||
+    metadata.agent ||
+    metadata.web_fetch ||
+    metadata.skill
     ? metadata
     : undefined;
 }

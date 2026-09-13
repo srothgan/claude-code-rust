@@ -117,6 +117,11 @@ pub enum ClientEvent {
     TerminalReturnedFromChild { reason: ReleaseReason },
     /// Session runtime plugin reload completed successfully.
     RuntimeReloadCompleted { session_id: String },
+    /// A safe plugin reload was held because it would invalidate the prompt cache.
+    RuntimeReloadHeld {
+        session_id: String,
+        cache_impact: crate::agent::types::RuntimeReloadCacheImpact,
+    },
     /// Session runtime plugin reload failed after dispatch.
     RuntimeReloadFailed { session_id: String, message: String },
     /// Custom slash command replaced the active session.
@@ -214,6 +219,7 @@ impl ClientEvent {
             | Self::TurnError { session_id, .. }
             | Self::TurnErrorClassified { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id }
+            | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }

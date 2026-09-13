@@ -211,6 +211,10 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::RuntimeReloadCompleted { session_id } => {
             let _ = event_tx.send(ClientEvent::RuntimeReloadCompleted { session_id }).await;
         }
+        crate::agent::wire::BridgeEvent::RuntimeReloadHeld { session_id, cache_impact } => {
+            let _ =
+                event_tx.send(ClientEvent::RuntimeReloadHeld { session_id, cache_impact }).await;
+        }
         crate::agent::wire::BridgeEvent::RuntimeReloadFailed { session_id, message } => {
             let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message }).await;
         }

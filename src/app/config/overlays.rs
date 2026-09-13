@@ -162,6 +162,7 @@ pub enum ConfirmationAction {
     MarketplaceRemove,
     McpClearAuth,
     McpRemoveConfig,
+    ForceRuntimePluginReload,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,7 +173,7 @@ pub struct ConfirmationOverlayState {
     pub cancel_label: String,
     pub selected_index: usize,
     pub action: ConfirmationAction,
-    pub previous: Box<ConfigOverlayState>,
+    pub previous: Option<Box<ConfigOverlayState>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

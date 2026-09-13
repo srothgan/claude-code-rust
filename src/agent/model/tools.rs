@@ -357,6 +357,7 @@ impl BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub staged: bool,
     pub bash: Option<BashOutputMetadata>,
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
@@ -397,6 +398,12 @@ impl ToolOutputMetadata {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn staged(mut self, staged: bool) -> Self {
+        self.staged = staged;
+        self
     }
 
     #[must_use]

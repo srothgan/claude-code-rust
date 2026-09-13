@@ -236,6 +236,8 @@ pub enum ApiRetryError {
     InvalidRequest,
     ModelNotFound,
     ServerError,
+    VerificationRequired,
+    CloudCredentialError,
     MaxOutputTokens,
     #[serde(other)]
     Unknown,
@@ -283,6 +285,7 @@ pub struct RateLimitUpdate {
     pub resets_at: Option<f64>,
     pub utilization: Option<f64>,
     pub rate_limit_type: Option<String>,
+    pub limit_scope: Option<String>,
     pub overage_status: Option<RateLimitStatus>,
     pub overage_resets_at: Option<f64>,
     pub overage_disabled_reason: Option<String>,
@@ -290,6 +293,17 @@ pub struct RateLimitUpdate {
     pub surpassed_threshold: Option<f64>,
     pub can_user_purchase_credits: Option<bool>,
     pub has_chargeable_saved_payment_method: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeReloadCacheImpact {
+    #[serde(default)]
+    pub mcp_servers_added: Vec<String>,
+    #[serde(default)]
+    pub mcp_servers_removed: Vec<String>,
+    pub lsp_tool_change: Option<String>,
+    #[serde(default)]
+    pub invalid_server_name_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,6 +436,8 @@ pub struct BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    #[serde(default)]
+    pub staged: bool,
     pub bash: Option<BashOutputMetadata>,
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
@@ -635,6 +651,7 @@ pub enum SessionUpdate {
         resets_at: Option<f64>,
         utilization: Option<f64>,
         rate_limit_type: Option<String>,
+        limit_scope: Option<String>,
         overage_status: Option<RateLimitStatus>,
         overage_resets_at: Option<f64>,
         overage_disabled_reason: Option<String>,
@@ -708,6 +725,10 @@ pub struct PermissionDisplay {
     pub title: Option<String>,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    #[serde(default)]
+    pub default_to_no: bool,
+    #[serde(default)]
+    pub suppress_always_allow_rule: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

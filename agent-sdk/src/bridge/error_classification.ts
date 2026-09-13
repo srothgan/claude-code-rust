@@ -54,9 +54,11 @@ export function classifyTurnErrorKind(
     case "rate_limit":
       return "plan_limit";
     case "authentication_failed":
+    case "verification_required":
       return "auth_required";
     case "account_on_hold":
     case "oauth_org_not_allowed":
+    case "cloud_credential_error":
       return "account_access";
     case "model_not_found":
       return "model_unavailable";

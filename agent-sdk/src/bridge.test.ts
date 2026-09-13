@@ -1415,6 +1415,82 @@ test("parseCommandEnvelope validates reload_plugins command", () => {
     command: "reload_plugins",
     session_id: "session-123",
   });
+
+  assert.deepEqual(
+    parseCommandEnvelope(
+      JSON.stringify({
+        command: "reload_plugins",
+        session_id: "session-123",
+        force: true,
+      }),
+    ).command,
+    { command: "reload_plugins", session_id: "session-123", force: true },
+  );
+});
+
+test("handleReloadPluginsCommand holds cache-impacting reloads and sanitizes plugin names", async () => {
+  const session = makeSessionState();
+  const optionsSeen: unknown[] = [];
+  session.query = {
+    reloadPlugins: async (options: unknown) => {
+      optionsSeen.push(options);
+      return {
+        commands: [],
+        agents: [],
+        plugins: [],
+        mcpServers: [],
+        error_count: 0,
+        held: true,
+        cache_impact: {
+          mcp_servers_added: ["plugin:docs:search", "unscoped", "plugin:bad:\u202eline"],
+          mcp_servers_removed: ["plugin:old:server"],
+          lsp_tool_change: "adds",
+        },
+      };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  const events = await captureBridgeEventsAsync(async () => {
+    await handleReloadPluginsCommand(session, "req-held");
+  });
+
+  assert.deepEqual(optionsSeen, [{ holdOnCacheImpact: true }]);
+  assert.deepEqual(events, [
+    {
+      request_id: "req-held",
+      event: "runtime_reload_held",
+      session_id: "session-1",
+      cache_impact: {
+        mcp_servers_added: ["plugin:docs:search"],
+        mcp_servers_removed: ["plugin:old:server"],
+        lsp_tool_change: "adds",
+        invalid_server_name_count: 2,
+      },
+    },
+  ]);
+});
+
+test("handleReloadPluginsCommand forces only through an optionless explicit request", async () => {
+  const session = makeSessionState();
+  const argumentLists: unknown[][] = [];
+  session.query = {
+    reloadPlugins: async (...args: unknown[]) => {
+      argumentLists.push(args);
+      return {
+        commands: [],
+        agents: [],
+        plugins: [],
+        mcpServers: [],
+        error_count: 0,
+      };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+
+  await captureBridgeEventsAsync(async () => {
+    await handleReloadPluginsCommand(session, "req-force", true);
+  });
+
+  assert.deepEqual(argumentLists, [[]]);
 });
 
 test("handleReloadPluginsCommand emits MCP snapshot from reload result", async () => {
@@ -2438,7 +2514,7 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
 
   assert.equal(options.permissionMode, "bypassPermissions");
   assert.equal(options.allowDangerouslySkipPermissions, true);
-  assert.equal("canUseTool" in options, false);
+  assert.equal("canUseTool" in options, true);
 });
 
 test("buildQueryOptions omits optional startup overrides but keeps bridge guard prompt", () => {
@@ -2679,7 +2755,7 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
   }
 });
 
-test("buildQueryOptions defaults Todo tools without overriding explicit SDK child env", async () => {
+test("buildQueryOptions leaves Todo tool availability under SDK environment authority", async () => {
   for (const explicit of [undefined, "0", "1"] as const) {
     const input = new AsyncQueue<
       import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
@@ -2717,7 +2793,7 @@ test("buildQueryOptions defaults Todo tools without overriding explicit SDK chil
       child.on("exit", resolve);
     });
     assert.equal(exitCode, 0);
-    assert.equal(stdout, explicit ?? "1");
+    assert.equal(stdout, explicit ?? "missing");
   }
 });
 
@@ -3669,6 +3745,27 @@ test("handleSdkMessage emits main-thread user-message start before streamed cont
   assert.equal(events[1]?.event, "session_update");
 });
 
+test("handleSdkMessage emits bounded deduplicated starts for plural user message UUIDs", () => {
+  const session = makeSessionState();
+  const uuids = Array.from({ length: 70 }, (_, index) => `user-${index}`);
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "assistant",
+      uuid: "assistant-complete",
+      session_id: "session-1",
+      parent_tool_use_id: null,
+      user_message_uuids: [uuids[0], uuids[0], ...uuids],
+      user_message_uuid: "legacy-fallback",
+      message: { role: "assistant", content: [] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  const starts = events.filter((event) => event.event === "user_message_started");
+  assert.equal(starts.length, 64);
+  assert.equal(starts[0]?.message_uuid, "user-0");
+  assert.equal(starts.at(-1)?.message_uuid, "user-63");
+});
+
 test("direct user MCP result appends resource links without replacing text", () => {
   const session = makeSessionState();
   const toolCall = createToolCall("tool-mcp", "mcp__docs__export", {});
@@ -3928,6 +4025,26 @@ test("handleSdkMessage uses assistant and result as correlation fallbacks and fo
       queued_turn_count: 2,
     },
   ]);
+});
+
+test("handleResultMessage treats permission denials as authoritative for open tools", () => {
+  const session = makeSessionState();
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-denied", "Write", { file_path: "a.txt", content: "x" });
+    emitToolCall(session, "tool-finished", "Read", { file_path: "b.txt" });
+    emitToolResultUpdate(session, "tool-finished", false, "done");
+    handleResultMessage(session, {
+      type: "result",
+      subtype: "success",
+      permission_denials: [
+        { tool_name: "Write", tool_use_id: "tool-denied", tool_input: {} },
+        { tool_name: "Write", tool_use_id: "tool-denied", tool_input: {} },
+      ],
+    });
+  });
+
+  assert.equal(session.toolCalls.get("tool-denied")?.status, "failed");
+  assert.equal(session.toolCalls.get("tool-finished")?.status, "completed");
 });
 
 test("handleSdkMessage does not correlate subagent reply frames", () => {
@@ -6347,6 +6464,7 @@ test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
     resetsAt: 1_741_280_000,
     utilization: 0.92,
     rateLimitType: "five_hour",
+    limitScope: "group_pool",
     overageStatus: "rejected",
     overageResetsAt: 1_741_280_600,
     overageDisabledReason: "out_of_credits",
@@ -6364,6 +6482,7 @@ test("buildRateLimitUpdate maps SDK fields to wire shape", () => {
     resets_at: 1_741_280_000,
     utilization: 0.92,
     rate_limit_type: "five_hour",
+    limit_scope: "group_pool",
     overage_status: "rejected",
     overage_resets_at: 1_741_280_600,
     overage_disabled_reason: "out_of_credits",
@@ -8090,6 +8209,44 @@ test("permissionOptionsFromSuggestions uses persistent label when settings scope
   ]);
 });
 
+test("permissionOptionsFromSuggestions suppresses persistent allow when requested", () => {
+  const options = permissionOptionsFromSuggestions(
+    [
+      {
+        type: "addRules",
+        behavior: "allow",
+        destination: "localSettings",
+        rules: [{ toolName: "Bash" }],
+      },
+    ],
+    true,
+  );
+  assert.deepEqual(options, [
+    { option_id: "allow_once", name: "Allow once", kind: "allow_once" },
+    { option_id: "reject_once", name: "Deny", kind: "reject_once" },
+  ]);
+});
+
+test("permissionOptionsFromSuggestions retains session approval while suppressing mixed persistent rules", () => {
+  const options = permissionOptionsFromSuggestions(
+    [
+      { type: "setMode", mode: "acceptEdits", destination: "session" },
+      {
+        type: "addRules",
+        behavior: "allow",
+        destination: "localSettings",
+        rules: [{ toolName: "Bash" }],
+      },
+    ],
+    true,
+  );
+  assert.deepEqual(options, [
+    { option_id: "allow_once", name: "Allow once", kind: "allow_once" },
+    { option_id: "allow_session", name: "Allow for session", kind: "allow_session" },
+    { option_id: "reject_once", name: "Deny", kind: "reject_once" },
+  ]);
+});
+
 test("permissionResultFromOutcome keeps Bash allow_always suggestions unchanged", () => {
   const allow = permissionResultFromOutcome(
     { outcome: "selected", option_id: "allow_always" },
@@ -8211,7 +8368,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.258");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.270");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -9156,9 +9313,11 @@ test("commitDeferredSession publishes connect before all buffered session-scoped
 test("handleResultMessage emits typed turn error classifications for SDK assistant errors", () => {
   const cases = [
     ["account_on_hold", "account_access"],
+    ["cloud_credential_error", "account_access"],
     ["model_not_found", "model_unavailable"],
     ["oauth_org_not_allowed", "account_access"],
     ["overloaded", "transient_service"],
+    ["verification_required", "auth_required"],
   ] as const;
 
   for (const [assistantError, errorKind] of cases) {

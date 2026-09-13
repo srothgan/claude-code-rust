@@ -96,6 +96,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }
+        | ClientEvent::RuntimeReloadHeld { .. }
         | ClientEvent::RuntimeReloadFailed { .. }
         | ClientEvent::StructuredUsageReceived { .. }
         | ClientEvent::UsageRefreshStarted { .. }

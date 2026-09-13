@@ -26,6 +26,7 @@ import {
   failConnection,
   slashError,
   emitRuntimeReloadCompleted,
+  emitRuntimeReloadHeld,
   emitRuntimeReloadFailed,
   emitSessionUpdate,
   setSessionListingDir,
@@ -358,7 +359,7 @@ export function emitAgentConfigOptionUpdate(
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.258";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.270";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {
@@ -394,9 +395,20 @@ export function agentSdkVersionCompatibilityError(): string | undefined {
 export async function handleReloadPluginsCommand(
   session: SessionState,
   requestId?: string,
+  force = false,
 ): Promise<void> {
   try {
-    const result = await session.query.reloadPlugins();
+    const result = force
+      ? await session.query.reloadPlugins()
+      : await session.query.reloadPlugins({ holdOnCacheImpact: true });
+    if (!force && result.held === true) {
+      emitRuntimeReloadHeld(
+        session.sessionId,
+        sanitizeRuntimeReloadCacheImpact(result.cache_impact),
+        requestId,
+      );
+      return;
+    }
     updateAvailableCommands(
       session,
       "reload_plugins",
@@ -423,6 +435,59 @@ export async function handleReloadPluginsCommand(
     });
     emitRuntimeReloadFailed(session.sessionId, message, requestId);
   }
+}
+
+const MAX_CACHE_IMPACT_SERVER_NAMES = 64;
+const MAX_CACHE_IMPACT_SERVER_NAME_LENGTH = 256;
+const UNSAFE_SERVER_NAME_CHARACTER = /[\p{Cc}\p{Cf}\p{Cs}\p{Z}]/u;
+
+function sanitizeRuntimeReloadCacheImpact(
+  value: unknown,
+): import("./types.js").RuntimeReloadCacheImpact {
+  const impact = value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+  let invalidServerNameCount = 0;
+  const sanitizeNames = (names: unknown): string[] => {
+    if (!Array.isArray(names)) {
+      return [];
+    }
+    const safe: string[] = [];
+    const seen = new Set<string>();
+    for (const value of names) {
+      const valid =
+        typeof value === "string" &&
+        value.length <= MAX_CACHE_IMPACT_SERVER_NAME_LENGTH &&
+        !UNSAFE_SERVER_NAME_CHARACTER.test(value) &&
+        /^plugin:[^:]+:[^:]+$/.test(value);
+      if (!valid) {
+        invalidServerNameCount += 1;
+        continue;
+      }
+      if (seen.has(value)) {
+        continue;
+      }
+      if (safe.length >= MAX_CACHE_IMPACT_SERVER_NAMES) {
+        invalidServerNameCount += 1;
+        continue;
+      }
+      seen.add(value);
+      safe.push(value);
+    }
+    return safe;
+  };
+  const lspToolChange = impact.lsp_tool_change;
+  return {
+    mcp_servers_added: sanitizeNames(impact.mcp_servers_added),
+    mcp_servers_removed: sanitizeNames(impact.mcp_servers_removed),
+    ...(lspToolChange === "adds" ||
+    lspToolChange === "may-add" ||
+    lspToolChange === "removes" ||
+    lspToolChange === "may-remove"
+      ? { lsp_tool_change: lspToolChange }
+      : {}),
+    invalid_server_name_count: invalidServerNameCount,
+  };
 }
 
 type ResolvedRewindTarget = {

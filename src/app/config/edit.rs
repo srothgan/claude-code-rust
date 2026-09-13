@@ -239,7 +239,18 @@ fn restore_confirmation_previous_overlay(app: &mut App) {
     let Some(overlay) = app.config.confirmation_overlay().cloned() else {
         return;
     };
-    app.config.replace_overlay(*overlay.previous);
+    restore_previous_overlay(app, overlay.previous);
+    if overlay.action == ConfirmationAction::ForceRuntimePluginReload {
+        crate::app::plugins::cancel_held_runtime_reload(app);
+    }
+}
+
+fn restore_previous_overlay(app: &mut App, previous: Option<Box<ConfigOverlayState>>) {
+    if let Some(previous) = previous {
+        app.config.replace_overlay(*previous);
+    } else {
+        app.config.clear_overlay();
+    }
 }
 
 fn confirm_confirmation_overlay(app: &mut App) {
@@ -247,12 +258,12 @@ fn confirm_confirmation_overlay(app: &mut App) {
         return;
     };
     if overlay.selected_index == 0 {
-        app.config.replace_overlay(*overlay.previous);
+        restore_confirmation_previous_overlay(app);
         return;
     }
 
     let action = overlay.action;
-    app.config.replace_overlay(*overlay.previous);
+    restore_previous_overlay(app, overlay.previous);
     match action {
         ConfirmationAction::InstalledPluginUninstall => {
             crate::app::plugins::execute_confirmed_installed_plugin_action(
@@ -301,6 +312,9 @@ fn confirm_confirmation_overlay(app: &mut App) {
                 }
             };
             super::mcp_edit::execute_confirmed_mcp_server_action(app, action);
+        }
+        ConfirmationAction::ForceRuntimePluginReload => {
+            crate::app::plugins::force_held_runtime_reload(app);
         }
     }
 }

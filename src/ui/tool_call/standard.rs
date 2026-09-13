@@ -109,12 +109,14 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
         return (renderer.has_structured_body)(tc)
             || tc.pending_permission.is_some()
             || tc.pending_question.is_some()
+            || tc.output_was_staged()
             || tc.non_execution_metadata().is_some();
     }
 
     !tc.content.is_empty()
         || tc.pending_permission.is_some()
         || tc.pending_question.is_some()
+        || tc.output_was_staged()
         || tc.non_execution_metadata().is_some()
         || renders_structured_ask_user_question_result(tc)
         || (tc.is_execute_tool()
@@ -135,6 +137,12 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
         if is_execute { EXECUTE_BODY_INDENT_WIDTH } else { STANDARD_BODY_PREFIX_WIDTH };
     let content_width = width.saturating_sub(prefix_width);
     let mut content_lines = render_tool_content(tc, content_width);
+    if tc.output_was_staged() {
+        content_lines.push(Line::from(vec![
+            Span::styled("Staged for review: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("file unchanged"),
+        ]));
+    }
     content_lines.extend(render_non_execution_metadata(tc));
     content_lines = match tool_content_height_policy(tc) {
         ToolContentHeightPolicy::Bounded => {

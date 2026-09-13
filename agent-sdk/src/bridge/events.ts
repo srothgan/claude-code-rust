@@ -137,6 +137,17 @@ export function emitRuntimeReloadCompleted(
   );
 }
 
+export function emitRuntimeReloadHeld(
+  sessionId: string,
+  cacheImpact: import("../types.js").RuntimeReloadCacheImpact,
+  requestId?: string,
+): void {
+  writeEvent(
+    { event: "runtime_reload_held", session_id: sessionId, cache_impact: cacheImpact },
+    requestId,
+  );
+}
+
 export function emitRuntimeReloadFailed(
   sessionId: string,
   message: string,

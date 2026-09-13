@@ -165,7 +165,7 @@ fn inventory_refresh_success_triggers_runtime_reload_when_requested() {
     let envelope = rx.try_recv().expect("reload command");
     assert!(matches!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id } if session_id == "session-1"
+        BridgeCommand::ReloadPlugins { session_id, force: false } if session_id == "session-1"
     ));
     assert!(!app.plugins.runtime_reload_after_refresh);
     assert_eq!(app.config.status_message.as_deref(), Some("Reloading session plugins..."));
@@ -191,7 +191,7 @@ fn cli_action_success_triggers_runtime_reload() {
     let envelope = rx.try_recv().expect("reload command");
     assert!(matches!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id } if session_id == "session-1"
+        BridgeCommand::ReloadPlugins { session_id, force: false } if session_id == "session-1"
     ));
     assert_eq!(
         app.plugins.pending_runtime_reload_success_message.as_deref(),
@@ -241,7 +241,7 @@ fn cli_action_success_reconciles_stale_plugin_mcp_servers() {
     let envelope = rx.try_recv().expect("reload command");
     assert!(matches!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id } if session_id == "session-1"
+        BridgeCommand::ReloadPlugins { session_id, force: false } if session_id == "session-1"
     ));
     assert_eq!(
         app.mcp.servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(),
@@ -276,6 +276,60 @@ fn runtime_reload_failure_surfaces_visible_error() {
     assert_eq!(app.config.last_error.as_deref(), Some("Failed to reload session plugins: boom"));
     assert!(app.config.status_message.is_none());
     assert!(app.plugins.pending_runtime_reload_success_message.is_none());
+}
+
+#[test]
+fn held_runtime_reload_requires_explicit_force_and_preserves_pending_success() {
+    let (mut app, mut rx) = app_with_connection();
+    app.plugins.loading = true;
+    app.plugins.pending_runtime_reload_success_message = Some("Updated plugin".to_owned());
+
+    apply_runtime_reload_held(
+        &mut app,
+        &crate::agent::types::RuntimeReloadCacheImpact {
+            mcp_servers_added: vec!["plugin:docs:search".to_owned()],
+            mcp_servers_removed: Vec::new(),
+            lsp_tool_change: Some("adds".to_owned()),
+            invalid_server_name_count: 1,
+        },
+    );
+
+    assert!(!app.plugins.loading);
+    assert!(matches!(
+        app.config.overlay,
+        Some(crate::app::config::ConfigOverlayState::Confirmation(ref overlay))
+            if overlay.action == crate::app::config::ConfirmationAction::ForceRuntimePluginReload
+                && overlay.selected_index == 0
+                && overlay.body.contains("plugin:docs:search")
+                && overlay.body.contains("unsafe to display")
+    ));
+    assert_eq!(
+        app.plugins.pending_runtime_reload_success_message.as_deref(),
+        Some("Updated plugin")
+    );
+
+    force_held_runtime_reload(&mut app);
+    let envelope = rx.try_recv().expect("forced reload command");
+    assert!(matches!(
+        envelope.command,
+        BridgeCommand::ReloadPlugins { session_id, force: true } if session_id == "session-1"
+    ));
+}
+
+#[test]
+fn cancelling_held_runtime_reload_does_not_report_runtime_success() {
+    let mut app = App::test_default();
+    app.plugins.pending_runtime_reload_success_message = Some("Updated plugin".to_owned());
+
+    cancel_held_runtime_reload(&mut app);
+
+    assert!(app.plugins.pending_runtime_reload_success_message.is_none());
+    assert!(
+        app.config
+            .status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("kept its existing tools"))
+    );
 }
 
 #[test]

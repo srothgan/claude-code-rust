@@ -145,6 +145,8 @@ pub enum BridgeCommand {
     },
     ReloadPlugins {
         session_id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
     },
     GetMcpSnapshot {
         session_id: String,
@@ -241,7 +243,7 @@ impl BridgeCommand {
             | Self::GetUsage { session_id }
             | Self::GetRewindTargets { session_id }
             | Self::Rewind { session_id, .. }
-            | Self::ReloadPlugins { session_id }
+            | Self::ReloadPlugins { session_id, .. }
             | Self::GetMcpSnapshot { session_id }
             | Self::McpReconnect { session_id, .. }
             | Self::McpToggle { session_id, .. }
@@ -408,6 +410,10 @@ pub enum BridgeEvent {
     RuntimeReloadCompleted {
         session_id: String,
     },
+    RuntimeReloadHeld {
+        session_id: String,
+        cache_impact: types::RuntimeReloadCacheImpact,
+    },
     RuntimeReloadFailed {
         session_id: String,
         message: String,
@@ -493,6 +499,7 @@ impl BridgeEvent {
             Self::SlashError { .. } => "slash_error",
             Self::SessionResumeFailed { .. } => "session_resume_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
+            Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
@@ -528,6 +535,7 @@ impl BridgeEvent {
             | Self::SlashError { session_id, .. }
             | Self::SessionResumeFailed { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
+            | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
@@ -569,6 +577,7 @@ impl BridgeEvent {
             | Self::SlashError { .. }
             | Self::SessionResumeFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
+            | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }

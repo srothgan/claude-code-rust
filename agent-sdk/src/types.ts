@@ -103,6 +103,7 @@ export interface RateLimitUpdate {
   resets_at?: number;
   utilization?: number;
   rate_limit_type?: string;
+  limit_scope?: "service" | "channel" | "group_pool";
   overage_status?: RateLimitStatus;
   overage_resets_at?: number;
   overage_disabled_reason?: string;
@@ -122,6 +123,8 @@ export type ApiRetryError =
   | "invalid_request"
   | "model_not_found"
   | "server_error"
+  | "verification_required"
+  | "cloud_credential_error"
   | "unknown"
   | "max_output_tokens";
 
@@ -209,6 +212,7 @@ export interface ToolNonExecutionMetadata {
 }
 
 export interface ToolOutputMetadata {
+  staged?: boolean;
   bash?: BashOutputMetadata;
   agent?: AgentOutputMetadata;
   web_fetch?: WebFetchOutputMetadata;
@@ -435,6 +439,8 @@ export interface PermissionDisplay {
   title?: string;
   display_name?: string;
   description?: string;
+  default_to_no?: boolean;
+  suppress_always_allow_rule?: boolean;
 }
 
 export type ElicitationMode = "form" | "url";
@@ -897,6 +903,7 @@ export type BridgeCommand =
   | {
       command: "reload_plugins";
       session_id: string;
+      force?: boolean;
     }
   | {
       command: "mcp_status";
@@ -964,6 +971,13 @@ export type TurnErrorKind =
   | "transient_service"
   | "internal"
   | "other";
+
+export interface RuntimeReloadCacheImpact {
+  mcp_servers_added: string[];
+  mcp_servers_removed: string[];
+  lsp_tool_change?: "adds" | "may-add" | "removes" | "may-remove";
+  invalid_server_name_count: number;
+}
 
 export type BridgeEvent =
   | {
@@ -1062,6 +1076,11 @@ export type BridgeEvent =
       message: string;
     }
   | { event: "runtime_reload_completed"; session_id: string }
+  | {
+      event: "runtime_reload_held";
+      session_id: string;
+      cache_impact: RuntimeReloadCacheImpact;
+    }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {
       event: "session_replaced";

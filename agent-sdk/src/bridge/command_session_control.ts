@@ -56,6 +56,7 @@ export type SessionControlCommandDeps = {
   handleReloadPluginsCommand: (
     session: SessionState,
     requestId?: string,
+    force?: boolean,
   ) => Promise<void>;
 };
 
@@ -424,7 +425,7 @@ async function reloadPlugins(
 ): Promise<void> {
   const session = requireSession(command.session_id, requestId);
   if (session) {
-    await deps.handleReloadPluginsCommand(session, requestId);
+    await deps.handleReloadPluginsCommand(session, requestId, command.force);
   }
 }
 

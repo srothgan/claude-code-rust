@@ -90,6 +90,8 @@ pub enum ApiRetryError {
     InvalidRequest,
     ModelNotFound,
     ServerError,
+    VerificationRequired,
+    CloudCredentialError,
     MaxOutputTokens,
     Unknown,
 }
@@ -115,6 +117,7 @@ pub struct RateLimitUpdate {
     pub resets_at: Option<f64>,
     pub utilization: Option<f64>,
     pub rate_limit_type: Option<String>,
+    pub limit_scope: Option<String>,
     pub overage_status: Option<RateLimitStatus>,
     pub overage_resets_at: Option<f64>,
     pub overage_disabled_reason: Option<String>,

@@ -192,6 +192,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "slash_error":
     case "session_resume_failed":
     case "runtime_reload_completed":
+    case "runtime_reload_held":
     case "runtime_reload_failed":
     case "session_replaced":
     case "initialized":
@@ -234,6 +235,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "slash_error":
     case "session_resume_failed":
     case "runtime_reload_failed":
+    case "runtime_reload_held":
       return "warn";
     case "session_update":
     case "permission_request":

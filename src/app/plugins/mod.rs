@@ -13,8 +13,9 @@ mod types;
 
 pub(crate) use actions::{
     apply_cli_action_failure, apply_cli_action_success, apply_runtime_reload_failure,
-    apply_runtime_reload_success, execute_confirmed_installed_plugin_action,
-    execute_confirmed_marketplace_action,
+    apply_runtime_reload_held, apply_runtime_reload_success, cancel_held_runtime_reload,
+    execute_confirmed_installed_plugin_action, execute_confirmed_marketplace_action,
+    force_held_runtime_reload,
 };
 pub(crate) use inventory::{
     apply_inventory_refresh_failure, apply_inventory_refresh_success,

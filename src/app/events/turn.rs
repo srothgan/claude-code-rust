@@ -22,6 +22,24 @@ const PLAN_LIMIT_NEXT_STEPS_HINT: &str = "Next steps:\n\
 3. Check quota/billing for your account or switch plans.";
 const AUTH_REQUIRED_NEXT_STEPS_HINT: &str = "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal.";
 
+fn permission_initial_selected_index(request: &model::RequestPermissionRequest) -> usize {
+    if !request.display.as_ref().is_some_and(|display| display.default_to_no) {
+        return 0;
+    }
+    request
+        .options
+        .iter()
+        .position(|option| {
+            matches!(
+                option.kind,
+                model::PermissionOptionKind::RejectOnce
+                    | model::PermissionOptionKind::RejectAlways
+                    | model::PermissionOptionKind::PlanReject
+            )
+        })
+        .unwrap_or_else(|| request.options.len().saturating_sub(1))
+}
+
 #[derive(Clone, Copy)]
 struct TurnExitState {
     tail_assistant_idx: Option<usize>,
@@ -46,6 +64,7 @@ pub(super) fn handle_permission_request_event(
     let display_description = permission_display_field(request.display.as_ref(), |display| {
         display.description.as_deref()
     });
+    let selected_index = permission_initial_selected_index(&request);
 
     let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         tracing::warn!(
@@ -87,7 +106,7 @@ pub(super) fn handle_permission_request_event(
             display: request.display,
             subagent_context: permission_context.clone(),
             response_tx,
-            selected_index: 0,
+            selected_index,
             focused: auto_focus,
         });
         tc.invalidate_render_cache();
@@ -835,6 +854,7 @@ fn push_turn_error_message(
                     base_message,
                     super::super::NoticeDedupKey::RateLimit(super::super::RateLimitIncidentKey {
                         rate_limit_type: None,
+                        limit_scope: None,
                         resets_at_bucket: None,
                     }),
                 )
@@ -1321,6 +1341,40 @@ mod tests {
             panic!("expected tool call block");
         };
         assert!(tool.pending_permission.is_some());
+    }
+
+    #[test]
+    fn permission_request_defaults_to_denial_when_sdk_requests_it() {
+        let mut app = App::test_default();
+        push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, false));
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let request = model::RequestPermissionRequest::new(
+            "session-1",
+            model::ToolCallUpdate::new("bash-1", model::ToolCallUpdateFields::new()),
+            vec![
+                model::PermissionOption::new(
+                    "allow",
+                    "Allow",
+                    model::PermissionOptionKind::AllowOnce,
+                ),
+                model::PermissionOption::new(
+                    "deny",
+                    "Deny",
+                    model::PermissionOptionKind::RejectOnce,
+                ),
+            ],
+            Some(model::PermissionDisplay::new().default_to_no(true)),
+        );
+
+        handle_permission_request_event(&mut app, request, tx);
+
+        let Some(MessageBlock::ToolCall(tool)) = app.transcript.messages[0].blocks.first() else {
+            panic!("expected tool call block");
+        };
+        assert_eq!(
+            tool.pending_permission.as_ref().map(|permission| permission.selected_index),
+            Some(1)
+        );
     }
 
     #[test]

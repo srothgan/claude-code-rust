@@ -68,7 +68,13 @@ pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> Stri
     let is_rejected = matches!(update.status, model::RateLimitStatus::Rejected);
 
     // Intro
-    let intro = if is_rejected { "Rate limit reached" } else { "Approaching rate limit" };
+    let shared_group_pool = update.limit_scope.as_deref() == Some("group_pool");
+    let intro = match (is_rejected, shared_group_pool) {
+        (true, true) => "Shared group rate limit reached",
+        (false, true) => "Approaching shared group rate limit",
+        (true, false) => "Rate limit reached",
+        (false, false) => "Approaching rate limit",
+    };
 
     // "you've used 91% of your 5-hour rate limit"
     let usage_part = match (update.utilization, &update.rate_limit_type) {
@@ -113,6 +119,7 @@ pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> Stri
 pub(super) fn rate_limit_notice_key(update: &model::RateLimitUpdate) -> NoticeDedupKey {
     NoticeDedupKey::RateLimit(RateLimitIncidentKey {
         rate_limit_type: update.rate_limit_type.clone(),
+        limit_scope: update.limit_scope.clone(),
         resets_at_bucket: update.resets_at.and_then(reset_bucket_from_epoch_secs),
     })
 }
@@ -134,6 +141,7 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
         status = ?update.status,
         utilization = update.utilization,
         rate_limit_type = update.rate_limit_type.as_deref().unwrap_or(""),
+        limit_scope = update.limit_scope.as_deref().unwrap_or(""),
         resets_at = update.resets_at.unwrap_or_default(),
         overage_status = ?update.overage_status,
         overage_resets_at = update.overage_resets_at.unwrap_or_default(),
@@ -180,6 +188,7 @@ mod tests {
             resets_at: None,
             utilization: None,
             rate_limit_type: None,
+            limit_scope: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: Some("org_level_disabled".to_owned()),
@@ -203,6 +212,7 @@ mod tests {
             resets_at: Some(1_741_280_000.0),
             utilization: None,
             rate_limit_type: Some("five_hour".to_owned()),
+            limit_scope: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: Some("org_level_disabled".to_owned()),
@@ -226,6 +236,7 @@ mod tests {
             resets_at: None,
             utilization: Some(0.92),
             rate_limit_type: Some("seven_day_overage_included".to_owned()),
+            limit_scope: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,

@@ -90,6 +90,8 @@ fn looks_like_auth_required_error_lower(lower: &str) -> bool {
         "login required",
         "not authenticated",
         "unauthorized",
+        "verification_required",
+        "verification required",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -102,6 +104,9 @@ fn looks_like_account_access_error_lower(lower: &str) -> bool {
         "organization not allowed",
         "account access not allowed",
         "org not allowed",
+        "cloud_credential_error",
+        "cloud credential error",
+        "cloud provider credentials",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

@@ -238,6 +238,22 @@ fn render_tool_call_preserves_non_execution_reason_and_feedback() {
 }
 
 #[test]
+fn render_tool_call_marks_staged_edits_as_file_unchanged() {
+    let mut tc = test_tool_call("tc-staged", "Write", model::ToolCallStatus::Completed);
+    tc.output_metadata = Some(model::ToolOutputMetadata::new().staged(true));
+
+    let mut rendered = Vec::new();
+    render_tool_call_cached(&mut tc, ToolCallRenderContext::default(), 100, 0, &mut rendered);
+    let text = rendered
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+
+    assert!(text.contains("Staged for review: file unchanged"));
+}
+
+#[test]
 fn render_tool_call_title_shows_resolved_model_badge_for_subagents() {
     let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::Completed);
     tc.output_metadata = Some(model::ToolOutputMetadata::new().agent(Some(

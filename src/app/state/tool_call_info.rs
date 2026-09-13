@@ -136,6 +136,11 @@ impl ToolCallInfo {
     }
 
     #[must_use]
+    pub fn output_was_staged(&self) -> bool {
+        self.output_metadata.as_ref().is_some_and(|metadata| metadata.staged)
+    }
+
+    #[must_use]
     pub fn hidden_unless_focused_interaction(&self) -> bool {
         self.hidden && self.pending_permission.is_none() && self.pending_question.is_none()
     }

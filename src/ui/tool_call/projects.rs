@@ -65,10 +65,156 @@ fn render_output_object(object: &serde_json::Map<String, serde_json::Value>) -> 
         Some("project_search") => render_project_search_fields(object, &mut project_fields),
         Some("project_write") => render_project_write_fields(object, &mut project_fields),
         Some("project_delete") => render_project_delete_fields(object, &mut project_fields),
+        Some("project_memory_read") => {
+            render_project_memory_read_fields(object, &mut project_fields);
+        }
         _ => {}
     }
 
-    fields::render_fields(project_fields)
+    let mut lines = fields::render_fields(project_fields);
+    if typed::json_string(object, "method") == Some("project_memory_read")
+        && let Some(content) = typed::json_string(object, "content")
+    {
+        lines.extend(fields::render_multiline_field("Content", bounded_memory_content(content)));
+    }
+    if typed::json_string(object, "method") == Some("project_memory_list") {
+        lines.extend(render_project_memory_list(object));
+    }
+    lines
+}
+
+fn render_project_memory_read_fields<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    project_fields: &mut Vec<ToolField<'a>>,
+) {
+    if let Some(path) = typed::json_string(object, "path") {
+        project_fields.push(ToolField::new("Path", path.to_owned()));
+    }
+    if let Some(local_file) = typed::json_string(object, "local_file") {
+        project_fields.push(ToolField::new("Local file", local_file.to_owned()));
+    }
+    if let Some(size) = typed::json_i64(object, "size_bytes") {
+        project_fields.push(ToolField::new("Size", format!("{size} bytes")));
+    }
+    if let Some(updated_at) = typed::json_string(object, "updated_at") {
+        project_fields.push(ToolField::new("Updated", updated_at.to_owned()));
+    }
+    if let Some(truncated) = typed::json_bool(object, "truncated") {
+        project_fields.push(ToolField::new("Truncated", typed::bool_label(truncated)));
+    }
+    if let Some(additional) = additional_memory_json(
+        object,
+        &[
+            "method",
+            "notice",
+            "path",
+            "local_file",
+            "size_bytes",
+            "updated_at",
+            "truncated",
+            "content",
+        ],
+    ) {
+        project_fields.push(ToolField::new("Additional memory output", additional));
+    }
+}
+
+fn render_project_memory_list(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if let Some(truncated) = typed::json_bool(object, "truncated") {
+        lines.push(fields::render_field("List truncated", typed::bool_label(truncated)));
+    }
+    let files = object.get("files").and_then(serde_json::Value::as_array);
+    if let Some(files) = files {
+        lines.push(fields::render_field("Memory files", files.len().to_string()));
+        for (index, file) in files.iter().take(128).enumerate() {
+            let Some(file) = file.as_object() else {
+                if let Some(value) = typed::non_empty_compact_json(file) {
+                    lines.push(fields::render_dynamic_field(
+                        format!("Memory file {}", index + 1),
+                        value,
+                    ));
+                }
+                continue;
+            };
+            let path = typed::json_string(file, "path").unwrap_or("<unknown path>");
+            let size = typed::json_i64(file, "size_bytes")
+                .map(|value| format!("; {value} bytes"))
+                .unwrap_or_default();
+            let updated = typed::json_string(file, "updated_at").map_or_else(
+                || "; updated unknown".to_owned(),
+                |value| format!("; updated {value}"),
+            );
+            let truncated = typed::json_bool(file, "truncated")
+                .filter(|value| *value)
+                .map(|_| "; truncated".to_owned())
+                .unwrap_or_default();
+            let additional =
+                additional_memory_json(file, &["path", "size_bytes", "updated_at", "truncated"])
+                    .map(|value| format!("; additional {value}"))
+                    .unwrap_or_default();
+            lines.push(fields::render_dynamic_field(
+                format!("Memory file {}", index + 1),
+                format!("{path}{size}{updated}{truncated}{additional}"),
+            ));
+        }
+    }
+    if let Some(additional) =
+        additional_memory_json(object, &["method", "notice", "files", "truncated"])
+    {
+        lines.push(fields::render_field("Additional memory-list output", additional));
+    }
+    lines
+}
+
+fn bounded_memory_content(content: &str) -> String {
+    const MAX_CHARS: usize = 16_384;
+    const MAX_LINES: usize = 200;
+    let mut output = String::new();
+    let mut chars = 0;
+    let mut was_truncated = false;
+    for (index, line) in content.lines().enumerate() {
+        if index >= MAX_LINES {
+            was_truncated = true;
+            break;
+        }
+        let remaining = MAX_CHARS.saturating_sub(chars);
+        if remaining == 0 {
+            was_truncated = true;
+            break;
+        }
+        if !output.is_empty() {
+            output.push('\n');
+            chars += 1;
+        }
+        let segment = line.chars().take(remaining).collect::<String>();
+        chars += segment.chars().count();
+        output.push_str(&segment);
+        if segment.chars().count() < line.chars().count() {
+            was_truncated = true;
+            break;
+        }
+    }
+    if was_truncated {
+        output.push_str("\n… [content truncated for display]");
+    }
+    output
+}
+
+fn additional_memory_json(
+    object: &serde_json::Map<String, serde_json::Value>,
+    handled: &[&str],
+) -> Option<String> {
+    let additional = object
+        .iter()
+        .filter(|(key, _)| !handled.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<serde_json::Map<_, _>>();
+    (!additional.is_empty())
+        .then(|| typed::compact_json(&serde_json::Value::Object(additional)))
+        .flatten()
 }
 
 fn render_project_info_fields<'a>(
@@ -232,6 +378,37 @@ mod tests {
                 "Doc UUID: doc-1",
                 "Replaced: no",
             ]
+        );
+    }
+
+    #[test]
+    fn renders_project_memory_list_and_read_metadata() {
+        let list = projects_tool_call(
+            json!({"method": "project_memory_list"}),
+            Some(
+                r#"{"method":"project_memory_list","truncated":true,"files":[{"path":"memory/notes.md","size_bytes":42,"updated_at":"2026-09-13T10:00:00Z","truncated":true,"future":1}]}"#,
+            ),
+        );
+        let list_lines = rendered_line_texts(&render_tool_content(&list));
+        assert!(list_lines.contains(&"List truncated: yes".to_owned()));
+        assert!(list_lines.iter().any(|line| line.contains("memory/notes.md")
+            && line.contains("42 bytes")
+            && line.contains("future")));
+
+        let read = projects_tool_call(
+            json!({"method": "project_memory_read", "path": "memory/notes.md"}),
+            Some(
+                r#"{"method":"project_memory_read","path":"memory/notes.md","content":"first\nsecond","size_bytes":12,"updated_at":null,"truncated":false,"future":2}"#,
+            ),
+        );
+        let read_lines = rendered_line_texts(&render_tool_content(&read));
+        assert!(read_lines.contains(&"Path: memory/notes.md".to_owned()));
+        assert!(read_lines.contains(&"Content: first".to_owned()));
+        assert!(read_lines.contains(&"         second".to_owned()));
+        assert!(
+            read_lines
+                .iter()
+                .any(|line| line.contains("Additional memory output") && line.contains("future"))
         );
     }
 }
