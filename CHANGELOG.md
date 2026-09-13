@@ -2,7 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- ## [Unreleased] -->
+## [Unreleased]
+
+### Features
+
+- **Agent SDK 0.3.270 migration** (#378, @srothgan): Upgrade to Agent SDK `0.3.270`, honor permission safety hints and SDK-controlled Task and Todo availability, hold cache-invalidating plugin reloads behind explicit confirmation, and render staged writes, project memory, and expanded Artifact metadata.
+
+### Fixes
+
+- **Prompt suggestion lifecycle** (#377, @srothgan): Clear the SDK prompt suggestion only after a prompt is dispatched or queued, so local slash commands, rejected submissions, and send failures keep it visible.
 
 ## [0.14.6] - 2026-09-02 [Changes][v0.14.6]
 
