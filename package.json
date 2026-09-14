@@ -41,7 +41,7 @@
     "quality:duplicates:summary": "node scripts/quality/jscpd-warning-summary.mjs jscpd-report/jscpd-report.json"
   },
   "devDependencies": {
-    "jscpd": "5.1.2"
+    "jscpd": "5.2.0"
   },
   "engines": {
     "node": ">=24"
