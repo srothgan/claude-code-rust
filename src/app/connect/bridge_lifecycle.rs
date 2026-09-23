@@ -717,11 +717,7 @@ mod tests {
     impl RuntimeFixture {
         fn new(runtime_contents: impl AsRef<str>) -> std::io::Result<Self> {
             let dir = tempfile::tempdir()?;
-            let runtime_path = dir.path().join(runtime_name());
-            let script_path = dir.path().join("bridge.js");
-            fs::write(&runtime_path, runtime_contents.as_ref())?;
-            fs::write(&script_path, "// fake bridge script\n")?;
-            make_executable(&runtime_path)?;
+            let (runtime_path, script_path) = stage_runtime(dir.path(), runtime_contents.as_ref())?;
             Ok(Self { _dir: dir, runtime_path, script_path })
         }
 
@@ -865,18 +861,30 @@ mod tests {
         "#!/bin/sh\nsleep 0.5\n"
     }
 
-    #[cfg(unix)]
-    fn make_executable(path: &Path) -> std::io::Result<()> {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let mut permissions = fs::metadata(path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions)
+    /// Stage the fake bridge and return the `(runtime, script)` pair to launch it with.
+    ///
+    /// On Unix the launcher runs the script through `/bin/sh` rather than marking it
+    /// executable and running it directly. The suite executes roughly eighteen hundred tests
+    /// across parallel threads and several of them spawn child processes. A `fork` in one
+    /// thread transiently inherits the writable descriptor another thread still holds on its
+    /// freshly written script, and an `execve` of that path then fails with `ETXTBSY`. Keeping
+    /// the exec target on an interpreter that nothing in the suite writes removes that race by
+    /// construction instead of narrowing the window.
+    #[cfg(not(windows))]
+    fn stage_runtime(dir: &Path, runtime_contents: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+        let script_path = dir.join(runtime_name());
+        fs::write(&script_path, runtime_contents)?;
+        Ok((PathBuf::from("/bin/sh"), script_path))
     }
 
-    #[cfg(not(unix))]
-    #[allow(clippy::unnecessary_wraps)]
-    fn make_executable(_path: &Path) -> std::io::Result<()> {
-        Ok(())
+    /// Windows has no `ETXTBSY`, so the batch file stays the runtime and keeps the launcher
+    /// shape identical to production, where a real runtime is handed a separate script path.
+    #[cfg(windows)]
+    fn stage_runtime(dir: &Path, runtime_contents: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+        let runtime_path = dir.join(runtime_name());
+        let script_path = dir.join("bridge.js");
+        fs::write(&runtime_path, runtime_contents)?;
+        fs::write(&script_path, "// fake bridge script\n")?;
+        Ok((runtime_path, script_path))
     }
 }
