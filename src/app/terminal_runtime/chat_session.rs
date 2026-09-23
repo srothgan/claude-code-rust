@@ -1107,6 +1107,10 @@ fn render_composer_editor(
 
 fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: Rect) {
     let geometry = input::compute_render_geometry(area, 0);
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(theme::USER_MSG_BG)),
+        geometry.field,
+    );
     if !geometry.prompt.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -1267,6 +1271,7 @@ mod tests {
         LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
         serialize_live_rows_with_boundaries_excluding,
     };
+    use crate::ui::theme;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
@@ -1335,10 +1340,10 @@ mod tests {
         app.input.set_text("hello");
         let _ = app.input.set_cursor(0, 5);
 
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 1));
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
 
         assert!(backend.cursor_visible());
-        assert_eq!(backend.cursor_position(), Position { x: 9, y: 0 });
+        assert_eq!(backend.cursor_position(), Position { x: 8, y: 1 });
     }
 
     #[test]
@@ -1349,7 +1354,7 @@ mod tests {
         app.turn.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
 
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 1));
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
 
         assert!(!backend.cursor_visible());
     }
@@ -1363,6 +1368,35 @@ mod tests {
         let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 4, 1));
 
         assert!(!backend.cursor_visible());
+    }
+
+    #[test]
+    fn render_textarea_editor_uses_user_message_background_for_empty_input() {
+        let mut app = App::test_default();
+
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
+        let buffer = backend.buffer();
+
+        for y in 0..3 {
+            for x in 0..20 {
+                assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
+            }
+        }
+    }
+
+    #[test]
+    fn render_textarea_editor_uses_user_message_background_for_populated_input() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+
+        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
+        let buffer = backend.buffer();
+
+        for y in 0..3 {
+            for x in 0..20 {
+                assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
+            }
+        }
     }
 
     #[test]
