@@ -48,7 +48,12 @@ impl BridgeClient {
         let mut child = launcher
             .command(bridge_diagnostics_enabled)
             .spawn()
-            .map_err(|_| anyhow::Error::new(AppError::BridgeSpawnFailed))
+            .map_err(|err| {
+                // Keep the typed error as the root so `extract_app_error` still finds it, but
+                // carry the OS detail (permissions, ETXTBSY, missing interpreter) in the chain.
+                // Without it every spawn failure reports the same unactionable message.
+                anyhow::Error::new(AppError::BridgeSpawnFailed).context(format!("os error: {err}"))
+            })
             .with_context(|| format!("failed to spawn bridge process: {}", launcher.describe()))?;
 
         tracing::info!(
