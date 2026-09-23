@@ -12,16 +12,16 @@ use tui_textarea::{CursorRenderMode, TextArea};
 
 use super::autocomplete;
 
-/// Horizontal padding to match header/footer inset.
-const INPUT_PAD: u16 = 2;
+/// Symmetric horizontal padding inside the colored input field.
+const INPUT_HORIZONTAL_PAD: u16 = 1;
 
-/// Extra right-side breathing room so text doesn't touch the padded edge.
-const INPUT_RIGHT_PAD: u16 = 1;
+/// Vertical padding inside the colored input field when enough rows are available.
+const INPUT_VERTICAL_PAD: u16 = 1;
 
 /// Prompt column width: "❯ " = 2 columns (icon + space)
 const PROMPT_WIDTH: u16 = 2;
 
-/// Maximum input area height (lines) to prevent the input from consuming the entire screen.
+/// Maximum input content height (lines) before the surrounding vertical padding is added.
 const MAX_INPUT_HEIGHT: u16 = 12;
 const HIGHLIGHT_SLASH_PRIORITY: u8 = 6;
 const HIGHLIGHT_MENTION_PRIORITY: u8 = 7;
@@ -38,6 +38,7 @@ const MAX_PENDING_MESSAGE_PREVIEW_ROWS: usize = 3;
 
 #[derive(Clone, Copy)]
 pub(crate) struct InputRenderGeometry {
+    pub field: Rect,
     pub prompt: Rect,
     pub text: Rect,
 }
@@ -86,16 +87,18 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
         area
     };
 
-    let padded = Rect {
-        x: input_main_area.x.saturating_add(INPUT_PAD),
-        y: input_main_area.y,
-        width: input_main_area.width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD),
-        height: input_main_area.height,
+    let vertical_pad =
+        if input_main_area.height > INPUT_VERTICAL_PAD * 2 { INPUT_VERTICAL_PAD } else { 0 };
+    let content = Rect {
+        x: input_main_area.x.saturating_add(INPUT_HORIZONTAL_PAD),
+        y: input_main_area.y.saturating_add(vertical_pad),
+        width: input_main_area.width.saturating_sub(INPUT_HORIZONTAL_PAD * 2),
+        height: input_main_area.height.saturating_sub(vertical_pad * 2),
     };
     let [prompt, text] =
-        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(padded);
+        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(content);
 
-    InputRenderGeometry { prompt, text }
+    InputRenderGeometry { field: input_main_area, prompt, text }
 }
 
 pub(crate) fn prompt_prefix_text() -> String {
@@ -107,8 +110,9 @@ pub(crate) fn configure_input_textarea(app: &mut App) {
 
     {
         let textarea = app.input.editor_mut();
+        textarea.set_style(Style::default().bg(theme::USER_MSG_BG));
         textarea.set_placeholder_text("Type a message...");
-        textarea.set_placeholder_style(Style::default().fg(theme::DIM));
+        textarea.set_placeholder_style(Style::default().fg(theme::DIM).bg(theme::USER_MSG_BG));
         textarea.set_cursor_line_style(Style::default());
         textarea.set_cursor_render_mode(CursorRenderMode::Hidden);
         textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -219,16 +223,17 @@ fn slash_command_range(line: &str) -> Option<(usize, usize)> {
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
     let content_width =
-        area_width.saturating_sub(INPUT_PAD * 2 + INPUT_RIGHT_PAD).saturating_sub(PROMPT_WIDTH);
+        area_width.saturating_sub(INPUT_HORIZONTAL_PAD * 2).saturating_sub(PROMPT_WIDTH);
     let input_lines = app.input.measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
-    hint + input_lines
+    hint.saturating_add(input_lines).saturating_add(INPUT_VERTICAL_PAD * 2)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CANCEL_HINT_LINES, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT, PROMPT_SUGGESTION_HINT_LINES,
-        configure_input_textarea, slash_command_range, visual_line_count,
+        CANCEL_HINT_LINES, INPUT_VERTICAL_PAD, LOGIN_HINT_LINES, MAX_INPUT_HEIGHT,
+        PROMPT_SUGGESTION_HINT_LINES, compute_render_geometry, configure_input_textarea,
+        slash_command_range, visual_line_count,
     };
     use crate::app::mention::CommittedMentionSpan;
     use crate::app::subagent::find_subagent_spans;
@@ -267,10 +272,32 @@ mod tests {
     }
 
     #[test]
+    fn input_geometry_uses_symmetric_horizontal_and_vertical_padding() {
+        let area = Rect::new(10, 5, 20, 3);
+
+        let geometry = compute_render_geometry(area, 0);
+
+        assert_eq!(geometry.field, area);
+        assert_eq!(geometry.prompt, Rect::new(11, 6, 2, 1));
+        assert_eq!(geometry.text, Rect::new(13, 6, 16, 1));
+    }
+
+    #[test]
+    fn input_geometry_preserves_content_when_vertical_space_is_constrained() {
+        let area = Rect::new(10, 5, 20, 2);
+
+        let geometry = compute_render_geometry(area, 0);
+
+        assert_eq!(geometry.field, area);
+        assert_eq!(geometry.prompt, Rect::new(11, 5, 2, 2));
+        assert_eq!(geometry.text, Rect::new(13, 5, 16, 2));
+    }
+
+    #[test]
     fn visual_line_count_uses_textarea_max_rows() {
         let mut app = App::test_default();
         app.input.set_text(&"x".repeat(500));
-        assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT);
+        assert_eq!(visual_line_count(&mut app, 8), MAX_INPUT_HEIGHT + INPUT_VERTICAL_PAD * 2);
     }
 
     #[test]
@@ -280,21 +307,24 @@ mod tests {
             method_name: "oauth".to_owned(),
             method_description: "Sign in".to_owned(),
         });
-        assert_eq!(visual_line_count(&mut app, 80), LOGIN_HINT_LINES + 1);
+        assert_eq!(visual_line_count(&mut app, 80), LOGIN_HINT_LINES + 1 + INPUT_VERTICAL_PAD * 2);
     }
 
     #[test]
     fn visual_line_count_includes_cancel_hint_row() {
         let mut app = App::test_default();
         app.turn.cancel_requested = true;
-        assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1);
+        assert_eq!(visual_line_count(&mut app, 80), CANCEL_HINT_LINES + 1 + INPUT_VERTICAL_PAD * 2);
     }
 
     #[test]
     fn visual_line_count_includes_prompt_suggestion_hint_row() {
         let mut app = App::test_default();
         app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
-        assert_eq!(visual_line_count(&mut app, 80), PROMPT_SUGGESTION_HINT_LINES + 1);
+        assert_eq!(
+            visual_line_count(&mut app, 80),
+            PROMPT_SUGGESTION_HINT_LINES + 1 + INPUT_VERTICAL_PAD * 2
+        );
     }
 
     #[test]
@@ -312,7 +342,7 @@ mod tests {
             );
         }
 
-        assert_eq!(visual_line_count(&mut app, 80), 5);
+        assert_eq!(visual_line_count(&mut app, 80), 5 + INPUT_VERTICAL_PAD * 2);
     }
 
     #[test]
@@ -322,7 +352,7 @@ mod tests {
         let _ = app.input.set_cursor(0, 1);
         crate::app::mention::activate(&mut app);
 
-        assert_eq!(visual_line_count(&mut app, 80), 2);
+        assert_eq!(visual_line_count(&mut app, 80), 2 + INPUT_VERTICAL_PAD * 2);
     }
 
     #[test]
@@ -330,7 +360,7 @@ mod tests {
         let mut app = App::test_default();
         app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
         app.input.set_text("draft");
-        assert_eq!(visual_line_count(&mut app, 80), 1);
+        assert_eq!(visual_line_count(&mut app, 80), 1 + INPUT_VERTICAL_PAD * 2);
     }
 
     #[test]
@@ -339,7 +369,7 @@ mod tests {
         app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
         app.turn.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
-        assert_eq!(visual_line_count(&mut app, 80), 1);
+        assert_eq!(visual_line_count(&mut app, 80), 1 + INPUT_VERTICAL_PAD * 2);
     }
 
     #[test]
@@ -349,6 +379,20 @@ mod tests {
         configure_input_textarea(&mut app);
 
         assert_eq!(app.input.editor().cursor_render_mode(), CursorRenderMode::Hidden);
+    }
+
+    #[test]
+    fn configure_input_textarea_uses_user_message_background() {
+        let mut app = App::test_default();
+
+        configure_input_textarea(&mut app);
+
+        let editor = app.input.editor();
+        assert_eq!(editor.style().bg, Some(crate::ui::theme::USER_MSG_BG));
+        assert_eq!(
+            editor.placeholder_style().and_then(|style| style.bg),
+            Some(crate::ui::theme::USER_MSG_BG)
+        );
     }
 
     #[test]
