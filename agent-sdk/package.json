@@ -24,8 +24,8 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",
-    "@types/node": "26.6.1",
-    "knip": "6.37.0",
+    "@types/node": "26.6.2",
+    "knip": "6.38.0",
     "typescript": "7.0.2"
   }
 }
