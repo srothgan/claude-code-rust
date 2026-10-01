@@ -56,7 +56,7 @@ Full documentation is available at [srothgan.github.io/claude-code-rust](https:/
 
 ## Why
 
-The stock Claude Code TUI runs on Node.js with React Ink, which renders by redrawing full frames over raw ANSI escape codes. This causes real, widely-reported problems:
+The stock Claude Code TUI runs on Node.js with React Ink, which renders by redrawing full frames over raw ANSI escape codes. Users widely report the following problems with it:
 
 - **Flickering**: The whole view is redrawn on every status update, causing constant flicker (bad enough to crash editors' integrated terminals during long sessions)
 - **CPU**: Sustained high CPU even when idle, and runaway loops that spawn multiple background processes
@@ -66,7 +66,7 @@ The stock Claude Code TUI runs on Node.js with React Ink, which renders by redra
 - **Scrollback**: Hijacks the terminal's native scrollback, erasing history you can no longer scroll back to
 - **Paste**: Large pastes can flood stdout and freeze the terminal
 
-Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui, with no full-frame redraws and no React Ink rendering loop.
+Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui, with no full-frame redraws and no React Ink rendering loop. There is no benchmark against the stock interface yet, so the improvements are based on daily use, not on measurements.
 
 ## Documentation
 
@@ -79,6 +79,8 @@ The manual covers installation with scripts and npm, plus help, slash commands, 
 - [Settings](https://srothgan.github.io/claude-code-rust/settings.html)
 - [Troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html)
 - [Development](https://srothgan.github.io/claude-code-rust/development.html)
+
+For the design history, including the move from fullscreen to inline rendering in 0.12.0, see [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
 ## Status
 
