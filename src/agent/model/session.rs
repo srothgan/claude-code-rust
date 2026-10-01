@@ -8,6 +8,54 @@ use super::content::ContentChunk;
 use super::ids::SessionModeId;
 use super::tasks::TaskStateUpdate;
 use super::tools::{ToolCall, ToolCallUpdate};
+
+/// Verified SDK session setting, independent of the thinking effort level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct UltracodeState {
+    available: bool,
+    requested: bool,
+    effective: bool,
+}
+
+impl UltracodeState {
+    #[must_use]
+    pub const fn new(available: bool, requested: bool, effective: bool) -> Option<Self> {
+        if effective == (available && requested) {
+            Some(Self { available, requested, effective })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn available(self) -> bool {
+        self.available
+    }
+
+    #[must_use]
+    pub const fn requested(self) -> bool {
+        self.requested
+    }
+
+    #[must_use]
+    pub const fn effective(self) -> bool {
+        self.effective
+    }
+}
+
+impl<'de> Deserialize<'de> for UltracodeState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Snapshot {
+            available: bool,
+            requested: bool,
+            effective: bool,
+        }
+        let raw = Snapshot::deserialize(deserializer)?;
+        Self::new(raw.available, raw.requested, raw.effective)
+            .ok_or_else(|| serde::de::Error::custom("inconsistent Ultracode snapshot"))
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAgentsUpdate {
     pub available_agents: Vec<AvailableAgent>,
@@ -237,6 +285,9 @@ pub enum SessionUpdate {
     CurrentModeUpdate(CurrentModeUpdate),
     CurrentModelUpdate(CurrentModelUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
+    UltracodeUpdate {
+        ultracode: Option<UltracodeState>,
+    },
     FastModeUpdate {
         state: FastModeState,
         disabled_reason: Option<String>,

@@ -4,6 +4,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub use super::model::UltracodeState;
+
+pub(crate) fn deserialize_ultracode<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<UltracodeState>, D::Error> {
+    let raw = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(raw) = raw else { return Ok(None) };
+    match serde_json::from_value(raw.clone()) {
+        Ok(state) => Ok(Some(state)),
+        Err(error) => {
+            tracing::warn!(target: crate::logging::targets::APP_SESSION,
+                event_name = "invalid_ultracode_snapshot", raw = %raw, error = %error,
+                "bridge supplied an invalid Ultracode snapshot");
+            Ok(None)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModeInfo {
     pub id: String,
@@ -651,6 +669,10 @@ pub enum SessionUpdate {
     ConfigOptionUpdate {
         option_id: String,
         value: serde_json::Value,
+    },
+    UltracodeUpdate {
+        #[serde(default, deserialize_with = "deserialize_ultracode")]
+        ultracode: Option<UltracodeState>,
     },
     FastModeUpdate {
         fast_mode_state: FastModeState,

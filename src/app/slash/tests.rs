@@ -25,6 +25,96 @@ fn parse_non_slash_returns_none() {
 }
 
 #[test]
+fn ultracode_usage_policy_and_completion() {
+    for input in
+        ["/ultracode", "/ultracode toggle", "/ultracode on extra", "/ultracode status extra"]
+    {
+        let mut app = App::test_default();
+        assert!(try_handle_submit(&mut app, input));
+        let MessageBlock::Text(block) = &app.transcript.messages.last().expect("usage").blocks[0]
+        else {
+            panic!("expected usage text");
+        };
+        assert_eq!(block.text, "Usage: /ultracode <on|off|status>");
+        assert_eq!(ResolvedSubmission::resolve(input.to_owned()).class(), SubmissionClass::Invalid);
+    }
+    let app = App::test_default();
+    assert!(supported_command_candidates(&app).iter().any(|c| c.primary == "/ultracode"));
+    assert!(!supported_command_candidates(&app).iter().any(|c| c.primary == "/ultramode"));
+    assert_eq!(
+        argument_candidates(&app, "/ultracode", 0)
+            .iter()
+            .map(|c| c.insert_value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["on", "off", "status"]
+    );
+    assert_eq!(
+        ResolvedSubmission::resolve("/ultracode status".to_owned()).class(),
+        SubmissionClass::Informational
+    );
+    for operation in ["on", "off"] {
+        assert_eq!(
+            ResolvedSubmission::resolve(format!("/ultracode {operation}")).class(),
+            SubmissionClass::TurnExclusive
+        );
+    }
+}
+
+#[test]
+fn ultracode_reports_local_connection_errors() {
+    let mut app = App::test_default();
+    assert!(try_handle_submit(&mut app, "/ultracode on"));
+    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("error").blocks[0]
+    else {
+        panic!("text")
+    };
+    assert_eq!(block.text, "Cannot change Ultracode: not connected yet.");
+    let _receiver = attach_test_connection(&mut app);
+    assert!(try_handle_submit(&mut app, "/ultracode off"));
+    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("error").blocks[0]
+    else {
+        panic!("text")
+    };
+    assert_eq!(block.text, "Cannot change Ultracode: no active session.");
+    assert!(app.turn.pending_command_ack.is_none());
+}
+
+#[test]
+fn ultracode_status_uses_verified_snapshot_and_effort() {
+    for (state, expected) in [
+        (None, "Ultracode status is unknown for this session."),
+        (
+            model::UltracodeState::new(true, false, false),
+            "Ultracode is off and available for this session.",
+        ),
+        (
+            model::UltracodeState::new(true, true, true),
+            "Ultracode is on for this session. Effort remains xhigh.",
+        ),
+        (
+            model::UltracodeState::new(false, true, false),
+            "Ultracode is requested but unavailable for this session.",
+        ),
+        (
+            model::UltracodeState::new(false, false, false),
+            "Ultracode is off and unavailable for this session.",
+        ),
+    ] {
+        let mut app = App::test_default();
+        app.session_runtime.ultracode = state;
+        app.session_runtime.config_options.insert("effortLevel".to_owned(), json!("xhigh"));
+        app.status = AppStatus::Running;
+        assert!(try_handle_submit(&mut app, "/ultracode status"));
+        let MessageBlock::Text(block) = &app.transcript.messages.last().expect("status").blocks[0]
+        else {
+            panic!("text")
+        };
+        assert_eq!(block.text, expected);
+        assert_eq!(app.status, AppStatus::Running);
+    }
+}
+
+#[test]
 fn parse_slash_name_and_args() {
     let parsed = parse("/mode plan").expect("slash command");
     assert_eq!(parsed.name, "/mode");
@@ -2270,4 +2360,111 @@ fn mcp_appears_in_candidates() {
     let names: Vec<String> =
         supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
     assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ultracode_composer_wire_events_status_and_footer_workflow() {
+    tokio::task::LocalSet::new().run_until(async {
+        use crate::agent::{types, wire};
+            use crate::agent::events::ClientEvent;
+        let mut app = App::test_default();
+        let mut commands = attach_test_connection(&mut app);
+        app.session_runtime.session_id = Some("sess-1".into());
+        app.session_runtime.current_model = Some(model::CurrentModel::new("opus", "Opus", "Opus").supports_effort(true));
+        app.session_runtime.mode = Some(crate::app::ModeState {
+            current_mode_id: "default".to_owned(), current_mode_name: "default".to_owned(), available_modes: vec![],
+        });
+        app.session_runtime.config_options.insert("effortLevel".to_owned(), json!("high"));
+        let off = model::UltracodeState::new(true, false, false);
+        let on = model::UltracodeState::new(true, true, true);
+        app.session_runtime.ultracode = off;
+        let transcript_before = app.transcript.messages.len();
+        app.input.set_text("/ultracode on");
+        crate::app::input_submit::submit_input(&mut app);
+        assert_eq!(app.status, AppStatus::CommandPending);
+        assert_eq!(app.session_runtime.ultracode, off, "submission must not optimistically change state");
+        tokio::task::yield_now().await;
+        let command = commands.try_recv().expect("set command");
+        assert_eq!(serde_json::to_value(command).expect("wire command"), json!({"command":"set_ultracode","session_id":"sess-1","enabled":true}));
+
+        // Cross the actual wire decoder before applying a received snapshot.
+        let envelope: wire::EventEnvelope = serde_json::from_value(json!({"event":"session_update","session_id":"sess-1","update":{"type":"ultracode_update","ultracode":{"available":true,"requested":true,"effective":true}}})).expect("NDJSON event");
+        let wire::BridgeEvent::SessionUpdate { session_id, update: types::SessionUpdate::UltracodeUpdate { ultracode } } = envelope.event else { panic!("expected Ultracode update") };
+        crate::app::handle_client_event(&mut app, ClientEvent::SessionUpdate { session_id, update: model::SessionUpdate::UltracodeUpdate { ultracode } });
+        assert_eq!(app.status, AppStatus::Ready);
+        assert!(app.turn.pending_command_ack.is_none());
+        assert_eq!(app.session_runtime.ultracode, on);
+        assert_eq!(app.transcript.messages.len(), transcript_before, "successful change must not add permanent messages");
+        let footer = crate::ui::footer_rows::serialize_footer_rows(&app, 120);
+        let row: String = footer.rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(row.contains("[Opus/High \u{b7} Ultracode]"), "{row}");
+
+        app.input.set_text("/effort low");
+        crate::app::input_submit::submit_input(&mut app);
+        tokio::task::yield_now().await;
+        assert!(matches!(commands.try_recv().expect("effort").command, wire::BridgeCommand::SetEffort { effort, .. } if effort == "low"));
+        crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::UltracodeUpdate { ultracode: on }));
+        assert_eq!(app.status, AppStatus::CommandPending, "Ultracode telemetry must not acknowledge effort");
+        crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate { option_id: "effortLevel".to_owned(), value: json!("low") })));
+        app.input.set_text("/ultracode status");
+        crate::app::input_submit::submit_input(&mut app);
+        let MessageBlock::Text(status) = &app.transcript.messages.last().expect("status").blocks[0] else { panic!("text") };
+        assert_eq!(status.text, "Ultracode is on for this session. Effort remains low.");
+
+        app.status = AppStatus::Running;
+        app.input.set_text("/ultracode off");
+        crate::app::input_submit::submit_input(&mut app);
+        tokio::task::yield_now().await;
+        assert!(commands.try_recv().is_err(), "state changes during an active turn must be blocked");
+        assert_eq!(app.session_runtime.ultracode, on);
+        app.input.set_text("/ultracode status");
+        crate::app::input_submit::submit_input(&mut app);
+        assert_eq!(app.status, AppStatus::Running);
+
+        app.status = AppStatus::Ready;
+        app.input.set_text("/ultracode off");
+        crate::app::input_submit::submit_input(&mut app);
+        tokio::task::yield_now().await;
+        assert!(matches!(commands.try_recv().expect("off").command, wire::BridgeCommand::SetUltracode { enabled: false, .. }));
+        crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::UltracodeUpdate { ultracode: off }));
+        assert_eq!(app.status, AppStatus::Ready);
+        let footer = crate::ui::footer_rows::serialize_footer_rows(&app, 120);
+        assert!(!footer.rows[0].spans.iter().any(|s| s.content.contains("Ultracode")));
+
+        app.input.set_text("/ultracode on");
+        crate::app::input_submit::submit_input(&mut app);
+        tokio::task::yield_now().await;
+        commands.try_recv().expect("on");
+        crate::app::handle_client_event(&mut app, ClientEvent::SlashCommandError { session_id: Some("sess-1".to_owned()), message: "Cannot enable Ultracode: dynamic workflows are disabled for this session.".to_owned() });
+        assert_eq!(app.status, AppStatus::Ready);
+        assert!(app.turn.pending_command_ack.is_none());
+        assert_eq!(app.session_runtime.ultracode, off);
+
+        app.input.set_text("/ultracode on");
+        crate::app::input_submit::submit_input(&mut app);
+        tokio::task::yield_now().await;
+        commands.try_recv().expect("unavailable on");
+        let unavailable = model::UltracodeState::new(false, true, false);
+        crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::UltracodeUpdate { ultracode: unavailable }));
+        let error_message = "Cannot enable Ultracode: unavailable for this session. The SDK saved the request, but Ultracode remains inactive.";
+        crate::app::handle_client_event(&mut app, ClientEvent::SlashCommandError { session_id: Some("sess-1".to_owned()), message: error_message.to_owned() });
+        assert_eq!(app.status, AppStatus::Ready);
+        assert!(app.turn.pending_command_ack.is_none());
+        assert_eq!(app.session_runtime.ultracode, unavailable);
+        let error = app.transcript.messages.last().expect("activation error");
+        assert!(matches!(error.role, MessageRole::System(Some(SystemSeverity::Error))));
+        let MessageBlock::Notice(error) = &error.blocks[0] else { panic!("error notice") };
+        assert_eq!(error.severity, SystemSeverity::Error);
+        assert_eq!(error.text.text, error_message);
+        let footer = crate::ui::footer_rows::serialize_footer_rows(&app, 120);
+        assert!(!footer.rows[0].spans.iter().any(|s| s.content.contains("Ultracode")));
+
+        app.input.set_text("/ultracode status");
+        crate::app::input_submit::submit_input(&mut app);
+        let status = app.transcript.messages.last().expect("unavailable status");
+        assert!(matches!(status.role, MessageRole::System(Some(SystemSeverity::Info))));
+        let MessageBlock::Text(status) = &status.blocks[0] else { panic!("text") };
+        assert_eq!(status.text, "Ultracode is requested but unavailable for this session.");
+        assert!(commands.try_recv().is_err(), "status must not retry activation");
+    }).await;
 }

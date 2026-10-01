@@ -29,6 +29,7 @@ pub enum PendingCommandAck {
     CurrentMode,
     CurrentModel,
     FastMode,
+    Ultracode,
     ConfigOption { option_id: String },
 }
 

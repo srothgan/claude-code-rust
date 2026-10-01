@@ -24,6 +24,7 @@ pub(super) struct SessionReplacedEventData {
     pub mode: Option<super::super::ModeState>,
     pub fast_mode_state: model::FastModeState,
     pub fast_mode_disabled_reason: Option<String>,
+    pub ultracode: Option<model::UltracodeState>,
     pub history_updates: Vec<model::SessionUpdate>,
     pub restored_input: Option<String>,
 }
@@ -36,6 +37,7 @@ pub(super) struct ConnectedEventData {
     pub mode: Option<super::super::ModeState>,
     pub fast_mode_state: model::FastModeState,
     pub fast_mode_disabled_reason: Option<String>,
+    pub ultracode: Option<model::UltracodeState>,
     pub history_updates: Vec<model::SessionUpdate>,
 }
 
@@ -48,6 +50,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
         mode,
         fast_mode_state,
         fast_mode_disabled_reason,
+        ultracode,
         history_updates,
     } = event;
     let session_id_for_log = session_id.to_string();
@@ -66,6 +69,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
         ChatResetKind::InitialConnection,
     );
     app.sdk_inventory.available_models = available_models;
+    app.session_runtime.ultracode = ultracode;
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, &history_updates);
@@ -348,6 +352,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         mode,
         fast_mode_state,
         fast_mode_disabled_reason,
+        ultracode,
         history_updates,
         restored_input,
     } = event;
@@ -365,6 +370,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
         model::FastModeSnapshot::new(fast_mode_state, fast_mode_disabled_reason),
         ChatResetKind::Replacement,
     );
+    app.session_runtime.ultracode = ultracode;
     app.sync_welcome_snapshot();
     if !history_updates.is_empty() {
         load_resume_history(app, &history_updates);
@@ -797,6 +803,7 @@ mod tests {
                 mode: None,
                 fast_mode_state: model::FastModeState::Off,
                 fast_mode_disabled_reason: None,
+                ultracode: None,
                 history_updates: Vec::new(),
             },
         );
@@ -836,6 +843,7 @@ mod tests {
                 mode: None,
                 fast_mode_state: model::FastModeState::Off,
                 fast_mode_disabled_reason: None,
+                ultracode: None,
                 history_updates: Vec::new(),
                 restored_input: None,
             },

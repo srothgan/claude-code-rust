@@ -266,8 +266,12 @@ export async function generatePersistedSessionTitle(
 export async function applySessionEffort(
   query: import("@anthropic-ai/claude-agent-sdk").Query,
   effort: EffortLevel,
+  ultracodeEffective = false,
 ): Promise<void> {
-  await query.applyFlagSettings({ effortLevel: effort });
+  await query.applyFlagSettings({
+    effortLevel: effort,
+    ...(ultracodeEffective ? { ultracode: true } : {}),
+  });
 }
 
 export async function applySessionFastMode(
@@ -1078,6 +1082,8 @@ async function handleCommand(
     case "set_mode":
     case "set_effort":
     case "set_agent":
+    case "set_ultracode":
+    case "refresh_ultracode":
     case "set_fast_mode":
     case "reload_plugins":
       await handleSessionControlCommand(command, requestId, {

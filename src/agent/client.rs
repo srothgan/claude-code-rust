@@ -660,6 +660,20 @@ impl AgentConnection {
         })
     }
 
+    pub fn set_ultracode(&self, session_id: String, enabled: bool) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetUltracode { session_id, enabled },
+        })
+    }
+
+    pub fn refresh_ultracode(&self, session_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::RefreshUltracode { session_id },
+        })
+    }
+
     pub fn set_effort(&self, session_id: String, effort: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,

@@ -275,6 +275,7 @@ export function buildConnectBridgeEvent(
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
+        ultracode: session.ultracode ?? null,
         fast_mode_state: session.fastModeState,
         ...(session.fastModeDisabledReason
           ? { fast_mode_disabled_reason: session.fastModeDisabledReason }
@@ -293,6 +294,7 @@ export function buildConnectBridgeEvent(
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
         mode: session.mode ? buildModeState(session, session.mode) : null,
+        ultracode: session.ultracode ?? null,
         fast_mode_state: session.fastModeState,
         ...(session.fastModeDisabledReason
           ? { fast_mode_disabled_reason: session.fastModeDisabledReason }

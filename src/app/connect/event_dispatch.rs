@@ -29,6 +29,7 @@ struct ConnectedEventData {
     mode: Option<types::ModeState>,
     fast_mode_state: types::FastModeState,
     fast_mode_disabled_reason: Option<String>,
+    ultracode: Option<model::UltracodeState>,
     history_updates: Option<Vec<types::SessionUpdate>>,
 }
 
@@ -50,6 +51,7 @@ pub(super) async fn handle_bridge_event(
             mode,
             fast_mode_state,
             fast_mode_disabled_reason,
+            ultracode,
             history_updates,
         } => {
             handle_connected_event(
@@ -63,6 +65,7 @@ pub(super) async fn handle_bridge_event(
                     mode,
                     fast_mode_state,
                     fast_mode_disabled_reason,
+                    ultracode,
                     history_updates,
                 },
             )
@@ -241,6 +244,7 @@ pub(super) async fn handle_bridge_event(
             mode,
             fast_mode_state,
             fast_mode_disabled_reason,
+            ultracode,
             history_updates,
             restored_input,
         } => {
@@ -258,6 +262,7 @@ pub(super) async fn handle_bridge_event(
                     mode: mode.map(convert_mode_state),
                     fast_mode_state: convert_fast_mode_state(fast_mode_state),
                     fast_mode_disabled_reason,
+                    ultracode,
                     history_updates,
                     restored_input,
                 })
@@ -354,6 +359,7 @@ async fn handle_connected_event(
                 mode,
                 fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
                 fast_mode_disabled_reason: event.fast_mode_disabled_reason,
+                ultracode: event.ultracode,
                 history_updates,
                 restored_input: None,
             })
@@ -369,6 +375,7 @@ async fn handle_connected_event(
                 mode,
                 fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
                 fast_mode_disabled_reason: event.fast_mode_disabled_reason,
+                ultracode: event.ultracode,
                 history_updates,
             })
             .await;

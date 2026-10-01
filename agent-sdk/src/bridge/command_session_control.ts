@@ -12,6 +12,15 @@ import { emitFastModeUpdate } from "./error_classification.js";
 import { emitSessionUpdate, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
+  applyUltracode,
+  emitUltracodeUpdate,
+  logUltracodeFailure,
+  readUltracodeState,
+  refreshUltracode,
+  ultracodeError,
+  UltracodeVerificationError,
+} from "./ultracode.js";
+import {
   emitCurrentModelUpdate,
   refreshCurrentModel,
   sessionById,
@@ -29,6 +38,8 @@ type SessionControlCommand = Extract<
       | "set_mode"
       | "set_effort"
       | "set_agent"
+      | "set_ultracode"
+      | "refresh_ultracode"
       | "set_fast_mode"
       | "reload_plugins";
   }
@@ -39,7 +50,11 @@ export type SessionControlCommandDeps = {
     command: Extract<BridgeCommand, { command: "prompt" }>,
     sessionId: string,
   ) => SDKUserMessage | undefined;
-  applySessionEffort: (query: Query, effort: EffortLevel) => Promise<void>;
+  applySessionEffort: (
+    query: Query,
+    effort: EffortLevel,
+    ultracodeEffective?: boolean,
+  ) => Promise<void>;
   applySessionAgent: (query: Query, agent: string | null) => Promise<void>;
   applySessionFastMode: (
     query: Query,
@@ -87,6 +102,10 @@ export async function handleSessionControlCommand(
       return;
     case "set_agent":
       await setAgent(command, requestId, deps);
+      return;
+    case "set_ultracode":
+    case "refresh_ultracode":
+      await handleUltracode(command, requestId);
       return;
     case "set_fast_mode":
       await setFastMode(command, requestId, deps);
@@ -187,6 +206,7 @@ async function setModel(
     if (invalidatedResolvedRuntimeModel) {
       session.resolvedRuntimeModelId = undefined;
     }
+    await refreshUltracode(session);
     const changed = refreshCurrentModel(session, true);
     const forcedCurrentModelUpdate =
       !changed && emitCurrentModelUpdate(session);
@@ -296,7 +316,12 @@ async function setEffort(
     return;
   }
   try {
-    await deps.applySessionEffort(session.query, command.effort);
+    await deps.applySessionEffort(
+      session.query,
+      command.effort,
+      session.ultracode?.effective === true,
+    );
+    await refreshUltracode(session);
     deps.emitEffortConfigOptionUpdate(session.sessionId, command.effort);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -327,6 +352,50 @@ async function setAgent(
       `failed to set agent: ${message}`,
       requestId,
     );
+  }
+}
+
+async function handleUltracode(
+  command: Extract<SessionControlCommand, { command: "set_ultracode" | "refresh_ultracode" }>,
+  requestId: string | undefined,
+): Promise<void> {
+  const session = sessionById(command.session_id);
+  if (!session) {
+    slashError(command.session_id, "Cannot change Ultracode: no active session.", requestId);
+    return;
+  }
+  if (command.command === "refresh_ultracode") {
+    try {
+      session.ultracode = await readUltracodeState(session.query);
+      emitUltracodeUpdate(session);
+    } catch (error) {
+      session.ultracode = undefined;
+      logUltracodeFailure(session, error);
+      emitUltracodeUpdate(session);
+      slashError(command.session_id, ultracodeError(error), requestId);
+    }
+    return;
+  }
+  try {
+    session.ultracode = await applyUltracode(session.query, command.enabled);
+    emitUltracodeUpdate(session);
+    if (command.enabled && !session.ultracode.effective) {
+      slashError(
+        command.session_id,
+        "Cannot enable Ultracode: unavailable for this session. The SDK saved the request, but Ultracode remains inactive.",
+        requestId,
+      );
+    }
+  } catch (error) {
+    logUltracodeFailure(session, error);
+    // An accepted change with a failed read invalidates the previous snapshot.
+    if (error instanceof UltracodeVerificationError) {
+      session.ultracode = undefined;
+      emitUltracodeUpdate(session);
+      slashError(command.session_id, error.message, requestId);
+    } else {
+      slashError(command.session_id, ultracodeError(error), requestId);
+    }
   }
 }
 

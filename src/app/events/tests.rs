@@ -756,6 +756,7 @@ fn connected_event(model_name: &str) -> ClientEvent {
         mode: None,
         fast_mode_state: model::FastModeState::Off,
         fast_mode_disabled_reason: None,
+        ultracode: None,
         history_updates: Vec::new(),
     }
 }
@@ -1302,6 +1303,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
         },
     );
@@ -1354,6 +1356,7 @@ fn startup_resume_history_allows_immediate_prompt_submit() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
         },
     );
@@ -1401,6 +1404,7 @@ fn resume_history_preserves_turn_order_between_user_and_assistant_messages() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates,
             restored_input: None,
         },
@@ -1447,6 +1451,7 @@ fn resume_history_forces_open_tool_calls_to_failed() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: vec![model::SessionUpdate::ToolCall(open_tool)],
             restored_input: None,
         },
@@ -1477,6 +1482,7 @@ fn resume_history_clears_active_turn_owner_after_loading() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: vec![model::SessionUpdate::AgentMessageChunk(
                 model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                     "assistant reply",
@@ -1507,6 +1513,7 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: vec![model::SessionUpdate::ToolCall(task_tool)],
             restored_input: None,
         },
@@ -2497,6 +2504,7 @@ fn turn_notice_tracking_clears_on_turn_complete_and_session_reset() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
         },
     );
@@ -3069,6 +3077,7 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
             mode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
+            ultracode: None,
             history_updates: Vec::new(),
             restored_input: None,
         },

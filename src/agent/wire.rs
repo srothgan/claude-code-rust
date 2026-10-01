@@ -92,6 +92,13 @@ pub enum BridgeCommand {
         session_id: String,
         agent: Option<String>,
     },
+    SetUltracode {
+        session_id: String,
+        enabled: bool,
+    },
+    RefreshUltracode {
+        session_id: String,
+    },
     SetFastMode {
         session_id: String,
         enabled: bool,
@@ -203,6 +210,8 @@ impl BridgeCommand {
             Self::SetMode { .. } => "set_mode",
             Self::SetEffort { .. } => "set_effort",
             Self::SetAgent { .. } => "set_agent",
+            Self::SetUltracode { .. } => "set_ultracode",
+            Self::RefreshUltracode { .. } => "refresh_ultracode",
             Self::SetFastMode { .. } => "set_fast_mode",
             Self::GenerateSessionTitle { .. } => "generate_session_title",
             Self::RenameSession { .. } => "rename_session",
@@ -240,6 +249,8 @@ impl BridgeCommand {
             | Self::SetMode { session_id, .. }
             | Self::SetEffort { session_id, .. }
             | Self::SetAgent { session_id, .. }
+            | Self::SetUltracode { session_id, .. }
+            | Self::RefreshUltracode { session_id }
             | Self::SetFastMode { session_id, .. }
             | Self::GenerateSessionTitle { session_id, .. }
             | Self::RenameSession { session_id, .. }
@@ -281,6 +292,8 @@ impl BridgeCommand {
             | Self::SetMode { .. }
             | Self::SetEffort { .. }
             | Self::SetAgent { .. }
+            | Self::SetUltracode { .. }
+            | Self::RefreshUltracode { .. }
             | Self::SetFastMode { .. }
             | Self::GenerateSessionTitle { .. }
             | Self::RenameSession { .. }
@@ -332,6 +345,8 @@ pub enum BridgeEvent {
         mode: Option<types::ModeState>,
         fast_mode_state: types::FastModeState,
         fast_mode_disabled_reason: Option<String>,
+        #[serde(default, deserialize_with = "types::deserialize_ultracode")]
+        ultracode: Option<types::UltracodeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
     },
     AuthRequired {
@@ -457,6 +472,8 @@ pub enum BridgeEvent {
         mode: Option<types::ModeState>,
         fast_mode_state: types::FastModeState,
         fast_mode_disabled_reason: Option<String>,
+        #[serde(default, deserialize_with = "types::deserialize_ultracode")]
+        ultracode: Option<types::UltracodeState>,
         history_updates: Option<Vec<types::SessionUpdate>>,
         restored_input: Option<String>,
     },
@@ -635,6 +652,68 @@ mod tests {
     };
     use crate::agent::types;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn ultracode_wire_round_trips_and_invalid_snapshots_become_unknown() {
+        for enabled in [true, false] {
+            let command = CommandEnvelope {
+                request_id: Some("u1".to_owned()),
+                command: BridgeCommand::SetUltracode { session_id: "s1".to_owned(), enabled },
+            };
+            let json = serde_json::to_value(&command).expect("serialize");
+            assert_eq!(
+                json,
+                serde_json::json!({"request_id":"u1","command":"set_ultracode","session_id":"s1","enabled":enabled})
+            );
+            assert_eq!(
+                serde_json::from_value::<CommandEnvelope>(json).expect("deserialize"),
+                command
+            );
+        }
+        let refresh = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::RefreshUltracode { session_id: "s1".to_owned() },
+        };
+        let json = serde_json::to_value(&refresh).expect("serialize");
+        assert_eq!(json, serde_json::json!({"command":"refresh_ultracode","session_id":"s1"}));
+        assert_eq!(serde_json::from_value::<CommandEnvelope>(json).expect("deserialize"), refresh);
+        for available in [false, true] {
+            for requested in [false, true] {
+                for effective in [false, true] {
+                    let event: EventEnvelope = serde_json::from_value(serde_json::json!({"event":"session_update","session_id":"s1","update":{"type":"ultracode_update","ultracode":{"available":available,"requested":requested,"effective":effective}}})).expect("event");
+                    let BridgeEvent::SessionUpdate {
+                        update: types::SessionUpdate::UltracodeUpdate { ultracode },
+                        ..
+                    } = &event.event
+                    else {
+                        panic!("update")
+                    };
+                    assert_eq!(ultracode.is_some(), effective == (available && requested));
+                    assert_eq!(
+                        serde_json::from_value::<EventEnvelope>(
+                            serde_json::to_value(&event).expect("serialize event")
+                        )
+                        .expect("round trip"),
+                        event
+                    );
+                }
+            }
+        }
+        for state in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"available":true,"requested":true,"effective":"true"}),
+        ] {
+            let event: EventEnvelope = serde_json::from_value(serde_json::json!({"event":"session_update","session_id":"s1","update":{"type":"ultracode_update","ultracode":state}})).expect("invalid state must not discard the event");
+            assert!(matches!(
+                event.event,
+                BridgeEvent::SessionUpdate {
+                    update: types::SessionUpdate::UltracodeUpdate { ultracode: None },
+                    ..
+                }
+            ));
+        }
+    }
 
     #[test]
     fn command_envelope_roundtrip_json() {

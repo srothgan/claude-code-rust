@@ -13,6 +13,7 @@ pub(crate) enum AppSlashCommand {
     Docs,
     Agent,
     Effort,
+    Ultracode,
     Fast,
     Help,
     Mcp,
@@ -166,6 +167,18 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Ultracode,
+        name: "/ultracode",
+        usage: "Usage: /ultracode <on|off|status>",
+        short_description: "Control session Ultracode",
+        long_description: "Enable, disable, or inspect verified Ultracode state for the active session. Retains thinking effort.",
+        args: &[
+            SlashArgSpec { value: "on", description: "Enable session Ultracode" },
+            SlashArgSpec { value: "off", description: "Disable session Ultracode" },
+            SlashArgSpec { value: "status", description: "Show verified session Ultracode state" },
+        ],
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Fast,
         name: "/fast",
         usage: "Usage: /fast",
@@ -294,6 +307,7 @@ impl AppSlashCommand {
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
+            Self::Ultracode => "/ultracode",
             Self::Fast => "/fast",
             Self::Help => "/help",
             Self::Mcp => "/mcp",
@@ -369,6 +383,11 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            Self::Ultracode => match args {
+                ["status"] => SubmissionClass::Informational,
+                ["on" | "off"] => SubmissionClass::TurnExclusive,
+                _ => SubmissionClass::Invalid,
+            },
             Self::Effort => {
                 if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max"]) {
                     SubmissionClass::TurnExclusive

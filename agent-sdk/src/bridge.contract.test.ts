@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 type BridgeEnvelope = Record<string, unknown>;
 
@@ -34,8 +34,8 @@ class SpawnedBridge {
   }> = [];
   #exitCode: number | null | undefined;
 
-  constructor(env: NodeJS.ProcessEnv = {}) {
-    this.child = spawn(process.execPath, [bridgePath], {
+  constructor(env: NodeJS.ProcessEnv = {}, nodeArgs: string[] = []) {
+    this.child = spawn(process.execPath, [...nodeArgs, bridgePath], {
       env: {
         ...process.env,
         CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1",
@@ -322,5 +322,184 @@ test("production bridge source stays on the public main SDK export", () => {
     const source = readFileSync(path, "utf8");
     assert.doesNotMatch(source, forbiddenDeepImport, path);
     assert.doesNotMatch(source, forbiddenFactory, path);
+  }
+});
+
+
+// Only the external SDK is replaced. The spawned process runs the production
+// readline parser, command scheduler, session lifecycle and NDJSON writer.
+function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedBridge; cleanup: () => Promise<void> } {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-ultracode-"));
+  const sdkPath = import.meta.resolve("@anthropic-ai/claude-agent-sdk");
+  const fixturePath = join(directory, "sdk-fixture.mjs");
+  writeFileSync(fixturePath, `
+    export * from ${JSON.stringify(sdkPath)};
+    export async function listSessions() { return [...saved.keys()].map(sessionId => ({ sessionId, cwd: process.cwd(), lastModified: 1 })); }
+    export async function getSessionMessages() { return []; }
+    const saved = new Map();
+    export function query({ prompt, options }) {
+      const state = saved.get(options.resume) ?? { requested: false, effort: "high" };
+      saved.set(options.sessionId ?? options.resume, state);
+      let model = options.model ?? "opus";
+      let done = false;
+      let waiter;
+      const queue = [];
+      function push(value) { if (waiter) { const resolve = waiter; waiter = undefined; resolve({ value, done: false }); } else queue.push(value); }
+      void (async () => {
+        for await (const message of prompt) {
+          if (JSON.stringify(message.message?.content).includes("fixture conversation reset")) {
+            push({ type: "conversation_reset", new_conversation_id: "fixture-conversation-2" });
+          }
+        }
+      })();
+      return {
+        [Symbol.asyncIterator]() { return this; },
+        next() {
+          if (queue.length) return Promise.resolve({ value: queue.shift(), done: false });
+          if (done) return Promise.resolve({ done: true });
+          return new Promise(resolve => { waiter = resolve; });
+        },
+        close() { done = true; waiter?.({ done: true }); },
+        async initializationResult() { return { models: [], commands: [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+        async setModel(value) { model = value; },
+        async getSettings() {
+          if (model === "fixture-read-failure") throw new Error("fixture read failed");
+          const available = model !== "haiku" && model !== "fixture-unavailable" && process.env.ULTRACODE_FIXTURE_WORKFLOWS !== "off";
+          return { applied: { ultracodeAvailable: available, ultracodeRequested: state.requested, ultracode: state.requested && available, effort: state.effort } };
+        },
+        async applyFlagSettings(settings) {
+          if (settings.ultracode === true && process.env.ULTRACODE_FIXTURE_WORKFLOWS === "off") throw new Error("apply_flag_settings: ultracode is not available for this session (dynamic workflows are off)");
+          if (settings.ultracode === true && model === "haiku") throw new Error("apply_flag_settings: ultracode is not available for this session (haiku does not support it)");
+          if (settings.effortLevel !== undefined) {
+            state.effort = settings.effortLevel;
+            state.requested = settings.ultracode === true;
+          } else if (settings.ultracode !== undefined) state.requested = settings.ultracode;
+        },
+      };
+    }
+  `);
+  const loaderPath = join(directory, "loader.mjs");
+  writeFileSync(loaderPath, `
+    import { registerHooks } from "node:module";
+    registerHooks({ resolve(specifier, context, nextResolve) {
+      return specifier === "@anthropic-ai/claude-agent-sdk"
+        ? { url: ${JSON.stringify(pathToFileURL(fixturePath).href)}, shortCircuit: true }
+        : nextResolve(specifier, context);
+    } });
+  `);
+  const bridge = new SpawnedBridge({ CLAUDE_CODE_EXECUTABLE: "", ...env }, ["--import", pathToFileURL(loaderPath).href]);
+  return { bridge, cleanup: async () => { await bridge.stop(); rmSync(directory, { recursive: true, force: true }); } };
+}
+
+async function nextMatching(bridge: SpawnedBridge, matches: (event: BridgeEnvelope) => boolean): Promise<BridgeEnvelope> {
+  for (let index = 0; index < 30; index++) {
+    const event = await bridge.nextEnvelope(5_000).catch((error: unknown) => {
+      throw new Error(`Waiting for ${matches.toString()}: ${String(error)}; diagnostics: ${bridge.stderrLines.slice(-4).join("\n")}`);
+    });
+    if (matches(event)) return event;
+  }
+  throw new Error("expected bridge event was not emitted");
+}
+
+async function nextUltracode(bridge: SpawnedBridge): Promise<unknown> {
+  const event = await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "ultracode_update");
+  return (event.update as BridgeEnvelope).ultracode;
+}
+
+test("spawned bridge Ultracode workflow covers enable, effort, model, reset, resume and replacement", async () => {
+  const { bridge, cleanup } = ultracodeFixtureBridge();
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: { model: "opus" } } });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    const sessionId = connected.session_id;
+    assert.deepEqual(connected.ultracode, { available: true, requested: false, effective: false });
+    const active = { available: true, requested: true, effective: true };
+    bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: true });
+    // Back-to-back commands exercise the production per-session scheduler.
+    bridge.writeCommand({ command: "set_effort", session_id: sessionId, effort: "low" });
+    assert.deepEqual(await nextUltracode(bridge), active);
+    assert.deepEqual(await nextUltracode(bridge), active);
+    const effort = await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "config_option_update");
+    assert.equal((effort.update as BridgeEnvelope).value, "low");
+    bridge.writeCommand({ command: "prompt", session_id: sessionId, message_uuid: "reset-message", chunks: [{ kind: "text", value: "fixture conversation reset" }] });
+    await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "conversation_reset");
+    assert.deepEqual(await nextUltracode(bridge), active);
+    bridge.writeCommand({ command: "set_model", session_id: sessionId, model: "haiku" });
+    assert.deepEqual(await nextUltracode(bridge), { available: false, requested: true, effective: false });
+    bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: true, request_id: "unsupported-model" });
+    const unsupported = await nextMatching(bridge, event => event.event === "slash_error");
+    assert.equal(unsupported.request_id, "unsupported-model");
+    assert.equal(unsupported.message, "Cannot enable Ultracode: haiku does not support it.");
+    bridge.writeCommand({ command: "set_model", session_id: sessionId, model: "opus" });
+    assert.deepEqual(await nextUltracode(bridge), active);
+    bridge.writeCommand({ command: "resume_session", session_id: sessionId, launch_settings: { settings: { model: "opus" } } });
+    const resumed = await nextMatching(bridge, event => event.event === "session_replaced");
+    assert.equal(resumed.session_id, sessionId);
+    assert.deepEqual(resumed.ultracode, active);
+    bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: false });
+    assert.deepEqual(await nextUltracode(bridge), { available: true, requested: false, effective: false });
+    bridge.writeCommand({ command: "new_session", cwd: process.cwd(), launch_settings: { settings: { model: "opus" } } });
+    const replaced = await nextMatching(bridge, event => event.event === "session_replaced");
+    assert.notEqual(replaced.session_id, sessionId);
+    assert.deepEqual(replaced.ultracode, { available: true, requested: false, effective: false });
+    bridge.writeCommand({ command: "refresh_ultracode", session_id: sessionId, request_id: "closed-session" });
+    const closed = await nextMatching(bridge, event => event.event === "slash_error");
+    assert.equal(closed.request_id, "closed-session");
+    assert.equal(closed.message, "Cannot change Ultracode: no active session.");
+    bridge.writeCommand({ command: "shutdown" });
+    assert.equal(await bridge.waitForExit(), 0);
+  } finally { await cleanup(); }
+});
+
+test("spawned bridge reports accepted inactive Ultracode requests and preserves verified state", async () => {
+  const { bridge, cleanup } = ultracodeFixtureBridge();
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: { model: "fixture-unavailable" } } });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    const sessionId = connected.session_id;
+    assert.deepEqual(connected.ultracode, { available: false, requested: false, effective: false });
+    const requested = { available: false, requested: true, effective: false };
+    for (const requestId of ["inactive-enable", "inactive-retry"]) {
+      bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: true, request_id: requestId });
+      assert.deepEqual(await nextUltracode(bridge), requested);
+      const error = await bridge.nextEnvelope(5_000);
+      assert.equal(error.event, "slash_error");
+      assert.equal(error.session_id, sessionId);
+      assert.equal(error.request_id, requestId);
+      assert.equal(error.message, "Cannot enable Ultracode: unavailable for this session. The SDK saved the request, but Ultracode remains inactive.");
+    }
+    bridge.writeCommand({ command: "refresh_ultracode", session_id: sessionId });
+    assert.deepEqual(await nextUltracode(bridge), requested);
+    bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: false });
+    assert.deepEqual(await nextUltracode(bridge), { available: false, requested: false, effective: false });
+    bridge.writeCommand({ command: "shutdown" });
+    assert.equal(await bridge.waitForExit(), 0);
+  } finally { await cleanup(); }
+});
+
+test("spawned bridge Ultracode failures report disabled workflows and clear unverifiable state", async () => {
+  for (const workflows of ["off", "on"]) {
+    const { bridge, cleanup } = ultracodeFixtureBridge({ ULTRACODE_FIXTURE_WORKFLOWS: workflows });
+    try {
+      bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: { model: "opus" } } });
+      const connected = await nextMatching(bridge, event => event.event === "connected");
+      const sessionId = connected.session_id;
+      if (workflows === "off") {
+        assert.deepEqual(connected.ultracode, { available: false, requested: false, effective: false });
+        bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: true });
+        const error = await nextMatching(bridge, event => event.event === "slash_error");
+        assert.equal(error.message, "Cannot enable Ultracode: dynamic workflows are disabled for this session.");
+      } else {
+        bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: true });
+        await nextUltracode(bridge);
+        bridge.writeCommand({ command: "set_model", session_id: sessionId, model: "fixture-read-failure" });
+        assert.equal(await nextUltracode(bridge), null);
+        bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: false });
+        assert.equal(await nextUltracode(bridge), null);
+        const error = await nextMatching(bridge, event => event.event === "slash_error");
+        assert.equal(error.message, "The SDK accepted the Ultracode change, but its resulting state could not be verified.");
+        assert.ok(bridge.stderrLines.some(line => line.includes("fixture read failed")));
+      }
+    } finally { await cleanup(); }
   }
 });

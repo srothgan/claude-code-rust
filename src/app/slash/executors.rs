@@ -54,6 +54,7 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Docs => handle_docs_submit(app, &args),
         AppSlashCommand::Agent => handle_agent_submit(app, &args),
         AppSlashCommand::Effort => handle_effort_submit(app, &args),
+        AppSlashCommand::Ultracode => handle_ultracode_submit(app, &args),
         AppSlashCommand::Fast => handle_fast_submit(app),
         AppSlashCommand::Help => handle_help_submit(app),
         AppSlashCommand::Mcp => handle_mcp_submit(app),
@@ -782,6 +783,64 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
         }
     });
     true
+}
+
+fn handle_ultracode_submit(app: &mut App, args: &[&str]) -> bool {
+    if args == ["status"] {
+        let text = ultracode_status_text(app);
+        push_submission_feedback(app, SystemSeverity::Info, &text);
+        return true;
+    }
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot change Ultracode: not connected yet.",
+        "Cannot change Ultracode: no active session.",
+    ) else {
+        return true;
+    };
+    let enabled = args == ["on"];
+    let label = if enabled { "Enabling Ultracode..." } else { "Disabling Ultracode..." };
+    set_command_pending(app, label, Some(crate::app::PendingCommandAck::Ultracode));
+    let tx = app.event_tx.clone();
+    let session_id = sid.to_string();
+    tokio::task::spawn_local(async move {
+        if let Err(error) = conn.set_ultracode(session_id.clone(), enabled) {
+            let _ = tx
+                .send(ClientEvent::SlashCommandError {
+                    session_id: Some(session_id),
+                    message: format!("Failed to run /ultracode: {error}"),
+                })
+                .await;
+        }
+    });
+    true
+}
+
+fn ultracode_status_text(app: &App) -> String {
+    let Some(state) = app.session_runtime.ultracode else {
+        return "Ultracode status is unknown for this session.".to_owned();
+    };
+    if state.effective() {
+        let mut text = "Ultracode is on for this session.".to_owned();
+        if let Some(effort) = app
+            .session_runtime
+            .config_options
+            .get("effortLevel")
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::agent::model::EffortLevel::from_stored)
+        {
+            text.push_str(" Effort remains ");
+            text.push_str(effort.as_stored());
+            text.push('.');
+        }
+        text
+    } else if state.requested() {
+        "Ultracode is requested but unavailable for this session.".to_owned()
+    } else if state.available() {
+        "Ultracode is off and available for this session.".to_owned()
+    } else {
+        "Ultracode is off and unavailable for this session.".to_owned()
+    }
 }
 
 fn handle_fast_submit(app: &mut App) -> bool {

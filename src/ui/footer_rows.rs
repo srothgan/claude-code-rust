@@ -147,7 +147,7 @@ fn build_primary_line(app: &App) -> Line<'static> {
         push_badge(&mut spans, mode.current_mode_name.clone(), color);
         if let Some(model_badge) = footer_model_badge(app) {
             spans.push(Span::raw("  "));
-            push_badge(&mut spans, model_badge, FOOTER_CONTEXT_VALUE);
+            spans.extend(model_badge);
         }
         spans.push(Span::raw("  "));
         push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
@@ -171,14 +171,21 @@ fn push_badge(spans: &mut Vec<Span<'static>>, text: String, color: Color) {
     spans.push(Span::styled("]", Style::default().fg(color)));
 }
 
-fn footer_model_badge(app: &App) -> Option<String> {
+fn footer_model_badge(app: &App) -> Option<Vec<Span<'static>>> {
     let current_model = app.session_runtime.current_model.as_ref()?;
     let mut badge = current_model.display_name_short.clone();
     if current_model.supports_effort {
         badge.push('/');
         badge.push_str(footer_effort_label(app.session_thinking_effort_effective()));
     }
-    Some(badge)
+    let model_style = Style::default().fg(FOOTER_CONTEXT_VALUE);
+    let mut spans = vec![Span::styled("[", model_style), Span::styled(badge, model_style)];
+    if app.session_runtime.ultracode.is_some_and(model::UltracodeState::effective) {
+        spans.push(Span::styled(" \u{b7} ", model_style));
+        spans.push(Span::styled("Ultracode", Style::default().fg(theme::ULTRACODE_ACCENT)));
+    }
+    spans.push(Span::styled("]", model_style));
+    Some(spans)
 }
 
 const fn footer_effort_label(effort: model::EffortLevel) -> &'static str {
@@ -522,6 +529,37 @@ mod tests {
 
         assert!(text.contains("[default]"));
         assert!(text.contains("[FAST:OFF]"));
+    }
+
+    #[test]
+    fn ultracode_badge_appears_only_for_verified_effective_state() {
+        for state in [
+            None,
+            model::UltracodeState::new(true, false, false),
+            model::UltracodeState::new(false, true, false),
+            model::UltracodeState::new(false, false, false),
+            model::UltracodeState::new(true, true, true),
+        ] {
+            let mut app = app_with_mode();
+            app.session_runtime.ultracode = state;
+            let footer = serialize_footer_rows(&app, 120);
+            assert_eq!(
+                line_text(&footer.rows[0]).contains("Ultracode"),
+                state.is_some_and(model::UltracodeState::effective)
+            );
+            if state.is_some_and(model::UltracodeState::effective) {
+                let label = footer.rows[0]
+                    .spans
+                    .iter()
+                    .find(|span| span.content == "Ultracode")
+                    .expect("Ultracode label");
+                assert_eq!(label.style.fg, Some(theme::ULTRACODE_ACCENT));
+                assert!(
+                    footer.rows[0].spans.iter().any(|span| span.content.contains("test-model")
+                        && span.style.fg == Some(FOOTER_CONTEXT_VALUE))
+                );
+            }
+        }
     }
 
     #[test]

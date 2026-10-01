@@ -426,6 +426,12 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ConfigOptionUpdate(config) => {
             handle_config_option_update(app, config);
         }
+        model::SessionUpdate::UltracodeUpdate { ultracode } => {
+            app.session_runtime.ultracode = ultracode;
+            if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::Ultracode)) {
+                session::clear_pending_command(app);
+            }
+        }
         model::SessionUpdate::FastModeUpdate { state, disabled_reason } => {
             let previous_reason = app.session_runtime.fast_mode_disabled_reason.clone();
             app.session_runtime.fast_mode_state = state;

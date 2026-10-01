@@ -462,6 +462,17 @@ export function parseCommandEnvelope(line: string): {
           session_id: expectString(raw, "session_id", "set_agent"),
           agent: expectNonEmptyStringOrNull(raw, "agent", "set_agent"),
         };
+      case "set_ultracode":
+        return {
+          command: "set_ultracode",
+          session_id: expectString(raw, "session_id", "set_ultracode"),
+          enabled: expectBoolean(raw, "enabled", "set_ultracode"),
+        };
+      case "refresh_ultracode":
+        return {
+          command: "refresh_ultracode",
+          session_id: expectString(raw, "session_id", "refresh_ultracode"),
+        };
       case "set_fast_mode":
         return {
           command: "set_fast_mode",

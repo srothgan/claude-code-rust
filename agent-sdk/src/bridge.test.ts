@@ -10163,3 +10163,102 @@ test("handleUserDialogResponse ignores a duplicate response for a resolved reque
     sessions.delete("session-dialog");
   }
 });
+
+
+test("Ultracode commands validate explicit boolean payloads", () => {
+  for (const enabled of [true, false]) {
+    const command = { command: "set_ultracode", session_id: "session-1", enabled };
+    assert.deepEqual(parseCommandEnvelope(JSON.stringify(command)).command, command);
+  }
+  for (const enabled of [undefined, "on", 1, null]) {
+    assert.throws(() => parseCommandEnvelope(JSON.stringify({ command: "set_ultracode", session_id: "session-1", enabled })), /enabled must be a boolean/);
+  }
+  const refresh = { command: "refresh_ultracode", session_id: "session-1" };
+  assert.deepEqual(parseCommandEnvelope(JSON.stringify(refresh)).command, refresh);
+});
+
+test("Ultracode NDJSON control flow preserves effort and refreshes model support", async () => {
+  const session = makeSessionState();
+  let enabled = false;
+  let available = true;
+  const calls: unknown[] = [];
+  session.query = {
+    getSettings: async () => ({ applied: { ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled } }),
+    applyFlagSettings: async (settings: Record<string, unknown>) => {
+      calls.push(settings);
+      if ("effortLevel" in settings && !("ultracode" in settings)) enabled = false;
+      if (typeof settings.ultracode === "boolean") enabled = settings.ultracode;
+      return {};
+    },
+    setModel: async () => { available = false; },
+  } as unknown as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      for (const command of [
+        { command: "refresh_ultracode", session_id: session.sessionId },
+        { command: "set_ultracode", session_id: session.sessionId, enabled: true },
+        { command: "set_effort", session_id: session.sessionId, effort: "high" },
+        { command: "set_model", session_id: session.sessionId, model: "haiku" },
+        { command: "set_effort", session_id: session.sessionId, effort: "low" },
+        { command: "set_ultracode", session_id: session.sessionId, enabled: false },
+      ]) {
+        const parsed = parseCommandEnvelope(JSON.stringify(command));
+        await handleSessionControlCommand(parsed.command as Parameters<typeof handleSessionControlCommand>[0], "request-1", promptControlDeps());
+      }
+    });
+    assert.deepEqual(calls, [{ ultracode: true }, { effortLevel: "high", ultracode: true }, { effortLevel: "low" }, { ultracode: false }]);
+    assert.deepEqual(events.filter(e => (e.update as Record<string, unknown>)?.type === "ultracode_update").map(e => (e.update as Record<string, unknown>).ultracode), [
+      { available: true, requested: false, effective: false },
+      { available: true, requested: true, effective: true },
+      { available: true, requested: true, effective: true },
+      { available: false, requested: true, effective: false },
+      { available: false, requested: false, effective: false },
+      { available: false, requested: false, effective: false },
+    ]);
+    assert.equal(events.some(e => e.event === "slash_error"), false);
+  } finally { sessions.delete(session.sessionId); }
+});
+
+test("Ultracode accepted but unverifiable changes emit unknown and a correlated error", async () => {
+  const session = makeSessionState();
+  session.ultracode = { available: true, requested: false, effective: false };
+  session.query = { applyFlagSettings: async () => ({}) } as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      await handleSessionControlCommand({ command: "set_ultracode", session_id: session.sessionId, enabled: true }, "ultracode-1", promptControlDeps());
+    });
+    assert.equal(session.ultracode, undefined);
+    assert.deepEqual(events[0]?.update, { type: "ultracode_update", ultracode: null });
+    assert.equal(events[1]?.event, "slash_error");
+    assert.equal(events[1]?.request_id, "ultracode-1");
+    assert.match(String(events[1]?.message), /accepted.*could not be verified/);
+  } finally { sessions.delete(session.sessionId); }
+});
+
+test("Ultracode connection snapshots, identity changes, conversation reset and close follow SDK session identity", async () => {
+  const session = makeSessionState();
+  const active = { available: true, requested: true, effective: true };
+  session.ultracode = active;
+  session.query = { getSettings: async () => ({ applied: { ultracodeAvailable: true, ultracodeRequested: true, ultracode: true } }) } as unknown as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    for (const kind of ["connected", "session_replaced"] as const) {
+      assert.deepEqual((buildConnectBridgeEvent(session, kind) as unknown as Record<string, unknown>).ultracode, active);
+    }
+    updateSessionId(session, session.sessionId);
+    assert.deepEqual(session.ultracode, active);
+    const events = await captureBridgeEventsAsync(async () => {
+      handleSdkMessage(session, { type: "conversation_reset", new_conversation_id: "conversation-2" } as unknown as Parameters<typeof handleSdkMessage>[1]);
+      assert.deepEqual(session.ultracode, active);
+      await new Promise<void>(resolve => setImmediate(resolve));
+    });
+    assert.ok(events.some(e => (e.update as Record<string, unknown>)?.type === "ultracode_update"));
+    updateSessionId(session, "session-2");
+    assert.equal(session.ultracode, undefined);
+    session.ultracode = active;
+    beginSessionClose(session);
+    assert.equal(session.ultracode, undefined);
+  } finally { sessions.delete(session.sessionId); }
+});

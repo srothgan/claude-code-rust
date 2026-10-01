@@ -465,6 +465,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 value,
             }))
         }
+        types::SessionUpdate::UltracodeUpdate { ultracode } => {
+            Some(model::SessionUpdate::UltracodeUpdate { ultracode })
+        }
         types::SessionUpdate::FastModeUpdate { fast_mode_state, fast_mode_disabled_reason } => {
             Some(model::SessionUpdate::FastModeUpdate {
                 state: convert_fast_mode_state(fast_mode_state),

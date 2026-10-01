@@ -44,6 +44,12 @@ export interface AvailableAgent {
   model?: string;
 }
 
+export type UltracodeSnapshot = {
+  available: boolean;
+  requested: boolean;
+  effective: boolean;
+};
+
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface AvailableModel {
@@ -387,6 +393,10 @@ export type SessionUpdate =
   | { type: "current_mode_update"; current_mode_id: string }
   | { type: "current_model_update"; current_model: CurrentModel }
   | { type: "config_option_update"; option_id: string; value: Json }
+  | {
+      type: "ultracode_update";
+      ultracode: UltracodeSnapshot | null;
+    }
   | {
       type: "fast_mode_update";
       fast_mode_state: FastModeState;
@@ -852,6 +862,15 @@ export type BridgeCommand =
       agent: string | null;
     }
   | {
+      command: "set_ultracode";
+      session_id: string;
+      enabled: boolean;
+    }
+  | {
+      command: "refresh_ultracode";
+      session_id: string;
+    }
+  | {
       command: "set_fast_mode";
       session_id: string;
       enabled: boolean;
@@ -1017,6 +1036,7 @@ export type BridgeEvent =
       mode: ModeState | null;
       fast_mode_state: FastModeState;
       fast_mode_disabled_reason?: string;
+      ultracode?: UltracodeSnapshot | null;
       history_updates?: SessionUpdate[];
     }
   | { event: "auth_required"; method_name: string; method_description: string }
@@ -1134,6 +1154,7 @@ export type BridgeEvent =
       mode: ModeState | null;
       fast_mode_state: FastModeState;
       fast_mode_disabled_reason?: string;
+      ultracode?: UltracodeSnapshot | null;
       history_updates?: SessionUpdate[];
       restored_input?: string;
     }

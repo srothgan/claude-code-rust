@@ -26,6 +26,8 @@ pub struct SessionRuntimeState {
     pub login_hint: Option<LoginHint>,
     /// Session-wide usage and cost telemetry from the bridge.
     pub session_usage: SessionUsageState,
+    /// Latest verified SDK Ultracode snapshot; absent when unknown.
+    pub ultracode: Option<model::UltracodeState>,
     /// Fast mode state telemetry from the SDK.
     pub fast_mode_state: model::FastModeState,
     /// Open-set reason reported by the SDK when fast mode cannot activate.
@@ -53,6 +55,7 @@ impl Default for SessionRuntimeState {
             config_options: BTreeMap::new(),
             login_hint: None,
             session_usage: SessionUsageState::default(),
+            ultracode: None,
             fast_mode_state: model::FastModeState::Off,
             fast_mode_disabled_reason: None,
             runtime_session_state: None,
@@ -80,6 +83,9 @@ impl SessionRuntimeState {
     }
 
     pub(crate) fn activate_session(&mut self, session_id: model::SessionId) {
+        if self.session_id.as_ref() != Some(&session_id) {
+            self.ultracode = None;
+        }
         self.last_resumable_session_id = Some(session_id.clone());
         self.session_id = Some(session_id);
         self.conversation_id = None;
@@ -92,6 +98,7 @@ impl SessionRuntimeState {
     }
 
     pub fn clear_identity(&mut self) {
+        self.ultracode = None;
         self.session_id = None;
         self.conversation_id = None;
         self.current_model = None;

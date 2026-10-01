@@ -1,3 +1,4 @@
+import { refreshUltracode } from "./ultracode.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
@@ -1689,6 +1690,7 @@ export function handleSdkMessage(
       return;
     }
     closeSideQuestions(session.sessionId, session.query);
+    void refreshUltracode(session);
     emitSessionUpdate(session.sessionId, {
       type: "conversation_reset",
       new_conversation_id: newConversationId,
@@ -1884,6 +1886,9 @@ export function handleSdkMessage(
       const incomingSessionId =
         typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
       updateSessionId(session, incomingSessionId);
+      if (session.connected) {
+        void refreshUltracode(session);
+      }
       const modelName =
         typeof msg.model === "string" ? msg.model : session.model;
       session.model = modelName;

@@ -163,6 +163,7 @@ export type PendingWorkerShutdown = {
 };
 
 export type SessionState = {
+  ultracode?: import("../types.js").UltracodeSnapshot;
   sessionId: string;
   cwd: string;
   model: string;
@@ -369,12 +370,14 @@ export function updateSessionId(
   }
   closeSideQuestions(session.sessionId, session.query);
   sessions.delete(session.sessionId);
+  session.ultracode = undefined;
   session.sessionId = newSessionId;
   sessions.set(newSessionId, session);
 }
 
 export function beginSessionClose(session: SessionState): void {
   session.closing = true;
+  session.ultracode = undefined;
   closeSideQuestions(session.sessionId, session.query);
   for (const monitor of session.mcpAuthMonitors.values()) {
     monitor.controller.abort();
@@ -817,6 +820,8 @@ export async function createSession(params: {
           history_update_count: session.resumeUpdates?.length ?? 0,
         },
       });
+      const { refreshUltracode } = await import("./ultracode.js");
+      await refreshUltracode(session, session.connected);
       session.availableModels = mapAvailableModels(result.models);
       const currentModelChanged = refreshCurrentModel(session);
       const { buildModeState, refreshSupportedModesForSession } = await import(

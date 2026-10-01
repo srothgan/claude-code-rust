@@ -401,7 +401,9 @@ pub(super) fn argument_candidates(
     }
 
     match command_name {
-        "/1m-context" | "/docs" | "/opus-version" => static_argument_candidates(command_name),
+        "/1m-context" | "/docs" | "/opus-version" | "/ultracode" => {
+            static_argument_candidates(command_name)
+        }
         "/agent" => agent_argument_candidates(app),
         "/effort" => effort_argument_candidates(app),
         "/resume" => app
