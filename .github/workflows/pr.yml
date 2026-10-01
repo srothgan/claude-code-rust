@@ -178,7 +178,7 @@ jobs:
         run: |
           node scripts/runtime/stage-bun-runtime.mjs --check
           node scripts/shared/verify-third-party-notices.mjs
-          node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/shared/deny-targets.test.mjs
+          node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/shared/deny-targets.test.mjs scripts/install/release-advisories.test.mjs
 
       - name: Check public installer syntax
         shell: bash

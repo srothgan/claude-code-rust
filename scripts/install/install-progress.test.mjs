@@ -292,6 +292,9 @@ emit_error() {
   fi
 }
 case "$url" in
+  */release-advisories.json)
+    exit 22
+    ;;
   */SHA256SUMS)
     if [ "$MOCK_DOWNLOAD_MODE" = "checksum-download-failure" ]; then
       emit_error 'mock checksum download failed'

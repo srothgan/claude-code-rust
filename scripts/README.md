@@ -44,8 +44,25 @@ active release tooling and are validated by PR, release, or nightly workflows.
 - `install/test-install-progress.ps1` validates the PowerShell spinner, fixed-width download progress, streaming transfer, and output-helper behavior without executing the installer body.
 - `install/test-install-version-guard.ps1` validates PowerShell version metadata,
   decision precedence, and release-download boundaries under Windows PowerShell.
+- `install/release-advisories.json` lists known issues by release range. Both installers read it; see Release Advisories.
+- `install/release-advisories.test.mjs` validates the checked-in advisories in PR validation.
 - `install/install.sh` and `install/install.ps1` are maintained public installer
   assets. Keep syntax checks and help text current before publishing them.
+
+### Release Advisories
+
+`install/release-advisories.json` is the single source for "this release has a known issue" notices. Each entry has three keys:
+
+- `start` and `end`: the first and last affected release, both inclusive, as plain `MAJOR.MINOR.PATCH`.
+- `summary`: the complete one-line user-facing text, at most 200 characters, using only letters, digits, spaces, and `. , : ; ( ) / + _ @ # = -`. `install.sh` reads the file without a JSON parser and the text is pasted into a shell command, so quotes, backslashes, and `$` are rejected by the test.
+
+The installers fetch the file from `main` after the release is selected and print `Known issue in claude-rs <version>: <summary>` for every entry whose range contains the selected version. Prerelease and build suffixes are ignored when comparing. The check only warns: it never blocks or prompts, it is skipped when the selected version is already installed, and a fetch or parse failure is ignored. Because the file is read from `main`, a merged entry takes effect immediately for every installer run, without a release.
+
+To add an advisory, append an entry, run `node --test scripts/install/release-advisories.test.mjs`, and merge. After the fixed release is published, show the same text to npm users of the affected versions by deprecating the range on the root package only:
+
+```sh
+npm deprecate "claude-code-rust@>=<start> <=<end>" "<summary> Upgrade: npm install -g claude-code-rust@latest"
+```
 
 ## Release
 
@@ -66,6 +83,7 @@ npm manifests, install archives, and install manifests.
 - `shared/verify-third-party-notices.mjs` validates notice coverage and is run
   directly in PR validation.
 - `shared/install-archive-common.mjs` contains archive helpers.
+- `shared/release-advisories.mjs` loads and validates `install/release-advisories.json`.
 - `shared/repo-root.mjs` resolves the repository root for scripts in any phase
   directory.
 
@@ -93,7 +111,7 @@ release steps unless they expose their own command-line interface.
 ```sh
 node scripts/runtime/stage-bun-runtime.mjs --check
 node scripts/shared/verify-third-party-notices.mjs
-node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs
+node --test scripts/npm/npm-resolver.test.cjs scripts/npm/smoke-npm-package-install.test.mjs scripts/runtime/verify-staged-bun-runtimes.test.mjs scripts/npm/dry-run-npm-publish.test.mjs scripts/npm/publish-npm-platform-packages.test.mjs scripts/install/release-advisories.test.mjs
 shellcheck -s sh scripts/install/install.sh
 pwsh -NoLogo -NoProfile -File scripts/install/install.ps1 -Help
 pwsh -NoLogo -NoProfile -File scripts/install/test-install-progress.ps1

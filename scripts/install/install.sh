@@ -9,6 +9,8 @@ download_retry_count=3
 download_connect_timeout_seconds=30
 download_low_speed_bytes_per_second=1024
 download_low_speed_time_seconds=30
+release_advisories_url="https://raw.githubusercontent.com/$repo_slug/main/scripts/install/release-advisories.json"
+release_advisories_timeout_seconds=10
 
 release="${CLAUDE_RS_RELEASE:-latest}"
 install_dir="${CLAUDE_RS_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/claude-rs}"
@@ -887,6 +889,76 @@ release_version() {
   printf '%s\n' "${selected_tag#v}"
 }
 
+# Release advisories are optional guidance. A single short attempt keeps an
+# unreachable advisory file from delaying or failing the install.
+fetch_release_advisories() {
+  advisories_destination="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL \
+      --connect-timeout "$release_advisories_timeout_seconds" \
+      --max-time "$release_advisories_timeout_seconds" \
+      "$release_advisories_url" -o "$advisories_destination" 2>/dev/null
+    return $?
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -q -T "$release_advisories_timeout_seconds" -t 1 \
+      -O "$advisories_destination" "$release_advisories_url" 2>/dev/null
+    return $?
+  fi
+  return 1
+}
+
+# Prints the summary of every advisory whose inclusive start..end range contains
+# the version. Only the MAJOR.MINOR.PATCH core is compared. Advisory values never
+# contain quotes or backslashes (enforced by release-advisories.test.mjs), so
+# fields can be extracted without a JSON parser.
+matching_release_advisories() {
+  awk -v version="$2" '
+    function field(name,    pattern, text) {
+      pattern = "\"" name "\"[ \t\r\n]*:[ \t\r\n]*\"[^\"]*\""
+      if (!match($0, pattern)) return ""
+      text = substr($0, RSTART, RLENGTH)
+      sub(/^"[a-z]*"[ \t\r\n]*:[ \t\r\n]*"/, "", text)
+      sub(/"$/, "", text)
+      return text
+    }
+    function compare(left, right,    a, b, i) {
+      split(left, a, ".")
+      split(right, b, ".")
+      for (i = 1; i <= 3; i++) {
+        if (a[i] + 0 < b[i] + 0) return -1
+        if (a[i] + 0 > b[i] + 0) return 1
+      }
+      return 0
+    }
+    BEGIN {
+      RS = "}"
+      plain = "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+      if (version !~ /^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$/) exit
+      sub(/[-+].*$/, "", version)
+    }
+    {
+      first = field("start")
+      last = field("end")
+      summary = field("summary")
+      if (first !~ plain || last !~ plain || summary == "") next
+      if (compare(first, version) <= 0 && compare(version, last) <= 0) print summary
+    }
+  ' "$1"
+}
+
+warn_release_advisories() {
+  advisory_version="$1"
+  advisories_file="$tmpdir/release-advisories.json"
+  advisory_matches_file="$tmpdir/release-advisories.txt"
+  fetch_release_advisories "$advisories_file" || return 0
+  matching_release_advisories "$advisories_file" "$advisory_version" \
+    > "$advisory_matches_file" 2>/dev/null || return 0
+  while IFS= read -r advisory_summary; do
+    warn "Known issue in claude-rs $advisory_version: $advisory_summary"
+  done < "$advisory_matches_file"
+}
+
 approve_same_version_reinstall() {
   selected_version="$1"
   if [ "$update" -eq 1 ]; then
@@ -1191,6 +1263,7 @@ archive_file="$tmpdir/$archive_name"
 progress_done "Release $tag selected"
 
 guard_same_version_before_download "$selected_version"
+warn_release_advisories "$selected_version"
 
 progress_start "Downloading release archive"
 download "$base_url/SHA256SUMS" "$checksum_file" || die "could not download SHA256SUMS for $tag"

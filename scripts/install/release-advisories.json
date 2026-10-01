@@ -1,0 +1,9 @@
+{
+  "advisories": [
+    {
+      "start":"0.12.0",
+      "end":"0.14.8",
+      "summary":"Enter may not submit slash commands that take arguments (workaround: press Esc, then Enter). Fixed in 0.14.9."
+    }
+  ]
+}

@@ -12,6 +12,7 @@ const installerPath = path.join(repoRoot, "scripts", "install", "install.sh");
 const selectedVersion = "9.8.7-preview.1+build.5";
 const selectedTag = `v${selectedVersion}`;
 const platformDir = unixPlatformDir();
+const advisoriesUrl = "https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/release-advisories.json";
 const skipReason = platformDir ? false : `Unix installer test is not supported on ${process.platform}:${process.arch}`;
 
 test("Unix installer skips a pinned same-version install before release downloads", { skip: skipReason }, () => {
@@ -38,7 +39,9 @@ test("Unix installer --yes explicitly proceeds with a same-version reinstall", {
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, new RegExp(`Reinstalling claude-rs ${escapeRegex(selectedVersion)}`));
   assert.match(result.output, new RegExp(`Verified claude-rs ${escapeRegex(selectedVersion)}`));
+  assert.doesNotMatch(result.output, /Known issue/, "unavailable release advisories produced a warning");
   assert.deepEqual(result.downloads, [
+    advisoriesUrl,
     `https://github.com/srothgan/claude-code-rust/releases/download/${selectedTag}/SHA256SUMS`,
     `https://github.com/srothgan/claude-code-rust/releases/download/${selectedTag}/claude-code-rust-${selectedVersion}-${platformDir}.tar.gz`,
   ]);
@@ -63,11 +66,67 @@ test("Unix installer compares release identity exactly", { skip: skipReason }, (
   assert.equal(result.status, 1, "mock checksum failure should prove the different release proceeded");
   assert.doesNotMatch(result.output, /already installed; no changes made/);
   assert.deepEqual(result.downloads, [
+    advisoriesUrl,
     `https://github.com/srothgan/claude-code-rust/releases/download/${differentlyCasedTag}/SHA256SUMS`,
   ]);
 });
 
-function runInstallerScenario({ requestedRelease = selectedTag, extraArgs = [], allowReleasePayload = false } = {}) {
+test("Unix installer warns about advisories whose inclusive range contains the selected release", { skip: skipReason }, () => {
+  for (const [name, advisories, expectedSummaries] of [
+    ["inside range", [advisory("9.8.0", "9.9.0", "Inside.")], ["Inside."]],
+    ["range start", [advisory("9.8.7", "9.9.0", "Start.")], ["Start."]],
+    ["range end", [advisory("9.0.0", "9.8.7", "End.")], ["End."]],
+    ["several advisories", [advisory("9.8.7", "9.8.7", "First."), advisory("10.0.0", "10.0.1", "Other."), advisory("0.1.0", "9.8.7", "Second.")], ["First.", "Second."]],
+    ["below range", [advisory("9.8.8", "9.9.0", "Below.")], []],
+    ["above range", [advisory("9.0.0", "9.8.6", "Above.")], []],
+    ["numeric components", [advisory("9.8.10", "9.9.0", "Numeric.")], []],
+  ]) {
+    for (const space of [0, 2]) {
+      const result = runInstallerScenario({
+        extraArgs: ["--yes"],
+        allowReleasePayload: true,
+        advisories: JSON.stringify({ advisories }, null, space),
+      });
+
+      assert.equal(result.status, 0, `${name}: ${result.output}`);
+      assert.deepEqual(
+        result.output.split(/\r?\n/u).filter((line) => line.includes("Known issue")),
+        expectedSummaries.map((summary) => `! Known issue in claude-rs ${selectedVersion}: ${summary}`),
+        name,
+      );
+      assert.equal(result.replacementMarker, true, `${name}: advisory check stopped the install`);
+    }
+  }
+});
+
+test("Unix installer does not fetch advisories for a same-version no-op", { skip: skipReason }, () => {
+  const result = runInstallerScenario({
+    advisories: JSON.stringify({ advisories: [advisory("9.8.0", "9.9.0", "Inside.")] }),
+  });
+
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.output, /Known issue/);
+  assert.deepEqual(result.downloads, []);
+});
+
+test("Unix installer ignores malformed advisories", { skip: skipReason }, () => {
+  const result = runInstallerScenario({ extraArgs: ["--yes"], allowReleasePayload: true, advisories: "not json" });
+
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.output, /Known issue/);
+  assert.equal(result.replacementMarker, true);
+});
+
+function advisory(start, end, summary) {
+  return { start, end, summary };
+}
+
+function runInstallerScenario({
+  requestedRelease = selectedTag,
+  extraArgs = [],
+  allowReleasePayload = false,
+  advisories,
+} = {}) {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "claude-rs-version-guard-"));
   const homeDir = path.join(sandbox, "home");
   const tempDir = path.join(sandbox, "tmp");
@@ -75,6 +134,7 @@ function runInstallerScenario({ requestedRelease = selectedTag, extraArgs = [], 
   const binDir = path.join(sandbox, "bin");
   const shimDir = path.join(sandbox, "shims");
   const downloadLog = path.join(sandbox, "downloads.log");
+  const advisoriesPath = path.join(sandbox, "advisories-fixture.json");
   for (const directory of [homeDir, tempDir, installDir, binDir, shimDir]) {
     fs.mkdirSync(directory, { recursive: true });
   }
@@ -82,6 +142,9 @@ function runInstallerScenario({ requestedRelease = selectedTag, extraArgs = [], 
   writeOwnedInstall(installDir, selectedVersion);
   const releaseFixture = createReleaseFixture(sandbox, selectedVersion);
   writeCommandShims(shimDir);
+  if (advisories !== undefined) {
+    fs.writeFileSync(advisoriesPath, advisories, "utf8");
+  }
 
   const env = { ...process.env };
   for (const name of Object.keys(env)) {
@@ -99,6 +162,7 @@ function runInstallerScenario({ requestedRelease = selectedTag, extraArgs = [], 
     MOCK_ALLOW_RELEASE_PAYLOAD: allowReleasePayload ? "1" : "0",
     MOCK_ARCHIVE_FILE: releaseFixture.archivePath,
     MOCK_CHECKSUM_FILE: releaseFixture.checksumsPath,
+    MOCK_ADVISORIES_FILE: advisoriesPath,
   });
 
   try {
@@ -254,6 +318,10 @@ printf '%s\\n' "$url" >> "$MOCK_DOWNLOAD_LOG"
 case "$url" in
   */releases/latest)
     printf '{"tag_name":"%s"}\\n' "$MOCK_LATEST_TAG" > "$destination"
+    exit 0
+    ;;
+  */release-advisories.json)
+    cp "$MOCK_ADVISORIES_FILE" "$destination" 2>/dev/null || exit 22
     exit 0
     ;;
 esac

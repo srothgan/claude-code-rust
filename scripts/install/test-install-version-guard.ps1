@@ -18,6 +18,7 @@ $helperNames = @(
     "Test-CanPrompt",
     "Confirm-DefaultNo",
     "Get-ReleaseVersion",
+    "Get-MatchingReleaseAdvisories",
     "Get-ScriptInstallInfo",
     "Test-ScriptInstallDirectory",
     "Confirm-SameVersionReinstall"
@@ -68,15 +69,20 @@ function Invoke-InstallerScenario {
     param(
         [string]$RequestedRelease,
         [ValidateSet("Default", "Update", "Yes", "Latest")]
-        [string]$Mode = "Default"
+        [string]$Mode = "Default",
+        [string]$Advisories
     )
 
     $sandbox = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-version-guard-test-$PID-$([Guid]::NewGuid().ToString('N'))"
     $installDir = Join-Path $sandbox "install"
     $wrapperPath = Join-Path $sandbox "invoke-installer.ps1"
     $downloadLog = Join-Path $sandbox "downloads.log"
+    $advisoriesFile = Join-Path $sandbox "advisories-fixture.json"
     $selectedVersion = "9.8.7-preview.1+build.5"
     New-OwnedInstall -Path $installDir -Version $selectedVersion
+    if ($Advisories) {
+        [IO.File]::WriteAllText($advisoriesFile, $Advisories)
+    }
 
     $wrapper = @'
 param(
@@ -85,7 +91,8 @@ param(
     [string]$RequestedRelease,
     [string]$Mode,
     [string]$DownloadLog,
-    [string]$LatestTag
+    [string]$LatestTag,
+    [string]$AdvisoriesFile
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -93,8 +100,12 @@ Get-ChildItem Env:CLAUDE_RS_* -ErrorAction SilentlyContinue | Remove-Item -Error
 $env:CLAUDE_RS_NON_INTERACTIVE = "1"
 
 function Invoke-WebRequest {
-    param([string]$Uri, [string]$OutFile)
+    param([string]$Uri, [string]$OutFile, [int]$TimeoutSec)
     Add-Content -LiteralPath $DownloadLog -Value $Uri
+    if ($Uri.EndsWith("/release-advisories.json", [StringComparison]::Ordinal)) {
+        Copy-Item -LiteralPath $AdvisoriesFile -Destination $OutFile
+        return
+    }
     if ($Mode -eq "Latest" -and $Uri.EndsWith("/releases/latest", [StringComparison]::Ordinal)) {
         [IO.File]::WriteAllText($OutFile, "{`"tag_name`":`"$LatestTag`"}")
         return
@@ -129,7 +140,8 @@ if ($Mode -eq "Yes") {
                 -RequestedRelease $RequestedRelease `
                 -Mode $Mode `
                 -DownloadLog $downloadLog `
-                -LatestTag "v$selectedVersion" 2>&1)
+                -LatestTag "v$selectedVersion" `
+                -AdvisoriesFile $advisoriesFile 2>&1)
             $status = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $previousErrorActionPreference
@@ -169,6 +181,35 @@ try {
     Remove-Item -LiteralPath $metadataSandbox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$advisoriesSandbox = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-advisories-test-$PID.json"
+try {
+    [IO.File]::WriteAllText($advisoriesSandbox, @'
+{
+  "advisories": [
+    {
+      "start":"1.2.0",
+      "end":"1.10.3",
+      "summary":"First issue."
+    },
+    {"summary": "Second issue.", "end": "1.10.3", "start": "1.10.3"}
+  ]
+}
+'@)
+    function Get-Advisories {
+        param([string]$Version)
+        return (@(Get-MatchingReleaseAdvisories -Path $advisoriesSandbox -Version $Version) -join "|")
+    }
+    Assert-Equal "" (Get-Advisories "1.1.9") "Version below the range matched an advisory"
+    Assert-Equal "First issue." (Get-Advisories "1.2.0") "Range start is not inclusive"
+    Assert-Equal "First issue." (Get-Advisories "1.9.0") "Version components were not compared numerically"
+    Assert-Equal "First issue.|Second issue." (Get-Advisories "1.10.3") "Range end is not inclusive or not every matching advisory was returned"
+    Assert-Equal "" (Get-Advisories "1.10.4") "Version above the range matched an advisory"
+    Assert-Equal "First issue." (Get-Advisories "1.2.0-preview.1+build.5") "Prerelease and build suffixes were not ignored"
+    Assert-Equal "" (Get-Advisories "nightly") "Unparseable version matched an advisory"
+} finally {
+    Remove-Item -LiteralPath $advisoriesSandbox -Force -ErrorAction SilentlyContinue
+}
+
 $Update = $true
 $Yes = $true
 Assert-True (-not (Confirm-SameVersionReinstall -Version "1.2.3")) "Update mode allowed a same-version reinstall"
@@ -196,8 +237,10 @@ Assert-Equal 0 $updateResult.Downloads.Count "Same-version update attempted a re
 $yesResult = Invoke-InstallerScenario -RequestedRelease $selectedTag -Mode "Yes"
 Assert-True ($yesResult.Status -ne 0) "Mock release payload failure did not stop the -Yes reinstall"
 Assert-True $yesResult.Output.Contains("Reinstalling claude-rs $selectedVersion") "-Yes did not report a same-version reinstall"
-Assert-Equal 1 $yesResult.Downloads.Count "-Yes reinstall made an unexpected number of download attempts"
-Assert-True $yesResult.Downloads[0].EndsWith("/$selectedTag/SHA256SUMS", [StringComparison]::Ordinal) "-Yes reinstall did not reach the checksum download"
+Assert-Equal 2 $yesResult.Downloads.Count "-Yes reinstall made an unexpected number of download attempts"
+Assert-True $yesResult.Downloads[0].EndsWith("/main/scripts/install/release-advisories.json", [StringComparison]::Ordinal) "-Yes reinstall did not check release advisories before downloading"
+Assert-True $yesResult.Downloads[1].EndsWith("/$selectedTag/SHA256SUMS", [StringComparison]::Ordinal) "-Yes reinstall did not reach the checksum download"
+Assert-True (-not $yesResult.Output.Contains("Known issue")) "Unavailable release advisories produced a warning"
 
 $latestResult = Invoke-InstallerScenario -RequestedRelease "latest" -Mode "Latest"
 Assert-Equal 0 $latestResult.Status "Latest same-version install did not exit successfully"
@@ -210,7 +253,23 @@ $differentlyCasedTag = "v9.8.7-Preview.1+build.5"
 $differentResult = Invoke-InstallerScenario -RequestedRelease $differentlyCasedTag
 Assert-True ($differentResult.Status -ne 0) "Mock release payload failure did not stop the distinct release install"
 Assert-True (-not $differentResult.Output.Contains("already installed; no changes made")) "Release comparison ignored prerelease identifier casing"
-Assert-Equal 1 $differentResult.Downloads.Count "Distinct release install made an unexpected number of download attempts"
-Assert-True $differentResult.Downloads[0].EndsWith("/$differentlyCasedTag/SHA256SUMS", [StringComparison]::Ordinal) "Distinct release install did not reach the checksum download"
+Assert-Equal 2 $differentResult.Downloads.Count "Distinct release install made an unexpected number of download attempts"
+Assert-True $differentResult.Downloads[1].EndsWith("/$differentlyCasedTag/SHA256SUMS", [StringComparison]::Ordinal) "Distinct release install did not reach the checksum download"
+
+$matchingAdvisories = '{"advisories":[{"start":"9.8.0","end":"9.8.7","summary":"Known test issue. Fixed in 9.8.8."}]}'
+$advisedResult = Invoke-InstallerScenario -RequestedRelease $selectedTag -Mode "Yes" -Advisories $matchingAdvisories
+Assert-True $advisedResult.Output.Contains("Known issue in claude-rs ${selectedVersion}: Known test issue. Fixed in 9.8.8.") "Selected release inside an advisory range did not warn: $($advisedResult.Output)"
+Assert-Equal 2 $advisedResult.Downloads.Count "Release advisory warning stopped the install before the checksum download"
+
+$advisedNoOpResult = Invoke-InstallerScenario -RequestedRelease $selectedTag -Advisories $matchingAdvisories
+Assert-Equal 0 $advisedNoOpResult.Downloads.Count "Same-version no-op fetched release advisories"
+
+$unrelatedAdvisories = '{"advisories":[{"start":"9.8.8","end":"9.9.0","summary":"Known test issue."}]}'
+$unadvisedResult = Invoke-InstallerScenario -RequestedRelease $selectedTag -Mode "Yes" -Advisories $unrelatedAdvisories
+Assert-True (-not $unadvisedResult.Output.Contains("Known issue")) "Selected release outside every advisory range warned"
+
+$malformedResult = Invoke-InstallerScenario -RequestedRelease $selectedTag -Mode "Yes" -Advisories "not json"
+Assert-True (-not $malformedResult.Output.Contains("Known issue")) "Malformed release advisories produced a warning"
+Assert-Equal 2 $malformedResult.Downloads.Count "Malformed release advisories stopped the install before the checksum download"
 
 Write-Output "PowerShell installer version guard tests passed"

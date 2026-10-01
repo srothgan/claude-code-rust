@@ -25,6 +25,8 @@ $DownloadRetryCount = 3
 $DownloadConnectTimeoutSeconds = 30
 $DownloadLowSpeedBytesPerSecond = 1024
 $DownloadLowSpeedTimeSeconds = 30
+$ReleaseAdvisoriesUrl = "https://raw.githubusercontent.com/$RepoSlug/main/scripts/install/release-advisories.json"
+$ReleaseAdvisoriesTimeoutSeconds = 10
 
 function Show-Usage {
     @"
@@ -712,6 +714,45 @@ function Get-ReleaseVersion {
     return $Tag
 }
 
+# Returns the summary of every advisory whose inclusive start..end range contains
+# the version. Only the MAJOR.MINOR.PATCH core is compared.
+function Get-MatchingReleaseAdvisories {
+    param([string]$Path, [string]$Version)
+    if ($Version -notmatch '^(\d+\.\d+\.\d+)(?:[-+].*)?$') {
+        return
+    }
+    $versionCore = [version]$Matches[1]
+    $document = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    foreach ($advisory in @($document.advisories)) {
+        $start = [string]$advisory.start
+        $end = [string]$advisory.end
+        $summary = [string]$advisory.summary
+        if ($start -notmatch '^\d+\.\d+\.\d+$' -or $end -notmatch '^\d+\.\d+\.\d+$' -or
+            [string]::IsNullOrWhiteSpace($summary)) {
+            continue
+        }
+        if ([version]$start -le $versionCore -and $versionCore -le [version]$end) {
+            $summary
+        }
+    }
+}
+
+# Release advisories are optional guidance. Any failure to fetch or read them is
+# ignored so that it can never delay or fail the install.
+function Write-ReleaseAdvisories {
+    param([string]$Version, [string]$TempDir)
+    try {
+        $advisoriesPath = Join-Path $TempDir "release-advisories.json"
+        Invoke-WebRequest -Uri $ReleaseAdvisoriesUrl -OutFile $advisoriesPath -TimeoutSec $ReleaseAdvisoriesTimeoutSeconds
+        $summaries = @(Get-MatchingReleaseAdvisories -Path $advisoriesPath -Version $Version)
+    } catch {
+        return
+    }
+    foreach ($summary in $summaries) {
+        Write-WarnLine "Known issue in claude-rs ${Version}: $summary"
+    }
+}
+
 function Get-ExpectedSha256 {
     param([string]$ChecksumsPath, [string]$ArchiveName)
     $expectedPath = "dist-install/$ArchiveName"
@@ -1211,6 +1252,8 @@ try {
             }
         }
     }
+
+    Write-ReleaseAdvisories -Version $selectedVersion -TempDir $tempDir
 
     Start-InstallerProgress "Downloading release archive"
     Invoke-WebRequest -Uri "$baseUrl/SHA256SUMS" -OutFile $checksumsPath
