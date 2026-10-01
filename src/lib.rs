@@ -3,6 +3,7 @@
 
 pub mod agent;
 pub mod app;
+mod claude_paths;
 pub mod cli;
 pub mod error;
 pub mod failure;

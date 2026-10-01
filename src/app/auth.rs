@@ -10,9 +10,9 @@ pub(crate) struct ClaudeOAuthCredentials {
     pub expires_at: Option<SystemTime>,
 }
 
-/// Resolved path to `~/.claude/.credentials.json`.
+/// File credentials in the active Claude configuration directory.
 pub(crate) fn credentials_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".claude").join(".credentials.json"))
+    crate::claude_paths::ClaudePaths::resolve(None).map(|paths| paths.credentials())
 }
 
 pub(crate) fn load_oauth_credentials() -> Option<ClaudeOAuthCredentials> {
@@ -22,7 +22,7 @@ pub(crate) fn load_oauth_credentials() -> Option<ClaudeOAuthCredentials> {
 
 /// Returns `true` when valid OAuth credentials exist on disk.
 ///
-/// Reads `~/.claude/.credentials.json` and checks that
+/// Reads the active profile's `.credentials.json` and checks that
 /// `claudeAiOauth.accessToken` is a non-empty string.
 pub fn has_credentials() -> bool {
     load_oauth_credentials().is_some()

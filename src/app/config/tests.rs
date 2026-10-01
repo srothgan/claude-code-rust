@@ -14,6 +14,89 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use tempfile::TempDir;
 
+#[test]
+fn profile_override_persists_settings_and_trust_without_touching_default_home() {
+    if let Some(project) = std::env::var_os("CLAUDE_RS_CONFIG_TEST_PROJECT") {
+        let profile = PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").expect("profile"));
+        let mut app = App::test_default();
+        app.cwd_raw = PathBuf::from(project).to_string_lossy().into_owned();
+        initialize_shared_state(&mut app).expect("initialize");
+        assert_eq!(app.config.settings_path, Some(profile.join("settings.json")));
+        assert_eq!(app.config.preferences_path, Some(profile.join(".claude.json")));
+        assert_eq!(app.config.model_effective().as_deref(), Some("haiku"));
+        crate::app::trust::initialize(&mut app);
+        assert!(!app.is_project_trusted());
+        crate::app::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        );
+        assert!(app.is_project_trusted());
+        open(&mut app).expect("open settings");
+        select_setting(&mut app, SettingId::FastMode);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert!(app.config.fast_mode_effective());
+
+        let mut reloaded = App::test_default();
+        reloaded.cwd_raw = app.cwd_raw.clone();
+        initialize_shared_state(&mut reloaded).expect("reload settings");
+        crate::app::trust::initialize(&mut reloaded);
+        assert!(reloaded.is_project_trusted());
+        assert!(reloaded.config.fast_mode_effective());
+        let credentials = crate::app::auth::load_oauth_credentials().expect("isolated credentials");
+        assert_eq!(credentials.access_token, "isolated-test-token");
+        assert_eq!(crate::app::auth::credentials_path(), Some(profile.join(".credentials.json")));
+        let paths = crate::claude_paths::ClaudePaths::resolve(None).expect("paths");
+        assert_eq!(
+            paths.default_memory_file(&app.cwd_raw),
+            profile.join("projects/work/memory/MEMORY.md")
+        );
+        return;
+    }
+
+    // Set environment only in a subprocess: Rust's parallel test process never
+    // mutates its global environment or consults the developer's credentials.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("default home");
+    let profile = temp.path().join("isolated profile");
+    let project = temp.path().join("project");
+    for directory in [home.join(".claude"), profile.clone(), project] {
+        std::fs::create_dir_all(directory).expect("directory");
+    }
+    let default_settings = home.join(".claude/settings.json");
+    let default_preferences = home.join(".claude.json");
+    let default_credentials = home.join(".claude/.credentials.json");
+    for file in [&default_settings, &default_preferences, &default_credentials] {
+        std::fs::write(file, "{\"sentinel\":true}").expect("default sentinel");
+    }
+    std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","fastMode":false}"#)
+        .expect("settings");
+    std::fs::write(
+        profile.join(".credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"isolated-test-token"}}"#,
+    )
+    .expect("credentials");
+    let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", "app::config::tests::profile_override_persists_settings_and_trust_without_touching_default_home", "--nocapture"])
+        .env("CLAUDE_RS_CONFIG_TEST_PROJECT", temp.path().join("project"))
+        .env("CLAUDE_CONFIG_DIR", &profile)
+        .env("CLAUDE_CODE_PROJECT_DIR_NAME", "work")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .output()
+        .expect("run isolated app workflow");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for file in [&default_settings, &default_preferences, &default_credentials] {
+        assert_eq!(std::fs::read_to_string(file).expect("sentinel"), "{\"sentinel\":true}");
+    }
+    assert!(!profile.join(".claude").exists());
+    assert!(profile.join(".claude.json").is_file());
+}
+
 fn attach_test_connection(app: &mut App) -> crate::agent::client::CommandReceiver {
     let (connection, receiver) = crate::agent::client::AgentConnection::test_channel();
     app.session_runtime.conn = Some(Rc::new(connection));

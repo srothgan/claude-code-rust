@@ -51,6 +51,8 @@ Settings are loaded from Claude-compatible JSON files. The app can edit supporte
 | `./.claude/settings.local.json` | Project-local settings for the current working directory. |
 | `~/.claude.json` | User preferences. |
 
+Set `CLAUDE_CONFIG_DIR` before starting the app to use an isolated Claude profile. User settings resolve to `<directory>/settings.json`, preferences and workspace trust to `<directory>/.claude.json`, and file credentials to `<directory>/.credentials.json`. The bridge and Claude CLI subprocesses inherit the same directory for sessions, plugins, and authentication. An unset or empty variable uses the default paths above; project-local settings remain in the project. The app's own preferences and diagnostic logs still use their normal OS locations.
+
 Malformed JSON files are backed up with a timestamped `.bak` extension and replaced in memory with an empty object so the app can keep running.
 
 For read-only support workflows, use:

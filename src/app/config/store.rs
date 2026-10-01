@@ -16,7 +16,6 @@ use crate::agent::model::EffortLevel;
 
 const SETTINGS_FILENAME: &str = "settings.json";
 const LOCAL_SETTINGS_FILENAME: &str = "settings.local.json";
-const PREFERENCES_FILENAME: &str = ".claude.json";
 const CLAUDE_DIR: &str = ".claude";
 const CLAUDE_CODE_DISABLE_1M_CONTEXT_ENV: &str = "CLAUDE_CODE_DISABLE_1M_CONTEXT";
 const ANTHROPIC_DEFAULT_OPUS_MODEL_ENV: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
@@ -531,11 +530,8 @@ pub fn resolve_paths(
     home_override: Option<&Path>,
     project_root_override: Option<&Path>,
 ) -> Result<SettingsPaths, String> {
-    let home = if let Some(path) = home_override {
-        path.to_path_buf()
-    } else {
-        dirs::home_dir().ok_or_else(|| "Failed to resolve home directory".to_owned())?
-    };
+    let user_paths = crate::claude_paths::ClaudePaths::resolve(home_override)
+        .ok_or_else(|| "Failed to resolve Claude configuration directory".to_owned())?;
     let project_root = if let Some(path) = project_root_override {
         path.to_path_buf()
     } else {
@@ -544,9 +540,9 @@ pub fn resolve_paths(
     };
 
     Ok(SettingsPaths {
-        settings: home.join(CLAUDE_DIR).join(SETTINGS_FILENAME),
+        settings: user_paths.config_dir.join(SETTINGS_FILENAME),
         local_settings: project_root.join(CLAUDE_DIR).join(LOCAL_SETTINGS_FILENAME),
-        preferences: home.join(PREFERENCES_FILENAME),
+        preferences: user_paths.preferences,
     })
 }
 
