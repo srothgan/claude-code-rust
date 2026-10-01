@@ -44,9 +44,7 @@ to inspect the current session's full command list. The output includes app-owne
 
 ## Session Commands
 
-`/fast` changes fast mode only for the active session. It does not rewrite the
-persisted Fast mode setting. Use the settings surface to choose the fast-mode
-preference applied when future sessions start.
+`/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start.
 
 ## Project-Local Commands
 

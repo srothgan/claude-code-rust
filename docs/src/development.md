@@ -1,7 +1,6 @@
 # Development
 
-This page covers building and running Claude Code Rust from source. For CI checks, coding
-standards, and how to open a pull request, see [CONTRIBUTING.md](https://github.com/srothgan/claude-code-rust/blob/main/CONTRIBUTING.md).
+This page covers building and running Claude Code Rust from source. For CI checks, coding standards, and how to open a pull request, see [CONTRIBUTING.md](https://github.com/srothgan/claude-code-rust/blob/main/CONTRIBUTING.md).
 
 ## Build From Source
 
