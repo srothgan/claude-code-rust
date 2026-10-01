@@ -2,7 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
-<!-- ## [Unreleased] -->
+## [Unreleased]
+
+### Features
+
+- **Agent SDK 0.3.286 migration** (#403, @srothgan): Upgrade to Agent SDK `0.3.286` with slash command aliases, SDK conversation resets, plugin load failure notices, and Artifact pin state.
+- **`/btw` side questions** (#403, @srothgan): Ask side questions with `/btw <question>` without interrupting the active turn, queueing up to ten.
+- **`/ultracode` session controls** (#403, @srothgan): Toggle and inspect Ultracode with `/ultracode on`, `off`, and `status`, keep it active across effort changes, and show a purple footer label only while it is effective.
+- **Composer input surface** (#392, @srothgan): Give the composer the user-message background with one-cell padding on every side.
+
+### Fixes
+
+- **Actionable startup failures** (#403, @srothgan): Map every SDK startup failure reason to an actionable message, suppress duplicate failures, and keep the composer input recoverable.
+- **Bridge spawn diagnostics** (#393, @srothgan): Preserve the OS error in the bridge spawn failure chain and remove the exec race behind the flaky bridge spawn test.
+
+### Documentation
+
+- **GitHub Sponsors** (#402, @srothgan): Add the repository Sponsor button and document sponsorship tiers and placement policy on the governance page.
+- **Shared agent instructions** (#403, @srothgan): Track `AGENTS.md` and add a `CLAUDE.md` that imports it.
+
+### CI and Dependencies
+
+- **rustls security update** (#393, @srothgan): Bump `rustls` to `0.23.45` to clear RUSTSEC-2026-0285 while keeping the `1.88.0` MSRV.
 
 ## [0.14.7] - 2026-09-13 [Changes][v0.14.7]
 
