@@ -243,6 +243,7 @@ async fn run_tui_loop(
             match action {
                 paste_burst::FlushAction::EmitChar(ch) => {
                     let _ = app.input.textarea_insert_char(ch);
+                    slash::sync_with_cursor(app);
                 }
                 paste_burst::FlushAction::EmitPaste(text) => {
                     app.queue_paste_text(&text);
@@ -422,7 +423,7 @@ fn prepare_app_shutdown(app: &mut App) {
     app.paste.clear_all_sessions();
     app.pending_submit = None;
     app.mention = None;
-    app.slash = None;
+    app.slash.clear();
     app.subagent = None;
     app.request_chat_visible_rebuild();
 
@@ -561,6 +562,14 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 /// Finalize queued `Event::Paste` chunks for this drain cycle.
 fn finalize_pending_paste_event(app: &mut App) {
+    let input_version_before = app.input.version;
+    apply_pending_paste_event(app);
+    if app.input.version != input_version_before {
+        slash::sync_with_cursor(app);
+    }
+}
+
+fn apply_pending_paste_event(app: &mut App) {
     let pasted = app.paste.take_pending_text();
     if pasted.is_empty() {
         return;

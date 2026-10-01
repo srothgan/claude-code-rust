@@ -70,7 +70,7 @@ pub(super) fn reset_for_conversation(
     reset_messages_for_new_session(app, false);
     app.chat_render.reset();
     app.mention = None;
-    app.slash = None;
+    app.slash.clear();
     app.subagent = None;
     crate::app::usage::reset_for_session_change(app);
     app.request_chat_repaint();
@@ -170,7 +170,7 @@ fn reset_render_state_for_new_session(app: &mut App) {
     app.chat_render.reset();
     app.mention = None;
     crate::app::file_index::reset(app);
-    app.slash = None;
+    app.slash.clear();
     app.subagent = None;
 }
 

@@ -5,11 +5,13 @@
 //!
 //! Submodules:
 //! - `candidates`: candidate detection, filtering, and building
-//! - `navigation`: autocomplete activation, movement, and confirm
+//! - `completion`: autocomplete visibility, continuation, and dismissal
+//! - `navigation`: autocomplete synchronization, movement, and confirmation
 //! - `executors`: slash command execution handlers
 
 mod candidates;
 mod catalog;
+mod completion;
 mod executors;
 mod navigation;
 
@@ -19,17 +21,17 @@ use super::{
 };
 use crate::agent::model;
 use crate::app::events::push_submission_feedback;
+pub use completion::SlashAutocomplete;
+use completion::{CompletionRequest, SlashCommandToken};
 use std::rc::Rc;
 
-const MAX_CANDIDATES: usize = 50;
 // Re-export public API
 pub(crate) use catalog::{APP_SLASH_COMMANDS, AppSlashCommand, SubmissionClass, command_spec};
 pub(crate) use executors::try_handle_submission;
 #[cfg(test)]
 pub use executors::try_handle_submit;
-pub use navigation::{
-    confirm_selection, deactivate, move_down, move_up, sync_with_cursor, update_query,
-};
+pub use navigation::{confirm_selection, move_down, move_up, prepare_submit, sync_with_cursor};
+pub(crate) use navigation::{dismiss, request_completion};
 
 #[derive(Debug, Clone)]
 pub struct SlashCandidate {
@@ -63,7 +65,7 @@ pub struct SlashState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SlashDetection {
-    trigger_row: usize,
+    command_token: SlashCommandToken,
     trigger_col: usize,
     query: String,
     context: SlashContext,

@@ -9,6 +9,12 @@ use super::candidates::{
     supported_command_candidates,
 };
 
+fn requested_slash_state(app: &App) -> Option<SlashState> {
+    let detection =
+        detect_slash_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())?;
+    super::candidates::build_slash_state(app, detection, CompletionRequest::Arguments)
+}
+
 fn attach_test_connection(app: &mut App) -> crate::agent::client::CommandReceiver {
     let (connection, receiver) = crate::agent::client::AgentConnection::test_channel();
     app.session_runtime.conn = Some(std::rc::Rc::new(connection));
@@ -343,7 +349,7 @@ fn app_config_candidate_ignores_advertised_config_metadata() {
     app.input.set_text("/config");
     let _ = app.input.set_cursor(0, "/config".chars().count());
 
-    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let slash = requested_slash_state(&app).expect("slash state");
     let config_candidates: Vec<_> =
         slash.candidates.iter().filter(|candidate| candidate.primary == "/config").collect();
 
@@ -359,7 +365,7 @@ fn app_config_does_not_enter_advertised_argument_mode() {
     app.input.set_text("/config ");
     let _ = app.input.set_cursor(0, "/config ".chars().count());
 
-    assert!(super::candidates::build_slash_state(&app).is_none());
+    assert!(requested_slash_state(&app).is_none());
 }
 
 #[test]
@@ -370,7 +376,7 @@ fn app_fast_candidate_ignores_advertised_fast_metadata() {
     app.input.set_text("/fast");
     let _ = app.input.set_cursor(0, "/fast".chars().count());
 
-    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let slash = requested_slash_state(&app).expect("slash state");
     let fast_candidates: Vec<_> =
         slash.candidates.iter().filter(|candidate| candidate.primary == "/fast").collect();
 
@@ -1086,7 +1092,7 @@ fn agent_argument_candidates_filter_by_query() {
     app.input.set_text("/agent rev");
     let _ = app.input.set_cursor(0, "/agent rev".chars().count());
 
-    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let slash = requested_slash_state(&app).expect("slash state");
 
     assert!(matches!(slash.context, SlashContext::Argument { .. }));
     assert_eq!(
@@ -1126,7 +1132,7 @@ fn rewind_argument_candidates_use_cached_targets() {
     app.input.set_text("/rewind second");
     let _ = app.input.set_cursor(0, "/rewind second".chars().count());
 
-    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let slash = requested_slash_state(&app).expect("slash state");
 
     assert!(matches!(slash.context, SlashContext::Argument { .. }));
     assert_eq!(
@@ -1191,7 +1197,7 @@ fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
 
     sync_with_cursor(&mut app);
 
-    let slash = app.slash.as_ref().expect("slash state");
+    let slash = app.slash.visible().expect("slash state");
     assert!(slash.candidates.is_empty());
     assert_eq!(slash.placeholder.as_deref(), Some("Loading messages"));
 }
@@ -1205,7 +1211,7 @@ fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
     app.input.set_text("/rewind ");
     let _ = app.input.set_cursor(0, "/rewind ".chars().count());
 
-    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let slash = requested_slash_state(&app).expect("slash state");
 
     assert!(slash.candidates.is_empty());
     assert_eq!(slash.placeholder.as_deref(), Some("No previous user messages"));
@@ -1228,7 +1234,7 @@ fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result(
     app.input.set_text("/rewind missing");
     let _ = app.input.set_cursor(0, "/rewind missing".chars().count());
 
-    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let slash = requested_slash_state(&app).expect("slash state");
 
     assert!(slash.candidates.is_empty());
     assert_eq!(slash.placeholder.as_deref(), Some("No matching messages"));
@@ -1271,7 +1277,7 @@ fn effort_argument_candidates_filter_by_query() {
     app.input.set_text("/effort xh");
     let _ = app.input.set_cursor(0, "/effort xh".chars().count());
 
-    let slash = super::candidates::build_slash_state(&app).expect("slash state");
+    let slash = requested_slash_state(&app).expect("slash state");
 
     assert!(matches!(slash.context, SlashContext::Argument { .. }));
     assert_eq!(
@@ -1452,7 +1458,7 @@ fn non_variable_command_argument_mode_is_disabled() {
     app.input.set_text("/cancel now");
     let _ = app.input.set_cursor(0, "/cancel now".chars().count());
     sync_with_cursor(&mut app);
-    assert!(app.slash.is_none());
+    assert!(app.slash.visible().is_none());
 }
 
 #[test]
@@ -1469,7 +1475,7 @@ fn variable_command_argument_mode_stays_active_without_matches() {
     app.input.set_text("/mode xyz");
     let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
     sync_with_cursor(&mut app);
-    let slash = app.slash.as_ref().expect("slash state should stay active for empty result hint");
+    let slash = app.slash.visible().expect("slash state should stay active for empty result hint");
     assert!(slash.candidates.is_empty());
 }
 
@@ -1478,7 +1484,7 @@ fn confirm_selection_replaces_only_active_argument_token() {
     let mut app = App::test_default();
     app.input.set_text("/resume old-id trailing");
     let _ = app.input.set_cursor(0, "/resume old-id".chars().count());
-    app.slash = Some(SlashState {
+    app.slash.show(SlashState {
         trigger_row: 0,
         trigger_col: 8,
         query: "old-id".to_owned(),
@@ -2182,7 +2188,7 @@ fn model_with_extra_args_returns_usage_message() {
 fn confirm_selection_with_invalid_trigger_row_is_noop() {
     let mut app = App::test_default();
     app.input.set_text("/mode");
-    app.slash = Some(SlashState {
+    app.slash.show(SlashState {
         trigger_row: 99,
         trigger_col: 0,
         query: "m".into(),
@@ -2206,7 +2212,7 @@ fn docs_command_confirm_enters_argument_mode() {
     let mut app = App::test_default();
     app.input.set_text("/do");
     let _ = app.input.set_cursor(0, "/do".chars().count());
-    app.slash = Some(SlashState {
+    app.slash.show(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: "do".into(),
@@ -2223,7 +2229,7 @@ fn docs_command_confirm_enters_argument_mode() {
     confirm_selection(&mut app);
 
     assert_eq!(app.input.text(), "/docs ");
-    let slash = app.slash.as_ref().expect("topic autocomplete should activate");
+    let slash = app.slash.visible().expect("topic autocomplete should activate");
     match &slash.context {
         SlashContext::Argument { command, arg_index, .. } => {
             assert_eq!(command, "/docs");
@@ -2249,7 +2255,7 @@ fn single_argument_builtin_selection_closes_autocomplete() {
         let input = format!("{command} ");
         app.input.set_text(&input);
         let _ = app.input.set_cursor(0, input.chars().count());
-        app.slash = Some(SlashState {
+        app.slash.show(SlashState {
             trigger_row: 0,
             trigger_col: input.chars().count(),
             query: String::new(),
@@ -2270,7 +2276,7 @@ fn single_argument_builtin_selection_closes_autocomplete() {
         confirm_selection(&mut app);
 
         assert_eq!(app.input.text(), format!("{command} {value} "));
-        assert!(app.slash.is_none(), "{command} should close after first argument");
+        assert!(app.slash.visible().is_none(), "{command} should close after first argument");
     }
 }
 

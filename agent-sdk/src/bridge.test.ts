@@ -7070,6 +7070,78 @@ test("handleSdkMessage replaces available commands from commands_changed", () =>
   );
 });
 
+test("SDK no-argument hints are absent from the command wire inventory", () => {
+  const session = makeSessionState();
+  const hints = [
+    undefined, "", "  ", "none", " [None] ", "[none]",
+    "<target>", "[optional reason]", "[none|all]",
+  ];
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "commands_changed",
+      commands: hints.map((argumentHint, index) => ({
+        name: `command-${index}`, argumentHint,
+      })),
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.ok(events[0]);
+  assert.deepEqual(
+    (events[0].update as { commands: unknown[] }).commands,
+    hints.map((hint, index) => ({
+      name: `command-${index}`, description: "",
+      ...(index >= 6 ? { input_hint: hint } : {}),
+    })),
+  );
+});
+
+test("SDK identity replacement republishes authoritative commands after the reset", async () => {
+  for (const commands of [[], [
+    { name: "clear", description: "Clear conversation", builtin: true },
+    { name: "project-plugin", description: "Current plugin" },
+  ]]) {
+    const session = makeSessionState();
+    session.query = {
+      supportedCommands: async () => [{
+        name: "stale-plugin", description: "Removed plugin", argumentHint: "",
+      }],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+    captureBridgeEvents(() =>
+      updateAvailableCommands(session, "commands_changed", commands),
+    );
+    const events: Array<Record<string, unknown>> = [];
+    let finishRefresh!: () => void;
+    const refreshed = new Promise<void>((resolve) => { finishRefresh = resolve; });
+    const restoreWriter = replaceProtocolEventWriter((line) => {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      events.push(event);
+      if (event.event === "sessions_listed") finishRefresh();
+    });
+    try {
+      handleSdkMessage(session, {
+        type: "system", subtype: "init", session_id: "replacement-session",
+        model: "haiku", slash_commands: ["stale-plugin"],
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      await refreshed;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      restoreWriter();
+      sessions.delete(session.sessionId);
+    }
+    const relevant = events.filter((event) =>
+      event.event === "session_replaced" ||
+      (event.update as { type?: string })?.type === "available_commands_update",
+    );
+    assert.deepEqual(relevant.map((event) => event.event), ["session_replaced", "session_update"]);
+    assert.equal(relevant[1]?.session_id, "replacement-session");
+    assert.deepEqual(relevant[1]?.update, {
+      type: "available_commands_update", commands, source: "commands_changed", generation: 1,
+    });
+    assert.equal(session.availableCommands?.generation, 1);
+    assert.deepEqual(session.availableCommands?.commands, commands);
+  }
+});
+
 test("handleSdkMessage accepts empty commands_changed replacement list", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {

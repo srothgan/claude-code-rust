@@ -4,8 +4,8 @@
 //! Slash command candidate detection, filtering, and building.
 
 use super::{
-    APP_SLASH_COMMANDS, AppSlashCommand, MAX_CANDIDATES, SlashCandidate, SlashContext,
-    SlashDetection, SlashState, command_spec, normalize_slash_name,
+    APP_SLASH_COMMANDS, AppSlashCommand, CompletionRequest, SlashCandidate, SlashCommandToken,
+    SlashContext, SlashDetection, SlashState, SubmissionClass, command_spec, normalize_slash_name,
 };
 use crate::agent::model::EffortLevel;
 use crate::app::App;
@@ -17,6 +17,7 @@ const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
 const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
 const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
 const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
+const MAX_ARGUMENT_CANDIDATES: usize = 50;
 
 fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
     match model_id {
@@ -103,8 +104,13 @@ pub(super) fn detect_slash_at_cursor(
     cursor_col: usize,
 ) -> Option<SlashDetection> {
     let line = lines.get(cursor_row)?;
-    let first_non_ws = line.find(|c: char| !c.is_whitespace())?;
+    // Submission recognizes a command only at the start of the message.
+    // Later lines are prompt/argument text, even if they begin with a slash.
+    if lines[..cursor_row].iter().any(|line| !line.trim().is_empty()) {
+        return None;
+    }
     let chars: Vec<char> = line.chars().collect();
+    let first_non_ws = chars.iter().position(|c| !c.is_whitespace())?;
     if chars.get(first_non_ws).copied() != Some('/') {
         return None;
     }
@@ -117,26 +123,28 @@ pub(super) fn detect_slash_at_cursor(
         return None;
     }
 
+    let command: String = chars[token_start..token_end].iter().collect();
+    let command_token = SlashCommandToken { row: cursor_row, name: command.clone() };
+
     if cursor_col <= token_end {
         let query: String = chars[token_start + 1..cursor_col].iter().collect();
         if query.chars().any(char::is_whitespace) {
             return None;
         }
         return Some(SlashDetection {
-            trigger_row: cursor_row,
+            command_token,
             trigger_col: token_start,
             query,
             context: SlashContext::CommandName,
         });
     }
 
-    let command: String = chars[token_start..token_end].iter().collect();
     let (arg_index, token_start, token_end) =
         detect_argument_at_cursor(&chars, token_end, cursor_col)?;
     let query: String = chars[token_start..cursor_col.min(token_end)].iter().collect();
 
     Some(SlashDetection {
-        trigger_row: cursor_row,
+        command_token,
         trigger_col: token_start,
         query,
         context: SlashContext::Argument {
@@ -252,19 +260,24 @@ pub(super) fn filter_command_candidates(
     query: &str,
 ) -> Vec<SlashCandidate> {
     if query.is_empty() {
-        return candidates.iter().take(MAX_CANDIDATES).cloned().collect();
+        return candidates.to_vec();
     }
 
     let query_lower = query.to_lowercase();
-    candidates
+    let mut matches = candidates
         .iter()
         .filter(|candidate| {
             let body = candidate.primary.strip_prefix('/').unwrap_or(&candidate.primary);
             body.to_lowercase().contains(&query_lower)
         })
-        .take(MAX_CANDIDATES)
-        .cloned()
-        .collect()
+        .collect::<Vec<_>>();
+    // An exact command must precede substring matches before Enter can submit.
+    // Keep all other matches in inventory order for deliberate arrow selection.
+    matches.sort_by_key(|candidate| {
+        candidate.primary.strip_prefix('/').unwrap_or(&candidate.primary).to_lowercase()
+            != query_lower
+    });
+    matches.into_iter().cloned().collect()
 }
 
 fn candidate_matches(candidate: &SlashCandidate, query_lower: &str) -> bool {
@@ -281,16 +294,18 @@ pub(super) fn filter_argument_candidates(
     query: &str,
 ) -> Vec<SlashCandidate> {
     if query.is_empty() {
-        return candidates.iter().take(MAX_CANDIDATES).cloned().collect();
+        return candidates.iter().take(MAX_ARGUMENT_CANDIDATES).cloned().collect();
     }
 
     let query_lower = query.to_lowercase();
-    candidates
+    let mut matches = candidates
         .iter()
         .filter(|candidate| candidate_matches(candidate, &query_lower))
-        .take(MAX_CANDIDATES)
-        .cloned()
-        .collect()
+        .collect::<Vec<_>>();
+    // A fully typed value must precede description-only matches: e.g. the
+    // description of rewind's "both" also contains the word "conversation".
+    matches.sort_by_key(|candidate| candidate.insert_value.to_lowercase() != query_lower);
+    matches.into_iter().take(MAX_ARGUMENT_CANDIDATES).cloned().collect()
 }
 
 fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
@@ -532,7 +547,14 @@ fn placeholder_for_empty_candidates(
         {
             Some("Select restore mode".to_owned())
         }
-        _ => None,
+        SlashContext::Argument { command, .. } => {
+            command_spec(command).map(|spec| spec.usage.to_owned()).or_else(|| {
+                find_advertised_command(app, command)
+                    .and_then(|command| command.input_hint.as_ref())
+                    .map(|hint| format!("Arguments: {hint}"))
+            })
+        }
+        SlashContext::CommandName => Some("No matching commands".to_owned()),
     }
 }
 
@@ -547,15 +569,23 @@ fn truncate_rewind_label(text: &str) -> String {
     if label.is_empty() { "(empty user message)".to_owned() } else { label }
 }
 
-pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
-    let detection =
-        detect_slash_at_cursor(app.input.lines(), app.input.cursor_row(), app.input.cursor_col())?;
-
+pub(super) fn build_slash_state(
+    app: &App,
+    detection: SlashDetection,
+    request: CompletionRequest,
+) -> Option<SlashState> {
     let candidates = match &detection.context {
         SlashContext::CommandName => {
             filter_command_candidates(&supported_command_candidates(app), &detection.query)
         }
         SlashContext::Argument { command, arg_index, .. } => {
+            // App validation owns whether an argument is required. SDK hints
+            // are opaque help text; they never impose local arity rules.
+            let requires_arguments = command_spec(command)
+                .is_some_and(|spec| spec.command.submission_class(&[]) == SubmissionClass::Invalid);
+            if request == CompletionRequest::Automatic && !requires_arguments {
+                return None;
+            }
             if !is_variable_input_command(app, command) {
                 return None;
             }
@@ -567,7 +597,7 @@ pub(super) fn build_slash_state(app: &App) -> Option<SlashState> {
     };
     let placeholder = placeholder_for_empty_candidates(app, &detection, &candidates);
     Some(SlashState {
-        trigger_row: detection.trigger_row,
+        trigger_row: detection.command_token.row,
         trigger_col: detection.trigger_col,
         query: detection.query,
         context: detection.context,

@@ -25,7 +25,7 @@ fn busy_view_test_app() -> App {
         placeholder_index: Some(1),
     });
     app.mention = Some(crate::app::mention::MentionState::new(0, 0, "rs".to_owned(), vec![]));
-    app.slash = Some(SlashState {
+    app.slash.show(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: "/co".to_owned(),
@@ -57,7 +57,7 @@ fn set_surface_mode_clears_transient_chat_state_but_keeps_draft() {
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
     assert_eq!(app.input.text(), "draft");
     assert!(app.mention.is_none());
-    assert!(app.slash.is_none());
+    assert!(app.slash.visible().is_none());
     assert!(app.subagent.is_none());
     assert!(app.paste.pending_text.is_empty());
     assert!(app.paste.pending_session.is_none());

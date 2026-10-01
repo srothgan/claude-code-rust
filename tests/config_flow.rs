@@ -44,7 +44,7 @@ fn config_blocks_chat_text_and_slash_activation() {
     );
 
     assert_eq!(app.input.text(), "seed");
-    assert!(app.slash.is_none());
+    assert!(app.slash.visible().is_none());
 }
 
 #[test]

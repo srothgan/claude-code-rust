@@ -351,8 +351,8 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
             app.sdk_inventory.available_commands = cmds.available_commands;
             crate::app::plugins::clamp_selection(app);
-            if app.slash.is_some() {
-                super::slash::update_query(app);
+            if app.slash.is_visible() {
+                super::slash::sync_with_cursor(app);
             }
         }
         model::SessionUpdate::AvailableAgentsUpdate(agents) => {

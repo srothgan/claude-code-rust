@@ -20,7 +20,7 @@ struct DropdownMeta {
 
 pub fn is_active(app: &App) -> bool {
     app.mention.is_some()
-        || app.slash.is_some()
+        || app.slash.is_visible()
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
@@ -41,7 +41,7 @@ fn active_dropdown(app: &App) -> Option<Dropdown<'_>> {
     if let Some(m) = &app.mention {
         return Some(Dropdown::Mention(m));
     }
-    if let Some(s) = &app.slash {
+    if let Some(s) = app.slash.visible() {
         return Some(Dropdown::Slash(s));
     }
     if let Some(s) = &app.subagent
@@ -459,7 +459,7 @@ mod tests {
         app.input.set_text("/");
         let _ = app.input.set_cursor(0, 1);
         slash::sync_with_cursor(&mut app);
-        let state = app.slash.as_mut().expect("slash autocomplete");
+        let state = app.slash.visible_mut().expect("slash autocomplete");
         state.query = "cmd".to_owned();
         state.candidates = (0..8)
             .map(|i| slash::SlashCandidate {

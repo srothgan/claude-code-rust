@@ -15,7 +15,7 @@ impl App {
     pub fn active_autocomplete_kind(&self) -> Option<AutocompleteKind> {
         if self.mention.is_some() {
             Some(AutocompleteKind::Mention)
-        } else if self.slash.is_some() {
+        } else if self.slash.is_visible() {
             Some(AutocompleteKind::Slash)
         } else if self.subagent.is_some() {
             Some(AutocompleteKind::Subagent)
@@ -27,7 +27,7 @@ impl App {
     #[must_use]
     pub fn autocomplete_focus_available(&self) -> bool {
         self.mention.as_ref().is_some_and(mention::MentionState::has_selectable_candidates)
-            || self.slash.is_some()
+            || self.slash.is_visible()
             || self.subagent.is_some()
     }
 }

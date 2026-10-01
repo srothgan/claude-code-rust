@@ -93,7 +93,22 @@ pub(super) fn dispatch_key_by_focus(app: &mut App, key: KeyEvent) -> KeyOutcome 
     if !app.composer_access().can_edit() {
         return handle_keymap_context(app, KeyContext::ChatBlocked, key);
     }
+    // Every composer route, including autocomplete and custom bindings, must
+    // cancel stale submissions and respect a paste awaiting drain finalization.
+    if should_ignore_key_during_paste(app, key) {
+        return KeyOutcome::Ignored;
+    }
+    let input_version_before = app.input.version;
+    let outcome = route_key_by_focus(app, key);
+    // A deferred submit returns unchanged: prepare_submit already chose the
+    // final menu state, and the drain will consume its completed draft.
+    if outcome.changed() && app.input.version != input_version_before {
+        slash::sync_with_cursor(app);
+    }
+    outcome
+}
 
+fn route_key_by_focus(app: &mut App, key: KeyEvent) -> KeyOutcome {
     match app.focus_owner() {
         FocusOwner::Mention => handle_autocomplete_key(app, key),
         FocusOwner::Permission => {
@@ -160,15 +175,10 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
     let input_version_before = app.input.version;
 
-    if should_ignore_key_during_paste(app, key) {
-        return KeyOutcome::Ignored;
-    }
-
     let outcome = handle_chat_input_key(app, key);
 
     if app.input.version != input_version_before {
         mention::sync_with_cursor(app);
-        slash::sync_with_cursor(app);
         subagent::sync_with_cursor(app);
     }
 
@@ -176,33 +186,50 @@ pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 }
 
 fn should_ignore_key_during_paste(app: &mut App, key: KeyEvent) -> bool {
-    if paste_suppression_bypass_action(app, key).is_some() {
+    let action = autocomplete_key_context(app)
+        .filter(|_| app.focus_owner() == FocusOwner::Mention)
+        .and_then(|context| resolve_key_action_for_context(app, context, key))
+        .or_else(|| resolve_key_action_for_context(app, KeyContext::ChatInput, key));
+    if matches!(
+        action,
+        Some(KeyAction::App(
+            AppAction::ClearInputOrQuit
+                | AppAction::Quit
+                | AppAction::Redraw
+                | AppAction::CancelTurn
+        ))
+    ) {
         return false;
     }
-    if app.pending_submit.is_some() && is_editing_like_key(key) {
+    let edits_input = is_editing_like_key(key, action);
+    if edits_input {
         app.pending_submit = None;
     }
-    app.paste.has_pending_text() && is_editing_like_key(key)
+    app.paste.has_pending_text() && edits_input
 }
 
-fn paste_suppression_bypass_action(app: &App, key: KeyEvent) -> Option<KeyAction> {
-    resolve_key_action_for_context(app, KeyContext::ChatInput, key).filter(|action| {
-        matches!(
-            action,
-            KeyAction::App(
-                AppAction::ClearInputOrQuit
-                    | AppAction::Quit
-                    | AppAction::Redraw
-                    | AppAction::CancelTurn
-            )
-        )
-    })
-}
-
-fn is_editing_like_key(key: KeyEvent) -> bool {
+fn is_editing_like_key(key: KeyEvent, action: Option<KeyAction>) -> bool {
     matches!(
         key.code,
         KeyCode::Char(_) | KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace | KeyCode::Delete
+    ) || matches!(
+        action,
+        Some(
+            KeyAction::App(AppAction::SubmitInput | AppAction::FocusPromptOrAcceptSuggestion)
+                | KeyAction::Autocomplete(AutocompleteAction::Confirm)
+                | KeyAction::Input(
+                    InputAction::DeleteCharBefore
+                        | InputAction::DeleteCharAfter
+                        | InputAction::DeleteWordBefore
+                        | InputAction::DeleteWordAfter
+                        | InputAction::KillLineStart
+                        | InputAction::KillLineEnd
+                        | InputAction::Yank
+                        | InputAction::Undo
+                        | InputAction::Redo
+                        | InputAction::InsertNewline
+                )
+        )
     )
 }
 
@@ -258,6 +285,7 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
         AppAction::CancelTurn => handle_turn_control(app).into(),
         AppAction::SubmitInput => handle_submit(app).into(),
         AppAction::FocusPromptOrAcceptSuggestion => (mention::commit_literal_if_active(app)
+            || slash::request_completion(app)
             || handle_focus_toggle(app)
             || handle_prompt_suggestion(app))
         .into(),
@@ -392,21 +420,21 @@ fn execute_mention_action(app: &mut App, action: AutocompleteAction) -> bool {
 fn execute_slash_action(app: &mut App, action: AutocompleteAction) -> bool {
     match action {
         AutocompleteAction::MovePrevious => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
+            if app.slash.visible().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::move_up(app);
             }
         }
         AutocompleteAction::MoveNext => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
+            if app.slash.visible().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::move_down(app);
             }
         }
         AutocompleteAction::Confirm => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
+            if app.slash.visible().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::confirm_selection(app);
             }
         }
-        AutocompleteAction::Cancel => slash::deactivate(app),
+        AutocompleteAction::Cancel => slash::dismiss(app),
     }
     true
 }
@@ -490,6 +518,10 @@ fn handle_submit(app: &mut App) -> bool {
             message = "enter was routed through the paste buffer",
             outcome = "success",
         );
+        return true;
+    }
+
+    if !slash::prepare_submit(app) {
         return true;
     }
 
@@ -766,14 +798,19 @@ fn try_move_input_cursor_down(app: &mut App) -> bool {
 
 /// Handle keystrokes while mention/slash autocomplete dropdown is active.
 pub(super) fn handle_autocomplete_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
-    let context = match app.active_autocomplete_kind() {
-        Some(AutocompleteKind::Mention) => KeyContext::AutocompleteMention,
-        Some(AutocompleteKind::Slash) => KeyContext::AutocompleteSlash,
-        Some(AutocompleteKind::Subagent) => KeyContext::AutocompleteSubagent,
-        None => return handle_normal_key(app, key),
+    let Some(context) = autocomplete_key_context(app) else {
+        return handle_normal_key(app, key);
     };
     first_handled(handle_keymap_context(app, context, key), || {
         handle_autocomplete_fallback_key(app, key)
+    })
+}
+
+fn autocomplete_key_context(app: &App) -> Option<KeyContext> {
+    app.active_autocomplete_kind().map(|kind| match kind {
+        AutocompleteKind::Mention => KeyContext::AutocompleteMention,
+        AutocompleteKind::Slash => KeyContext::AutocompleteSlash,
+        AutocompleteKind::Subagent => KeyContext::AutocompleteSubagent,
     })
 }
 
@@ -827,41 +864,37 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 fn handle_slash_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
     match (key.code, key.modifiers) {
         (KeyCode::Up, _) => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
+            if app.slash.visible().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::move_up(app);
             }
             KeyOutcome::Handled(true)
         }
         (KeyCode::Down, _) => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
+            if app.slash.visible().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::move_down(app);
             }
             KeyOutcome::Handled(true)
         }
-        (KeyCode::Enter | KeyCode::Tab, _) => {
-            if app.slash.as_ref().is_some_and(|slash| !slash.candidates.is_empty()) {
+        (KeyCode::Enter, KeyModifiers::NONE) => handle_submit(app).into(),
+        (KeyCode::Tab, KeyModifiers::NONE) => {
+            if app.slash.visible().is_some_and(|slash| !slash.candidates.is_empty()) {
                 slash::confirm_selection(app);
             }
             KeyOutcome::Handled(true)
         }
         (KeyCode::Esc, _) => {
-            slash::deactivate(app);
+            slash::dismiss(app);
             KeyOutcome::Handled(true)
         }
         (KeyCode::Backspace, _) => {
             let changed = delete_input_char_before(app);
-            slash::update_query(app);
             changed.into()
         }
         (KeyCode::Char(c), m) if is_printable_text_modifiers(m) => {
             let changed = app.input.textarea_insert_char(c);
-            slash::update_query(app);
             changed.into()
         }
-        _ => {
-            slash::deactivate(app);
-            dispatch_key_by_focus(app, key)
-        }
+        _ => handle_normal_key(app, key),
     }
 }
 
@@ -1194,7 +1227,7 @@ mod tests {
     #[test]
     fn autocomplete_focus_routes_keys_to_active_slash_state() {
         let mut app = App::test_default();
-        app.slash = Some(slash::SlashState {
+        app.slash.show(slash::SlashState {
             trigger_row: 0,
             trigger_col: 0,
             query: "d".to_owned(),
@@ -1220,7 +1253,7 @@ mod tests {
             handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
 
         assert!(handled.changed());
-        let slash = app.slash.as_ref().expect("slash autocomplete should stay active");
+        let slash = app.slash.visible().expect("slash autocomplete should stay active");
         assert_eq!(slash.dialog.selected, 1);
     }
 
@@ -1300,7 +1333,7 @@ mod tests {
 
         assert!(handled.changed());
         assert_eq!(app.input.text(), "/1m-context ");
-        assert!(app.slash.is_some());
+        assert!(app.slash.is_visible());
     }
 
     #[test]

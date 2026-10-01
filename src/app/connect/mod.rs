@@ -199,7 +199,7 @@ pub fn create_app(cli: &Cli) -> App {
         mention: None,
         committed_mentions: Vec::new(),
         file_index: super::file_index::FileIndexState::default(),
-        slash: None,
+        slash: super::slash::SlashAutocomplete::default(),
         subagent: None,
         pending_submit: None,
         paste: super::state::PasteState::default(),

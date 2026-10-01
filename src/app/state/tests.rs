@@ -1319,7 +1319,7 @@ fn incr_streaming_simulation() {
 fn focus_test_app_with_available_targets() -> App {
     let mut app = make_test_app();
     app.turn.pending_interaction_ids.push("perm-1".into());
-    app.slash = Some(SlashState {
+    app.slash.show(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: String::new(),

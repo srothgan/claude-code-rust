@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 mod client_events;
+mod slash_input;
 
 fn session_update(update: model::SessionUpdate) -> ClientEvent {
     ClientEvent::SessionUpdate { session_id: "test-session".to_owned(), update }
@@ -2613,11 +2614,14 @@ fn ctrl_v_not_inserted_by_chat_key_handlers() {
 #[test]
 fn pending_paste_payload_blocks_overlapping_key_text_insertion() {
     let mut app = make_test_app();
-    app.paste.pending_text = "clipboard".to_owned();
-
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+    handle_terminal_event(&mut app, Event::Paste("clipboard".into()));
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+    );
 
     assert_eq!(app.input.text(), "");
+    assert_eq!(app.paste.pending_text, "clipboard");
 }
 
 #[test]
@@ -3235,7 +3239,7 @@ fn permission_ctrl_n_does_not_bypass_mention_focus() {
         true,
     );
 
-    app.slash = Some(SlashState {
+    app.slash.show(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: String::new(),
@@ -3536,7 +3540,7 @@ fn error_state_blocks_paste_events() {
 #[test]
 fn mention_owner_releases_back_to_input() {
     let mut app = make_test_app();
-    app.slash = Some(SlashState {
+    app.slash.show(SlashState {
         trigger_row: 0,
         trigger_col: 0,
         query: String::new(),

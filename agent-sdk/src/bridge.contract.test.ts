@@ -385,9 +385,26 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       let done = false;
       let waiter;
       const queue = [];
+      const commandFixture = process.env.SLASH_COMMANDS_FIXTURE === "1";
+      const bootstrapCommands = [
+        { name: "clear", description: "Clear conversation", argumentHint: "[name]", aliases: ["reset", "new"], builtin: true },
+        { name: "deploy", description: "Deploy", argumentHint: "<target>", aliases: ["ship"] },
+        { name: "removed-plugin", description: "Old plugin", argumentHint: "" },
+      ];
+      const currentCommands = [...bootstrapCommands.slice(0, 2), { name: "current-plugin", description: "Current plugin", argumentHint: "[optional reason]" }];
+      let clearCount = 0;
       function push(value) { if (waiter) { const resolve = waiter; waiter = undefined; resolve({ value, done: false }); } else queue.push(value); }
       void (async () => {
         for await (const message of prompt) {
+          const text = message.message?.content?.filter(block => block.type === "text").map(block => block.text).join("").trim();
+          if (commandFixture && text === "/fixture-refresh-commands") {
+            push({ type: "system", subtype: "commands_changed", commands: currentCommands });
+          }
+          if (commandFixture && text === "/clear") {
+            const sessionId = "fixture-cleared-" + ++clearCount;
+            push({ type: "conversation_reset", new_conversation_id: sessionId, trigger: "clear" });
+            push({ type: "system", subtype: "init", session_id: sessionId, model, slash_commands: bootstrapCommands.map(command => command.name) });
+          }
           if (JSON.stringify(message.message?.content).includes("fixture conversation reset")) {
             push({ type: "conversation_reset", new_conversation_id: "fixture-conversation-2" });
           }
@@ -401,7 +418,8 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
           return new Promise(resolve => { waiter = resolve; });
         },
         close() { done = true; waiter?.({ done: true }); },
-        async initializationResult() { return { models: [], commands: [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+        async initializationResult() { return { models: [], commands: commandFixture ? bootstrapCommands : [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+        async supportedCommands() { return bootstrapCommands; },
         async setModel(value) { model = value; },
         async getSettings() {
           if (model === "fixture-read-failure") throw new Error("fixture read failed");
@@ -446,6 +464,51 @@ async function nextUltracode(bridge: SpawnedBridge): Promise<unknown> {
   const event = await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "ultracode_update");
   return (event.update as BridgeEnvelope).ultracode;
 }
+
+test("spawned bridge restores normalized command inventory after repeated clear and a new session", async () => {
+  const { bridge, cleanup } = ultracodeFixtureBridge({ SLASH_COMMANDS_FIXTURE: "1" });
+  const commandUpdate = (event: BridgeEnvelope) => (event.update as BridgeEnvelope)?.type === "available_commands_update";
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    let sessionId = connected.session_id;
+    const initial = await nextMatching(bridge, commandUpdate);
+    const bootstrapCommands = (initial.update as BridgeEnvelope).commands;
+    assert.deepEqual(bootstrapCommands, [
+      { name: "clear", description: "Clear conversation", input_hint: "[name]", aliases: ["reset", "new"], builtin: true },
+      { name: "deploy", description: "Deploy", input_hint: "<target>", aliases: ["ship"] },
+      { name: "removed-plugin", description: "Old plugin" },
+    ]);
+    bridge.writeCommand({ command: "prompt", session_id: sessionId, message_uuid: "command-refresh", chunks: [{ kind: "text", value: "/fixture-refresh-commands" }] });
+    const dynamic = await nextMatching(bridge, commandUpdate);
+    const authoritative = dynamic.update as BridgeEnvelope;
+    assert.equal(authoritative.source, "commands_changed");
+    assert.equal(authoritative.generation, 2);
+    assert.deepEqual(authoritative.commands, [
+      ...(bootstrapCommands as unknown[]).slice(0, 2),
+      { name: "current-plugin", description: "Current plugin", input_hint: "[optional reason]" },
+    ]);
+    for (let iteration = 1; iteration <= 2; iteration++) {
+      bridge.writeCommand({ command: "prompt", session_id: sessionId, message_uuid: `clear-${iteration}`, chunks: [{ kind: "text", value: "/clear" }] });
+      await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "conversation_reset");
+      const replaced = await nextMatching(bridge, event => event.event === "session_replaced");
+      assert.equal(replaced.session_id, `fixture-cleared-${iteration}`);
+      sessionId = replaced.session_id;
+      const replay = await nextMatching(bridge, commandUpdate);
+      assert.equal(replay.session_id, sessionId);
+      assert.deepEqual(replay.update, authoritative);
+    }
+    // A genuinely new query must receive its own inventory rather than the old cache.
+    bridge.writeCommand({ command: "new_session", cwd: process.cwd(), launch_settings: {} });
+    const fresh = await nextMatching(bridge, event => event.event === "session_replaced");
+    assert.notEqual(fresh.session_id, sessionId);
+    const freshCommands = await nextMatching(bridge, commandUpdate);
+    assert.equal(freshCommands.session_id, fresh.session_id);
+    assert.deepEqual(freshCommands.update, initial.update);
+  } finally {
+    await cleanup();
+  }
+});
 
 test("spawned bridge Ultracode workflow covers enable, effort, model, reset, resume and replacement", async () => {
   const { bridge, cleanup } = ultracodeFixtureBridge();

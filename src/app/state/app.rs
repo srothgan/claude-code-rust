@@ -63,8 +63,8 @@ pub struct App {
     pub(crate) committed_mentions: Vec<mention::CommittedMentionSpan>,
     /// App-owned file index backing `@` file mention autocomplete.
     pub(crate) file_index: file_index::FileIndexState,
-    /// Active slash-command autocomplete state.
-    pub slash: Option<slash::SlashState>,
+    /// Slash completion visibility and explicit dismissal for this draft.
+    pub slash: slash::SlashAutocomplete,
     /// Active subagent autocomplete state (`&name`).
     pub(crate) subagent: Option<subagent::SubagentState>,
     /// Deferred plain-Enter submit. Stores the exact input state from before the
@@ -255,7 +255,7 @@ impl App {
             mention: None,
             committed_mentions: Vec::new(),
             file_index: file_index::FileIndexState::default(),
-            slash: None,
+            slash: slash::SlashAutocomplete::default(),
             subagent: None,
             pending_submit: None,
             paste: PasteState::default(),

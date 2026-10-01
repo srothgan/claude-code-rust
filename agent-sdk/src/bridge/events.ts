@@ -397,6 +397,7 @@ export function emitSessionReplacedEvent(
   const bridgeEvent = buildConnectBridgeEvent(session, "session_replaced");
   logConnectEventEmission(session, "session_replaced", requestId);
   writeEvent(bridgeEvent, requestId);
+  emitAvailableCommandsSnapshot(session);
   if (session.pendingRewindResult) {
     writeEvent(
       { ...session.pendingRewindResult, session_id: session.sessionId },
@@ -446,6 +447,35 @@ export async function emitSessionsList(requestId?: string): Promise<void> {
     });
     writeEvent({ event: "sessions_listed", sessions: [] }, requestId);
   }
+}
+
+/** Replay the current authority after the host resets its session inventory. */
+export function emitAvailableCommandsSnapshot(session: SessionState): void {
+  const snapshot = session.availableCommands;
+  if (!snapshot) {
+    return;
+  }
+  const { source, generation, commands } = snapshot;
+  bridgeLogger.info({
+    target: LOG_TARGETS.APP_SESSION,
+    eventName: "available_commands_update_emitted",
+    message: "available commands update emitted",
+    outcome: "success",
+    sessionId: session.sessionId,
+    count: commands.length,
+    fields: {
+      source,
+      generation,
+      command_count: commands.length,
+      command_names: commands.map((command) => command.name),
+    },
+  });
+  emitSessionUpdate(session.sessionId, {
+    type: "available_commands_update",
+    commands,
+    source,
+    generation,
+  });
 }
 
 export function refreshSessionsList(): void {

@@ -55,14 +55,14 @@ const ACTION_CATALOG: &[KeyActionDescriptor] = &[
         action: KeyAction::App(AppAction::SubmitInput),
         id: "app.submit_input",
         label: "Send message",
-        description: "Submit the current chat input.",
-        default_contexts: &[KeyContext::ChatInput],
+        description: "Complete a slash suggestion and submit the current input when ready.",
+        default_contexts: &[KeyContext::ChatInput, KeyContext::AutocompleteSlash],
     },
     KeyActionDescriptor {
         action: KeyAction::App(AppAction::FocusPromptOrAcceptSuggestion),
         id: "app.focus_prompt_or_accept_suggestion",
         label: "Focus prompt / accept suggestion",
-        description: "Focus a pending prompt, or accept the current prompt suggestion.",
+        description: "Request slash completion, focus a pending prompt, or accept a prompt suggestion.",
         default_contexts: &[KeyContext::ChatInput],
     },
     KeyActionDescriptor {

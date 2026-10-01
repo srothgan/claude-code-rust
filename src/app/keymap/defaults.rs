@@ -185,7 +185,15 @@ fn autocomplete_default_bindings() -> Vec<KeyBinding> {
         bindings.extend([
             autocomplete(context, KeyCodeSpec::Up, AutocompleteAction::MovePrevious),
             autocomplete(context, KeyCodeSpec::Down, AutocompleteAction::MoveNext),
-            autocomplete(context, KeyCodeSpec::Enter, AutocompleteAction::Confirm),
+            KeyBinding::default(
+                context,
+                KeySpec::new(KeyCodeSpec::Enter, KeyModifiers::NONE),
+                if context == KeyContext::AutocompleteSlash {
+                    KeyAction::App(AppAction::SubmitInput)
+                } else {
+                    KeyAction::Autocomplete(AutocompleteAction::Confirm)
+                },
+            ),
             autocomplete(context, KeyCodeSpec::Tab, AutocompleteAction::Confirm),
             autocomplete(context, KeyCodeSpec::Esc, AutocompleteAction::Cancel),
         ]);

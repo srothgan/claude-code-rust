@@ -141,7 +141,7 @@ pub fn activate(app: &mut App) {
     };
     app.subagent = Some(state);
     app.mention = None;
-    app.slash = None;
+    app.slash.clear();
     app.claim_focus_target(FocusTarget::Mention);
 }
 
@@ -174,7 +174,7 @@ pub fn sync_with_cursor(app: &mut App) {
 
 pub fn deactivate(app: &mut App) {
     app.subagent = None;
-    if app.mention.is_none() && app.slash.is_none() {
+    if app.mention.is_none() && app.slash.visible().is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }
@@ -197,7 +197,7 @@ pub fn confirm_selection(app: &mut App) {
     };
 
     let Some(candidate) = subagent.candidates.get(subagent.dialog.selected) else {
-        if app.mention.is_none() && app.slash.is_none() {
+        if app.mention.is_none() && app.slash.visible().is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -205,7 +205,7 @@ pub fn confirm_selection(app: &mut App) {
 
     let mut lines = app.input.lines().to_vec();
     let Some(line) = lines.get(subagent.trigger_row) else {
-        if app.mention.is_none() && app.slash.is_none() {
+        if app.mention.is_none() && app.slash.visible().is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -213,7 +213,7 @@ pub fn confirm_selection(app: &mut App) {
 
     let chars: Vec<char> = line.chars().collect();
     if subagent.trigger_col >= chars.len() || chars[subagent.trigger_col] != '&' {
-        if app.mention.is_none() && app.slash.is_none() {
+        if app.mention.is_none() && app.slash.visible().is_none() {
             app.release_focus_target(FocusTarget::Mention);
         }
         return;
@@ -240,7 +240,7 @@ pub fn confirm_selection(app: &mut App) {
     );
 
     sync_with_cursor(app);
-    if app.mention.is_none() && app.slash.is_none() && app.subagent.is_none() {
+    if app.mention.is_none() && app.slash.visible().is_none() && app.subagent.is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }

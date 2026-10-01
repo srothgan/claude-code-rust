@@ -1,6 +1,6 @@
 import type { SlashCommand } from "@anthropic-ai/claude-agent-sdk";
 import type { AvailableCommand } from "../types.js";
-import { emitSessionUpdate } from "./events.js";
+import { emitAvailableCommandsSnapshot } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 
@@ -147,26 +147,7 @@ export function updateAvailableCommands(
     decision.reason,
     nextGeneration,
   );
-  bridgeLogger.info({
-    target: LOG_TARGETS.APP_SESSION,
-    eventName: "available_commands_update_emitted",
-    message: "available commands update emitted",
-    outcome: "success",
-    sessionId: session.sessionId,
-    count: commands.length,
-    fields: {
-      source,
-      generation: nextGeneration,
-      command_count: commands.length,
-      command_names: commands.map((command) => command.name),
-    },
-  });
-  emitSessionUpdate(session.sessionId, {
-    type: "available_commands_update",
-    commands,
-    source,
-    generation: nextGeneration,
-  });
+  emitAvailableCommandsSnapshot(session);
   return true;
 }
 
@@ -189,12 +170,16 @@ export function mapSdkSlashCommand(command: unknown): AvailableCommand | null {
         ),
       ]
     : [];
+  const argumentHint =
+    typeof record.argumentHint === "string" ? record.argumentHint : undefined;
+  const normalizedHint = argumentHint?.trim().toLowerCase();
+  const hasArguments =
+    normalizedHint && normalizedHint !== "none" && normalizedHint !== "[none]";
   return {
     name,
     description:
       typeof record.description === "string" ? record.description : "",
-    input_hint:
-      typeof record.argumentHint === "string" ? record.argumentHint : undefined,
+    input_hint: hasArguments ? argumentHint : undefined,
     ...(aliases.length > 0 ? { aliases } : {}),
     ...(typeof record.builtin === "boolean"
       ? { builtin: record.builtin }

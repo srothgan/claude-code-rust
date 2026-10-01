@@ -313,6 +313,17 @@ fn default_keymap_resolves_enter_by_context() {
         Some(KeyAction::App(AppAction::SubmitInput))
     );
     assert_eq!(
+        keymap.action_for_event(KeyContext::AutocompleteSlash, enter),
+        Some(KeyAction::App(AppAction::SubmitInput))
+    );
+    assert_eq!(
+        keymap.action_for_event(
+            KeyContext::AutocompleteSlash,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        ),
+        Some(KeyAction::Autocomplete(AutocompleteAction::Confirm))
+    );
+    assert_eq!(
         keymap.action_for_event(KeyContext::InlinePermission, enter),
         Some(KeyAction::Interaction(InteractionAction::Confirm))
     );

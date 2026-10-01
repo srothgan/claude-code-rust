@@ -223,7 +223,7 @@ pub fn activate(app: &mut App) {
     mention.replace_end_col = span.end_col;
     mention.line_char_count = line_char_count;
     app.mention = Some(mention);
-    app.slash = None;
+    app.slash.clear();
     app.subagent = None;
     refresh_query_state(app);
 }
@@ -582,7 +582,7 @@ pub fn commit_literal_if_active(app: &mut App) -> bool {
         return false;
     }
 
-    if app.slash.is_none() && app.subagent.is_none() {
+    if app.slash.visible().is_none() && app.subagent.is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 
@@ -688,7 +688,7 @@ fn resolve_confirm_end_col(
 /// Deactivate mention autocomplete.
 pub fn deactivate(app: &mut App) {
     app.mention = None;
-    if app.slash.is_none() && app.subagent.is_none() {
+    if app.slash.visible().is_none() && app.subagent.is_none() {
         app.release_focus_target(FocusTarget::Mention);
     }
 }

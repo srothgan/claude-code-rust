@@ -79,7 +79,7 @@ fn clear_transient_view_state(app: &mut App) {
     app.paste.clear_all_sessions();
     app.pending_submit = None;
     app.mention = None;
-    app.slash = None;
+    app.slash.clear();
     app.subagent = None;
     if app.surface_mode == SurfaceMode::Fullscreen(FullscreenView::Config) {
         app.config.clear_overlay();

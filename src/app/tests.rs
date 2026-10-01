@@ -361,13 +361,13 @@ fn sending_lone_question_mark_submits_as_prompt() {
 }
 
 #[test]
-fn docs_topic_selected_with_enter_then_second_enter_submits() {
+fn docs_topic_selection_submits_on_the_first_enter() {
     let mut app = App::test_default();
     app.input.set_text("/docs co");
     let _ = app.input.set_cursor(0, "/docs co".chars().count());
     crate::app::slash::sync_with_cursor(&mut app);
 
-    assert!(app.slash.is_some(), "topic autocomplete should be active before selection");
+    assert!(app.slash.is_visible(), "topic autocomplete should be active before selection");
     assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
     events::handle_terminal_event(
@@ -376,15 +376,10 @@ fn docs_topic_selected_with_enter_then_second_enter_submits() {
     );
 
     assert_eq!(app.input.text(), "/docs commands ");
-    assert!(app.slash.is_none(), "topic selection should leave slash mode");
+    assert!(app.slash.visible().is_none(), "topic selection should leave slash mode");
     assert_eq!(app.focus_owner(), FocusOwner::Input);
 
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert!(app.pending_submit.is_some(), "second Enter should arm submit");
+    assert!(app.pending_submit.is_some(), "first Enter should arm submit");
 
     finalize_deferred_submit(&mut app);
 
@@ -398,13 +393,13 @@ fn docs_topic_selected_with_enter_then_second_enter_submits() {
 }
 
 #[test]
-fn docs_command_selection_then_topic_selection_then_submit_works_with_enter_only() {
+fn docs_name_waits_for_a_topic_then_topic_enter_submits() {
     let mut app = App::test_default();
     app.input.set_text("/do");
     let _ = app.input.set_cursor(0, "/do".chars().count());
     crate::app::slash::sync_with_cursor(&mut app);
 
-    assert!(app.slash.is_some(), "command autocomplete should be active before selection");
+    assert!(app.slash.is_visible(), "command autocomplete should be active before selection");
     assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
     events::handle_terminal_event(
@@ -412,8 +407,9 @@ fn docs_command_selection_then_topic_selection_then_submit_works_with_enter_only
         Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
     );
 
+    assert!(app.pending_submit.is_none(), "command name still needs a topic");
     assert_eq!(app.input.text(), "/docs ");
-    let slash = app.slash.as_ref().expect("topic autocomplete should activate");
+    let slash = app.slash.visible().expect("topic autocomplete should activate");
     assert!(matches!(slash.context, crate::app::slash::SlashContext::Argument { .. }));
     assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
@@ -430,13 +426,8 @@ fn docs_command_selection_then_topic_selection_then_submit_works_with_enter_only
     );
 
     assert_eq!(app.input.text(), "/docs commands ");
-    assert!(app.slash.is_none(), "topic selection should leave slash mode");
+    assert!(app.slash.visible().is_none(), "topic selection should leave slash mode");
     assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
 
     assert!(app.pending_submit.is_some(), "submit should arm after topic selection");
 
@@ -450,7 +441,7 @@ fn docs_command_selection_then_topic_selection_then_submit_works_with_enter_only
 }
 
 #[test]
-fn mode_selection_then_second_enter_arms_submit() {
+fn mode_selection_arms_submit_on_the_first_enter() {
     let mut app = App::test_default();
     app.session_runtime.mode = Some(ModeState {
         current_mode_id: "code".to_owned(),
@@ -470,19 +461,14 @@ fn mode_selection_then_second_enter_arms_submit() {
     );
 
     assert_eq!(app.input.text(), "/mode plan ");
-    assert!(app.slash.is_none());
+    assert!(app.slash.visible().is_none());
     assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
 
     assert!(app.pending_submit.is_some());
 }
 
 #[test]
-fn model_selection_then_second_enter_arms_submit() {
+fn model_selection_arms_submit_on_the_first_enter() {
     let mut app = App::test_default();
     app.sdk_inventory.available_models = vec![
         model::AvailableModel::new("sonnet", "Claude Sonnet"),
@@ -498,19 +484,14 @@ fn model_selection_then_second_enter_arms_submit() {
     );
 
     assert_eq!(app.input.text(), "/model sonnet ");
-    assert!(app.slash.is_none());
+    assert!(app.slash.visible().is_none());
     assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
 
     assert!(app.pending_submit.is_some());
 }
 
 #[test]
-fn resume_selection_then_second_enter_arms_submit() {
+fn resume_selection_with_explicit_tab_then_enter_arms_submit() {
     let mut app = App::test_default();
     app.recent_sessions = vec![RecentSessionInfo {
         session_id: "session-1".to_owned(),
@@ -528,11 +509,12 @@ fn resume_selection_then_second_enter_arms_submit() {
 
     events::handle_terminal_event(
         &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
     );
 
+    assert!(app.pending_submit.is_none());
     assert_eq!(app.input.text(), "/resume session-1 ");
-    assert!(app.slash.is_none());
+    assert!(app.slash.visible().is_none());
     assert_eq!(app.focus_owner(), FocusOwner::Input);
 
     events::handle_terminal_event(
