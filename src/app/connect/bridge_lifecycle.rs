@@ -306,6 +306,10 @@ async fn bridge_event_loop(
     loop {
         match bridge.recv().await {
             Ok(Some(envelope)) => {
+                let startup_failed = matches!(
+                    &envelope.event,
+                    BridgeEvent::ConnectionFailed { startup_failure: Some(_), .. }
+                );
                 handle_bridge_event(
                     &params.event_tx,
                     connection,
@@ -314,6 +318,9 @@ async fn bridge_event_loop(
                     envelope,
                 )
                 .await;
+                if startup_failed {
+                    break;
+                }
             }
             Ok(None) => {
                 tracing::error!(
@@ -349,9 +356,10 @@ async fn bridge_event_loop(
 
 pub(super) async fn emit_connection_failed(
     event_tx: &mpsc::Sender<ClientEvent>,
-    message: String,
+    failure: impl Into<crate::agent::events::ConnectionFailure>,
     app_error: AppError,
 ) {
+    let failure = failure.into();
     tracing::error!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         event_name = "bridge_failure_reported",
@@ -359,9 +367,9 @@ pub(super) async fn emit_connection_failed(
         outcome = "failure",
         error_category = app_error.category_tag(),
         exit_code = app_error.exit_code(),
-        user_message = %message,
+        user_message = %failure.message,
     );
-    let _ = event_tx.send(ClientEvent::ConnectionFailed(message)).await;
+    let _ = event_tx.send(ClientEvent::ConnectionFailed(failure)).await;
     let _ = event_tx.send(ClientEvent::FatalError(app_error)).await;
 }
 
@@ -454,8 +462,8 @@ async fn wait_for_bridge_initialized_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::{
-        ConnectionSlot, StartConnectionParams, handle_bridge_event, run_connection_task,
-        wait_for_bridge_initialized_with_timeout,
+        ConnectionSlot, StartConnectionParams, bridge_event_loop, handle_bridge_event,
+        run_connection_task, wait_for_bridge_initialized_with_timeout,
     };
     use crate::agent::bridge::BridgeLauncher;
     use crate::agent::client::{BridgeClient, BridgeShutdownOutcome};
@@ -467,6 +475,50 @@ mod tests {
     use std::rc::Rc;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn startup_failure_stops_event_loop_without_reporting_stdout_closure() {
+        let json = r#"{"event":"connection_failed","request_id":"connect-1","message":"Claude Code startup failed.","startup_failure":{"reason":"future_reason","errors":["SDK guidance"]}}"#;
+        let script = if cfg!(windows) {
+            format!("@echo off\r\necho {json}\r\nexit /b 0\r\n")
+        } else {
+            format!("#!/bin/sh\nprintf '%s\\n' '{json}'\nexit 0\n")
+        };
+        let fixture = RuntimeFixture::new(script).expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ClientEvent>(8);
+        let params = StartConnectionParams {
+            event_tx,
+            cwd_raw: fixture.script_path.parent().expect("fixture directory").display().to_string(),
+            bridge_script: None,
+            resume_id: None,
+            resume_requested: false,
+            session_launch_settings: SessionLaunchSettings::default(),
+        };
+        let connection = bridge.connection();
+        let mut connected_once = false;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            bridge_event_loop(&params, &mut bridge, &connection, &mut connected_once),
+        )
+        .await
+        .expect("event loop completes");
+        let ClientEvent::ConnectionFailed(failure) =
+            event_rx.try_recv().expect("connection failure")
+        else {
+            panic!("connection failure")
+        };
+        assert_eq!(failure.request_id.as_deref(), Some("connect-1"));
+        let startup = failure.startup_failure.expect("structured startup failure");
+        assert_eq!(startup.reason, "future_reason");
+        assert_eq!(startup.errors, ["SDK guidance"]);
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(ClientEvent::FatalError(AppError::BridgeSdkFailure))
+        ));
+        assert!(event_rx.try_recv().is_err(), "no second connection failure");
+        bridge.wait().await.expect("reap fixture");
+    }
 
     #[tokio::test]
     async fn bridge_client_recv_returns_none_when_stdout_closes() {

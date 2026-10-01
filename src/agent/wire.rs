@@ -355,6 +355,8 @@ pub enum BridgeEvent {
     },
     ConnectionFailed {
         message: String,
+        #[serde(default)]
+        startup_failure: Option<types::StartupFailure>,
     },
     SessionUpdate {
         session_id: String,
@@ -652,6 +654,53 @@ mod tests {
     };
     use crate::agent::types;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn connection_failure_preserves_open_startup_reasons_and_older_messages() {
+        for reason in [
+            None,
+            Some("org_pin_api_key_conflict"),
+            Some("provider_not_allowed"),
+            Some("org_verify_failed"),
+            Some("org_pin_mismatch"),
+            Some("managed_settings_invalid"),
+            Some("remote_settings_required_unavailable"),
+            Some("gateway_signin_required"),
+            Some("gateway_access_denied"),
+            Some("proxy_invalid"),
+            Some("temp_dir_unusable"),
+            Some("cwd_unavailable"),
+            Some("shell_tool_missing"),
+            Some("session_held_by_background"),
+            Some("worktree_resume_refused"),
+            Some("worktree_unverified"),
+            Some("cli_version_too_old"),
+            Some("bypass_root"),
+            Some("future_reason"),
+        ] {
+            let mut json = serde_json::json!({
+                "event": "connection_failed", "message": "startup failed", "request_id": "connect-1",
+            });
+            if let Some(reason) = reason {
+                json["startup_failure"] =
+                    serde_json::json!({ "reason": reason, "errors": ["SDK guidance"] });
+            }
+            let envelope: EventEnvelope = serde_json::from_value(json).expect("connection failure");
+            assert_eq!(envelope.request_id.as_deref(), Some("connect-1"));
+            let BridgeEvent::ConnectionFailed { message, startup_failure } = &envelope.event else {
+                panic!("connection failure")
+            };
+            assert_eq!(message, "startup failed");
+            assert_eq!(startup_failure.as_ref().map(|failure| failure.reason.as_str()), reason);
+            if let Some(failure) = startup_failure {
+                assert_eq!(failure.errors, ["SDK guidance"]);
+            }
+            let round_trip: EventEnvelope =
+                serde_json::from_value(serde_json::to_value(&envelope).expect("serialize"))
+                    .expect("deserialize");
+            assert_eq!(round_trip, envelope);
+        }
+    }
 
     #[test]
     fn ultracode_wire_round_trips_and_invalid_snapshots_become_unknown() {

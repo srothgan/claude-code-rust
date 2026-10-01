@@ -158,6 +158,9 @@ async function resumeAt(
         reason: "resume_at_candidate_rejected",
         requestId,
       });
+      if (candidate.startupFailure) {
+        return;
+      }
     }
     const userMessage = message.startsWith(
       "Resume rejected by --resume-drops-turn:",

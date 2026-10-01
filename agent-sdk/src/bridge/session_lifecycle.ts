@@ -32,6 +32,7 @@ import type {
   RefusalFallbackPromptPayload,
   SessionLaunchSettings,
   SessionUpdate,
+  StartupFailure,
   TaskItem,
   ToolCall,
   UserDialogOption,
@@ -182,6 +183,7 @@ export type SessionState = {
   queryConsumerTask?: Promise<void>;
   initializationReady?: boolean;
   initializationError?: string;
+  startupFailure?: StartupFailure;
   deferConnect?: boolean;
   resumeDropsTurn?: string;
   resumeGuardFenceComplete?: boolean;
@@ -797,12 +799,20 @@ export async function createSession(params: {
     },
   });
 
+  startSessionTasks(session, params.requestId);
+  return session;
+}
+
+export function startSessionTasks(session: SessionState, requestId?: string): void {
   // In stream-input mode the SDK may defer init until input arrives.
   // Trigger initialization explicitly so the Rust UI can receive `connected`
   // before the first user prompt.
   session.initializationTask = session.query
     .initializationResult()
     .then(async (result) => {
+      if (session.startupFailure) {
+        return;
+      }
       bridgeLogger.info({
         target: LOG_TARGETS.APP_SESSION,
         eventName: "session_initialization_completed",
@@ -822,11 +832,17 @@ export async function createSession(params: {
       });
       const { refreshUltracode } = await import("./ultracode.js");
       await refreshUltracode(session, session.connected);
+      if (session.startupFailure) {
+        return;
+      }
       session.availableModels = mapAvailableModels(result.models);
       const currentModelChanged = refreshCurrentModel(session);
       const { buildModeState, refreshSupportedModesForSession } = await import(
         "./commands.js"
       );
+      if (session.startupFailure) {
+        return;
+      }
       refreshSupportedModesForSession(session);
       const fastModeChanged = setFastModeSnapshotIfChanged(
         session,
@@ -868,7 +884,13 @@ export async function createSession(params: {
       emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
       refreshAvailableAgents(session);
     })
-    .catch((error) => {
+    .catch(async (error) => {
+      // On process exit the SDK queues the result before rejecting initialization.
+      // Let the consumer drain queued frames before reporting a generic failure.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (session.startupFailure) {
+        return;
+      }
       if (session.connected) {
         return;
       }
@@ -908,13 +930,13 @@ export async function createSession(params: {
         );
         flushPendingWorkerShutdown(session);
       }
-      if (!session.connected) {
+      if (!session.connected && !session.startupFailure) {
         bridgeLogger.error({
           target: LOG_TARGETS.APP_SESSION,
           eventName: "session_stream_ended_before_connect",
           message: "session stream ended before connect",
           outcome: "failure",
-          ...(params.requestId ? { requestId: params.requestId } : {}),
+          ...(requestId ? { requestId } : {}),
           sessionId: session.sessionId,
         });
         session.initializationError =
@@ -922,11 +944,14 @@ export async function createSession(params: {
         if (!session.deferConnect) {
           failConnection(
             "agent stream ended before session initialization",
-            params.requestId,
+            requestId,
           );
         }
       }
     } catch (error) {
+      if (session.startupFailure) {
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       session.initializationError = message;
       bridgeLogger.error({
@@ -934,17 +959,15 @@ export async function createSession(params: {
         eventName: "session_stream_failed_before_connect",
         message: "session stream failed before connect",
         outcome: "failure",
-        ...(params.requestId ? { requestId: params.requestId } : {}),
+        ...(requestId ? { requestId } : {}),
         sessionId: session.sessionId,
         fields: { error_message: message },
       });
       if (!session.deferConnect) {
-        failConnection(`agent stream failed: ${message}`, params.requestId);
+        failConnection(`agent stream failed: ${message}`, requestId);
       }
     }
   })();
-
-  return session;
 }
 
 export async function awaitSessionInitialization(
@@ -1236,7 +1259,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       signal: AbortSignal;
     }) => {
       const command = resolveClaudeCodeSpawnCommand(options.command);
-      const env = { ...options.env };
+      const env = { ...options.env, CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "1" };
       const spawnOptions = { ...options, command, env };
       logSdkProcessSpawnStarted(spawnOptions, params.enableSpawnDebug);
       const child = spawnChild(command, options.args, {

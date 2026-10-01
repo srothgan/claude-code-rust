@@ -6,6 +6,12 @@ export type Json =
   | Json[]
   | { [key: string]: Json };
 
+/** Open SDK startup vocabulary, including reasons introduced by future runtimes. */
+export interface StartupFailure {
+  reason: string;
+  errors: string[];
+}
+
 export interface PromptChunk {
   kind: string;
   value: Json;
@@ -1040,7 +1046,11 @@ export type BridgeEvent =
       history_updates?: SessionUpdate[];
     }
   | { event: "auth_required"; method_name: string; method_description: string }
-  | { event: "connection_failed"; message: string }
+  | {
+      event: "connection_failed";
+      message: string;
+      startup_failure?: StartupFailure;
+    }
   | { event: "session_update"; session_id: string; update: SessionUpdate }
   | {
       event: "btw_result";

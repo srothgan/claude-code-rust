@@ -313,6 +313,47 @@ test("bridge process reports actionable session initialization failure", async (
   }
 });
 
+test("real SDK transports one correlated startup failure from a controlled CLI child", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-startup-"));
+  const cliPath = join(directory, "startup-cli.js");
+  writeFileSync(cliPath, `
+    process.stdin.once("data", () => {
+      const errors = ["Original startup guidance ANTHROPIC_API_KEY=private-key. Please login."];
+      process.stderr.write(errors[0] + "\\n");
+      if (process.env.CLAUDE_CODE_STARTUP_FAILURE_RESULTS !== "1") process.exit(1);
+      process.stdout.write(JSON.stringify({
+        type: "result", subtype: "error_during_execution", is_error: true,
+        startup_failure_reason: "provider_not_allowed", errors,
+        duration_ms: 0, duration_api_ms: 0, num_turns: 0,
+        total_cost_usd: 0, usage: {}, modelUsage: {}, permission_denials: [],
+        uuid: "startup-result", session_id: "startup-session", stop_reason: null,
+      }) + "\\n", () => process.exit(1));
+    });
+  `);
+  const bridge = new SpawnedBridge({ CLAUDE_CODE_EXECUTABLE: cliPath });
+  try {
+    bridge.writeCommand({ command: "create_session", request_id: "startup-connect", cwd: process.cwd(), launch_settings: {} });
+    const failure = await bridge.nextEnvelope(5_000);
+    assert.deepEqual(failure, {
+      event: "connection_failed", request_id: "startup-connect",
+      message: "Claude Code startup failed.",
+      startup_failure: { reason: "provider_not_allowed", errors: ["Original startup guidance ANTHROPIC_API_KEY=[redacted] Please login."] },
+    });
+    bridge.writeCommand({ command: "shutdown" });
+    assert.equal(await bridge.waitForExit(5_000), 0);
+    await assert.rejects(bridge.nextEnvelope(), /exited/);
+    const logs = bridge.stderrLines.join("\n");
+    assert.ok(logs.includes('"startup_failure_reason":"provider_not_allowed"'));
+    assert.ok(logs.includes("Original startup guidance"));
+    assert.ok(!logs.includes("private-key"));
+    assert.ok(!logs.includes('"event_name":"session_stream_ended_before_connect"'));
+    assert.ok(!logs.includes('"event_name":"session_initialization_failed"'));
+  } finally {
+    await bridge.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("production bridge source stays on the public main SDK export", () => {
   const sourceDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../src");
   const forbiddenDeepImport = /@anthropic-ai\/claude-agent-sdk\/(?:browser|bridge)/;

@@ -211,6 +211,97 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     );
 }
 
+pub(super) fn handle_connection_failure(
+    app: &mut App,
+    failure: &crate::agent::events::ConnectionFailure,
+) {
+    let message = if let Some(startup) = &failure.startup_failure {
+        let (reason, errors) = startup_failure_diagnostics(startup);
+        tracing::error!(
+            target: crate::logging::targets::APP_SESSION,
+            event_name = "sdk_startup_failed",
+            startup_failure_reason = %reason,
+            startup_failure_errors = ?errors,
+            request_id = failure.request_id.as_deref(),
+            "Claude Code startup failed",
+        );
+        startup_failure_message(&startup.reason)
+    } else {
+        &failure.message
+    };
+    handle_connection_failed_event(app, message);
+}
+
+fn startup_failure_diagnostics(
+    startup: &crate::agent::types::StartupFailure,
+) -> (String, Vec<String>) {
+    let bounded_redacted = |value: &str| {
+        crate::cli::redaction::redact_text(value).chars().take(1_024).collect::<String>()
+    };
+    (
+        bounded_redacted(&startup.reason),
+        startup.errors.iter().take(8).map(|error| bounded_redacted(error)).collect(),
+    )
+}
+
+fn startup_failure_message(reason: &str) -> &'static str {
+    match reason {
+        "org_pin_api_key_conflict" => {
+            "Configured API credentials conflict with organization-required sign-in. Remove the conflicting credentials and sign in again."
+        }
+        "provider_not_allowed" => {
+            "Organization policy disallows the selected provider. Select a provider permitted by your organization."
+        }
+        "org_verify_failed" => {
+            "Organization verification failed. Check connectivity or sign in again."
+        }
+        "org_pin_mismatch" => {
+            "Your signed-in account belongs to an organization not permitted by policy. Sign in with an allowed account."
+        }
+        "managed_settings_invalid" => {
+            "Managed policy settings are invalid or leave no usable model. Contact your organization administrator."
+        }
+        "remote_settings_required_unavailable" => {
+            "Required remote managed settings could not be loaded. Check connectivity and contact your administrator."
+        }
+        "gateway_signin_required" => {
+            "Authenticate through your organization's required gateway before starting Claude Code."
+        }
+        "gateway_access_denied" => {
+            "The configured gateway denied access. Check your gateway account and access policy."
+        }
+        "proxy_invalid" => "The proxy URL is invalid. Correct your proxy URL and start again.",
+        "temp_dir_unusable" => {
+            "The temporary directory is unusable. Repair it or select a writable temporary directory."
+        }
+        "cwd_unavailable" => {
+            "The working directory no longer exists or cannot be read. Restore it or start from a readable directory."
+        }
+        "shell_tool_missing" if cfg!(windows) => {
+            "Shell tooling is unavailable. Install Git Bash or enable PowerShell tooling."
+        }
+        "shell_tool_missing" => {
+            "Shell tooling is unavailable. Install or configure a supported shell."
+        }
+        "session_held_by_background" => {
+            "The requested session is still owned by a background process. Stop that process or allow it to finish."
+        }
+        "worktree_resume_refused" => {
+            "Worktree safety checks rejected resume. Review the SDK guidance in diagnostic logs before resuming."
+        }
+        "worktree_unverified" => {
+            "Worktree verification failed temporarily. A manual retry may succeed."
+        }
+        "cli_version_too_old" => {
+            "The bundled Claude Code runtime is too old. Update claude-rs to a release containing a newer runtime."
+        }
+        "bypass_root" => {
+            "Bypass-permissions mode cannot run as root. Use a non-root account or another permission mode."
+        }
+        _ => "Claude Code startup failed. Review diagnostic logs for details.",
+    }
+}
+
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
     if app.config.pending_session_title_change.take().is_some() {
         app.config.last_error = Some(msg.to_owned());
@@ -676,6 +767,117 @@ mod tests {
     use crate::app::file_index::FileCandidate;
     use crate::app::{App, MessageRole, PendingUserMessage};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn startup_reasons_are_actionable_through_connection_failure_lifecycle() {
+        for (reason, guidance) in [
+            ("org_pin_api_key_conflict", "organization-required sign-in"),
+            ("provider_not_allowed", "Organization policy disallows the selected provider"),
+            ("org_verify_failed", "Check connectivity or sign in again"),
+            ("org_pin_mismatch", "organization not permitted by policy"),
+            ("managed_settings_invalid", "invalid or leave no usable model"),
+            (
+                "remote_settings_required_unavailable",
+                "Required remote managed settings could not be loaded",
+            ),
+            ("gateway_signin_required", "Authenticate through"),
+            ("gateway_access_denied", "gateway denied access"),
+            ("proxy_invalid", "Correct your proxy URL"),
+            ("temp_dir_unusable", "select a writable temporary directory"),
+            ("cwd_unavailable", "no longer exists or cannot be read"),
+            (
+                "shell_tool_missing",
+                if cfg!(windows) {
+                    "Install Git Bash or enable PowerShell tooling"
+                } else {
+                    "supported shell"
+                },
+            ),
+            ("session_held_by_background", "Stop that process or allow it to finish"),
+            ("worktree_resume_refused", "SDK guidance in diagnostic logs"),
+            ("worktree_unverified", "manual retry may succeed"),
+            ("cli_version_too_old", "Update claude-rs to a release containing a newer runtime"),
+            ("bypass_root", "cannot run as root"),
+            ("future_reason", "Claude Code startup failed"),
+        ] {
+            let mut app = App::test_default();
+            app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
+            app.pending_user_messages
+                .try_push_sending(PendingUserMessage::sending(
+                    "message-1".to_owned(),
+                    "pending input".to_owned(),
+                    Vec::new(),
+                ))
+                .expect("pending input");
+            app.input.set_text("draft");
+            let failure = crate::agent::events::ConnectionFailure {
+                message: "raw SDK detail must not appear".to_owned(),
+                startup_failure: Some(crate::agent::types::StartupFailure {
+                    reason: reason.to_owned(),
+                    errors: vec!["original SDK worktree guidance".to_owned()],
+                }),
+                request_id: Some("connect-1".to_owned()),
+            };
+            super::super::client::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::ConnectionFailed(failure),
+            );
+            super::super::client::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::FatalError(AppError::BridgeSdkFailure),
+            );
+            assert_eq!(app.status, AppStatus::Error);
+            assert_eq!(app.exit_error, Some(AppError::BridgeSdkFailure));
+            assert!(app.shutdown_requested());
+            assert!(app.session_runtime.session_id.is_none());
+            assert!(app.pending_user_messages.is_empty());
+            assert_eq!(app.input.text(), "pending input\ndraft");
+            assert_eq!(app.transcript.messages.len(), 1);
+            let crate::app::MessageBlock::Text(text) = &app.transcript.messages[0].blocks[0] else {
+                panic!("error message")
+            };
+            assert!(text.text.contains(guidance), "{reason}: {}", text.text);
+            assert!(!text.text.contains("raw SDK detail"));
+            assert!(!text.text.contains("original SDK worktree guidance"));
+            if reason == "provider_not_allowed" {
+                assert!(!text.text.contains("credentials"));
+                assert!(!text.text.contains("downtime"));
+            }
+        }
+    }
+
+    #[test]
+    fn startup_diagnostics_preserve_reason_and_bounded_redacted_sdk_guidance() {
+        let failure = crate::agent::events::ConnectionFailure {
+            message: "raw error".to_owned(),
+            startup_failure: Some(crate::agent::types::StartupFailure {
+                reason: "future_reason".to_owned(),
+                errors: vec![
+                    format!(
+                        "SDK worktree guidance ANTHROPIC_API_KEY=private-key Bearer private-token {}",
+                        "x".repeat(2_000)
+                    );
+                    20
+                ],
+            }),
+            request_id: Some("connect-logs".to_owned()),
+        };
+        let startup = failure.startup_failure.as_ref().expect("startup failure");
+        let (reason, errors) = startup_failure_diagnostics(startup);
+        assert_eq!(reason, "future_reason");
+        assert_eq!(errors.len(), 8);
+        assert!(errors.iter().all(|error| error.chars().count() == 1_024));
+        assert!(errors.iter().all(|error| error.contains("SDK worktree guidance")));
+        assert!(errors.iter().all(|error| error.contains("[redacted]")));
+        assert!(
+            errors
+                .iter()
+                .all(|error| !error.contains("private-key") && !error.contains("private-token"))
+        );
+        let mut app = App::test_default();
+        handle_connection_failure(&mut app, &failure);
+        assert_eq!(app.transcript.messages.len(), 1);
+    }
 
     fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
         let start = Instant::now();

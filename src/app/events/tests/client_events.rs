@@ -1821,6 +1821,6 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
         },
     );
     assert_eq!(app.session_runtime.ultracode, on);
-    handle_client_event(&mut app, ClientEvent::ConnectionFailed("closed".to_owned()));
+    handle_client_event(&mut app, ClientEvent::ConnectionFailed("closed".to_owned().into()));
     assert!(app.session_runtime.ultracode.is_none());
 }

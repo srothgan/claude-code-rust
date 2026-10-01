@@ -79,6 +79,7 @@ import {
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
   trackSessionCloseTask,
+  startSessionTasks,
   updateSessionId,
 } from "./bridge/session_lifecycle.js";
 import { dispatchSideQuestion, closeSideQuestions } from "./bridge/side_questions.js";
@@ -114,6 +115,123 @@ import {
   normalizeStructuredUsage,
 } from "./bridge/command_session_data.js";
 import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
+import { startupFailureDetails } from "./bridge/startup_failures.js";
+
+const STARTUP_REASONS = {
+  org_pin_api_key_conflict: true,
+  provider_not_allowed: true,
+  org_verify_failed: true,
+  org_pin_mismatch: true,
+  managed_settings_invalid: true,
+  remote_settings_required_unavailable: true,
+  gateway_signin_required: true,
+  gateway_access_denied: true,
+  proxy_invalid: true,
+  temp_dir_unusable: true,
+  cwd_unavailable: true,
+  shell_tool_missing: true,
+  session_held_by_background: true,
+  worktree_resume_refused: true,
+  worktree_unverified: true,
+  cli_version_too_old: true,
+  bypass_root: true,
+} satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
+
+test("startup result reasons remain structured, correlated, and exclusive", () => {
+  for (const reason of [...Object.keys(STARTUP_REASONS), "future_startup_reason"]) {
+    const session = makeSessionState();
+    session.connected = false;
+    session.connectRequestId = "connect-1";
+    session.lastAssistantError = "authentication_failed";
+    const result = {
+      type: "result",
+      subtype: "error_during_execution",
+      startup_failure_reason: reason,
+      errors: ["Please login. Original SDK guidance"],
+    };
+    const events = captureBridgeEvents(() => {
+      handleResultMessage(session, result);
+      handleResultMessage(session, result);
+    });
+    assert.deepEqual(events, [{
+      event: "connection_failed",
+      request_id: "connect-1",
+      message: "Claude Code startup failed.",
+      startup_failure: { reason, errors: result.errors },
+    }]);
+    assert.equal(session.initializationReady, false);
+    assert.equal(session.lastAssistantError, undefined);
+  }
+});
+
+test("startup errors are validated, bounded and redacted", () => {
+  for (const errors of [undefined, null, "stderr", {}, ["valid", 1], []]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => handleResultMessage(session, {
+      type: "result", subtype: "error_during_execution",
+      startup_failure_reason: "proxy_invalid", errors,
+    }));
+    assert.deepEqual(events[0]?.startup_failure, { reason: "proxy_invalid", errors: [] });
+  }
+  const details = startupFailureDetails(Array.from({ length: 20 }, () =>
+    `ANTHROPIC_API_KEY=private-key Bearer secret-token https://user:password@proxy "accessToken": "private-token" sk-ant-private-key ${"x".repeat(2_000)}`,
+  ));
+  assert.equal(details.length, 8);
+  assert.ok(details.every((detail) => detail.length === 1_024));
+  assert.ok(details.every((detail) => !/private-key|secret-token|user:password|private-token/.test(detail)));
+});
+
+test("only execution result messages recognize startup reasons; older errors retain behavior", () => {
+  for (const result of [
+    { type: "result", subtype: "error_during_execution" },
+    { type: "result", subtype: "error_during_execution", startup_failure_reason: null },
+    { type: "result", subtype: "error_during_execution", startup_failure_reason: 1 },
+    { type: "result", subtype: "error_during_execution", startup_failure_reason: "" },
+    { type: "result", subtype: "error_max_turns", startup_failure_reason: "proxy_invalid" },
+    { type: "assistant", subtype: "error_during_execution", startup_failure_reason: "proxy_invalid" },
+  ]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => handleResultMessage(session, { ...result, errors: ["ordinary error"] }));
+    assert.equal(events.at(-1)?.event, "turn_error");
+    assert.equal(events.at(-1)?.message, "ordinary error");
+    assert.equal(session.startupFailure, undefined);
+  }
+  const events = captureBridgeEvents(() => handleResultMessage(makeSessionState(), {
+    type: "result", subtype: "success", startup_failure_reason: "proxy_invalid",
+  }));
+  assert.equal(events.at(-1)?.event, "turn_complete");
+});
+
+test("startup failure owns reporting across initialization rejection and stream end or exit error", async () => {
+  for (const rejectFirst of [false, true]) {
+    for (const streamThrows of [false, true]) {
+      const session = makeSessionState();
+      session.connected = false;
+      session.connectRequestId = "connect-race";
+      session.query = {
+        initializationResult: async () => {
+          if (!rejectFirst) await new Promise<void>((resolve) => setImmediate(resolve));
+          throw new Error("generic initialization rejection");
+        },
+        async *[Symbol.asyncIterator]() {
+          if (rejectFirst) await new Promise<void>((resolve) => setImmediate(resolve));
+          yield {
+            type: "result", subtype: "error_during_execution",
+            startup_failure_reason: "gateway_signin_required", errors: ["Please login"],
+          };
+          if (streamThrows) throw new Error("exit code 1");
+        },
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+      const events = await captureBridgeEventsAsync(async () => {
+        startSessionTasks(session, "connect-race");
+        await Promise.all([session.initializationTask, session.queryConsumerTask]);
+      });
+      assert.deepEqual(events.map((event) => event.event), ["connection_failed"]);
+      assert.equal(events[0]?.request_id, "connect-race");
+      assert.equal(session.initializationError, "Claude Code startup failed.");
+    }
+  }
+});
 
 const BRIDGE_RUNTIME_PROCESS_NAME =
   process.platform === "win32"
@@ -2756,14 +2874,15 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
   const previousParentOnly = process.env.PHASE10_PARENT_ONLY;
   process.env.PHASE10_PARENT_ONLY = "must-not-leak";
   try {
+    const env = Object.freeze({ PHASE10_ENV_CHECK: "forwarded", CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "0", SDK_OTHER: "kept" });
     const child = options.spawnClaudeCodeProcess({
       command: process.execPath,
       args: [
         "-e",
-        "process.stdout.write(JSON.stringify({check:process.env.PHASE10_ENV_CHECK??null,parent:process.env.PHASE10_PARENT_ONLY??null}))",
+        "process.stdout.write(JSON.stringify({check:process.env.PHASE10_ENV_CHECK??null,parent:process.env.PHASE10_PARENT_ONLY??null,startup:process.env.CLAUDE_CODE_STARTUP_FAILURE_RESULTS,other:process.env.SDK_OTHER,timing:process.env.CLAUDE_CODE_EMIT_STARTUP_TIMING??null}))",
       ],
       cwd: process.cwd(),
-      env: { PHASE10_ENV_CHECK: "forwarded" },
+      env,
       signal: new AbortController().signal,
     });
 
@@ -2779,7 +2898,8 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
     });
 
     assert.equal(exitCode, 0);
-    assert.deepEqual(JSON.parse(stdout), { check: "forwarded", parent: null });
+    assert.deepEqual(JSON.parse(stdout), { check: "forwarded", parent: null, startup: "1", other: "kept", timing: null });
+    assert.deepEqual(env, { PHASE10_ENV_CHECK: "forwarded", CLAUDE_CODE_STARTUP_FAILURE_RESULTS: "0", SDK_OTHER: "kept" });
   } finally {
     if (previousParentOnly === undefined) {
       delete process.env.PHASE10_PARENT_ONLY;

@@ -1,4 +1,5 @@
 import type { BridgeCommand, BridgeEvent } from "../types.js";
+import { redactStartupDetail } from "./startup_failures.js";
 
 const LOG_SCHEMA = "claude-rs-log/v1" as const;
 const DIAGNOSTICS_ENABLED = process.env.CLAUDE_RS_BRIDGE_DIAGNOSTICS === "1";
@@ -311,7 +312,7 @@ export function logSdkStderrLine(line: string, sessionId?: string): void {
     message: "SDK stderr line received",
     ...(sessionId ? { sessionId } : {}),
     fields: {
-      preview: previewText(trimmed, 240),
+      preview: previewText(redactStartupDetail(trimmed), 240),
       preview_chars: Math.min(trimmed.length, 240),
       line_chars: trimmed.length,
     },

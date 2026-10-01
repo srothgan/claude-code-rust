@@ -9,6 +9,24 @@ use crate::error::AppError;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+pub struct ConnectionFailure {
+    pub message: String,
+    pub startup_failure: Option<crate::agent::types::StartupFailure>,
+    pub request_id: Option<String>,
+}
+
+impl From<String> for ConnectionFailure {
+    fn from(message: String) -> Self {
+        Self { message, startup_failure: None, request_id: None }
+    }
+}
+
+impl From<&str> for ConnectionFailure {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
     /// Session update notification (streaming text, tool calls, etc.)
@@ -115,7 +133,7 @@ pub enum ClientEvent {
         history_updates: Vec<model::SessionUpdate>,
     },
     /// Background connection failed.
-    ConnectionFailed(String),
+    ConnectionFailed(ConnectionFailure),
     /// Authentication is required before a session can be created.
     AuthRequired { method_name: String, method_description: String },
     /// Slash-command execution failed with a user-facing error.

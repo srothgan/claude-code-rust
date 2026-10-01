@@ -6,6 +6,14 @@ use std::collections::BTreeMap;
 
 pub use super::model::UltracodeState;
 
+/// Startup reasons are an open SDK vocabulary; unknown tokens must survive the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartupFailure {
+    pub reason: String,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 pub(crate) fn deserialize_ultracode<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<UltracodeState>, D::Error> {

@@ -769,7 +769,7 @@ mod tests {
         let (id, question) = next_btw(&mut rx);
         crate::app::events::handle_client_event(
             &mut app,
-            ClientEvent::ConnectionFailed("bridge exited".to_owned()),
+            ClientEvent::ConnectionFailed("bridge exited".to_owned().into()),
         );
         assert_eq!(app.btw.len(), 0);
         assert!(app.session_runtime.session_id.is_none());

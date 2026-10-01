@@ -89,6 +89,7 @@ import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitMcpSnapshotFromStatuses } from "./mcp.js";
 import { appendResourceLinks } from "./resource_links.js";
 import { closeSideQuestions } from "./side_questions.js";
+import { redactStartupDetail, startupFailureDetails } from "./startup_failures.js";
 
 export function textFromPrompt(
   command: Extract<BridgeCommand, { command: "prompt" }>,
@@ -1528,6 +1529,44 @@ export function handleResultMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  if (session.startupFailure) {
+    return;
+  }
+  if (
+    message.type === "result" &&
+    message.subtype === "error_during_execution" &&
+    typeof message.startup_failure_reason === "string" &&
+    message.startup_failure_reason.length > 0
+  ) {
+    const failure = {
+      reason: message.startup_failure_reason,
+      errors: startupFailureDetails(message.errors),
+    };
+    session.startupFailure = failure;
+    session.initializationReady = false;
+    session.initializationError = "Claude Code startup failed.";
+    session.lastAssistantError = undefined;
+    bridgeLogger.error({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "sdk_startup_failed",
+      message: "Claude Code startup failed",
+      outcome: "failure",
+      sessionId: session.sessionId,
+      requestId: session.connectRequestId,
+      fields: {
+        startup_failure_reason: redactStartupDetail(failure.reason).slice(0, 1_024),
+        startup_failure_errors: failure.errors,
+        errors_valid: Array.isArray(message.errors) && message.errors.every((entry) => typeof entry === "string"),
+      },
+    });
+    writeEvent({
+      event: "connection_failed",
+      message: session.initializationError,
+      startup_failure: failure,
+    }, session.connectRequestId);
+    session.connectRequestId = undefined;
+    return;
+  }
   if (
     message.parent_tool_use_id === null ||
     message.parent_tool_use_id === undefined
@@ -1668,6 +1707,9 @@ export function handleSdkMessage(
   session: SessionState,
   message: SDKMessage,
 ): void {
+  if (session.startupFailure) {
+    return;
+  }
   const msg = message as unknown as Record<string, unknown>;
   const type = typeof msg.type === "string" ? msg.type : "";
   const subtype =
