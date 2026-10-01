@@ -2,5 +2,6 @@
   "permissions": {
     "defaultMode": "auto"
   },
+  "model": "opus",
   "enabledPlugins": {}
 }

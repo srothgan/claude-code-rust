@@ -20,6 +20,7 @@ Hide
 Type "clear && claude-rs --no-update-check --bridge-script /opt/claude-rs/agent-sdk/dist/bridge.js -C /workspace/claude-code-rust"
 Enter
 Wait+Screen /Type a message/
+Sleep 3s
 Show
 
 Sleep 1s

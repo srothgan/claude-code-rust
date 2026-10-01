@@ -2,11 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.14.8] - 2026-10-01 [Changes][v0.14.8]
 
 ### Features
 
-- **Agent SDK 0.3.286 migration** (#403, @srothgan): Upgrade to Agent SDK `0.3.286` with slash command aliases, SDK conversation resets, plugin load failure notices, and Artifact pin state.
+- **Opus 5.5, Sonnet 5.5, and Agent SDK 0.3.286 migration** (#403, @srothgan): Upgrade to Agent SDK `0.3.286`, add Opus 5.5 and Sonnet 5.5 support, and handle slash command aliases, SDK conversation resets, plugin load failure notices, and Artifact pin state.
 - **`/btw` side questions** (#403, @srothgan): Ask side questions with `/btw <question>` without interrupting the active turn, queueing up to ten.
 - **`/ultracode` session controls** (#403, @srothgan): Toggle and inspect Ultracode with `/ultracode on`, `off`, and `status`, keep it active across effort changes, and show a purple footer label only while it is effective.
 - **Composer input surface** (#392, @srothgan): Give the composer the user-message background with one-cell padding on every side.
@@ -868,6 +868,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.14.8]: https://github.com/srothgan/claude-code-rust/compare/v0.14.7...v0.14.8
 [v0.14.7]: https://github.com/srothgan/claude-code-rust/compare/v0.14.6...v0.14.7
 [v0.14.6]: https://github.com/srothgan/claude-code-rust/compare/v0.14.5...v0.14.6
 [v0.14.5]: https://github.com/srothgan/claude-code-rust/compare/v0.14.4...v0.14.5
