@@ -10,6 +10,8 @@ use std::rc::Rc;
 /// State owned by the active SDK session/runtime boundary.
 pub struct SessionRuntimeState {
     pub session_id: Option<model::SessionId>,
+    /// Active SDK conversation mounted inside the session after an explicit reset.
+    pub conversation_id: Option<String>,
     /// Most recently established session, retained across live identity resets for the exit hint.
     last_resumable_session_id: Option<model::SessionId>,
     /// Agent connection handle. `None` while connecting (before bridge is ready).
@@ -42,6 +44,7 @@ impl Default for SessionRuntimeState {
     fn default() -> Self {
         Self {
             session_id: None,
+            conversation_id: None,
             last_resumable_session_id: None,
             conn: None,
             session_scope_epoch: 0,
@@ -79,6 +82,7 @@ impl SessionRuntimeState {
     pub(crate) fn activate_session(&mut self, session_id: model::SessionId) {
         self.last_resumable_session_id = Some(session_id.clone());
         self.session_id = Some(session_id);
+        self.conversation_id = None;
     }
 
     /// Return the active or most recently established session that can be resumed after exit.
@@ -89,6 +93,7 @@ impl SessionRuntimeState {
 
     pub fn clear_identity(&mut self) {
         self.session_id = None;
+        self.conversation_id = None;
         self.current_model = None;
         self.mode = None;
         self.fast_mode_state = model::FastModeState::Off;

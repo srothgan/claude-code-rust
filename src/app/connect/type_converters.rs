@@ -158,6 +158,7 @@ pub(super) fn map_mcp_server_status(status: types::McpServerStatus) -> model::Mc
         error: status.error,
         config: status.config.map(map_mcp_status_config),
         scope: status.scope,
+        source: status.source,
         tools: status
             .tools
             .into_iter()
@@ -219,6 +220,7 @@ pub(super) fn map_available_commands_update(
                 {
                     mapped = mapped.input_hint(input_hint);
                 }
+                mapped = mapped.aliases(cmd.aliases).builtin(cmd.builtin);
                 mapped
             })
             .collect(),
@@ -379,6 +381,17 @@ pub(super) fn convert_account_info(account: types::AccountInfo) -> model::Accoun
 #[allow(clippy::too_many_lines)]
 pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::SessionUpdate> {
     match update {
+        types::SessionUpdate::ConversationReset {
+            new_conversation_id,
+            trigger,
+            timestamp,
+            user_message_uuid,
+        } => Some(model::SessionUpdate::ConversationReset {
+            new_conversation_id,
+            trigger,
+            timestamp,
+            user_message_uuid,
+        }),
         types::SessionUpdate::UserMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
             Some(model::SessionUpdate::UserMessageChunk(
@@ -612,6 +625,12 @@ pub(super) fn map_permission_request(
             tool_call_update,
             options,
             convert_permission_display(request.display),
+        )
+        .mcp_server(
+            request.mcp_server.map(|server| model::McpServerProvenance {
+                name: server.name,
+                source: server.source,
+            }),
         ),
         tool_call_id,
     )
@@ -959,6 +978,7 @@ fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetad
         .output_file(task_metadata.output_file)
         .summary(task_metadata.summary)
         .terminal_status(task_metadata.terminal_status)
+        .terminal_reason(task_metadata.terminal_reason)
         .blocked(task_metadata.blocked)
         .parent_agent_id(task_metadata.parent_agent_id)
         .ambient(task_metadata.ambient)
@@ -1477,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn map_permission_request_preserves_display_metadata() {
+    fn map_permission_request_preserves_display_and_mcp_provenance() {
         let (request, tool_call_id) = map_permission_request(
             "session-1",
             types::PermissionRequest {
@@ -1508,6 +1528,10 @@ mod tests {
                     default_to_no: false,
                     suppress_always_allow_rule: false,
                 }),
+                mcp_server: Some(types::McpServerProvenance {
+                    name: "filesystem".to_owned(),
+                    source: "project".to_owned(),
+                }),
             },
         );
 
@@ -1520,6 +1544,13 @@ mod tests {
                     .display_name(Some("Run tests".to_owned()))
                     .description(Some("This command reads project files".to_owned())),
             )
+        );
+        assert_eq!(
+            request.mcp_server,
+            Some(model::McpServerProvenance {
+                name: "filesystem".to_owned(),
+                source: "project".to_owned(),
+            })
         );
     }
 
@@ -1691,6 +1722,8 @@ mod tests {
                 name: "project-command".to_owned(),
                 description: "Project command".to_owned(),
                 input_hint: Some("<value>".to_owned()),
+                aliases: vec!["project-alias".to_owned()],
+                builtin: true,
             }],
             Some("commands_changed".to_owned()),
             Some(3),
@@ -1701,6 +1734,8 @@ mod tests {
             model::AvailableCommandsUpdate::new(vec![
                 model::AvailableCommand::new("project-command", "Project command")
                     .input_hint("<value>")
+                    .aliases(vec!["project-alias".to_owned()])
+                    .builtin(true)
             ])
             .source("commands_changed")
             .generation(3)
@@ -1730,6 +1765,7 @@ mod tests {
                 output_file: Some("C:/tmp/output.md".to_owned()),
                 summary: Some("Validation complete".to_owned()),
                 terminal_status: Some("completed".to_owned()),
+                terminal_reason: Some("worker_restart".to_owned()),
                 blocked: Some(true),
                 parent_agent_id: Some("agent-parent".to_owned()),
                 ambient: Some(true),
@@ -1756,6 +1792,7 @@ mod tests {
                     .output_file(Some("C:/tmp/output.md".to_owned()))
                     .summary(Some("Validation complete".to_owned()))
                     .terminal_status(Some("completed".to_owned()))
+                    .terminal_reason(Some("worker_restart".to_owned()))
                     .blocked(Some(true))
                     .parent_agent_id(Some("agent-parent".to_owned()))
                     .ambient(Some(true)),
@@ -1790,6 +1827,7 @@ mod tests {
                 output_file: Some("C:/tmp/review.md".to_owned()),
                 summary: Some("Review stopped".to_owned()),
                 terminal_status: Some("killed".to_owned()),
+                terminal_reason: Some("worker_restart".to_owned()),
                 blocked: Some(false),
                 parent_agent_id: Some("agent-root".to_owned()),
                 ambient: Some(false),
@@ -1819,6 +1857,7 @@ mod tests {
                     .output_file(Some("C:/tmp/review.md".to_owned()))
                     .summary(Some("Review stopped".to_owned()))
                     .terminal_status(Some("killed".to_owned()))
+                    .terminal_reason(Some("worker_restart".to_owned()))
                     .blocked(Some(false))
                     .parent_agent_id(Some("agent-root".to_owned()))
                     .ambient(Some(false)),
@@ -1967,6 +2006,7 @@ mod tests {
                 always_load: Some(true),
             }),
             scope: Some("project".to_owned()),
+            source: Some("project".to_owned()),
             tools: Vec::new(),
         };
 

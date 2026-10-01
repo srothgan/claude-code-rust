@@ -217,6 +217,12 @@ pub struct ExternalMessageUpdate {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionUpdate {
+    ConversationReset {
+        new_conversation_id: String,
+        trigger: Option<String>,
+        timestamp: Option<String>,
+        user_message_uuid: Option<String>,
+    },
     AgentMessageChunk(ContentChunk),
     UserMessageChunk(ContentChunk),
     ExternalMessageUpdate(ExternalMessageUpdate),

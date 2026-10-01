@@ -189,6 +189,15 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         badges.push(Span::styled("  [ends with final response]", Style::default().fg(theme::DIM)));
     }
 
+    if tc.task_metadata.as_ref().and_then(|metadata| metadata.terminal_reason.as_deref())
+        == Some("worker_restart")
+    {
+        badges.push(Span::styled(
+            "  [worker restarted]",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     if matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task") {
         if let Some(depth) = tc.task_spawn_depth() {
             badges.push(Span::styled(

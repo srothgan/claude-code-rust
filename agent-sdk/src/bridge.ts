@@ -322,6 +322,9 @@ export function buildPromptUserMessage(
     session_id: sessionId,
     parent_tool_use_id: null,
     origin: { kind: "human" },
+    ...(command.inline_pastes && command.inline_pastes.length > 0
+      ? { inline_pastes: command.inline_pastes }
+      : {}),
     message: {
       role: "user",
       content,
@@ -359,7 +362,7 @@ export function emitAgentConfigOptionUpdate(
   });
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.270";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.286";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {

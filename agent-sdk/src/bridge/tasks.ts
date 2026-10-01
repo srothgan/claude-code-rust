@@ -1084,6 +1084,11 @@ function lifecycleMetadata(
   ) {
     metadata.terminal_status = terminalStatus;
   }
+  const terminalReason =
+    nonEmptyString(msg.reason) ?? nonEmptyString(patch?.reason);
+  if (terminalReason) {
+    metadata.terminal_reason = terminalReason;
+  }
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 

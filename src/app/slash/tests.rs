@@ -5,7 +5,8 @@ use serde_json::json;
 
 // Re-import submodule items needed by tests
 use super::candidates::{
-    argument_candidates, detect_slash_at_cursor, supported_command_candidates,
+    argument_candidates, detect_slash_at_cursor, find_advertised_command,
+    supported_command_candidates,
 };
 
 fn attach_test_connection(app: &mut App) -> crate::agent::client::CommandReceiver {
@@ -89,6 +90,43 @@ fn advertised_command_is_forwarded() {
         vec![model::AvailableCommand::new("/remote-command", "Remote command")];
     let consumed = try_handle_submit(&mut app, "/remote-command");
     assert!(!consumed);
+}
+
+#[test]
+fn advertised_command_alias_is_forwarded_and_offered() {
+    let mut app = App::test_default();
+    app.sdk_inventory.available_commands = vec![
+        model::AvailableCommand::new("/remote-command", "Remote command")
+            .aliases(vec!["/remote".to_owned()]),
+    ];
+
+    assert!(!try_handle_submit(&mut app, "/remote"));
+    assert_eq!(
+        find_advertised_command(&app, "/remote").map(|cmd| cmd.name.as_str()),
+        Some("/remote-command")
+    );
+    assert!(
+        supported_command_candidates(&app).iter().any(|candidate| candidate.primary == "/remote")
+    );
+}
+
+#[test]
+fn advertised_command_collision_prefers_canonical_then_builtin() {
+    let mut app = App::test_default();
+    app.sdk_inventory.available_commands = vec![
+        model::AvailableCommand::new("/deploy", "Plugin deploy").aliases(vec!["/ship".to_owned()]),
+        model::AvailableCommand::new("/ship", "User ship"),
+        model::AvailableCommand::new("/deploy", "Built-in deploy").builtin(true),
+    ];
+
+    assert_eq!(
+        find_advertised_command(&app, "/ship").map(|cmd| cmd.description.as_str()),
+        Some("User ship")
+    );
+    assert_eq!(
+        find_advertised_command(&app, "/deploy").map(|cmd| cmd.description.as_str()),
+        Some("Built-in deploy")
+    );
 }
 
 #[test]

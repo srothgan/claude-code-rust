@@ -17,6 +17,7 @@ pub(super) fn submit_input(app: &mut App) {
 
     // No connection yet - can't submit
     let text = app.input.text();
+    let inline_pastes = app.input.inline_pastes();
     if text.trim().is_empty() {
         return;
     }
@@ -25,7 +26,7 @@ pub(super) fn submit_input(app: &mut App) {
     let has_active_or_queued_turn = matches!(app.status, AppStatus::Thinking | AppStatus::Running)
         || !app.pending_user_messages.is_empty();
     if has_active_or_queued_turn && submission.is_prompt() {
-        dispatch_active_turn_prompt(app, submission.into_text());
+        dispatch_active_turn_prompt(app, submission.into_text(), inline_pastes);
         return;
     }
     if (app.is_agent_turn_active() || !app.pending_user_messages.is_empty())
@@ -44,7 +45,7 @@ pub(super) fn submit_input(app: &mut App) {
     }
 
     app.input.clear();
-    dispatch_submission(app, submission);
+    dispatch_submission(app, submission, inline_pastes);
 }
 
 pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
@@ -76,14 +77,18 @@ pub(super) fn request_cancel(app: &mut App) -> Result<(), String> {
     Ok(())
 }
 
-fn dispatch_submission(app: &mut App, submission: slash::ResolvedSubmission) {
+fn dispatch_submission(
+    app: &mut App,
+    submission: slash::ResolvedSubmission,
+    inline_pastes: Vec<String>,
+) {
     if slash::try_handle_submission(app, &submission) {
         return;
     }
-    dispatch_prompt_turn(app, submission.into_text());
+    dispatch_prompt_turn(app, submission.into_text(), inline_pastes);
 }
 
-fn dispatch_prompt_turn(app: &mut App, text: String) {
+fn dispatch_prompt_turn(app: &mut App, text: String, inline_pastes: Vec<String>) {
     // New turn started by user input: force-stop stale tool calls from older turns
     // so their spinners don't continue during this turn.
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
@@ -110,7 +115,13 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
 
     // The text already contains [Image #N] badges from the textarea,
     // so the model can correlate user references with image attachments.
-    match conn.prompt_with_images(sid.to_string(), message_uuid.clone(), text, images) {
+    match conn.prompt_with_images_and_pastes(
+        sid.to_string(),
+        message_uuid.clone(),
+        text,
+        images,
+        inline_pastes,
+    ) {
         Ok(resp) => {
             app.session_runtime.prompt_suggestion = None;
             crate::app::session_runtime::request_context_usage_refresh(app);
@@ -131,7 +142,7 @@ fn dispatch_prompt_turn(app: &mut App, text: String) {
     }
 }
 
-fn dispatch_active_turn_prompt(app: &mut App, text: String) {
+fn dispatch_active_turn_prompt(app: &mut App, text: String, inline_pastes: Vec<String>) {
     let Some(conn) = app.session_runtime.conn.clone() else {
         return;
     };
@@ -158,7 +169,13 @@ fn dispatch_active_turn_prompt(app: &mut App, text: String) {
         }
     }
 
-    match conn.prompt_with_images(session_id.to_string(), message_uuid.clone(), text, images) {
+    match conn.prompt_with_images_and_pastes(
+        session_id.to_string(),
+        message_uuid.clone(),
+        text,
+        images,
+        inline_pastes,
+    ) {
         Ok(_) => {
             app.session_runtime.prompt_suggestion = None;
             app.input.clear();
@@ -251,12 +268,15 @@ mod tests {
         assert_eq!(pending.images.len(), 1);
         assert_eq!(pending.images[0].data, "aGVsbG8=");
         let envelope = rx.try_recv().expect("active-turn prompt should be sent");
-        let BridgeCommand::Prompt { session_id, message_uuid, chunks } = envelope.command else {
+        let BridgeCommand::Prompt { session_id, message_uuid, chunks, inline_pastes } =
+            envelope.command
+        else {
             panic!("expected prompt command");
         };
         assert_eq!(session_id, "session-1");
         assert_eq!(message_uuid, pending.uuid);
         assert_eq!(chunks.len(), 2);
+        assert!(inline_pastes.is_empty());
         assert!(rx.try_recv().is_err(), "active-turn prompt must not cancel the current turn");
     }
 
@@ -525,6 +545,56 @@ mod tests {
     }
 
     #[test]
+    fn prompt_submission_preserves_expanded_text_and_inline_paste_provenance() {
+        let (mut app, mut rx) = app_with_connection();
+        let pasted = "p".repeat(1_001);
+        app.input.insert_paste_block(&pasted);
+
+        submit_input(&mut app);
+
+        let envelope = rx.try_recv().expect("prompt should be sent");
+        let BridgeCommand::Prompt { chunks, inline_pastes, .. } = envelope.command else {
+            panic!("expected prompt command");
+        };
+        assert_eq!(inline_pastes, vec![pasted.clone()]);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].value, serde_json::Value::String(pasted));
+    }
+
+    #[test]
+    fn prompt_submission_preserves_interleaved_pastes_with_an_image() {
+        let (mut app, mut rx) = app_with_connection();
+        let first_paste = "a".repeat(1_001);
+        let second_paste = "b".repeat(1_002);
+        app.input.insert_str("before ");
+        app.input.insert_paste_block(&first_paste);
+        app.input.insert_str(" [Image #1] between ");
+        app.input.insert_paste_block(&second_paste);
+        app.input.insert_str(" after");
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: "aGVsbG8=".to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+
+        submit_input(&mut app);
+
+        let envelope = rx.try_recv().expect("prompt should be sent");
+        let BridgeCommand::Prompt { chunks, inline_pastes, .. } = envelope.command else {
+            panic!("expected prompt command");
+        };
+        assert_eq!(inline_pastes, vec![first_paste.clone(), second_paste.clone()]);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].kind, "image");
+        assert_eq!(chunks[1].kind, "text");
+        assert_eq!(
+            chunks[1].value,
+            serde_json::Value::String(format!(
+                "before {first_paste} [Image #1] between {second_paste} after"
+            ))
+        );
+    }
+
+    #[test]
     fn config_slash_submit_preserves_prompt_suggestion_across_fullscreen_return() {
         let (mut app, mut rx) = app_with_connection();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -709,7 +779,7 @@ mod tests {
         app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         app.status = AppStatus::Ready;
 
-        dispatch_prompt_turn(&mut app, "hello".into());
+        dispatch_prompt_turn(&mut app, "hello".into(), Vec::new());
 
         assert!(app.transcript.messages.is_empty());
         assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("previous suggestion"));

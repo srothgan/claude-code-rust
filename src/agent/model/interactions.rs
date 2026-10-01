@@ -194,6 +194,13 @@ pub struct RequestPermissionRequest {
     pub tool_call: ToolCallUpdate,
     pub options: Vec<PermissionOption>,
     pub display: Option<PermissionDisplay>,
+    pub mcp_server: Option<McpServerProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerProvenance {
+    pub name: String,
+    pub source: String,
 }
 
 impl RequestPermissionRequest {
@@ -204,7 +211,13 @@ impl RequestPermissionRequest {
         options: Vec<PermissionOption>,
         display: Option<PermissionDisplay>,
     ) -> Self {
-        Self { session_id: session_id.into(), tool_call, options, display }
+        Self { session_id: session_id.into(), tool_call, options, display, mcp_server: None }
+    }
+
+    #[must_use]
+    pub fn mcp_server(mut self, mcp_server: Option<McpServerProvenance>) -> Self {
+        self.mcp_server = mcp_server;
+        self
     }
 }
 

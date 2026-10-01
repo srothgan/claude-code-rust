@@ -65,6 +65,8 @@ pub enum BridgeCommand {
         session_id: String,
         message_uuid: String,
         chunks: Vec<types::PromptChunk>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        inline_pastes: Vec<String>,
     },
     CancelTurn {
         session_id: String,
@@ -625,6 +627,7 @@ mod tests {
                     kind: "text".to_owned(),
                     value: serde_json::json!("next"),
                 }],
+                inline_pastes: vec!["pasted text".to_owned()],
             },
         };
 
@@ -634,7 +637,8 @@ mod tests {
                 "command": "prompt",
                 "session_id": "s1",
                 "message_uuid": "message-1",
-                "chunks": [{ "kind": "text", "value": "next" }]
+                "chunks": [{ "kind": "text", "value": "next" }],
+                "inline_pastes": ["pasted text"]
             })
         );
     }

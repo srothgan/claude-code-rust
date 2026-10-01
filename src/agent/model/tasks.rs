@@ -18,6 +18,7 @@ pub struct TaskMetadata {
     pub output_file: Option<String>,
     pub summary: Option<String>,
     pub terminal_status: Option<String>,
+    pub terminal_reason: Option<String>,
     pub blocked: Option<bool>,
     pub parent_agent_id: Option<String>,
     pub ambient: Option<bool>,
@@ -125,6 +126,12 @@ impl TaskMetadata {
     #[must_use]
     pub fn terminal_status(mut self, terminal_status: Option<String>) -> Self {
         self.terminal_status = terminal_status;
+        self
+    }
+
+    #[must_use]
+    pub fn terminal_reason(mut self, terminal_reason: Option<String>) -> Self {
+        self.terminal_reason = terminal_reason;
         self
     }
 

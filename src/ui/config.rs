@@ -1375,6 +1375,7 @@ mod tests {
                 always_load: Some(true),
             }),
             scope: Some("project".to_owned()),
+            source: None,
             tools: vec![crate::agent::model::McpTool {
                 name: "read_file".to_owned(),
                 description: Some("Read a file".to_owned()),

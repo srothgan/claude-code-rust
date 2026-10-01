@@ -7,17 +7,37 @@ pub struct AvailableCommand {
     pub name: String,
     pub description: String,
     pub input_hint: Option<String>,
+    pub aliases: Vec<String>,
+    pub builtin: bool,
 }
 
 impl AvailableCommand {
     #[must_use]
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
-        Self { name: name.into(), description: description.into(), input_hint: None }
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_hint: None,
+            aliases: Vec::new(),
+            builtin: false,
+        }
     }
 
     #[must_use]
     pub fn input_hint(mut self, input_hint: impl Into<String>) -> Self {
         self.input_hint = Some(input_hint.into());
+        self
+    }
+
+    #[must_use]
+    pub fn aliases(mut self, aliases: Vec<String>) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    #[must_use]
+    pub fn builtin(mut self, builtin: bool) -> Self {
+        self.builtin = builtin;
         self
     }
 }

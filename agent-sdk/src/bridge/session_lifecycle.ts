@@ -586,6 +586,16 @@ export async function createSession(params: {
         options.suppressAlwaysAllowRule === true,
       ),
       ...(display ? { display } : {}),
+      ...(options.mcpServer &&
+      typeof options.mcpServer.name === "string" &&
+      typeof options.mcpServer.source === "string"
+        ? {
+            mcp_server: {
+              name: options.mcpServer.name,
+              source: options.mcpServer.source,
+            },
+          }
+        : {}),
     };
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_PERMISSION,
@@ -600,6 +610,8 @@ export async function createSession(params: {
         agent_id: options.agentID,
         blocked_path: options.blockedPath ?? "<none>",
         decision_reason: options.decisionReason ?? "<none>",
+        mcp_server_name: request.mcp_server?.name,
+        mcp_server_source: request.mcp_server?.source,
       },
     });
     emitPermissionRequestEvent(session.sessionId, request);

@@ -3797,6 +3797,79 @@ fn available_commands_update_replaces_previous_commands() {
 }
 
 #[test]
+fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_inventory() {
+    let mut app = make_test_app();
+    app.transcript.messages.push(user_msg("old conversation"));
+    app.recent_sessions = vec![
+        crate::app::RecentSessionInfo {
+            session_id: "test-session".to_owned(),
+            summary: "Old conversation title".to_owned(),
+            last_modified_ms: 1,
+            file_size_bytes: 2,
+            cwd: Some("/test".to_owned()),
+            git_branch: Some("main".to_owned()),
+            custom_title: Some("Old conversation title".to_owned()),
+            first_prompt: Some("prompt Old conversation title".to_owned()),
+        },
+        crate::app::RecentSessionInfo {
+            session_id: "other-session".to_owned(),
+            summary: "Other conversation title".to_owned(),
+            last_modified_ms: 1,
+            file_size_bytes: 2,
+            cwd: Some("/test".to_owned()),
+            git_branch: Some("main".to_owned()),
+            custom_title: Some("Other conversation title".to_owned()),
+            first_prompt: Some("prompt Other conversation title".to_owned()),
+        },
+    ];
+    app.sdk_inventory.available_commands = vec![model::AvailableCommand::new("/remote", "Remote")];
+    app.sdk_inventory.available_agents = vec![model::AvailableAgent::new("reviewer", "Reviews")];
+    app.config.pending_session_title_change =
+        Some(crate::app::config::PendingSessionTitleChangeState {
+            session_id: "test-session".to_owned(),
+            kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+        });
+
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ConversationReset {
+            new_conversation_id: "conversation-2".to_owned(),
+            trigger: Some("future-trigger".to_owned()),
+            timestamp: Some("2026-10-01T12:00:00Z".to_owned()),
+            user_message_uuid: None,
+        }),
+    );
+
+    assert_eq!(app.transcript.messages.len(), 1);
+    assert!(!app.transcript.messages.iter().any(|message| {
+        message.blocks.iter().any(|block| {
+            matches!(block, MessageBlock::Text(text) if text.text.contains("old conversation"))
+        })
+    }));
+    assert_eq!(app.sdk_inventory.available_commands.len(), 1);
+    assert_eq!(app.sdk_inventory.available_agents.len(), 1);
+    assert_eq!(app.session_runtime.conversation_id.as_deref(), Some("conversation-2"));
+    let active_session = app
+        .recent_sessions
+        .iter()
+        .find(|session| session.session_id == "test-session")
+        .expect("active session cache");
+    assert!(active_session.custom_title.is_none());
+    assert!(active_session.summary.is_empty());
+    assert!(active_session.first_prompt.is_none());
+    let other_session = app
+        .recent_sessions
+        .iter()
+        .find(|session| session.session_id == "other-session")
+        .expect("unrelated session cache");
+    assert_eq!(other_session.custom_title.as_deref(), Some("Other conversation title"));
+    assert_eq!(other_session.summary, "Other conversation title");
+    assert_eq!(other_session.first_prompt.as_deref(), Some("prompt Other conversation title"));
+    assert!(app.config.pending_session_title_change.is_none());
+    assert_eq!(app.status, AppStatus::Ready);
+}
+
+#[test]
 fn prompt_suggestion_tab_accepts_empty_input() {
     let mut app = make_test_app();
     app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());

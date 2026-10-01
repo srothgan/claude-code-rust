@@ -29,6 +29,8 @@ function commandSignature(commands: AvailableCommand[]): string {
       command.name,
       command.description,
       command.input_hint ?? "",
+      command.aliases ?? [],
+      command.builtin ?? false,
     ]),
   );
 }
@@ -177,12 +179,26 @@ export function mapSdkSlashCommand(command: unknown): AvailableCommand | null {
   if (!name) {
     return null;
   }
+  const aliases = Array.isArray(record.aliases)
+    ? [
+        ...new Set(
+          record.aliases.filter(
+            (alias): alias is string =>
+              typeof alias === "string" && alias.length > 0 && alias !== name,
+          ),
+        ),
+      ]
+    : [];
   return {
     name,
     description:
       typeof record.description === "string" ? record.description : "",
     input_hint:
       typeof record.argumentHint === "string" ? record.argumentHint : undefined,
+    ...(aliases.length > 0 ? { aliases } : {}),
+    ...(typeof record.builtin === "boolean"
+      ? { builtin: record.builtin }
+      : {}),
   };
 }
 

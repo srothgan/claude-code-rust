@@ -263,6 +263,9 @@ fn apply_tool_call_task_metadata_update(
     if task_metadata.terminal_status.is_some() {
         merged.terminal_status.clone_from(&task_metadata.terminal_status);
     }
+    if task_metadata.terminal_reason.is_some() {
+        merged.terminal_reason.clone_from(&task_metadata.terminal_reason);
+    }
     if task_metadata.blocked.is_some() {
         merged.blocked = task_metadata.blocked;
     }

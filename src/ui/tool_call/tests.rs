@@ -163,6 +163,23 @@ fn render_tool_call_title_shows_backgrounded_badge() {
 }
 
 #[test]
+fn render_task_capable_tool_titles_show_worker_restart_reason() {
+    for tool_name in ["Agent", "Task", "Bash", "Monitor", "Workflow"] {
+        let mut tc = test_tool_call("tc-worker-restart", tool_name, model::ToolCallStatus::Killed);
+        tc.task_metadata = Some(
+            model::TaskMetadata::new()
+                .terminal_status(Some("stopped".to_owned()))
+                .terminal_reason(Some("worker_restart".to_owned())),
+        );
+
+        let line = standard::render_tool_call_title(&tc, ToolCallRenderContext::default(), 100, 0);
+        let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+
+        assert!(rendered.contains("[worker restarted]"), "missing badge for {tool_name}");
+    }
+}
+
+#[test]
 fn render_agent_title_shows_spawn_depth_with_background_state() {
     let mut tc = test_tool_call("tc-depth", "Agent", model::ToolCallStatus::InProgress);
     tc.task_metadata =

@@ -405,11 +405,21 @@ export function parseCommandEnvelope(line: string): {
           ),
         };
       case "prompt":
+        if (
+          raw.inline_pastes !== undefined &&
+          (!Array.isArray(raw.inline_pastes) ||
+            !raw.inline_pastes.every((entry) => typeof entry === "string"))
+        ) {
+          throw new Error("prompt.inline_pastes must be an array of strings");
+        }
         return {
           command: "prompt",
           session_id: expectString(raw, "session_id", "prompt"),
           message_uuid: expectString(raw, "message_uuid", "prompt"),
           chunks: parsePromptChunks(raw, "prompt"),
+          ...(Array.isArray(raw.inline_pastes)
+            ? { inline_pastes: raw.inline_pastes as string[] }
+            : {}),
         };
       case "cancel_turn":
         return {

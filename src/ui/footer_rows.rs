@@ -600,6 +600,7 @@ mod tests {
             error: None,
             config: None,
             scope: None,
+            source: None,
             tools: Vec::new(),
         });
 
@@ -619,6 +620,7 @@ mod tests {
             error: None,
             config: None,
             scope: None,
+            source: None,
             tools: Vec::new(),
         });
 

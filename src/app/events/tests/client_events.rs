@@ -77,6 +77,7 @@ fn connected_requests_mcp_snapshot_even_outside_mcp_tab() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
     app.mcp.removed_config_servers.insert(
@@ -472,6 +473,7 @@ fn session_replaced_resets_chat_and_transient_state() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -535,6 +537,7 @@ fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -844,6 +847,7 @@ fn stale_mcp_snapshot_for_old_session_is_ignored() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -859,6 +863,7 @@ fn stale_mcp_snapshot_for_old_session_is_ignored() {
                 error: None,
                 config: None,
                 scope: None,
+                source: None,
                 tools: Vec::new(),
             }],
             source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
@@ -898,6 +903,7 @@ fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
                     error: None,
                     config: None,
                     scope: Some("user".into()),
+                    source: None,
                     tools: Vec::new(),
                 },
                 crate::agent::model::McpServerStatus {
@@ -907,6 +913,7 @@ fn removed_config_mcp_server_is_filtered_from_current_session_snapshot() {
                     error: None,
                     config: None,
                     scope: Some("user".into()),
+                    source: None,
                     tools: Vec::new(),
                 },
             ],
@@ -951,6 +958,7 @@ fn removed_config_mcp_guard_clears_after_matching_source_snapshot_proves_absence
                 error: None,
                 config: None,
                 scope: Some("user".into()),
+                source: None,
                 tools: Vec::new(),
             }],
             source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
@@ -986,6 +994,7 @@ fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
                 error: None,
                 config: None,
                 scope: Some("user".into()),
+                source: None,
                 tools: Vec::new(),
             }],
             source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),

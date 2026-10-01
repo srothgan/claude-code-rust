@@ -23,6 +23,10 @@ pub struct AvailableCommand {
     pub name: String,
     pub description: String,
     pub input_hint: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub builtin: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -490,6 +494,7 @@ pub struct TaskMetadata {
     pub output_file: Option<String>,
     pub summary: Option<String>,
     pub terminal_status: Option<String>,
+    pub terminal_reason: Option<String>,
     pub blocked: Option<bool>,
     pub parent_agent_id: Option<String>,
     pub ambient: Option<bool>,
@@ -589,6 +594,12 @@ pub struct TaskStateUpdate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
+    ConversationReset {
+        new_conversation_id: String,
+        trigger: Option<String>,
+        timestamp: Option<String>,
+        user_message_uuid: Option<String>,
+    },
     AgentMessageChunk {
         content: ContentBlock,
         source_message_uuid: Option<String>,
@@ -718,6 +729,13 @@ pub struct PermissionRequest {
     pub tool_call: ToolCall,
     pub options: Vec<PermissionOption>,
     pub display: Option<PermissionDisplay>,
+    pub mcp_server: Option<McpServerProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerProvenance {
+    pub name: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1142,6 +1160,7 @@ pub struct McpServerStatus {
     pub error: Option<String>,
     pub config: Option<McpServerStatusConfig>,
     pub scope: Option<String>,
+    pub source: Option<String>,
     #[serde(default)]
     pub tools: Vec<McpTool>,
 }

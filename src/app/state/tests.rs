@@ -200,6 +200,7 @@ fn cache_height_invalidated_returns_none() {
 fn clear_session_runtime_identity_resets_active_state_and_preserves_resumable_session_id() {
     let mut app = App::test_default();
     app.session_runtime.activate_session(crate::agent::model::SessionId::new("session-1"));
+    app.session_runtime.conversation_id = Some("conversation-1".to_owned());
     app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("sonnet", "Claude Sonnet", "Claude Sonnet")
             .authoritative(true),
@@ -218,6 +219,7 @@ fn clear_session_runtime_identity_resets_active_state_and_preserves_resumable_se
     app.clear_session_runtime_identity();
 
     assert!(app.session_runtime.session_id.is_none());
+    assert!(app.session_runtime.conversation_id.is_none());
     assert_eq!(
         app.session_runtime.resumable_session_id().map(crate::agent::model::SessionId::as_str),
         Some("session-1")
@@ -225,6 +227,16 @@ fn clear_session_runtime_identity_resets_active_state_and_preserves_resumable_se
     assert!(app.session_runtime.current_model.is_none());
     assert!(app.session_runtime.mode.is_none());
     assert_eq!(app.session_runtime.session_usage, SessionUsageState::default());
+}
+
+#[test]
+fn activating_a_session_clears_the_previous_conversation_identity() {
+    let mut runtime = SessionRuntimeState::test_default();
+    runtime.conversation_id = Some("conversation-1".to_owned());
+
+    runtime.activate_session(crate::agent::model::SessionId::new("session-2"));
+
+    assert!(runtime.conversation_id.is_none());
 }
 
 #[test]

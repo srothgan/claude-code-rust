@@ -19,6 +19,7 @@ type McpServerDiagnosticSummary = {
   status: McpServerStatus["status"];
   config_type: string;
   scope?: string;
+  source?: string;
   timeout_ms?: number;
   request_timeout_ms?: number;
   always_load?: boolean;
@@ -403,6 +404,7 @@ export function mapMcpServerStatus(
       ? { config: mapMcpServerStatusConfig(status.config) }
       : {}),
     ...(status.scope ? { scope: status.scope } : {}),
+    ...(status.source ? { source: status.source } : {}),
     tools: Array.isArray(status.tools)
       ? status.tools.map((tool) => ({
           name: tool.name,
@@ -590,6 +592,7 @@ export function summarizeMcpServersForDiagnostics(
       status: server.status,
       config_type: config.config_type,
       ...(server.scope ? { scope: server.scope } : {}),
+      ...(server.source ? { source: server.source } : {}),
       ...(config.timeout_ms === undefined
         ? {}
         : { timeout_ms: config.timeout_ms }),

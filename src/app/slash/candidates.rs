@@ -151,7 +151,11 @@ fn advertised_commands(app: &App) -> Vec<String> {
     app.sdk_inventory
         .available_commands
         .iter()
-        .map(|cmd| normalize_slash_name(&cmd.name))
+        .flat_map(|cmd| {
+            std::iter::once(cmd.name.as_str())
+                .chain(cmd.aliases.iter().map(String::as_str))
+                .map(normalize_slash_name)
+        })
         .filter(|name| command_spec(name).is_none())
         .collect()
 }
@@ -163,10 +167,21 @@ pub(super) fn find_advertised_command<'a>(
     if command_spec(command_name).is_some() {
         return None;
     }
+    let canonical = app
+        .sdk_inventory
+        .available_commands
+        .iter()
+        .filter(|cmd| normalize_slash_name(&cmd.name) == command_name);
+    if let Some(command) = canonical.clone().find(|cmd| cmd.builtin) {
+        return Some(command);
+    }
+    if let Some(command) = canonical.into_iter().next() {
+        return Some(command);
+    }
     app.sdk_inventory
         .available_commands
         .iter()
-        .find(|cmd| normalize_slash_name(&cmd.name) == command_name)
+        .find(|cmd| cmd.aliases.iter().any(|alias| normalize_slash_name(alias) == command_name))
 }
 
 fn is_builtin_variable_input_command(command_name: &str) -> bool {
@@ -210,11 +225,16 @@ pub(super) fn supported_command_candidates(app: &App) -> Vec<SlashCandidate> {
     }
 
     for cmd in &app.sdk_inventory.available_commands {
-        let name = normalize_slash_name(&cmd.name);
-        if command_spec(&name).is_some() {
-            continue;
+        for name in std::iter::once(cmd.name.as_str()).chain(cmd.aliases.iter().map(String::as_str))
+        {
+            let name = normalize_slash_name(name);
+            if command_spec(&name).is_some() {
+                continue;
+            }
+            let description = find_advertised_command(app, &name)
+                .map_or_else(|| cmd.description.clone(), |selected| selected.description.clone());
+            by_name.insert(name, description);
         }
-        by_name.entry(name).or_insert_with(|| cmd.description.clone());
     }
 
     by_name

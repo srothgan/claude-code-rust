@@ -174,6 +174,7 @@ function sdkTaskMetadata(
     status && typeof msg.summary === "string" && msg.summary.length > 0
       ? msg.summary
       : undefined;
+  const reason = diagnosticToken(msg.reason);
   const spawnDepth =
     typeof msg.spawn_depth === "number" &&
     Number.isSafeInteger(msg.spawn_depth) &&
@@ -195,6 +196,7 @@ function sdkTaskMetadata(
     ...(outputFile ? { output_file: outputFile } : {}),
     ...(summary ? { summary } : {}),
     ...(status ? { terminal_status: status } : {}),
+    ...(reason ? { terminal_reason: reason } : {}),
     ...(typeof msg.blocked === "boolean" ? { blocked: msg.blocked } : {}),
     ...(typeof msg.is_backgrounded === "boolean"
       ? { is_backgrounded: msg.is_backgrounded }
@@ -480,6 +482,32 @@ function boundedDiagnosticString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed.slice(0, 1_024) : undefined;
+}
+
+function emitPluginLoadErrors(session: SessionState, value: unknown): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+  const errors = value.slice(0, 20);
+  for (const entry of errors) {
+    const error = asRecordOrNull(entry);
+    const plugin = boundedDiagnosticString(error?.plugin) ?? "unknown plugin";
+    const category = boundedDiagnosticString(error?.type) ?? "generic-error";
+    const message = boundedDiagnosticString(error?.message) ?? "Unknown plugin load failure";
+    const path = boundedDiagnosticString(error?.path);
+    emitSystemNoticeUpdate(
+      session,
+      "warning",
+      `Plugin ${plugin} failed to load (${category})${path ? ` at ${path}` : ""}: ${message}`,
+    );
+  }
+  if (value.length > errors.length) {
+    emitSystemNoticeUpdate(
+      session,
+      "warning",
+      `${value.length - errors.length} additional plugin load failure(s) were omitted.`,
+    );
+  }
 }
 
 function ensureSentencePunctuation(value: string): string {
@@ -1647,6 +1675,28 @@ export function handleSdkMessage(
   }
   logSdkMessageOrigin(session, msg);
 
+  if (type === "conversation_reset") {
+    const newConversationId = trimmedStringField(msg, "new_conversation_id");
+    if (!newConversationId) {
+      bridgeLogger.warn({
+        target: LOG_TARGETS.APP_SESSION,
+        eventName: "sdk_conversation_reset_invalid",
+        message: "SDK conversation reset omitted its new conversation identifier",
+        outcome: "ignored",
+        sessionId: session.sessionId,
+      });
+      return;
+    }
+    emitSessionUpdate(session.sessionId, {
+      type: "conversation_reset",
+      new_conversation_id: newConversationId,
+      trigger: trimmedStringField(msg, "trigger"),
+      timestamp: trimmedStringField(msg, "timestamp"),
+      user_message_uuid: trimmedStringField(msg, "user_message_uuid"),
+    });
+    return;
+  }
+
   if (type === "system") {
     if (handleFallbackRetractionMessage(session, subtype, msg)) {
       return;
@@ -1914,6 +1964,7 @@ export function handleSdkMessage(
           ...settingsError,
         });
       }
+      emitPluginLoadErrors(session, msg.plugin_errors);
       return;
     }
 

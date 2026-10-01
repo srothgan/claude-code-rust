@@ -7,6 +7,19 @@ pub(crate) fn mcp_server_ownership<'a>(
     app: &'a App,
     server: &'a crate::agent::model::McpServerStatus,
 ) -> McpServerOwnership<'a> {
+    if let Some(source) = server.source.as_deref() {
+        return match source {
+            "plugin" => {
+                crate::app::plugins::installed_mcp_plugin_for_runtime_server(app, &server.name)
+                    .map_or(McpServerOwnership::PluginOwnedUnknown, McpServerOwnership::PluginOwned)
+            }
+            "user" => McpServerOwnership::Persisted(McpConfigScope::User),
+            "local" => McpServerOwnership::Persisted(McpConfigScope::Local),
+            "project" => McpServerOwnership::Persisted(McpConfigScope::Project),
+            "dynamic" => McpServerOwnership::SdkDynamic,
+            _ => McpServerOwnership::RuntimeOnly,
+        };
+    }
     if crate::app::plugins::is_plugin_mcp_runtime_server_name(&server.name) {
         return crate::app::plugins::installed_mcp_plugin_for_runtime_server(app, &server.name)
             .map_or(McpServerOwnership::PluginOwnedUnknown, McpServerOwnership::PluginOwned);

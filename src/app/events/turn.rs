@@ -47,6 +47,25 @@ struct TurnExitState {
     cancel_requested: bool,
 }
 
+fn log_permission_mcp_provenance(
+    session_id: &str,
+    tool_id: &str,
+    server: Option<&model::McpServerProvenance>,
+) {
+    let Some(server) = server else { return };
+    tracing::debug!(
+        target: crate::logging::targets::APP_PERMISSION,
+        event_name = "permission_request_mcp_provenance",
+        message = "MCP permission request provenance received",
+        outcome = "observed",
+        session_id,
+        tool_call_id = tool_id,
+        mcp_server_name = %server.name,
+        mcp_server_source = %server.source,
+        sdk_registered = server.source == "sdk",
+    );
+}
+
 pub(super) fn handle_permission_request_event(
     app: &mut App,
     request: model::RequestPermissionRequest,
@@ -65,6 +84,7 @@ pub(super) fn handle_permission_request_event(
         display.description.as_deref()
     });
     let selected_index = permission_initial_selected_index(&request);
+    log_permission_mcp_provenance(&session_id, &tool_id, request.mcp_server.as_ref());
 
     let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
         tracing::warn!(

@@ -77,6 +77,7 @@ fn connected_mcp_server_status(
         error: None,
         config,
         scope: Some(scope.to_owned()),
+        source: None,
         tools: Vec::new(),
     }
 }
@@ -1600,6 +1601,7 @@ fn mcp_enter_opens_details_overlay_instead_of_closing_config() {
             always_load: None,
         }),
         scope: Some("project".to_owned()),
+        source: None,
         tools: vec![],
     }];
 
@@ -1639,6 +1641,7 @@ fn mcp_clear_auth_requires_confirmation_and_cancel_restores_details_overlay() {
         error: None,
         config: None,
         scope: Some("project".to_owned()),
+        source: None,
         tools: Vec::new(),
     }];
     app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
@@ -1670,6 +1673,7 @@ fn user_mcp_server_offers_matching_config_remove_action() {
         error: None,
         config: None,
         scope: Some("user".to_owned()),
+        source: None,
         tools: Vec::new(),
     };
 
@@ -1685,6 +1689,46 @@ fn user_mcp_server_offers_matching_config_remove_action() {
         &server,
         super::mcp::McpServerActionKind::RemoveUserConfig
     ));
+}
+
+#[test]
+fn mcp_source_is_authoritative_for_config_removal_scope() {
+    let (_dir, app) = open_settings_test_app();
+    let mut server = connected_mcp_server_status("session-search", "user", None);
+    server.source = Some("dynamic".to_owned());
+
+    let actions = available_mcp_actions(&app, &server);
+
+    assert!(actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveUserConfig));
+}
+
+#[test]
+fn mcp_config_source_works_without_legacy_scope() {
+    let (_dir, app) = open_settings_test_app();
+    let mut server = connected_mcp_server_status("filesystem", "dynamic", None);
+    server.scope = None;
+    server.source = Some("user".to_owned());
+
+    let actions = available_mcp_actions(&app, &server);
+
+    assert!(actions.contains(&super::mcp::McpServerActionKind::RemoveUserConfig));
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+}
+
+#[test]
+fn sdk_and_unknown_mcp_sources_never_inherit_removal_from_scope_or_name() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.plugins.installed = vec![notion_plugin_entry()];
+    for source in ["sdk", "future-source"] {
+        let mut server = notion_mcp_server_status();
+        server.source = Some(source.to_owned());
+
+        let actions = available_mcp_actions(&app, &server);
+
+        assert!(!actions.contains(&super::mcp::McpServerActionKind::ManagePlugin));
+        assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+    }
 }
 
 #[test]
@@ -1865,6 +1909,7 @@ fn mcp_config_remove_requires_confirmation_with_exact_scope() {
         error: None,
         config: None,
         scope: Some("user".to_owned()),
+        source: None,
         tools: Vec::new(),
     }];
     let remove_index = available_mcp_actions(&app, &app.mcp.servers[0])
@@ -1898,6 +1943,7 @@ fn non_config_mcp_server_does_not_offer_remove_action() {
             timeout: None,
         }),
         scope: Some("claudeai".to_owned()),
+        source: None,
         tools: Vec::new(),
     };
 
@@ -1922,6 +1968,7 @@ fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
             error: None,
             config: None,
             scope: Some("user".to_owned()),
+            source: None,
             tools: Vec::new(),
         },
         crate::agent::model::McpServerStatus {
@@ -1931,6 +1978,7 @@ fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
             error: None,
             config: None,
             scope: Some("user".to_owned()),
+            source: None,
             tools: Vec::new(),
         },
     ];
@@ -2422,6 +2470,7 @@ fn mcp_tab_refresh_key_requests_snapshot() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -2470,6 +2519,7 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
         error: None,
         config: None,
         scope: None,
+        source: None,
         tools: Vec::new(),
     });
 
@@ -2518,6 +2568,7 @@ fn claudeai_proxy_server_shows_disabled_authenticate_action() {
             timeout: None,
         }),
         scope: Some("session".to_owned()),
+        source: None,
         tools: Vec::new(),
     };
 
@@ -2549,6 +2600,7 @@ fn mcp_auth_actions_follow_bridge_capabilities() {
             always_load: None,
         }),
         scope: Some("user".to_owned()),
+        source: None,
         tools: Vec::new(),
     };
 

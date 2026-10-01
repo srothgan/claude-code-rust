@@ -591,6 +591,17 @@ impl AgentConnection {
         text: String,
         images: Vec<crate::app::clipboard_image::ImageAttachment>,
     ) -> anyhow::Result<PromptResponse> {
+        self.prompt_with_images_and_pastes(session_id, message_uuid, text, images, Vec::new())
+    }
+
+    pub fn prompt_with_images_and_pastes(
+        &self,
+        session_id: String,
+        message_uuid: String,
+        text: String,
+        images: Vec<crate::app::clipboard_image::ImageAttachment>,
+        inline_pastes: Vec<String>,
+    ) -> anyhow::Result<PromptResponse> {
         let mut chunks = Vec::with_capacity(1 + images.len());
 
         // Add image chunks first (convention: images before text).
@@ -618,7 +629,7 @@ impl AgentConnection {
 
         self.send(CommandEnvelope {
             request_id: None,
-            command: BridgeCommand::Prompt { session_id, message_uuid, chunks },
+            command: BridgeCommand::Prompt { session_id, message_uuid, chunks, inline_pastes },
         })?;
         Ok(PromptResponse { stop_reason: "end_turn".to_owned() })
     }

@@ -220,5 +220,6 @@ pub struct McpServerStatus {
     pub error: Option<String>,
     pub config: Option<McpServerStatusConfig>,
     pub scope: Option<String>,
+    pub source: Option<String>,
     pub tools: Vec<McpTool>,
 }

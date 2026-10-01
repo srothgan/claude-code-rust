@@ -1369,6 +1369,7 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
     } as unknown as NonNullable<
       import("@anthropic-ai/claude-agent-sdk").McpServerStatus["config"]
     >,
+    source: "plugin",
     tools: [],
   });
 
@@ -1388,6 +1389,7 @@ test("mapMcpServerStatus preserves latest MCP status config fields", () => {
       },
     ],
   });
+  assert.equal(mapped.source, "plugin");
 });
 
 test("mapMcpServerStatusConfig maps unknown config types without throwing", () => {
@@ -5460,6 +5462,7 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
     handleTaskSystemMessage(session, "task_notification", {
       task_id: "task-1",
       status: "stopped",
+      reason: "worker_restart",
       output_file: "C:/tmp/task-1.txt",
       summary: "Stopped background watch",
     });
@@ -5483,6 +5486,7 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
               output_file: "C:/tmp/task-1.txt",
               summary: "Stopped background watch",
               terminal_status: "stopped",
+              terminal_reason: "worker_restart",
             },
           },
         ],
@@ -6878,7 +6882,13 @@ test("handleSdkMessage replaces available commands from commands_changed", () =>
       type: "system",
       subtype: "commands_changed",
       commands: [
-        { name: "/one", description: "First command", argumentHint: "<value>" },
+        {
+          name: "/one",
+          description: "First command",
+          argumentHint: "<value>",
+          aliases: ["/first", "/first", "/one"],
+          builtin: true,
+        },
         { name: "/two", description: undefined, argumentHint: undefined },
       ],
       uuid: "message-commands",
@@ -6892,7 +6902,13 @@ test("handleSdkMessage replaces available commands from commands_changed", () =>
       {
         type: "available_commands_update",
         commands: [
-          { name: "/one", description: "First command", input_hint: "<value>" },
+          {
+            name: "/one",
+            description: "First command",
+            input_hint: "<value>",
+            aliases: ["/first"],
+            builtin: true,
+          },
           { name: "/two", description: "" },
         ],
         source: "commands_changed",
@@ -7095,6 +7111,57 @@ test("handleSdkMessage emits system notices for notifications and plugin failure
       },
     ],
   );
+});
+
+test("handleSdkMessage emits bounded plugin load diagnostics from init", () => {
+  const session = makeSessionState();
+  session.query = {
+    supportedCommands: async () => [],
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system",
+      subtype: "init",
+      session_id: "session-1",
+      model: "haiku",
+      plugin_errors: [
+        {
+          plugin: "inline[0]",
+          type: "manifest-validation-error",
+          message: "Missing name",
+          path: "C:/work/plugin",
+        },
+      ],
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.at(-1)?.update, {
+    type: "system_notice_update",
+    severity: "warning",
+    message:
+      "Plugin inline[0] failed to load (manifest-validation-error) at C:/work/plugin: Missing name",
+  });
+});
+
+test("handleSdkMessage forwards conversation reset metadata for unknown triggers", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "conversation_reset",
+      new_conversation_id: "conversation-2",
+      trigger: "future-trigger",
+      timestamp: "2026-10-01T12:00:00Z",
+      user_message_uuid: "user-2",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+
+  assert.deepEqual(events.at(-1)?.update, {
+    type: "conversation_reset",
+    new_conversation_id: "conversation-2",
+    trigger: "future-trigger",
+    timestamp: "2026-10-01T12:00:00Z",
+    user_message_uuid: "user-2",
+  });
 });
 
 test("handleSdkMessage maps informational system messages to notices by level", () => {
@@ -8000,6 +8067,24 @@ test("buildPromptUserMessage attributes structured keyboard input to a human", (
   assert.equal(message?.message.content.length, 2);
 });
 
+test("buildPromptUserMessage preserves inline paste provenance", () => {
+  const message = buildPromptUserMessage(
+    {
+      command: "prompt",
+      session_id: "session-1",
+      message_uuid: "00000000-0000-4000-8000-000000000003",
+      chunks: [{ kind: "text", value: "pasted text" }],
+      inline_pastes: ["pasted text"],
+    },
+    "session-1",
+  );
+
+  assert.deepEqual(message?.inline_pastes, ["pasted text"]);
+  assert.deepEqual(message?.message.content, [
+    { type: "text", text: "pasted text" },
+  ]);
+});
+
 test("applySessionAgent uses live flag settings for agent switch and reset", async () => {
   const calls: unknown[] = [];
   const query = {
@@ -8368,7 +8453,7 @@ test("looksLikeAuthRequired detects login hints", () => {
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.270");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.286");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 

@@ -79,6 +79,9 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         if let Some(contract) = typed::json_string(input, "contract") {
             artifact_fields.push(ToolField::new("Contract", contract));
         }
+        if let Some(pin) = typed::json_bool(input, "pin") {
+            artifact_fields.push(ToolField::new("Pin after publish", typed::bool_label(pin)));
+        }
         if let Some(additional) = additional_json(
             input,
             &[
@@ -98,6 +101,7 @@ fn render_input_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
                 "after",
                 "capabilities",
                 "contract",
+                "pin",
                 "force",
             ],
         ) {
@@ -136,6 +140,12 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
     }
     if let Some(url) = typed::json_string(object, "url") {
         artifact_fields.push(ToolField::new("URL", url));
+    }
+    if let Some(pinned) = typed::json_bool(object, "pinned") {
+        artifact_fields.push(ToolField::new("Pinned", typed::bool_label(pinned)));
+    }
+    if let Some(pins_enabled) = typed::json_bool(object, "pins_enabled") {
+        artifact_fields.push(ToolField::new("Pinning enabled", typed::bool_label(pins_enabled)));
     }
     if let Some(path) = typed::json_string(object, "path") {
         artifact_fields.push(ToolField::new("Path", path));
@@ -179,6 +189,8 @@ fn render_output_fields(object: &Map<String, Value>) -> Vec<ToolField<'_>> {
             "scope",
             "title",
             "url",
+            "pinned",
+            "pins_enabled",
             "path",
             "version",
             "artifact_id",
@@ -309,14 +321,19 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
             let updated = typed::json_string(artifact, "updatedAt")
                 .map(|timestamp| format!(" — updated {timestamp}"))
                 .unwrap_or_default();
-            let additional =
-                additional_json(artifact, &["title", "url", "favicon", "updatedAt", "rel"])
-                    .map(|value| format!(" — additional {value}"))
-                    .unwrap_or_default();
+            let pinned = typed::json_bool(artifact, "pinned")
+                .map(|value| format!(" — pinned {}", typed::bool_label(value)))
+                .unwrap_or_default();
+            let additional = additional_json(
+                artifact,
+                &["title", "url", "favicon", "updatedAt", "rel", "pinned"],
+            )
+            .map(|value| format!(" — additional {value}"))
+            .unwrap_or_default();
             lines.push(fields::render_dynamic_field(
                 format!("Artifact {}", index + 1),
                 format!(
-                    "{}{title} — {url}{favicon}{updated}{additional}",
+                    "{}{title} — {url}{favicon}{updated}{pinned}{additional}",
                     relation.unwrap_or_default()
                 ),
             ));
@@ -479,6 +496,9 @@ fn render_read_output(read: &Value, artifact_read: Option<&Value>) -> Vec<Line<'
     if let Some(url) = typed::json_string(read, "url") {
         values.push(ToolField::new("Read URL", url));
     }
+    if let Some(title) = typed::json_string(read, "title") {
+        values.push(ToolField::new("Stored title", title));
+    }
     if let Some(bytes) = typed::json_i64(read, "bytes") {
         values.push(ToolField::new("Bytes", bytes.to_string()));
     }
@@ -499,9 +519,10 @@ fn render_read_output(read: &Value, artifact_read: Option<&Value>) -> Vec<Line<'
     if let Some(result) = typed::json_string(read, "result") {
         lines.extend(fields::render_multiline_field("Result", result));
     }
-    if let Some(additional) =
-        additional_json(read, &["url", "bytes", "code", "codeText", "result", "durationMs"])
-    {
+    if let Some(additional) = additional_json(
+        read,
+        &["url", "title", "bytes", "code", "codeText", "result", "durationMs"],
+    ) {
         lines.push(fields::render_field("Additional read output", additional));
     }
     lines
@@ -765,11 +786,12 @@ mod tests {
                 "action": "publish",
                 "title": "Dashboard page",
                 "favicon": "chart",
+                "pin": true,
                 "force": true,
                 "futureInput": {"enabled": true}
             }),
             Some(
-                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","path":"C:/work/dashboard.html","version":"v3","artifact_id":"artifact-42","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","preferredContract":"artifact-v2","capabilities":{"persist":true},"carried":true,"read":"v3","futureStored":4},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"audience":"workspace","liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
+                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","pinned":false,"pins_enabled":true,"path":"C:/work/dashboard.html","version":"v3","artifact_id":"artifact-42","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","preferredContract":"artifact-v2","capabilities":{"persist":true},"carried":true,"read":"v3","futureStored":4},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"audience":"workspace","liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
             ),
         );
 
@@ -781,10 +803,13 @@ mod tests {
                 "Action: publish",
                 "Title: Dashboard page",
                 "Favicon: chart",
+                "Pin after publish: yes",
                 "Additional input: {\"futureInput\":{\"enabled\":true}}",
                 "Overwrite conflicts: yes",
                 "Title: Dashboard",
                 "URL: https://artifact.local/dashboard",
+                "Pinned: no",
+                "Pinning enabled: yes",
                 "Path: C:/work/dashboard.html",
                 "Version: v3",
                 "Artifact ID: artifact-42",
@@ -837,7 +862,7 @@ mod tests {
         let tc = artifact_tool_call(
             json!({"action": "list", "scope": "all", "limit": 10}),
             Some(
-                r#"{"scope":"all","truncated":false,"artifacts":[{"rel":"mine","title":"Dashboard","url":"https://artifact.local/dashboard","favicon":"📊","updatedAt":"2026-07-18T10:00:00Z","futureItem":true},{"rel":"shared","title":"Roadmap","url":"https://artifact.local/roadmap"}]}"#,
+                r#"{"scope":"all","truncated":false,"artifacts":[{"rel":"mine","title":"Dashboard","url":"https://artifact.local/dashboard","favicon":"📊","updatedAt":"2026-07-18T10:00:00Z","pinned":true,"futureItem":true},{"rel":"shared","title":"Roadmap","url":"https://artifact.local/roadmap"}]}"#,
             ),
         );
 
@@ -852,7 +877,7 @@ mod tests {
                 "Scope: all",
                 "Truncated: no",
                 "Artifacts: 2",
-                "Artifact 1: (mine) Dashboard — https://artifact.local/dashboard — icon 📊 — updated 2026-07-18T10:00:00Z — additional {\"futureItem\":true}",
+                "Artifact 1: (mine) Dashboard — https://artifact.local/dashboard — icon 📊 — updated 2026-07-18T10:00:00Z — pinned yes — additional {\"futureItem\":true}",
                 "Artifact 2: (shared) Roadmap — https://artifact.local/roadmap",
             ]
         );
@@ -894,7 +919,7 @@ mod tests {
                 "contract": "latest"
             }),
             Some(
-                r#"{"read":{"url":"https://artifact.local/dashboard","bytes":128,"code":200,"codeText":"OK","result":"First line\nSecond line","durationMs":42,"futureRead":true},"artifactRead":{"slug":"dashboard","ver":"v3","seeded":false,"futureMeta":"kept"},"futureOutput":{"revision":4}}"#,
+                r#"{"read":{"url":"https://artifact.local/dashboard","title":"Stored dashboard","bytes":128,"code":200,"codeText":"OK","result":"First line\nSecond line","durationMs":42,"futureRead":true},"artifactRead":{"slug":"dashboard","ver":"v3","seeded":false,"futureMeta":"kept"},"futureOutput":{"revision":4}}"#,
             ),
         );
 
@@ -911,6 +936,7 @@ mod tests {
                 "Contract: latest",
                 "Additional output: {\"futureOutput\":{\"revision\":4}}",
                 "Read URL: https://artifact.local/dashboard",
+                "Stored title: Stored dashboard",
                 "Bytes: 128",
                 "Status: 200 OK",
                 "Duration: 42 ms",

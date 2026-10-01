@@ -210,6 +210,7 @@ fn cli_action_success_reconciles_stale_plugin_mcp_servers() {
             error: None,
             config: None,
             scope: Some("dynamic".to_owned()),
+            source: None,
             tools: Vec::new(),
         },
         model::McpServerStatus {
@@ -219,6 +220,7 @@ fn cli_action_success_reconciles_stale_plugin_mcp_servers() {
             error: None,
             config: None,
             scope: Some("user".to_owned()),
+            source: None,
             tools: Vec::new(),
         },
     ];

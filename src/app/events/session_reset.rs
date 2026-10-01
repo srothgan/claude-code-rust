@@ -41,6 +41,63 @@ pub(super) fn reset_for_new_session(
     app.sync_git_context();
 }
 
+pub(super) fn reset_for_conversation(
+    app: &mut App,
+    new_conversation_id: &str,
+    trigger: Option<&str>,
+    timestamp: Option<&str>,
+    user_message_uuid: Option<&str>,
+) {
+    app.pending_user_messages.clear();
+    app.bump_session_scope_epoch();
+    app.session_runtime.conversation_id = Some(new_conversation_id.to_owned());
+    super::compaction::reset(app);
+    app.session_runtime.session_usage = super::super::SessionUsageState::default();
+    app.sdk_inventory.clear_rewind_targets();
+    app.status = super::super::AppStatus::Ready;
+    app.session_runtime.runtime_session_state = None;
+    app.session_runtime.prompt_suggestion = None;
+    app.session_runtime.last_rate_limit_update = None;
+    app.files_accessed = 0;
+    app.turn.reset_for_new_session();
+    app.clear_tool_scope_tracking();
+    app.clear_tool_call_index();
+    app.sdk_inventory.tasks.clear();
+    app.focus = super::super::FocusManager::default();
+    app.config.clear_overlay();
+    app.config.pending_session_title_change = None;
+    clear_cached_active_session_title(app);
+    reset_messages_for_new_session(app, false);
+    app.chat_render.reset();
+    app.mention = None;
+    app.slash = None;
+    app.subagent = None;
+    crate::app::usage::reset_for_session_change(app);
+    app.request_chat_repaint();
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "conversation_reset_applied",
+        message = "SDK conversation reset applied",
+        outcome = "success",
+        new_conversation_id,
+        trigger,
+        timestamp,
+        user_message_uuid,
+    );
+}
+
+fn clear_cached_active_session_title(app: &mut App) {
+    let Some(session_id) = app.session_runtime.session_id.as_ref() else { return };
+    let Some(session) =
+        app.recent_sessions.iter_mut().find(|session| session.session_id == session_id.as_str())
+    else {
+        return;
+    };
+    session.custom_title = None;
+    session.summary.clear();
+    session.first_prompt = None;
+}
+
 fn reset_session_identity_state(
     app: &mut App,
     session_id: model::SessionId,

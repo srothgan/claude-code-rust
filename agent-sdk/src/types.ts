@@ -27,6 +27,8 @@ export interface AvailableCommand {
   name: string;
   description: string;
   input_hint?: string;
+  aliases?: string[];
+  builtin?: boolean;
 }
 
 export type AvailableCommandsSource =
@@ -247,6 +249,7 @@ export interface TaskMetadata {
   output_file?: string;
   summary?: string;
   terminal_status?: string;
+  terminal_reason?: string;
   blocked?: boolean;
   parent_agent_id?: string;
   ambient?: boolean;
@@ -342,6 +345,13 @@ export interface TaskStateUpdate {
 
 export type SessionUpdate =
   | {
+      type: "conversation_reset";
+      new_conversation_id: string;
+      trigger?: string;
+      timestamp?: string;
+      user_message_uuid?: string;
+    }
+  | {
       type: "agent_message_chunk";
       content: ContentBlock;
       source_message_uuid?: string;
@@ -433,6 +443,7 @@ export interface PermissionRequest {
   tool_call: ToolCall;
   options: PermissionOption[];
   display?: PermissionDisplay;
+  mcp_server?: { name: string; source: string };
 }
 
 export interface PermissionDisplay {
@@ -668,6 +679,7 @@ export interface McpServerStatus {
   error?: string;
   config?: McpServerStatusConfig;
   scope?: string;
+  source?: string;
   tools: McpTool[];
 }
 
@@ -807,6 +819,7 @@ export type BridgeCommand =
       session_id: string;
       message_uuid: string;
       chunks: PromptChunk[];
+      inline_pastes?: string[];
     }
   | {
       command: "cancel_turn";

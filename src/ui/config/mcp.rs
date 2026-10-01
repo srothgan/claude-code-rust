@@ -365,6 +365,7 @@ fn server_detail_lines(app: &App, server: &McpServerStatus) -> Vec<Line<'static>
             Color::White,
         ),
         detail_kv("Scope", scope_label(server.scope.as_deref()), Color::White),
+        detail_kv("Source", scope_label(server.source.as_deref()), Color::White),
         detail_kv("Transport", transport_label(server.config.as_ref()), Color::White),
         detail_kv("Tools", &tool_summary(server.tools.len()), Color::White),
     ];
@@ -907,6 +908,7 @@ mod tests {
                     always_load: Some(true),
                 }),
                 scope: Some("user".to_owned()),
+                source: None,
                 tools: vec![],
             },
             McpServerStatus {
@@ -929,6 +931,7 @@ mod tests {
                     always_load: None,
                 }),
                 scope: Some("project".to_owned()),
+                source: None,
                 tools: vec![crate::agent::model::McpTool {
                     name: "read_file".to_owned(),
                     description: Some("Read a file".to_owned()),

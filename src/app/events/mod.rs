@@ -286,6 +286,18 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
 #[allow(clippy::too_many_lines)]
 fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
     match update {
+        model::SessionUpdate::ConversationReset {
+            new_conversation_id,
+            trigger,
+            timestamp,
+            user_message_uuid,
+        } => session_reset::reset_for_conversation(
+            app,
+            &new_conversation_id,
+            trigger.as_deref(),
+            timestamp.as_deref(),
+            user_message_uuid.as_deref(),
+        ),
         model::SessionUpdate::AgentMessageChunk(chunk) => {
             compaction::finish_inferred(app, true);
             streaming::handle_agent_message_chunk(app, chunk);

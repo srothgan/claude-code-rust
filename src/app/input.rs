@@ -159,6 +159,19 @@ impl InputState {
     }
 
     #[must_use]
+    pub fn inline_pastes(&self) -> Vec<String> {
+        crate::app::input_atoms::resolve_input_atoms(self.lines())
+            .into_iter()
+            .filter_map(|atom| match atom.kind {
+                crate::app::input_atoms::InputAtomKind::PasteBlock { index, .. } => {
+                    self.paste_blocks.get(index).cloned()
+                }
+                crate::app::input_atoms::InputAtomKind::ImageBadge { .. } => None,
+            })
+            .collect()
+    }
+
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.lines().len() == 1 && self.lines()[0].is_empty()
     }
@@ -1679,6 +1692,16 @@ mod tests {
 
         assert_eq!(input.lines(), vec!["before[Pasted Text 1 - 1001 chars]after"]);
         assert_eq!(input.text(), format!("before{}after", "x".repeat(1001)));
+    }
+
+    #[test]
+    fn inline_pastes_follow_active_placeholders_in_document_order() {
+        let mut input = InputState::new();
+        input.insert_paste_block(&"a".repeat(1_001));
+        input.insert_str(" between ");
+        input.insert_paste_block(&"b".repeat(1_002));
+
+        assert_eq!(input.inline_pastes(), vec!["a".repeat(1_001), "b".repeat(1_002)]);
     }
 
     #[test]
