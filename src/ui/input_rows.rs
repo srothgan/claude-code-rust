@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+use crate::app::BtwRequestState;
 use crate::app::{App, ComposerBlockReason, FocusOwner};
 use crate::ui::{autocomplete, theme};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const SPINNER_FRAMES: &[char] = &[
     '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
@@ -75,6 +77,100 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     rows
 }
 
+pub(crate) fn build_btw_status_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    let ordered = app.btw.status_items();
+    if ordered.is_empty() {
+        return Vec::new();
+    }
+
+    let detail_count = ordered.len().min(crate::app::BtwRequests::MAX_DETAIL_ROWS);
+    let mut rows = Vec::with_capacity(detail_count + usize::from(ordered.len() > detail_count));
+    for item in ordered.into_iter().take(detail_count) {
+        let (icon, icon_style, body, body_style) = match &item.state {
+            BtwRequestState::Active => (
+                SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()].to_string(),
+                Style::default().fg(theme::BTW_ACCENT),
+                item.question.replace(['\r', '\n'], " "),
+                Style::default().fg(theme::DIM),
+            ),
+            BtwRequestState::Waiting => (
+                "·".to_owned(),
+                Style::default().fg(theme::DIM),
+                item.question.replace(['\r', '\n'], " "),
+                Style::default().fg(theme::DIM),
+            ),
+            BtwRequestState::Failed { reason, .. } => (
+                theme::ICON_FAILED.to_owned(),
+                Style::default().fg(theme::STATUS_ERROR),
+                format!(
+                    "{} — {}",
+                    item.question.replace(['\r', '\n'], " "),
+                    reason.replace(['\r', '\n'], " ")
+                ),
+                Style::default().fg(theme::STATUS_ERROR),
+            ),
+        };
+        let prefix = format!("{icon} BTW  ");
+        let available = usize::from(width).saturating_sub(UnicodeWidthStr::width(prefix.as_str()));
+        let preview = fit_status_text(&body, available);
+        rows.push(Line::from(vec![
+            Span::styled(format!("{icon} "), icon_style),
+            Span::styled("BTW  ", Style::default().fg(theme::BTW_ACCENT)),
+            Span::styled(preview, body_style),
+        ]));
+    }
+
+    let hidden = app.btw.len().saturating_sub(detail_count);
+    if hidden > 0 {
+        let prefix = "· BTW ";
+        let available = usize::from(width).saturating_sub(UnicodeWidthStr::width(prefix));
+        rows.push(Line::from(vec![
+            Span::styled("· ", Style::default().fg(theme::DIM)),
+            Span::styled("BTW ", Style::default().fg(theme::BTW_ACCENT)),
+            Span::styled(
+                fit_status_text(&format!("+{hidden} more pending"), available),
+                Style::default().fg(theme::DIM),
+            ),
+        ]));
+    }
+    rows.into_iter()
+        .map(|row| {
+            if row.width() > usize::from(width) {
+                // Clip even the fixed prefix when the terminal is narrower than it.
+                crate::ui::wrap::wrap_lines_to_physical_rows(&[row], width)
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default()
+            } else {
+                row
+            }
+        })
+        .collect()
+}
+
+fn fit_status_text(text: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_owned();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let ellipsis = '…';
+    let content_width = max_width.saturating_sub(1);
+    let mut result = String::new();
+    let mut width = 0usize;
+    for ch in text.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width.saturating_add(ch_width) > content_width {
+            break;
+        }
+        result.push(ch);
+        width = width.saturating_add(ch_width);
+    }
+    result.push(ellipsis);
+    result
+}
+
 pub(crate) fn blocked_input_lines(app: &App, reason: ComposerBlockReason) -> Vec<Line<'static>> {
     match reason {
         ComposerBlockReason::CommandPending => {
@@ -105,7 +201,7 @@ pub(crate) fn blocked_input_lines(app: &App, reason: ComposerBlockReason) -> Vec
 
 #[cfg(test)]
 mod tests {
-    use super::{blocked_input_lines, build_composer_hint_rows};
+    use super::{blocked_input_lines, build_btw_status_rows, build_composer_hint_rows};
     use crate::app::{
         App, AppStatus, ComposerBlockReason, FocusTarget, LoginHint, PendingUserMessage,
     };
@@ -190,6 +286,73 @@ mod tests {
                 "  5. preview 5",
             ]
         );
+    }
+
+    #[test]
+    fn btw_rows_apply_priority_limit_overflow_and_terminal_width() {
+        let mut app = App::test_default();
+        for (id, question) in [
+            ("old-failure", "old failure"),
+            ("new-failure", "new failure"),
+            ("active", "active question with a long tail"),
+            ("waiting", "waiting question"),
+        ] {
+            app.btw.try_push(id.to_owned(), question.to_owned()).expect("queue slot");
+        }
+        let now = std::time::Instant::now();
+        app.btw.take_next().expect("dispatch old failure");
+        assert!(app.btw.fail("old-failure", "old error".to_owned(), now));
+        app.btw.take_next().expect("dispatch new failure");
+        assert!(app.btw.fail("new-failure", "new error".to_owned(), now));
+        app.btw.take_next().expect("dispatch active");
+
+        let rows = build_btw_status_rows(&app, 24);
+        let text = rows.iter().map(line_text).collect::<Vec<_>>();
+
+        assert_eq!(rows.len(), 4);
+        assert!(text[0].contains("active question"));
+        assert!(text[1].contains("new failure"));
+        assert!(text[2].contains("old failure"));
+        assert!(text[3].contains("+1 more pending"));
+        assert!(rows.iter().all(|row| row.width() <= 24));
+        assert!(
+            rows[1].spans.iter().any(|span| span.style.fg == Some(crate::ui::theme::STATUS_ERROR))
+        );
+    }
+
+    #[test]
+    fn btw_rows_collapse_multiline_question_into_one_status_row() {
+        let mut app = App::test_default();
+        app.btw
+            .try_push("btw-1".to_owned(), "first line\nsecond  line".to_owned())
+            .expect("queue slot");
+
+        let rows = build_btw_status_rows(&app, 80);
+
+        assert_eq!(rows.len(), 1);
+        assert!(line_text(&rows[0]).contains("first line second  line"));
+    }
+
+    #[test]
+    fn btw_rows_clip_fixed_prefixes_at_tiny_widths_and_keep_multiline_errors_on_one_row() {
+        let mut app = App::test_default();
+        for index in 0..4 {
+            app.btw.try_push(index.to_string(), "question".to_owned()).expect("queue slot");
+        }
+        app.btw.take_next().expect("dispatch");
+        assert!(app.btw.fail(
+            "0",
+            "first error\nsecond error".to_owned(),
+            std::time::Instant::now()
+        ));
+        app.btw.take_next().expect("dispatch next");
+        for width in 0..10 {
+            let rows = build_btw_status_rows(&app, width);
+            assert_eq!(rows.len(), 4);
+            assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
+        }
+        let rows = build_btw_status_rows(&app, 120);
+        assert!(line_text(&rows[1]).contains("first error second error"));
     }
 
     #[test]

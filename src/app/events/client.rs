@@ -58,6 +58,8 @@ fn is_stale_session_event(app: &App, event: &ClientEvent) -> bool {
 fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
     match event {
         ClientEvent::SessionUpdate { .. }
+        | ClientEvent::BtwResult { .. }
+        | ClientEvent::BtwFailed { .. }
         | ClientEvent::PermissionRequest { .. }
         | ClientEvent::QuestionRequest { .. }
         | ClientEvent::UserDialogRequest { .. }

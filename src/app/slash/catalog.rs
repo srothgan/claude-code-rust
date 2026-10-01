@@ -6,6 +6,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppSlashCommand {
     OneMContext,
+    Btw,
     Cancel,
     Compact,
     Config,
@@ -107,6 +108,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         short_description: "Manage 1M context for this folder",
         long_description: "Enable, disable, or inspect project-local 1M context settings for future sessions.",
         args: ONE_M_CONTEXT_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Btw,
+        name: "/btw",
+        usage: "Usage: /btw <question>",
+        short_description: "Ask a contextual side question",
+        long_description: "Ask one contextual question without adding it to the main conversation.",
+        args: NO_ARGS,
     },
     AppSlashCommandSpec {
         command: AppSlashCommand::Cancel,
@@ -278,6 +287,7 @@ impl AppSlashCommand {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::OneMContext => "/1m-context",
+            Self::Btw => "/btw",
             Self::Cancel => "/cancel",
             Self::Compact => "/compact",
             Self::Config => "/config",
@@ -307,6 +317,13 @@ impl AppSlashCommand {
 
     pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
         match self {
+            Self::Btw => {
+                if args.is_empty() {
+                    SubmissionClass::Invalid
+                } else {
+                    SubmissionClass::Informational
+                }
+            }
             Self::Cancel => {
                 if args.is_empty() {
                     SubmissionClass::TurnControl

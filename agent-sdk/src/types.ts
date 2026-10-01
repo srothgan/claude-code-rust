@@ -822,6 +822,12 @@ export type BridgeCommand =
       inline_pastes?: string[];
     }
   | {
+      command: "side_question";
+      session_id: string;
+      btw_id: string;
+      question: string;
+    }
+  | {
       command: "cancel_turn";
       session_id: string;
     }
@@ -992,6 +998,15 @@ export interface RuntimeReloadCacheImpact {
   invalid_server_name_count: number;
 }
 
+export interface SideQuestionMetadata {
+  synthetic: boolean;
+  refusal_fallback?: {
+    original_model: string;
+    fallback_model: string;
+    content: Json;
+  };
+}
+
 export type BridgeEvent =
   | {
       event: "connected";
@@ -1007,6 +1022,21 @@ export type BridgeEvent =
   | { event: "auth_required"; method_name: string; method_description: string }
   | { event: "connection_failed"; message: string }
   | { event: "session_update"; session_id: string; update: SessionUpdate }
+  | {
+      event: "btw_result";
+      session_id: string;
+      btw_id: string;
+      question: string;
+      answer: string;
+      metadata: SideQuestionMetadata;
+    }
+  | {
+      event: "btw_failed";
+      session_id: string;
+      btw_id: string;
+      question: string;
+      error: string;
+    }
   | {
       event: "permission_request";
       session_id: string;

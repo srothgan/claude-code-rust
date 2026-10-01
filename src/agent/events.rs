@@ -13,6 +13,16 @@ use std::rc::Rc;
 pub enum ClientEvent {
     /// Session update notification (streaming text, tool calls, etc.)
     SessionUpdate { session_id: String, update: model::SessionUpdate },
+    /// One side question completed without entering the main conversation.
+    BtwResult {
+        session_id: String,
+        btw_id: String,
+        question: String,
+        answer: String,
+        metadata: crate::agent::wire::SideQuestionMetadata,
+    },
+    /// One side question failed and should remain briefly in status UI.
+    BtwFailed { session_id: String, btw_id: String, question: String, error: String },
     /// Permission request that needs user input.
     PermissionRequest {
         session_id: String,
@@ -202,6 +212,8 @@ impl ClientEvent {
     pub(crate) fn scoped_session_id(&self) -> Option<&str> {
         match self {
             Self::SessionUpdate { session_id, .. }
+            | Self::BtwResult { session_id, .. }
+            | Self::BtwFailed { session_id, .. }
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::UserDialogRequest { session_id, .. }

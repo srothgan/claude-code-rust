@@ -86,7 +86,8 @@ fn block_matches_retraction(block: &MessageBlock, message_uuids: &HashSet<&str>)
         MessageBlock::ToolCall(tool_call) => {
             tool_call.source_message_uuids.iter().any(|uuid| message_uuids.contains(uuid.as_str()))
         }
-        MessageBlock::Notice(_)
+        MessageBlock::BtwExchange(_)
+        | MessageBlock::Notice(_)
         | MessageBlock::Welcome(_)
         | MessageBlock::ImageAttachment(_)
         | MessageBlock::UserDialog(_) => false,

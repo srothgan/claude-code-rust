@@ -9,6 +9,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | Command | Usage | Purpose |
 | --- | --- | --- |
 | `/1m-context` | `/1m-context <enable\|disable\|status>` | Enable, disable, or inspect project-local 1M context settings for future sessions. |
+| `/btw` | `/btw <question>` | Ask a contextual side question without adding it to the main conversation. |
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
@@ -29,6 +30,10 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
 | `/resume` | `/resume <session_id>` | Resume a recent or manually supplied session id. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
+
+## Side Questions
+
+`/btw` treats the complete non-empty text after the command as one question, including internal spaces and line breaks. Side questions are shown in a separate status field while pending and produce a bordered `Claude · BTW` transcript card only when answered. During an active turn, the card is inserted at the current point in the agent's output, with subsequent output below it; when idle, it is a standalone transcript entry with the same design. You can continue using the normal composer while up to ten side questions are unresolved; Rust queues and dispatches them one at a time in submission order. Each question sees main-conversation context at SDK dispatch time, not a snapshot from submission. Failures free capacity immediately and remain visible briefly as error rows.
 
 ## SDK-Advertised Commands
 

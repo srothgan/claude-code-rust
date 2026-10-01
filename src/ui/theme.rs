@@ -5,6 +5,7 @@ use ratatui::style::Color;
 
 // Accent
 pub const RUST_ORANGE: Color = Color::Rgb(244, 118, 0);
+pub const BTW_ACCENT: Color = Color::LightCyan;
 
 // UI chrome
 pub const DIM: Color = Color::DarkGray;

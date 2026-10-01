@@ -80,6 +80,21 @@ pub(super) async fn handle_bridge_event(
                 let _ = event_tx.send(ClientEvent::SessionUpdate { session_id, update }).await;
             }
         }
+        crate::agent::wire::BridgeEvent::BtwResult {
+            session_id,
+            btw_id,
+            question,
+            answer,
+            metadata,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::BtwResult { session_id, btw_id, question, answer, metadata })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::BtwFailed { session_id, btw_id, question, error } => {
+            let _ =
+                event_tx.send(ClientEvent::BtwFailed { session_id, btw_id, question, error }).await;
+        }
         crate::agent::wire::BridgeEvent::PermissionRequest { session_id, request } => {
             handle_permission_request_event(event_tx, connection, session_id, request).await;
         }

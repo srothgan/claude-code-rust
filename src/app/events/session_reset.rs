@@ -313,6 +313,25 @@ mod tests {
     }
 
     #[test]
+    fn replacement_session_reset_discards_old_session_side_questions() {
+        let mut app = App::test_default();
+        app.btw
+            .try_push("btw-1".to_owned(), "must not cross sessions".to_owned())
+            .expect("queue side question");
+
+        reset_for_new_session(
+            &mut app,
+            model::SessionId::new("session-2"),
+            model::CurrentModel::new("test", "test", "test").authoritative(true),
+            None,
+            model::FastModeSnapshot::new(model::FastModeState::Off, None),
+            ChatResetKind::Replacement,
+        );
+
+        assert_eq!(app.btw.len(), 0);
+    }
+
+    #[test]
     fn startup_session_reset_preserves_inline_viewport_for_diffed_repaint() {
         let mut app = App::test_default();
         app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));

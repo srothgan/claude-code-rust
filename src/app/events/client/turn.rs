@@ -8,6 +8,12 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::SessionUpdate { session_id: _, update } => {
             super::super::handle_session_update_event(app, update);
         }
+        ClientEvent::BtwResult { session_id: _, btw_id, question, answer, metadata } => {
+            turn::handle_btw_result_event(app, &btw_id, &question, answer, &metadata);
+        }
+        ClientEvent::BtwFailed { session_id: _, btw_id, question, error } => {
+            turn::handle_btw_failed_event(app, &btw_id, &question, error);
+        }
         ClientEvent::PermissionRequest { session_id: _, request, response_tx } => {
             turn::handle_permission_request_event(app, request, response_tx);
         }

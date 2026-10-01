@@ -2,11 +2,13 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use crate::app::{
-    ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock, UserDialogBlock,
+    BtwExchangeBlock, ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock,
+    UserDialogBlock,
 };
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use super::message::{MessageRenderContext, render_text_block_cached};
 
@@ -46,7 +48,9 @@ pub(crate) fn build_user_system_message_rows(
         return rows;
     }
 
-    rows.push_lines(vec![role_label_line(&msg.role)]);
+    if !msg.blocks.iter().any(|block| matches!(block, MessageBlock::BtwExchange(_))) {
+        rows.push_lines(vec![role_label_line(&msg.role)]);
+    }
 
     match msg.role {
         MessageRole::User => append_user_blocks(msg, render_context.width, &mut rows),
@@ -103,6 +107,9 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
                     rows.push_blank();
                 }
             }
+            MessageBlock::BtwExchange(exchange) => {
+                rows.push_lines(render_btw_exchange_lines(exchange, width));
+            }
             MessageBlock::UserDialog(dialog) => {
                 rows.push_lines(render_user_dialog_lines(dialog));
                 rows.push_blank();
@@ -112,6 +119,84 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
             | MessageBlock::ImageAttachment(_) => {}
         }
     }
+}
+
+pub(super) fn render_btw_exchange_lines(
+    block: &mut BtwExchangeBlock,
+    width: u16,
+) -> Vec<Line<'static>> {
+    if block.cache.height_at(width).is_some()
+        && let Some(lines) = block.cache.get()
+    {
+        return lines.clone();
+    }
+
+    if width < 5 {
+        return Vec::new();
+    }
+    let card_width = width;
+    let inner_width = card_width.saturating_sub(4).max(1);
+    let accent = Style::default().fg(theme::BTW_ACCENT);
+    let label =
+        Style::default().fg(theme::BTW_ACCENT).add_modifier(Modifier::BOLD | Modifier::ITALIC);
+    let mut content = crate::ui::wrap::wrap_lines_to_physical_rows(
+        &[Line::from(Span::styled("Question:", label))],
+        inner_width,
+    );
+    content.extend(render_btw_markdown(&block.question, inner_width));
+    content.push(Line::default());
+    content.extend(crate::ui::wrap::wrap_lines_to_physical_rows(
+        &[Line::from(Span::styled("Answer:", label))],
+        inner_width,
+    ));
+    content.extend(render_btw_markdown(&block.answer, inner_width));
+
+    let title = " Claude · BTW ";
+    let top_inner_width = usize::from(card_width.saturating_sub(2));
+    let available_title = top_inner_width.saturating_sub(1);
+    let shown_title = if UnicodeWidthStr::width(title) <= available_title {
+        title.to_owned()
+    } else {
+        title.chars().take(available_title).collect()
+    };
+    let title_width = UnicodeWidthStr::width(shown_title.as_str());
+    let mut rows = vec![Line::from(Span::styled(
+        format!("╭─{shown_title}{}╮", "─".repeat(available_title.saturating_sub(title_width))),
+        accent,
+    ))];
+    for line in content {
+        let used = line.width().min(usize::from(inner_width));
+        let mut spans = Vec::with_capacity(line.spans.len() + 3);
+        spans.push(Span::styled("│ ", accent));
+        spans.extend(line.spans);
+        spans.push(Span::raw(" ".repeat(usize::from(inner_width).saturating_sub(used))));
+        spans.push(Span::styled(" │", accent));
+        rows.push(Line::from(spans));
+    }
+    rows.push(Line::from(Span::styled(
+        format!("╰{}╯", "─".repeat(usize::from(card_width.saturating_sub(2)))),
+        accent,
+    )));
+
+    // Normalize the completed physical rows here so inline and standalone cards
+    // share identical spans, styles, and terminal-cell layout.
+    let rows = crate::ui::wrap::wrap_lines_to_physical_rows(&rows, width);
+    block.cache.store(rows.clone());
+    block.cache.set_height(rows.len(), width);
+    rows
+}
+
+fn render_btw_markdown(text: &str, width: u16) -> Vec<Line<'static>> {
+    let logical = super::document_table::render_markdown_with_tables(text, width, None);
+    let mut physical = crate::ui::wrap::wrap_markdown_lines_to_physical_rows(&logical, width);
+    for line in &mut physical {
+        for span in &mut line.spans {
+            if span.style.bg.is_none_or(|color| color == Color::Reset) {
+                span.style = span.style.add_modifier(Modifier::ITALIC);
+            }
+        }
+    }
+    physical
 }
 
 /// Render a `refusal_fallback_prompt` dialog as an inline selectable chooser.
@@ -242,8 +327,8 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
 mod tests {
     use super::build_user_system_message_rows;
     use crate::app::{
-        ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole, NoticeBlock, SystemSeverity,
-        TextBlock, TextBlockSpacing,
+        BtwExchangeBlock, ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole,
+        NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing,
     };
     use crate::ui::message::MessageRenderContext;
     use ratatui::text::Line;
@@ -340,6 +425,88 @@ mod tests {
                 .filter(|span| !span.content.is_empty())
                 .all(|span| span.style.fg == Some(crate::ui::theme::STATUS_WARNING))
         );
+    }
+
+    #[test]
+    fn completed_btw_exchange_renders_as_a_bounded_card_without_a_system_heading() {
+        let mut msg = ChatMessage::new(
+            MessageRole::System(None),
+            vec![MessageBlock::BtwExchange(BtwExchangeBlock::new(
+                "Which test covers **this**?".to_owned(),
+                "The `workflow` test covers it.\n\n- including Markdown".to_owned(),
+            ))],
+            None,
+        );
+
+        let rows = build_user_system_message_rows(&mut msg, MessageRenderContext::new(None, 42));
+        let texts = segment_texts(&rows);
+
+        assert!(texts.first().is_some_and(|line| line.starts_with('╭')));
+        assert!(texts.first().is_some_and(|line| line.contains("Claude · BTW")));
+        assert!(texts.iter().any(|line| line.contains("Question:")));
+        assert!(texts.iter().any(|line| line.contains("Answer:")));
+        assert!(texts.iter().any(|line| line.contains("workflow")));
+        assert!(!texts.iter().any(|line| line == "Info"));
+        assert!(
+            texts.iter().all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) == 42)
+        );
+        assert!(texts.last().is_some_and(|line| line.starts_with('╰')));
+        assert!(
+            rows.segments.iter().any(|segment| {
+                let super::MessageRowSegment::Lines { lines } = segment else { return false };
+                lines.iter().flat_map(|line| &line.spans).any(|span| {
+                    span.content.contains("Which test covers")
+                        && span.style.add_modifier.contains(ratatui::style::Modifier::ITALIC)
+                })
+            }),
+            "question prose must retain italics through physical-row normalization"
+        );
+    }
+
+    #[test]
+    fn completed_btw_exchange_does_not_overflow_a_narrow_supported_width() {
+        let mut msg = ChatMessage::new(
+            MessageRole::System(None),
+            vec![MessageBlock::BtwExchange(BtwExchangeBlock::new(
+                "question".to_owned(),
+                "answer".to_owned(),
+            ))],
+            None,
+        );
+
+        let rows = build_user_system_message_rows(&mut msg, MessageRenderContext::new(None, 8));
+
+        assert!(
+            segment_texts(&rows)
+                .iter()
+                .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) == 8)
+        );
+    }
+
+    #[test]
+    fn completed_btw_exchange_wraps_unicode_code_and_tables_across_width_changes() {
+        let mut msg = ChatMessage::new(
+            MessageRole::System(None),
+            vec![MessageBlock::BtwExchange(BtwExchangeBlock::new(
+                "Why 日本語 and emoji 😀?".to_owned(),
+                "Prose with **emphasis** and `inline code`.\n\n```rust\nlet value = \"日本語\";\n```\n\n| Name | Value |\n| --- | --- |\n| 日本語 | long table value |".to_owned(),
+            ))], None,
+        );
+        for width in [60, 20, 42, 8, 5, 4, 0, 60] {
+            let rows =
+                build_user_system_message_rows(&mut msg, MessageRenderContext::new(None, width));
+            let texts = segment_texts(&rows);
+            assert!(
+                texts.iter().all(|line| unicode_width::UnicodeWidthStr::width(line.as_str())
+                    <= usize::from(width)),
+                "width {width}: {texts:?}"
+            );
+            if width >= 20 {
+                assert!(texts.iter().any(|line| line.contains("日本語")));
+                assert!(texts.iter().any(|line| line.contains("Question:")));
+                assert!(texts.iter().any(|line| line.contains("Answer:")));
+            }
+        }
     }
 
     #[test]

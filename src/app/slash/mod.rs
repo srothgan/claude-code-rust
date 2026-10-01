@@ -114,6 +114,10 @@ impl ResolvedSubmission {
         matches!(self, Self::Prompt { .. })
     }
 
+    pub(crate) fn is_btw(&self) -> bool {
+        matches!(self, Self::Slash { command: Some(AppSlashCommand::Btw), .. })
+    }
+
     pub(crate) fn blocked_label(&self) -> String {
         match self {
             Self::Prompt { .. } => "New prompts".to_owned(),

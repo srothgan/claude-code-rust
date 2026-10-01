@@ -80,6 +80,7 @@ import {
 } from "./model_metadata.js";
 import { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
 import type { McpAuthMonitorHandle } from "./mcp_monitor.js";
+import { closeSideQuestions } from "./side_questions.js";
 
 export { mapAvailableModels, resolveCurrentModel } from "./model_metadata.js";
 export { shouldEmitStartupAuthRequiredForAccount } from "./account_metadata.js";
@@ -366,6 +367,7 @@ export function updateSessionId(
   if (session.sessionId === newSessionId) {
     return;
   }
+  closeSideQuestions(session.sessionId, session.query);
   sessions.delete(session.sessionId);
   session.sessionId = newSessionId;
   sessions.set(newSessionId, session);
@@ -373,6 +375,7 @@ export function updateSessionId(
 
 export function beginSessionClose(session: SessionState): void {
   session.closing = true;
+  closeSideQuestions(session.sessionId, session.query);
   for (const monitor of session.mcpAuthMonitors.values()) {
     monitor.controller.abort();
   }

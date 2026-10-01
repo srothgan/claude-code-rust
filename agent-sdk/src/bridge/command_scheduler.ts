@@ -18,6 +18,7 @@ const LIFECYCLE_COMMANDS = new Set<BridgeCommand["command"]>([
 ]);
 
 const UNBLOCKING_COMMANDS = new Set<BridgeCommand["command"]>([
+  "side_question",
   "cancel_turn",
   "permission_response",
   "question_response",

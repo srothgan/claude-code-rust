@@ -128,6 +128,10 @@ enum BlockSnapshot {
         text: String,
         trailing_spacing: TextBlockSpacing,
     },
+    BtwExchange {
+        question: String,
+        answer: String,
+    },
     Notice {
         severity: SystemSeverity,
         text: String,
@@ -170,6 +174,10 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
             text: block.text.clone(),
             trailing_spacing: block.trailing_spacing,
         },
+        MessageBlock::BtwExchange(block) => BlockSnapshot::BtwExchange {
+            question: block.question.clone(),
+            answer: block.answer.clone(),
+        },
         MessageBlock::Notice(block) => {
             BlockSnapshot::Notice { severity: block.severity, text: block.text.text.clone() }
         }
@@ -201,6 +209,7 @@ fn seed_resize_measurements(app: &mut App) {
     app.chat_render.composer = ComposerRenderState {
         width: 90,
         hint_rows: 1,
+        btw_rows: 0,
         editor_rows: 2,
         footer_rows: 1,
         total_rows: 4,
@@ -329,6 +338,9 @@ fn first_block_text(msg: &ChatMessage) -> &str {
     match msg.blocks.first() {
         Some(MessageBlock::Text(block)) => &block.text,
         Some(MessageBlock::Notice(block)) => &block.text.text,
+        Some(MessageBlock::BtwExchange(_)) => {
+            panic!("expected text-like block, found BTW exchange")
+        }
         Some(MessageBlock::ToolCall(_)) => panic!("expected text-like block, found tool call"),
         Some(MessageBlock::Welcome(_)) => panic!("expected text-like block, found welcome"),
         Some(MessageBlock::ImageAttachment(_)) => {
@@ -704,6 +716,9 @@ fn canonical_messages_contain_text(app: &App, expected: &str) -> bool {
         message.blocks.iter().any(|block| match block {
             MessageBlock::Text(text) => text.text == expected,
             MessageBlock::Notice(notice) => notice.text.text == expected,
+            MessageBlock::BtwExchange(exchange) => {
+                exchange.question == expected || exchange.answer == expected
+            }
             MessageBlock::ToolCall(_)
             | MessageBlock::Welcome(_)
             | MessageBlock::ImageAttachment(_)

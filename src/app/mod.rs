@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub(crate) mod auth;
+mod btw;
 mod cache_policy;
 pub(crate) mod claude_cli;
 pub(crate) mod clipboard_image;
@@ -68,8 +69,8 @@ pub use settings::{AppSettings, UpdatePrompt};
 pub(crate) use state::ComposerBlockReason;
 pub(crate) use state::MarkdownRenderKey;
 pub use state::{
-    ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, CacheMetrics, ChatMessage,
-    ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
+    ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, BtwExchangeBlock, CacheMetrics,
+    ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
     HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion,
     InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
     MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
@@ -82,7 +83,9 @@ pub use state::{
     UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
-pub(crate) use state::{PendingUserMessage, PendingUserMessageInsertError};
+pub(crate) use state::{
+    BtwRequestState, BtwRequests, PendingUserMessage, PendingUserMessageInsertError,
+};
 pub use trust::TrustSelection;
 pub use update_check::start_update_check;
 pub(crate) use update_prompt::actions_for as update_prompt_actions;
@@ -258,6 +261,9 @@ async fn run_tui_loop(
         if !app.shutdown_requested() {
             app.tick_git_context(now);
             session_runtime::tick_context_usage_refresh(app, now);
+            if app.btw.expire_failed(now) {
+                app.request_active_surface_repaint();
+            }
         }
         // Deferred submit: if Enter was pressed and no paste payload arrived
         // in this drain cycle, restore the exact pre-submit snapshot and
@@ -283,7 +289,8 @@ async fn run_tui_loop(
                     | AppStatus::CommandPending
                     | AppStatus::Thinking
                     | AppStatus::Running
-            ) || app.turn.compaction.is_active());
+            ) || app.turn.compaction.is_active()
+                || app.btw.has_active());
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
@@ -411,6 +418,7 @@ fn prepare_app_shutdown(app: &mut App) {
     }
     app.input.clear();
     app.pending_images.clear();
+    app.btw.clear();
     app.paste.clear_all_sessions();
     app.pending_submit = None;
     app.mention = None;

@@ -68,6 +68,11 @@ pub enum BridgeCommand {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         inline_pastes: Vec<String>,
     },
+    SideQuestion {
+        session_id: String,
+        btw_id: String,
+        question: String,
+    },
     CancelTurn {
         session_id: String,
     },
@@ -192,6 +197,7 @@ impl BridgeCommand {
             Self::ResumeSession { .. } => "resume_session",
             Self::ResumeSessionAt { .. } => "resume_session_at",
             Self::Prompt { .. } => "prompt",
+            Self::SideQuestion { .. } => "side_question",
             Self::CancelTurn { .. } => "cancel_turn",
             Self::SetModel { .. } => "set_model",
             Self::SetMode { .. } => "set_mode",
@@ -228,6 +234,7 @@ impl BridgeCommand {
             Self::ResumeSession { session_id, .. }
             | Self::ResumeSessionAt { session_id, .. }
             | Self::Prompt { session_id, .. }
+            | Self::SideQuestion { session_id, .. }
             | Self::CancelTurn { session_id }
             | Self::SetModel { session_id, .. }
             | Self::SetMode { session_id, .. }
@@ -268,6 +275,7 @@ impl BridgeCommand {
             | Self::ResumeSession { .. }
             | Self::ResumeSessionAt { .. }
             | Self::Prompt { .. }
+            | Self::SideQuestion { .. }
             | Self::CancelTurn { .. }
             | Self::SetModel { .. }
             | Self::SetMode { .. }
@@ -306,6 +314,13 @@ pub struct EventEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SideQuestionMetadata {
+    pub synthetic: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal_fallback: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BridgeEvent {
     Connected {
@@ -329,6 +344,19 @@ pub enum BridgeEvent {
     SessionUpdate {
         session_id: String,
         update: types::SessionUpdate,
+    },
+    BtwResult {
+        session_id: String,
+        btw_id: String,
+        question: String,
+        answer: String,
+        metadata: SideQuestionMetadata,
+    },
+    BtwFailed {
+        session_id: String,
+        btw_id: String,
+        question: String,
+        error: String,
     },
     PermissionRequest {
         session_id: String,
@@ -484,6 +512,8 @@ impl BridgeEvent {
             Self::AuthRequired { .. } => "auth_required",
             Self::ConnectionFailed { .. } => "connection_failed",
             Self::SessionUpdate { .. } => "session_update",
+            Self::BtwResult { .. } => "btw_result",
+            Self::BtwFailed { .. } => "btw_failed",
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
             Self::UserDialogRequest { .. } => "user_dialog_request",
@@ -520,6 +550,8 @@ impl BridgeEvent {
         match self {
             Self::Connected { session_id, .. }
             | Self::SessionUpdate { session_id, .. }
+            | Self::BtwResult { session_id, .. }
+            | Self::BtwFailed { session_id, .. }
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::UserDialogRequest { session_id, .. }
@@ -564,6 +596,8 @@ impl BridgeEvent {
             | Self::AuthRequired { .. }
             | Self::ConnectionFailed { .. }
             | Self::SessionUpdate { .. }
+            | Self::BtwResult { .. }
+            | Self::BtwFailed { .. }
             | Self::UserDialogRequest { .. }
             | Self::ElicitationRequest { .. }
             | Self::ElicitationComplete { .. }
@@ -641,6 +675,58 @@ mod tests {
                 "inline_pastes": ["pasted text"]
             })
         );
+    }
+
+    #[test]
+    fn side_question_command_preserves_the_complete_question() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SideQuestion {
+                session_id: "s1".to_owned(),
+                btw_id: "btw-1".to_owned(),
+                question: "Why  two spaces?\nAnd this line?".to_owned(),
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(env).expect("serialize"),
+            serde_json::json!({
+                "command": "side_question",
+                "session_id": "s1",
+                "btw_id": "btw-1",
+                "question": "Why  two spaces?\nAnd this line?"
+            })
+        );
+    }
+
+    #[test]
+    fn side_question_result_deserializes_with_correlation_and_metadata() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "btw_result",
+            "session_id": "s1",
+            "btw_id": "btw-1",
+            "question": "Question?",
+            "answer": "Answer.",
+            "metadata": {
+                "synthetic": true,
+                "refusal_fallback": {
+                    "original_model": "opus",
+                    "fallback_model": "sonnet",
+                    "content": { "reason": "policy" }
+                }
+            }
+        }))
+        .expect("deserialize side-question result");
+
+        let BridgeEvent::BtwResult { btw_id, question, answer, metadata, .. } = decoded.event
+        else {
+            panic!("expected BTW result");
+        };
+        assert_eq!(btw_id, "btw-1");
+        assert_eq!(question, "Question?");
+        assert_eq!(answer, "Answer.");
+        assert!(metadata.synthetic);
+        assert!(metadata.refusal_fallback.is_some());
     }
 
     #[test]

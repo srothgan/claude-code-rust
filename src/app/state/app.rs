@@ -81,6 +81,8 @@ pub struct App {
     pub(crate) pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
     /// Session-scoped projection of user messages accepted locally while an agent turn is active.
     pub pending_user_messages: PendingUserMessages,
+    /// Session-run side-question status, independent from queued main prompts.
+    pub(crate) btw: BtwRequests,
     /// Git repo context used by footer/status rendering and live branch tracking.
     pub(crate) git_context: GitContextState,
     /// Update prompt state for the startup fullscreen surface.
@@ -259,6 +261,7 @@ impl App {
             paste: PasteState::default(),
             pending_images: Vec::new(),
             pending_user_messages: PendingUserMessages::default(),
+            btw: BtwRequests::default(),
             git_context: GitContextState::default(),
             update_prompt: None,
             post_exit_action: None,

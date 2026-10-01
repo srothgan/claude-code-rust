@@ -421,6 +421,18 @@ export function parseCommandEnvelope(line: string): {
             ? { inline_pastes: raw.inline_pastes as string[] }
             : {}),
         };
+      case "side_question": {
+        const question = expectString(raw, "question", "side_question");
+        if (question.trim().length === 0) {
+          throw new Error("side_question.question must not be empty");
+        }
+        return {
+          command: "side_question",
+          session_id: expectString(raw, "session_id", "side_question"),
+          btw_id: expectString(raw, "btw_id", "side_question"),
+          question,
+        };
+      }
       case "cancel_turn":
         return {
           command: "cancel_turn",

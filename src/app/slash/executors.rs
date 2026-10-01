@@ -32,7 +32,7 @@ const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 /// Returns `true` if the slash input was fully handled and should not be sent as a prompt.
 /// Returns `false` when the input should continue through the normal prompt path.
 pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmission) -> bool {
-    let ResolvedSubmission::Slash { name, args, command, .. } = submission else {
+    let ResolvedSubmission::Slash { text, name, args, command, .. } = submission else {
         return false;
     };
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
@@ -47,6 +47,7 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
 
     match command {
         AppSlashCommand::OneMContext => handle_1m_context_submit(app, &args),
+        AppSlashCommand::Btw => handle_btw_submit(app, text),
         AppSlashCommand::Cancel => handle_cancel_submit(app),
         AppSlashCommand::Compact => handle_compact_submit(app),
         AppSlashCommand::Config => handle_config_submit(app),
@@ -68,6 +69,34 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Resume => handle_resume_submit(app, &args),
         AppSlashCommand::Rewind => handle_rewind_submit(app, &args),
     }
+}
+
+fn handle_btw_submit(app: &mut App, text: &str) -> bool {
+    // Submission classification has already validated the non-empty remainder.
+    let question =
+        text.trim_start().strip_prefix("/btw").map(str::trim).unwrap_or_default().to_owned();
+
+    let Some(_) = require_active_session(
+        app,
+        "Cannot ask a side question before connecting.",
+        "Cannot ask a side question without an active session.",
+    ) else {
+        return true;
+    };
+    let btw_id = uuid::Uuid::new_v4().to_string();
+    if app.btw.try_push(btw_id, question).is_err() {
+        push_system_message(
+            app,
+            format!(
+                "Too many outstanding BTW questions (maximum {}). Wait for one to finish.",
+                crate::app::state::BtwRequests::CAPACITY
+            ),
+        );
+        return true;
+    }
+
+    crate::app::btw::dispatch_next(app);
+    true
 }
 
 #[cfg(test)]

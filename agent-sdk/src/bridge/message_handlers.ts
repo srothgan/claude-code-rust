@@ -87,6 +87,7 @@ import {
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitMcpSnapshotFromStatuses } from "./mcp.js";
 import { appendResourceLinks } from "./resource_links.js";
+import { closeSideQuestions } from "./side_questions.js";
 
 export function textFromPrompt(
   command: Extract<BridgeCommand, { command: "prompt" }>,
@@ -1687,6 +1688,7 @@ export function handleSdkMessage(
       });
       return;
     }
+    closeSideQuestions(session.sessionId, session.query);
     emitSessionUpdate(session.sessionId, {
       type: "conversation_reset",
       new_conversation_id: newConversationId,

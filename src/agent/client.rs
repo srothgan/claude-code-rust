@@ -641,6 +641,18 @@ impl AgentConnection {
         })
     }
 
+    pub fn ask_side_question(
+        &self,
+        session_id: String,
+        btw_id: String,
+        question: String,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SideQuestion { session_id, btw_id, question },
+        })
+    }
+
     pub fn set_mode(&self, session_id: String, mode: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,

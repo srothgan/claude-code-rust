@@ -181,6 +181,12 @@ impl super::App {
                         .saturating_add(block.text.capacity())
                         .saturating_add(block.markdown.text_capacity());
                 }
+                MessageBlock::BtwExchange(block) => {
+                    total = total
+                        .saturating_add(size_of::<super::messages::BtwExchangeBlock>())
+                        .saturating_add(block.question.capacity())
+                        .saturating_add(block.answer.capacity());
+                }
                 MessageBlock::Notice(block) => {
                     total = total
                         .saturating_add(size_of_val(block))

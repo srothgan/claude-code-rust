@@ -205,6 +205,7 @@ pub fn create_app(cli: &Cli) -> App {
         paste: super::state::PasteState::default(),
         pending_images: Vec::new(),
         pending_user_messages: super::state::PendingUserMessages::default(),
+        btw: super::state::BtwRequests::default(),
         git_context: super::git_context::GitContextState::default(),
         update_prompt,
         post_exit_action: None,

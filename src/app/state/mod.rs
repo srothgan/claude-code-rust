@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 pub mod block_cache;
+mod btw;
 pub mod cache_metrics;
 pub mod chat_render;
 mod history_retention;
@@ -31,16 +32,17 @@ mod welcome;
 pub use app::App;
 pub use autocomplete::AutocompleteKind;
 pub use block_cache::BlockCache;
+pub(crate) use btw::{BtwRequestState, BtwRequests};
 pub use cache_metrics::CacheMetrics;
 pub use chat_render::{
     ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
 };
 pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
-    ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown,
-    MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey,
-    SystemSeverity, TextBlock, TextBlockSpacing, UserDialogBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content,
+    BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock,
+    IncrementalMarkdown, MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey,
+    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, UserDialogBlock,
+    WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
 };
 pub use paste::PasteState;
 pub(crate) use pending_messages::{
@@ -68,6 +70,7 @@ pub use types::{
 };
 
 mod prelude {
+    pub(super) use super::BtwRequests;
     pub(super) use super::CacheMetrics;
     pub(super) use super::app::App;
     pub(super) use super::cache_metrics;

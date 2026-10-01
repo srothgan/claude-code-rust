@@ -126,6 +126,7 @@ impl ChatRenderState {
 pub struct ComposerRenderState {
     pub width: u16,
     pub hint_rows: u16,
+    pub btw_rows: u16,
     pub editor_rows: u16,
     pub footer_rows: u16,
     pub total_rows: u16,
@@ -159,6 +160,7 @@ mod tests {
             composer: ComposerRenderState {
                 width: 120,
                 hint_rows: 1,
+                btw_rows: 0,
                 editor_rows: 2,
                 footer_rows: 2,
                 total_rows: 5,

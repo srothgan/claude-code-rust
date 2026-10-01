@@ -2,9 +2,9 @@
 // Copyright 2025 Simon Peter Rothgang
 use crate::agent::model;
 use crate::app::{
-    App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
-    NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo, WelcomeBlock,
-    markdown_table_tail_is_open, starts_with_markdown_table_row,
+    App, AppStatus, BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
+    MessageRole, NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo,
+    WelcomeBlock, markdown_table_tail_is_open, starts_with_markdown_table_row,
 };
 #[cfg(test)]
 pub(crate) use crate::ui::live_rows::segments::LiveRowSegment;
@@ -13,7 +13,9 @@ use crate::ui::live_rows::segments::{
 };
 pub(crate) use crate::ui::live_rows::segments::{LiveRowBoundaryKind, SerializedLiveRows};
 use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_cached};
-use crate::ui::message_rows::{MessageRowSegment, build_user_system_message_rows};
+use crate::ui::message_rows::{
+    MessageRowSegment, build_user_system_message_rows, render_btw_exchange_lines,
+};
 use crate::ui::spinner_verbs::random_spinner_verb;
 use crate::ui::theme;
 use crate::ui::tool_call;
@@ -318,6 +320,7 @@ fn welcome_output_ids(message: &ChatMessage) -> Vec<HistoryOutputId> {
         .find_map(|block| match block {
             MessageBlock::Welcome(welcome) => Some(vec![HistoryOutputId::Block(welcome.id)]),
             MessageBlock::Text(_)
+            | MessageBlock::BtwExchange(_)
             | MessageBlock::Notice(_)
             | MessageBlock::ToolCall(_)
             | MessageBlock::ImageAttachment(_)
@@ -365,6 +368,7 @@ fn welcome_message_commit_ready(message: &ChatMessage) -> bool {
         .find_map(|block| match block {
             MessageBlock::Welcome(welcome) => Some(welcome),
             MessageBlock::Text(_)
+            | MessageBlock::BtwExchange(_)
             | MessageBlock::Notice(_)
             | MessageBlock::ToolCall(_)
             | MessageBlock::ImageAttachment(_)
@@ -447,6 +451,7 @@ const fn top_level_leading_blank_lines(
 enum AssistantRenderItem {
     Text(TextBlock),
     Notice(NoticeBlock),
+    CanonicalBtw { msg_idx: usize, block_idx: usize },
     CanonicalTool { msg_idx: usize, block_idx: usize },
 }
 
@@ -657,6 +662,13 @@ fn assistant_render_items_from_message(
                 });
                 previous_kind = Some(current_kind);
             }
+            MessageBlock::BtwExchange(exchange) => {
+                flush_pending_text_run(&mut pending_text, &mut items);
+                let current_kind = AssistantInlineItemKind::TextLike;
+                let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
+                items.push(btw_render_item(exchange, msg_idx, block_idx, leading_blank_lines));
+                previous_kind = Some(current_kind);
+            }
             MessageBlock::ToolCall(tool) => {
                 if tool.hidden_unless_focused_interaction() {
                     continue;
@@ -683,6 +695,24 @@ fn assistant_render_items_from_message(
 
     flush_pending_text_run(&mut pending_text, &mut items);
     items
+}
+
+fn btw_render_item(
+    exchange: &BtwExchangeBlock,
+    msg_idx: usize,
+    block_idx: usize,
+    leading_blank_lines: usize,
+) -> AssistantRenderItemSpec {
+    AssistantRenderItemSpec {
+        ids: vec![HistoryOutputId::Block(exchange.id)],
+        msg_idx,
+        leading_blank_lines,
+        block_idx: Some(block_idx),
+        boundary_kind: LiveRowBoundaryKind::AssistantBtw,
+        // A completed exchange is immutable, including while it is the active tail.
+        commit_ready: true,
+        item: AssistantRenderItem::CanonicalBtw { msg_idx, block_idx },
+    }
 }
 
 fn assistant_text_block_commit_ready(
@@ -786,7 +816,9 @@ fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Optio
             MessageBlock::Welcome(_)
             | MessageBlock::ImageAttachment(_)
             | MessageBlock::UserDialog(_) => {}
-            MessageBlock::Notice(_) | MessageBlock::ToolCall(_) => return None,
+            MessageBlock::Notice(_) | MessageBlock::BtwExchange(_) | MessageBlock::ToolCall(_) => {
+                return None;
+            }
         }
     }
     None
@@ -795,7 +827,7 @@ fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Optio
 fn last_visible_assistant_block_idx(message: &ChatMessage) -> Option<usize> {
     message.blocks.iter().enumerate().rev().find_map(|(block_idx, block)| match block {
         MessageBlock::Text(text) if !text.text.is_empty() => Some(block_idx),
-        MessageBlock::Notice(_) => Some(block_idx),
+        MessageBlock::Notice(_) | MessageBlock::BtwExchange(_) => Some(block_idx),
         MessageBlock::ToolCall(tool) if !tool.hidden_unless_focused_interaction() => {
             Some(block_idx)
         }
@@ -861,7 +893,6 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         return RenderedMessageRows::empty();
     }
 
-    let render_context = message_render_context(request.current_mode_id, request.width);
     let mut rows = Vec::new();
     let mut boundaries = Vec::new();
     rows.extend(std::iter::repeat_with(Line::default).take(request.leading_blank_lines));
@@ -888,14 +919,14 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
                 let rendered =
                     render_assistant_text_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
-                    let boundary_start = rows.len();
-                    rows.extend(
-                        std::iter::repeat_with(Line::default).take(item_leading_blank_lines),
+                    append_rendered_assistant_item(
+                        &mut rows,
+                        &mut boundaries,
+                        &mut state,
+                        boundary,
+                        item_leading_blank_lines,
+                        rendered,
                     );
-                    push_assistant_boundary(&mut boundaries, boundary, boundary_start);
-                    state.has_body_content = true;
-                    state.has_visible_content = true;
-                    rows.extend(rendered);
                     rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
                 }
             }
@@ -904,16 +935,29 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
                 let rendered =
                     render_assistant_notice_block(block, request.width, !state.has_visible_content);
                 if !rendered.is_empty() {
-                    let boundary_start = rows.len();
-                    rows.extend(
-                        std::iter::repeat_with(Line::default).take(item_leading_blank_lines),
+                    append_rendered_assistant_item(
+                        &mut rows,
+                        &mut boundaries,
+                        &mut state,
+                        boundary,
+                        item_leading_blank_lines,
+                        rendered,
                     );
-                    push_assistant_boundary(&mut boundaries, boundary, boundary_start);
-                    state.has_body_content = true;
-                    state.has_visible_content = true;
-                    rows.extend(rendered);
                     rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
                 }
+            }
+            AssistantRenderItem::CanonicalBtw { msg_idx, block_idx } => {
+                let Some(app) = request.app.as_deref_mut() else {
+                    continue;
+                };
+                append_rendered_assistant_item(
+                    &mut rows,
+                    &mut boundaries,
+                    &mut state,
+                    boundary,
+                    item_leading_blank_lines,
+                    render_canonical_btw_rows(app, msg_idx, block_idx, request.width),
+                );
             }
             AssistantRenderItem::CanonicalTool { msg_idx, block_idx } => {
                 let Some(app) = request.app.as_deref_mut() else {
@@ -929,7 +973,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
                         app,
                         msg_idx,
                         block_idx,
-                        render_context,
+                        message_render_context(request.current_mode_id, request.width),
                         request.spinner,
                     ),
                 );
@@ -937,9 +981,9 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         }
     }
 
-    append_assistant_indicator_rows(
-        &mut rows,
-        &mut boundaries,
+    finish_assistant_rows(
+        rows,
+        boundaries,
         &state,
         AssistantIndicatorMeta {
             message_id: request.message_id,
@@ -948,14 +992,23 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
             spinner: request.spinner,
             width: request.width,
         },
-    );
+    )
+}
 
-    if !state.has_visible_content && request.indicator.is_none() {
+fn finish_assistant_rows(
+    mut rows: Vec<Line<'static>>,
+    mut boundaries: Vec<LiveRowBoundary>,
+    state: &AssistantInlineLayoutState,
+    meta: AssistantIndicatorMeta,
+) -> RenderedMessageRows {
+    let indicator = meta.indicator;
+    append_assistant_indicator_rows(&mut rows, &mut boundaries, state, meta);
+    if !state.has_visible_content && indicator.is_none() {
         return RenderedMessageRows::empty();
     }
 
     let mut rows = trim_trailing_blank_rows(rows);
-    if matches!(request.indicator, Some(AssistantRuntimeIndicator::Compacting)) {
+    if matches!(indicator, Some(AssistantRuntimeIndicator::Compacting)) {
         rows.push(Line::default());
     }
     RenderedMessageRows::rendered(rows, boundaries)
@@ -978,7 +1031,9 @@ fn assistant_item_text(item: &AssistantRenderItemSpec) -> Option<&TextBlock> {
     match &item.item {
         AssistantRenderItem::Text(block) => Some(block),
         AssistantRenderItem::Notice(block) => Some(&block.text),
-        AssistantRenderItem::CanonicalTool { .. } => None,
+        AssistantRenderItem::CanonicalBtw { .. } | AssistantRenderItem::CanonicalTool { .. } => {
+            None
+        }
     }
 }
 
@@ -1230,6 +1285,23 @@ fn render_assistant_notice_block(
         }
     }
     lines
+}
+
+fn render_canonical_btw_rows(
+    app: &mut App,
+    msg_idx: usize,
+    block_idx: usize,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let Some(MessageBlock::BtwExchange(exchange)) = app
+        .transcript
+        .messages
+        .get_mut(msg_idx)
+        .and_then(|message| message.blocks.get_mut(block_idx))
+    else {
+        return Vec::new();
+    };
+    render_btw_exchange_lines(exchange, width)
 }
 
 fn render_canonical_tool_rows(

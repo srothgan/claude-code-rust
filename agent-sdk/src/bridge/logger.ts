@@ -100,6 +100,7 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "resume_session":
     case "resume_session_at":
     case "prompt":
+    case "side_question":
     case "cancel_turn":
     case "set_model":
     case "set_mode":
@@ -142,6 +143,7 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "resume_session":
     case "resume_session_at":
     case "prompt":
+    case "side_question":
     case "cancel_turn":
     case "set_model":
     case "set_mode":
@@ -177,6 +179,8 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "auth_required":
     case "connection_failed":
     case "session_update":
+    case "btw_result":
+    case "btw_failed":
     case "user_dialog_request":
     case "elicitation_request":
     case "elicitation_complete":
@@ -259,6 +263,8 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "user_message_rejected":
     case "turn_interrupt_receipt":
     case "mcp_snapshot":
+    case "btw_result":
+    case "btw_failed":
       return "debug";
   }
 }

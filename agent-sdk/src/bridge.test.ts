@@ -79,7 +79,9 @@ import {
   shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
   trackSessionCloseTask,
+  updateSessionId,
 } from "./bridge/session_lifecycle.js";
+import { dispatchSideQuestion, closeSideQuestions } from "./bridge/side_questions.js";
 import {
   classifyTurnErrorKind,
   emitAuthRequired,
@@ -582,6 +584,36 @@ test("parseCommandEnvelope requires and preserves prompt message UUID", () => {
         }),
       ),
     /message_uuid/,
+  );
+});
+
+test("parseCommandEnvelope preserves a side question as one complete string", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      command: "side_question",
+      session_id: "session-123",
+      btw_id: "btw-1",
+      question: "Why  two spaces?\nAnd this line?",
+    }),
+  );
+
+  assert.deepEqual(parsed.command, {
+    command: "side_question",
+    session_id: "session-123",
+    btw_id: "btw-1",
+    question: "Why  two spaces?\nAnd this line?",
+  });
+  assert.throws(
+    () =>
+      parseCommandEnvelope(
+        JSON.stringify({
+          command: "side_question",
+          session_id: "session-123",
+          btw_id: "btw-2",
+          question: "  \n  ",
+        }),
+      ),
+    /must not be empty/,
   );
 });
 
@@ -7142,6 +7174,58 @@ test("handleSdkMessage emits bounded plugin load diagnostics from init", () => {
       "Plugin inline[0] failed to load (manifest-validation-error) at C:/work/plugin: Missing name",
   });
 });
+
+for (const boundary of ["close", "identity-change", "conversation-reset"] as const) {
+  test(`side-question ${boundary} aborts SDK work and suppresses late NDJSON results`, async () => {
+    const session = makeSessionState();
+    session.sessionId = `btw-lifecycle-${boundary}`;
+    const originalSessionId = session.sessionId;
+    let resolve!: (result: unknown) => void;
+    let signal: AbortSignal | undefined;
+    const oldResult = new Promise<unknown>((settle) => { resolve = settle; });
+    let calls = 0;
+    session.query = {
+      askSideQuestion(_question: string, options: { signal: AbortSignal }) {
+        calls += 1;
+        if (calls === 1) {
+          signal = options.signal;
+          return oldResult;
+        }
+        return Promise.resolve({ response: "new answer", synthetic: false });
+      },
+    } as unknown as SessionState["query"];
+
+    const events = await captureBridgeEventsAsync(async () => {
+      dispatchSideQuestion(session.sessionId, session.query, { btwId: "old", question: "old question" });
+      assert.equal(signal?.aborted, false);
+      if (boundary === "close") {
+        beginSessionClose(session);
+      } else if (boundary === "identity-change") {
+        updateSessionId(session, `${originalSessionId}-new`);
+      } else {
+        handleSdkMessage(session, {
+          type: "conversation_reset", new_conversation_id: "conversation-2",
+        } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      }
+      assert.equal(signal?.aborted, true);
+      resolve({ response: "stale answer", synthetic: false });
+      await new Promise((settle) => setImmediate(settle));
+      if (boundary !== "close") {
+        dispatchSideQuestion(session.sessionId, session.query, { btwId: "new", question: "new question" });
+        await new Promise((settle) => setImmediate(settle));
+      }
+    });
+    assert.equal(events.some((event) => event.btw_id === "old"), false);
+    if (boundary !== "close") {
+      assert.deepEqual(events.find((event) => event.btw_id === "new"), {
+        event: "btw_result", session_id: session.sessionId, btw_id: "new",
+        question: "new question", answer: "new answer", metadata: { synthetic: false },
+      });
+    }
+    closeSideQuestions(session.sessionId, session.query);
+    sessions.delete(session.sessionId);
+  });
+}
 
 test("handleSdkMessage forwards conversation reset metadata for unknown triggers", () => {
   const session = makeSessionState();

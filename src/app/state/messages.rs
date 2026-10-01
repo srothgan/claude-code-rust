@@ -443,6 +443,7 @@ impl NoticeBlock {
 /// Ordered content block - text and tool calls interleaved as they arrive.
 pub enum MessageBlock {
     Text(TextBlock),
+    BtwExchange(BtwExchangeBlock),
     Notice(NoticeBlock),
     ToolCall(Box<ToolCallInfo>),
     Welcome(WelcomeBlock),
@@ -451,6 +452,22 @@ pub enum MessageBlock {
     /// Turn-level user dialog (e.g. `refusal_fallback_prompt`) rendered inline as
     /// a selectable chooser. Not anchored to a tool call.
     UserDialog(UserDialogBlock),
+}
+
+/// Presentation-only side-question exchange. It is never reconstructed as main conversation
+/// history and uses one immutable render cache for the complete bordered card.
+pub struct BtwExchangeBlock {
+    pub id: MessageBlockId,
+    pub question: String,
+    pub answer: String,
+    pub cache: BlockCache,
+}
+
+impl BtwExchangeBlock {
+    #[must_use]
+    pub fn new(question: String, answer: String) -> Self {
+        Self { id: MessageBlockId::new(), question, answer, cache: BlockCache::default() }
+    }
 }
 
 /// Inline chooser for a turn-level `request_user_dialog`. Carries the oneshot

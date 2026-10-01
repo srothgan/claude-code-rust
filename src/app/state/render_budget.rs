@@ -44,6 +44,7 @@ impl super::App {
     fn block_cache(block: &MessageBlock) -> &super::BlockCache {
         match block {
             MessageBlock::Text(block) => &block.cache,
+            MessageBlock::BtwExchange(block) => &block.cache,
             MessageBlock::Notice(block) => &block.text.cache,
             MessageBlock::Welcome(welcome) => &welcome.cache,
             MessageBlock::ToolCall(tc) => &tc.cache,
@@ -322,6 +323,7 @@ impl super::App {
         };
         let removed = match block {
             MessageBlock::Text(block) => block.cache.evict_cached_render(),
+            MessageBlock::BtwExchange(block) => block.cache.evict_cached_render(),
             MessageBlock::Notice(block) => block.text.cache.evict_cached_render(),
             MessageBlock::Welcome(welcome) => welcome.cache.evict_cached_render(),
             MessageBlock::ToolCall(tc) => tc.cache.evict_cached_render(),

@@ -132,6 +132,7 @@ pub(crate) enum LiveRowBoundaryKind {
     AssistantLabel,
     AssistantText,
     AssistantNotice,
+    AssistantBtw,
     AssistantTool,
     AssistantIndicator,
 }

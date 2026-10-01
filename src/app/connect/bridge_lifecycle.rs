@@ -708,6 +708,125 @@ mod tests {
         assert!(status.success());
     }
 
+    #[tokio::test]
+    async fn btw_workflow_crosses_real_process_ndjson_and_advances_only_after_host_finalization() {
+        use crate::agent::model;
+        use crate::app::{App, AppStatus, MessageBlock};
+
+        let marker_dir = tempfile::tempdir().expect("marker directory");
+        let marker_path = marker_dir.path().join("btw-commands.ndjson");
+        let fixture = RuntimeFixture::new(side_question_workflow_script(&marker_path))
+            .expect("runtime fixture");
+        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
+        let connection = bridge.connection();
+        let mut app = App::test_default();
+        app.session_runtime.conn = Some(Rc::new(connection.clone()));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.status = AppStatus::Running;
+        let stream_text = |app: &mut App, text: &str| {
+            crate::app::events::handle_client_event(
+                app,
+                ClientEvent::SessionUpdate {
+                    session_id: "session-1".to_owned(),
+                    update: model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                        model::ContentBlock::Text(model::TextContent::new(text)),
+                    )),
+                },
+            );
+        };
+        stream_text(&mut app, "Before the process response.");
+        let owner_id = app.transcript.messages[0].id;
+        let question = "Why  two spaces?\nAnd Unicode: 日本語?";
+        for _ in 0..2 {
+            app.input.set_text(&format!("/btw   {question}  "));
+            crate::app::input_submit::submit_input(&mut app);
+        }
+        let first_capture =
+            wait_for_nonempty_file(&marker_path).await.expect("first command reaches child");
+        assert_eq!(
+            first_capture.lines().count(),
+            1,
+            "Rust must retain the waiting item until processing a terminal event"
+        );
+        let first_command: serde_json::Value =
+            serde_json::from_str(first_capture.trim()).expect("command NDJSON");
+        assert_eq!(first_command["command"], "side_question");
+        assert_eq!(first_command["question"], question);
+        assert_eq!(app.transcript.messages.len(), 1);
+        assert_eq!(app.transcript.messages[0].blocks.len(), 1);
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let mut connected_once = true;
+        for expected_event in ["btw_failed", "btw_result"] {
+            let envelope = tokio::time::timeout(Duration::from_secs(5), bridge.recv())
+                .await
+                .expect("child response deadline")
+                .expect("read NDJSON")
+                .expect("terminal event");
+            assert_eq!(envelope.event.event_name(), expected_event);
+            handle_bridge_event(&event_tx, &connection, &mut connected_once, false, envelope).await;
+            let event = event_rx.recv().await.expect("mapped application event");
+            crate::app::events::handle_client_event(&mut app, event);
+            if expected_event == "btw_failed" {
+                assert_eq!(
+                    app.transcript.messages[0].blocks.len(),
+                    1,
+                    "failure must not insert a card"
+                );
+                assert!(app.btw.has_active(), "failure must dispatch the next item");
+            }
+        }
+        let captured = fs::read_to_string(&marker_path).expect("captured commands");
+        let commands = captured
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("command JSON"))
+            .collect::<Vec<_>>();
+        assert_eq!(commands.len(), 2);
+        assert_ne!(commands[0]["btw_id"], commands[1]["btw_id"]);
+        assert_eq!(commands[1]["question"], question);
+        assert_eq!(app.transcript.messages.len(), 1);
+        assert!(
+            matches!(app.transcript.messages[0].blocks.get(1), Some(MessageBlock::BtwExchange(exchange)) if exchange.question == question && exchange.answer == "answer from child")
+        );
+        assert_eq!(app.transcript.messages[0].id, owner_id);
+        stream_text(&mut app, "After the process response.");
+        assert_eq!(app.transcript.messages[0].blocks.len(), 3);
+        let serialized = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            80,
+            &std::collections::BTreeSet::new(),
+        );
+        let rendered =
+            serialized.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let before = rendered.find("Before the process response.").expect("preceding text");
+        let card = rendered.find("Claude · BTW").expect("process answer card");
+        let after = rendered.find("After the process response.").expect("subsequent text");
+        assert!(
+            before < card && card < after,
+            "the process-backed result must enter the streaming transcript at its arrival point"
+        );
+        assert!(!app.btw.has_active());
+        assert!(app.pending_user_messages.is_empty());
+        assert!(matches!(app.status, AppStatus::Running));
+        assert!(bridge.wait().await.expect("child exit").success());
+    }
+
+    #[cfg(windows)]
+    fn side_question_workflow_script(marker_path: &Path) -> String {
+        let marker = marker_path.display().to_string().replace('\'', "''");
+        format!(
+            "@echo off\r\npowershell -NoProfile -Command \"[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $count=0; while ($count -lt 2) {{ $line=[Console]::ReadLine(); if ($null -eq $line) {{ exit 1 }}; [IO.File]::AppendAllText('{marker}', $line + [Environment]::NewLine); $item=ConvertFrom-Json $line; $event=@{{ session_id=$item.session_id; btw_id=$item.btw_id; question=$item.question }}; if ($count -eq 0) {{ $event.event='btw_failed'; $event.error='test SDK failure' }} else {{ $event.event='btw_result'; $event.answer='answer from child'; $event.metadata=@{{ synthetic=$false }} }}; [Console]::WriteLine(($event | ConvertTo-Json -Compress)); $count++ }}\"\r\n"
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn side_question_workflow_script(marker_path: &Path) -> String {
+        let marker = marker_path.display().to_string().replace('\'', "'\\''");
+        format!(
+            "#!/bin/sh\ncount=0\nwhile [ \"$count\" -lt 2 ]; do\nIFS= read -r line || exit 1\nprintf '%s\\n' \"$line\" >> '{marker}'\nif [ \"$count\" -eq 0 ]; then\nprintf '%s\\n' \"$line\" | sed 's/\"command\":\"side_question\"/\"event\":\"btw_failed\"/;s/}}$/,\"error\":\"test SDK failure\"}}/'\nelse\nprintf '%s\\n' \"$line\" | sed 's/\"command\":\"side_question\"/\"event\":\"btw_result\"/;s/}}$/,\"answer\":\"answer from child\",\"metadata\":{{\"synthetic\":false}}}}/'\nfi\ncount=$((count + 1))\ndone\n"
+        )
+    }
+
     struct RuntimeFixture {
         _dir: TempDir,
         runtime_path: PathBuf,

@@ -114,10 +114,58 @@ fn insert_notice(
     message: &str,
     tracking: Option<TurnNoticeTracking>,
 ) {
-    if let Some(owner_idx) = app.active_turn_assistant_idx() {
-        insert_inline_notice(app, owner_idx, severity, message, tracking);
-    } else {
-        insert_standalone_notice(app, severity, message, tracking);
+    let dedup_key = tracking.as_ref().map(|entry| entry.dedup_key.clone());
+    let location = insert_turn_presentation_block(
+        app,
+        MessageBlock::Notice(notice_block(severity, message, dedup_key)),
+        MessageRole::System(Some(severity)),
+    );
+    track_turn_notice(app, tracking, location);
+}
+
+/// Insert presentation-only content at the current point in the active turn, or as a
+/// standalone transcript message when there is no active assistant owner.
+pub(super) fn insert_turn_presentation_block(
+    app: &mut App,
+    block: MessageBlock,
+    standalone_role: MessageRole,
+) -> (usize, Option<usize>) {
+    insert_presentation_block(app, app.active_turn_assistant_idx(), block, standalone_role)
+}
+
+fn insert_presentation_block(
+    app: &mut App,
+    owner_idx: Option<usize>,
+    block: MessageBlock,
+    standalone_role: MessageRole,
+) -> (usize, Option<usize>) {
+    if let Some(owner_idx) = owner_idx
+        && let Some(owner) = app.transcript.messages.get_mut(owner_idx)
+    {
+        let block_idx = owner.blocks.len();
+        owner.blocks.push(block);
+        app.sync_after_message_blocks_changed(owner_idx);
+        return (owner_idx, Some(block_idx));
+    }
+    let msg_idx = app.transcript.messages.len();
+    app.push_message_tracked(ChatMessage::new(standalone_role, vec![block], None));
+    app.enforce_history_retention_tracked();
+    (msg_idx, None)
+}
+
+fn track_turn_notice(
+    app: &mut App,
+    tracking: Option<TurnNoticeTracking>,
+    (msg_idx, block_idx): (usize, Option<usize>),
+) {
+    if let Some(tracking) = tracking {
+        app.turn.notice_refs.push(TurnNoticeRef {
+            dedup_key: tracking.dedup_key,
+            stage: tracking.stage,
+            location: block_idx.map_or(TurnNoticeLocation::Standalone { msg_idx }, |block_idx| {
+                TurnNoticeLocation::Inline { msg_idx, block_idx }
+            }),
+        });
     }
 }
 
@@ -128,45 +176,14 @@ fn insert_inline_notice(
     message: &str,
     tracking: Option<TurnNoticeTracking>,
 ) {
-    let Some(owner) = app.transcript.messages.get_mut(owner_idx) else {
-        insert_standalone_notice(app, severity, message, tracking);
-        return;
-    };
-    let block_idx = owner.blocks.len();
     let dedup_key = tracking.as_ref().map(|entry| entry.dedup_key.clone());
-    owner.blocks.push(MessageBlock::Notice(notice_block(severity, message, dedup_key)));
-    app.sync_after_message_blocks_changed(owner_idx);
-    app.invalidate_layout(InvalidationLevel::MessageChanged(owner_idx));
-    if let Some(tracking) = tracking {
-        app.turn.notice_refs.push(TurnNoticeRef {
-            dedup_key: tracking.dedup_key,
-            stage: tracking.stage,
-            location: TurnNoticeLocation::Inline { msg_idx: owner_idx, block_idx },
-        });
-    }
-}
-
-fn insert_standalone_notice(
-    app: &mut App,
-    severity: SystemSeverity,
-    message: &str,
-    tracking: Option<TurnNoticeTracking>,
-) {
-    let msg_idx = app.transcript.messages.len();
-    let dedup_key = tracking.as_ref().map(|entry| entry.dedup_key.clone());
-    app.push_message_tracked(ChatMessage::new(
+    let location = insert_presentation_block(
+        app,
+        Some(owner_idx),
+        MessageBlock::Notice(notice_block(severity, message, dedup_key)),
         MessageRole::System(Some(severity)),
-        vec![MessageBlock::Notice(notice_block(severity, message, dedup_key))],
-        None,
-    ));
-    app.enforce_history_retention_tracked();
-    if let Some(tracking) = tracking {
-        app.turn.notice_refs.push(TurnNoticeRef {
-            dedup_key: tracking.dedup_key,
-            stage: tracking.stage,
-            location: TurnNoticeLocation::Standalone { msg_idx },
-        });
-    }
+    );
+    track_turn_notice(app, tracking, location);
 }
 
 fn notice_block(

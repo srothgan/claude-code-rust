@@ -68,6 +68,7 @@ import { handleInteractionCommand } from "./bridge/command_interactions.js";
 import { handleMcpCommand } from "./bridge/command_mcp.js";
 import { handleSessionControlCommand } from "./bridge/command_session_control.js";
 import { handleSessionDataCommand } from "./bridge/command_session_data.js";
+import { dispatchSideQuestion } from "./bridge/side_questions.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
@@ -1053,6 +1054,24 @@ async function handleCommand(
         buildRewindConversationPlan,
       });
       return;
+    case "side_question": {
+      const session = sessionById(command.session_id);
+      if (!session || session.closing) {
+        writeEvent({
+          event: "btw_failed",
+          session_id: command.session_id,
+          btw_id: command.btw_id,
+          question: command.question,
+          error: "No active SDK query is available for this side question",
+        });
+        return;
+      }
+      dispatchSideQuestion(command.session_id, session.query, {
+        btwId: command.btw_id,
+        question: command.question,
+      });
+      return;
+    }
     case "prompt":
     case "cancel_turn":
     case "set_model":

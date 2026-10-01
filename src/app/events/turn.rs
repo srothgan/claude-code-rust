@@ -11,6 +11,7 @@ use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 const CONVERSATION_INTERRUPTED_HINT: &str =
     "Conversation interrupted. Tell the model how to proceed.";
@@ -21,6 +22,96 @@ const PLAN_LIMIT_NEXT_STEPS_HINT: &str = "Next steps:\n\
 2. Reduce request size or request frequency.\n\
 3. Check quota/billing for your account or switch plans.";
 const AUTH_REQUIRED_NEXT_STEPS_HINT: &str = "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal.";
+
+pub(super) fn handle_btw_result_event(
+    app: &mut App,
+    btw_id: &str,
+    echoed_question: &str,
+    answer: String,
+    metadata: &crate::agent::wire::SideQuestionMetadata,
+) {
+    let Some(local_question) = app.btw.get_active(btw_id).map(|item| item.question.clone()) else {
+        log_unknown_btw_event(app, btw_id, "result");
+        return;
+    };
+    if local_question != echoed_question {
+        let reason = "bridge protocol error: echoed question did not match".to_owned();
+        let _ = app.btw.fail(btw_id, reason, Instant::now());
+        crate::app::btw::dispatch_next(app);
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_PROTOCOL,
+            event_name = "side_question_question_mismatch",
+            message = "side-question result echoed a different question",
+            outcome = "failure",
+            btw_id,
+        );
+        return;
+    }
+
+    let Some(completed) = app.btw.complete(btw_id) else {
+        log_unknown_btw_event(app, btw_id, "result");
+        return;
+    };
+    super::notices::insert_turn_presentation_block(
+        app,
+        MessageBlock::BtwExchange(super::super::BtwExchangeBlock::new(completed.question, answer)),
+        MessageRole::System(None),
+    );
+    app.enforce_history_retention_tracked();
+    app.request_chat_mutable_rebuild();
+    crate::app::btw::dispatch_next(app);
+    tracing::info!(
+        target: crate::logging::targets::APP_SESSION,
+        event_name = "side_question_completed",
+        message = "side question completed",
+        outcome = "success",
+        btw_id,
+        synthetic = metadata.synthetic,
+        refusal_fallback = metadata.refusal_fallback.is_some(),
+    );
+}
+
+pub(super) fn handle_btw_failed_event(
+    app: &mut App,
+    btw_id: &str,
+    echoed_question: &str,
+    error: String,
+) {
+    let Some(local_question) = app.btw.get_active(btw_id).map(|item| item.question.clone()) else {
+        log_unknown_btw_event(app, btw_id, "failure");
+        return;
+    };
+    let reason = if local_question == echoed_question {
+        error
+    } else {
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_PROTOCOL,
+            event_name = "side_question_question_mismatch",
+            message = "side-question failure echoed a different question",
+            outcome = "failure",
+            btw_id,
+        );
+        "bridge protocol error: echoed question did not match".to_owned()
+    };
+    let _ = app.btw.fail(btw_id, reason, Instant::now());
+    crate::app::btw::dispatch_next(app);
+}
+
+fn log_unknown_btw_event(app: &App, btw_id: &str, event_kind: &str) {
+    tracing::warn!(
+        target: crate::logging::targets::BRIDGE_PROTOCOL,
+        event_name = "stale_side_question_event_dropped",
+        message = "side-question event did not match local outstanding state",
+        outcome = "dropped",
+        session_id = app
+            .session_runtime
+            .session_id
+            .as_ref()
+            .map_or("<none>", model::SessionId::as_str),
+        btw_id,
+        event_kind,
+    );
+}
 
 fn permission_initial_selected_index(request: &model::RequestPermissionRequest) -> usize {
     if !request.display.as_ref().is_some_and(|display| display.default_to_no) {

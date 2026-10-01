@@ -467,8 +467,13 @@ fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
     let mut spans = Vec::new();
     let mut current_style = None;
     let mut current_text = String::new();
+    let mut continuation_cells = 0;
 
     for x in 0..area.width {
+        if continuation_cells > 0 {
+            continuation_cells -= 1;
+            continue;
+        }
         let Some(cell) = buf.cell((area.x.saturating_add(x), y)) else {
             continue;
         };
@@ -476,6 +481,8 @@ fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
         if symbol.is_empty() {
             continue;
         }
+        // A wide grapheme already accounts for its trailing buffer cells.
+        continuation_cells = UnicodeWidthStr::width(symbol).saturating_sub(1);
         let style = cell.style();
         match current_style {
             Some(existing) if existing == style => current_text.push_str(symbol),
@@ -516,6 +523,23 @@ mod tests {
     #[test]
     fn wrap_plain_wraps_long_emoji_graphemes() {
         assert_eq!(wrap_plain("👩‍💻👩‍💻👩‍💻", 4), vec!["👩‍💻👩‍💻".to_owned(), "👩‍💻".to_owned()]);
+    }
+
+    #[test]
+    fn physical_rows_preserve_wide_graphemes_without_adding_placeholder_spaces() {
+        let style = Style::default().add_modifier(Modifier::ITALIC);
+        let rows =
+            wrap_lines_to_physical_rows(&[Line::from(Span::styled("日本語 😀 end", style))], 16);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(line_text(&rows[0]).trim_end(), "日本語 😀 end");
+        assert_eq!(rows[0].width(), 16);
+        assert!(rows[0].spans[0].style.add_modifier.contains(Modifier::ITALIC));
+        let wrapped = wrap_markdown_lines_to_physical_rows(&[Line::from("日本語😀日本語")], 6);
+        assert!(wrapped.iter().all(|row| row.width() <= 6));
+        assert_eq!(
+            wrapped.iter().map(|row| line_text(row).trim_end().to_owned()).collect::<String>(),
+            "日本語😀日本語"
+        );
     }
 
     #[test]

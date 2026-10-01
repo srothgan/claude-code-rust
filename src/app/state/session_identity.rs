@@ -37,6 +37,8 @@ impl App {
 
     pub fn bump_session_scope_epoch(&mut self) {
         self.session_runtime.bump_session_scope_epoch();
+        // Side-question work belongs to this conversation scope, not the next one.
+        self.btw.clear();
     }
 
     pub fn clear_session_runtime_identity(&mut self) {

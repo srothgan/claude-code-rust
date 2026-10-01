@@ -237,6 +237,28 @@ test("bridge process preserves request_id for unsupported commands", async () =>
   }
 });
 
+test("bridge process correlates a side-question failure across NDJSON", async () => {
+  const bridge = new SpawnedBridge();
+  try {
+    bridge.writeCommand({
+      command: "side_question",
+      session_id: "missing-session",
+      btw_id: "btw-1",
+      question: "Why  preserve spaces?\nAnd lines?",
+    });
+
+    const envelope = await bridge.nextEnvelope();
+
+    assertProtocolEvent(envelope, "btw_failed");
+    assert.equal(envelope.session_id, "missing-session");
+    assert.equal(envelope.btw_id, "btw-1");
+    assert.equal(envelope.question, "Why  preserve spaces?\nAnd lines?");
+    assert.match(String(envelope.error), /active SDK query/);
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test("bridge process exits cleanly on shutdown", async () => {
   const bridge = new SpawnedBridge();
   try {
