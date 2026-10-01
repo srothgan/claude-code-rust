@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.9] - 2026-10-01 [Changes][v0.14.9]
+
+### Features
+
+- **Installer release advisories** (#405, @srothgan): Warn during script installs when the selected release has a known issue.
+
+### Fixes
+
+- **Slash command submission** (#405, @srothgan): Make Enter complete and submit slash commands with or without arguments. Affects 0.12.0 through 0.14.8.
+- **Slash command completion** (#405, @srothgan): Rank exact matches first and keep SDK commands available after `/clear`.
+
 ## [0.14.8] - 2026-10-01 [Changes][v0.14.8]
 
 ### Features
@@ -868,6 +879,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.14.9]: https://github.com/srothgan/claude-code-rust/compare/v0.14.8...v0.14.9
 [v0.14.8]: https://github.com/srothgan/claude-code-rust/compare/v0.14.7...v0.14.8
 [v0.14.7]: https://github.com/srothgan/claude-code-rust/compare/v0.14.6...v0.14.7
 [v0.14.6]: https://github.com/srothgan/claude-code-rust/compare/v0.14.5...v0.14.6
