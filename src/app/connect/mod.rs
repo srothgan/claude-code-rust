@@ -81,50 +81,6 @@ pub fn create_app(cli: &Cli) -> App {
 
     let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
     let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
-    let perf_path = match crate::logging::resolve_perf_path(cli) {
-        Ok(path) => path,
-        Err(err) => {
-            tracing::warn!(
-                target: crate::logging::targets::APP_PERF,
-                event_name = "perf_telemetry_unavailable",
-                message = "failed to resolve perf telemetry sidecar path",
-                outcome = "failure",
-                telemetry_channel = "perf_sidecar",
-                perf_schema = "claude-rs-perf/v1",
-                perf_append = cli.perf_append,
-                error = %err,
-            );
-            None
-        }
-    };
-    let perf = perf_path.as_deref().and_then(|path| {
-        let logger = crate::perf::PerfLogger::open(path, cli.perf_append);
-        if logger.is_some() {
-            tracing::info!(
-                target: crate::logging::targets::APP_PERF,
-                event_name = "perf_telemetry_enabled",
-                message = "perf telemetry sidecar enabled",
-                outcome = "success",
-                telemetry_channel = "perf_sidecar",
-                perf_schema = "claude-rs-perf/v1",
-                perf_log = %path.display(),
-                perf_append = cli.perf_append,
-            );
-        } else {
-            tracing::warn!(
-                target: crate::logging::targets::APP_PERF,
-                event_name = "perf_telemetry_unavailable",
-                message = "failed to enable perf telemetry sidecar",
-                outcome = "failure",
-                telemetry_channel = "perf_sidecar",
-                perf_schema = "claude-rs-perf/v1",
-                perf_log = %path.display(),
-                perf_append = cli.perf_append,
-            );
-        }
-        logger
-    });
-
     let loaded_settings = match settings::load_global_settings(env!("CARGO_PKG_VERSION")) {
         Ok(loaded) => loaded,
         Err(err) => {
@@ -213,13 +169,10 @@ pub fn create_app(cli: &Cli) -> App {
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
         notifications: super::notify::NotificationManager::new(),
-        perf,
         render_cache_budget: RenderCacheBudget::default(),
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
         cache_metrics: CacheMetrics::default(),
-        fps_ema: None,
-        last_frame_at: None,
         startup: StartupState::new(
             cli.bridge_script.clone(),
             match &cli.command {

@@ -123,8 +123,6 @@ fn apply_tool_call_update_to_indexed_block(
             tc.invalidate_render_cache();
             app.sync_render_cache_slot(mi, bi);
             out.layout_dirty_idx = Some(mi);
-        } else {
-            crate::perf::mark("tool_update_noop_skips");
         }
     }
 

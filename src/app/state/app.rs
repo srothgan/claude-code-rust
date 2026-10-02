@@ -97,10 +97,6 @@ pub struct App {
 
     /// Central notification manager (bell + desktop toast when unfocused).
     pub(crate) notifications: notify::NotificationManager,
-    /// Performance logger. Present only when built with `--features perf`.
-    /// Taken out (`Option::take`) during render, used, then put back to avoid
-    /// borrow conflicts with `&mut App`.
-    pub(crate) perf: Option<crate::perf::PerfLogger>,
     /// Global in-memory budget for rendered block and message caches.
     pub(crate) render_cache_budget: RenderCacheBudget,
     /// Byte budget for source conversation history retained in memory.
@@ -109,10 +105,6 @@ pub struct App {
     pub(crate) history_retention_stats: HistoryRetentionStats,
     /// Cross-cutting cache metrics accumulator (enforcement counts, watermarks, rate limits).
     pub(crate) cache_metrics: CacheMetrics,
-    /// Smoothed frames-per-second (EMA of presented frame cadence).
-    pub(crate) fps_ema: Option<f32>,
-    /// Timestamp of the previous presented frame.
-    pub(crate) last_frame_at: Option<Instant>,
     /// Bootstrap sequencing state resolved from CLI flags at launch.
     pub(crate) startup: StartupState,
     /// Owned bridge-process task and its explicit shutdown signal.
@@ -274,13 +266,10 @@ impl App {
             usage: UsageState::default(),
             mcp: McpState::default(),
             notifications: notify::NotificationManager::new(),
-            perf: None,
             render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
             cache_metrics: CacheMetrics::default(),
-            fps_ema: None,
-            last_frame_at: None,
             startup: StartupState::default(),
             bridge_task: None,
         }

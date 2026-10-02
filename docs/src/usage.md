@@ -57,11 +57,8 @@ The installed `claude-rs --help` command exposes these options:
 | `--log-file <PATH>` | Write tracing diagnostics to a specific file. |
 | `--log-filter <FILTER>` | Use explicit tracing filter directives. |
 | `--log-append` | Append to the active log file instead of resetting it on startup. |
-| `--enable-perf` | Enable perf telemetry when the binary was built with the `perf` feature. |
-| `--perf-log <PATH>` | Write high-frequency perf telemetry to a specific JSON-lines file. |
-| `--perf-append` | Append to the perf log instead of truncating it. |
 
-See [Diagnostics](diagnostics.md) before enabling verbose logs or perf telemetry.
+See [Diagnostics](diagnostics.md) before enabling verbose logs.
 
 ## Core UI
 

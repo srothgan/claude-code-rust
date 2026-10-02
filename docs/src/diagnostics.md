@@ -77,7 +77,7 @@ Available presets:
 | --- | --- |
 | `runtime` | Debugging general app, bridge, session, tool, permission, network, and update flow. |
 | `session` | Debugging session startup, permission, and command flow. |
-| `render` | Debugging rendering, cache, input, paste, and perf-adjacent UI behavior. |
+| `render` | Debugging rendering, cache, input, and paste behavior. |
 | `bridge` | Debugging Agent SDK bridge lifecycle, protocol, SDK, permission, and MCP behavior. |
 | `full` | Capturing the broadest diagnostic trace. |
 
@@ -123,7 +123,7 @@ claude-rs logs --path
 claude-rs logs --latest
 ```
 
-`claude-rs logs` prints the runtime log directory, legacy log path, perf log directory, latest discovered log, and common follow-up commands. `--path` prints only the default runtime log directory for scripts. `--latest` prints only the latest runtime log path, falling back to the legacy shared log when no timestamped runtime log exists.
+`claude-rs logs` prints the runtime log directory, legacy log path, latest discovered log, and common follow-up commands. `--path` prints only the default runtime log directory for scripts. `--latest` prints only the latest runtime log path, falling back to the legacy shared log when no timestamped runtime log exists.
 
 To inspect recent log output safely:
 
@@ -142,6 +142,8 @@ claude-rs logs --bundle --yes
 ```
 
 Without `--yes`, an interactive terminal is prompted before the bundle is written. Use `--output <PATH>` to choose the ZIP path.
+
+The manifest uses schema `claude-rs-debug-bundle/v2`. Diagnostics paths describe the runtime log directory and legacy log path.
 
 The bundle includes:
 
@@ -184,28 +186,6 @@ CLAUDE_RS_AGENT_BRIDGE_RUNTIME=/path/to/bun
 ```
 
 Release npm installs use the root package launcher to start the native platform binary and point it at the bundled bridge script. The native binary resolves the private `claude-rs-bridge-bun` executable from the installed platform package. In `doctor --json`, the runtime checks are reported as `bridge_runtime`, `bridge_runtime_version`, and `bridge_script`.
-
-## Perf Telemetry
-
-Perf telemetry is a separate JSON-lines sidecar intended for high-frequency render and layout samples. It requires a binary built with the `perf` feature.
-
-From source:
-
-```bash
-cargo run --features perf -- --enable-perf
-cargo run --features perf -- --perf-log claude-rs-perf.log
-```
-
-For an already-built perf-enabled binary:
-
-```bash
-claude-rs --enable-perf
-claude-rs --perf-log claude-rs-perf.log
-```
-
-If the binary was not built with `--features perf`, perf flags are rejected at startup.
-
-When `--perf-log` is omitted, default perf telemetry uses timestamped JSON-lines files under the sibling `logs/perf/` directory.
 
 ## Useful Issue Reports
 

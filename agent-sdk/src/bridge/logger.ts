@@ -12,7 +12,6 @@ export const LOG_TARGETS = {
   APP_NETWORK: "app.network",
   APP_INPUT: "app.input",
   APP_PASTE: "app.paste",
-  APP_PERF: "app.perf",
   APP_RENDER: "app.render",
   APP_SESSION: "app.session",
   APP_TOOL: "app.tool",

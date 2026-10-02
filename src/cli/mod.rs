@@ -65,6 +65,12 @@ mod tests {
         assert_eq!(result, Some(0));
         assert!(!stdout.is_empty());
         assert!(stderr.is_empty());
+        let report: serde_json::Value = serde_json::from_slice(&stdout).expect("doctor JSON");
+        let checks = report["checks"].as_array().expect("doctor checks");
+        for id in ["runtime_log_dir", "legacy_log_path"] {
+            assert!(checks.iter().any(|check| check["id"] == id), "missing {id}");
+        }
+        assert!(checks.iter().all(|check| check["id"] != "perf_log_dir"));
     }
 
     #[test]
@@ -113,9 +119,6 @@ mod tests {
             log_file: None,
             log_filter: None,
             log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         }
     }
 }

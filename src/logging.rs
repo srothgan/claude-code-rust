@@ -29,7 +29,6 @@ pub mod targets {
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
     pub const APP_NETWORK: &str = "app.network";
     pub const APP_PASTE: &str = "app.paste";
-    pub const APP_PERF: &str = "app.perf";
     pub const APP_PERMISSION: &str = "app.permission";
     pub const APP_RENDER: &str = "app.render";
     pub const APP_SESSION: &str = "app.session";
@@ -48,11 +47,8 @@ const BRIDGE_LINE_PREVIEW_LIMIT: usize = 240;
 const DEFAULT_LOG_DIR: &str = "claude-code-rust";
 const DEFAULT_LOG_FILE_NAME: &str = "claude-rs.log";
 const DEFAULT_RUNTIME_LOG_SUBDIR: &str = "runtime";
-const DEFAULT_PERF_LOG_SUBDIR: &str = "perf";
 const DEFAULT_RUNTIME_LOG_PREFIX: &str = "claude-rs";
-const DEFAULT_PERF_LOG_PREFIX: &str = "claude-rs-perf";
 const RUNTIME_LOG_EXTENSION: &str = "log";
-const PERF_LOG_EXTENSION: &str = "jsonl";
 const LOG_ROTATION_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const LOG_ROTATION_MAX_FILES: usize = 5;
 const LOG_RETENTION_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -67,7 +63,6 @@ pub struct DiagnosticsPaths {
     pub root_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub legacy_log_path: PathBuf,
-    pub perf_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,26 +428,8 @@ pub fn default_legacy_log_path() -> anyhow::Result<PathBuf> {
     Ok(base_dir.join(DEFAULT_LOG_FILE_NAME))
 }
 
-pub fn resolve_perf_path(cli: &Cli) -> anyhow::Result<Option<PathBuf>> {
-    if let Some(path) = cli.perf_log.clone() {
-        return Ok(Some(path));
-    }
-    if !perf_enabled_without_explicit_path(cli) {
-        return Ok(None);
-    }
-    Ok(Some(generated_log_path(
-        &default_perf_log_dir()?,
-        DEFAULT_PERF_LOG_PREFIX,
-        PERF_LOG_EXTENSION,
-    )))
-}
-
 pub fn default_runtime_log_dir() -> anyhow::Result<PathBuf> {
     Ok(default_diagnostics_dir()?.join(DEFAULT_RUNTIME_LOG_SUBDIR))
-}
-
-pub fn default_perf_log_dir() -> anyhow::Result<PathBuf> {
-    Ok(default_diagnostics_dir()?.join(DEFAULT_PERF_LOG_SUBDIR))
 }
 
 pub fn default_diagnostics_paths() -> anyhow::Result<DiagnosticsPaths> {
@@ -460,7 +437,6 @@ pub fn default_diagnostics_paths() -> anyhow::Result<DiagnosticsPaths> {
     Ok(DiagnosticsPaths {
         runtime_dir: root_dir.join(DEFAULT_RUNTIME_LOG_SUBDIR),
         legacy_log_path: root_dir.join(DEFAULT_LOG_FILE_NAME),
-        perf_dir: root_dir.join(DEFAULT_PERF_LOG_SUBDIR),
         root_dir,
     })
 }
@@ -544,10 +520,6 @@ fn generated_log_file_name(
 
 fn short_run_id() -> String {
     uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect()
-}
-
-fn perf_enabled_without_explicit_path(cli: &Cli) -> bool {
-    cli.enable_perf || cli.perf_append
 }
 
 pub fn default_diagnostics_dir() -> anyhow::Result<PathBuf> {
@@ -1010,7 +982,6 @@ impl BridgeDiagnosticRecord {
             targets::APP_INPUT => emit_for_level!(targets::APP_INPUT),
             targets::APP_PERMISSION => emit_for_level!(targets::APP_PERMISSION),
             targets::APP_PASTE => emit_for_level!(targets::APP_PASTE),
-            targets::APP_PERF => emit_for_level!(targets::APP_PERF),
             targets::APP_RENDER => emit_for_level!(targets::APP_RENDER),
             targets::APP_SESSION => emit_for_level!(targets::APP_SESSION),
             targets::APP_TOOL => emit_for_level!(targets::APP_TOOL),
@@ -1033,7 +1004,7 @@ mod tests {
         LogRetentionPolicy, LogRetentionTarget, RollingFileWriter, baseline_field_allowed,
         clear_rotated_files, enforce_log_retention_at, generated_log_file_name,
         is_managed_log_file, list_managed_runtime_logs_in, preview_text, resolve_log_path,
-        resolve_perf_path, rotated_log_path,
+        rotated_log_path,
     };
     use crate::{Cli, DiagnosticsPreset};
     use std::fs;
@@ -1166,9 +1137,6 @@ mod tests {
             log_file: None,
             log_filter: None,
             log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -1189,9 +1157,6 @@ mod tests {
             log_file: Some(PathBuf::from("custom.log")),
             log_filter: None,
             log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -1213,9 +1178,6 @@ mod tests {
             log_file: None,
             log_filter: Some("app.render=trace".to_owned()),
             log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -1246,9 +1208,6 @@ mod tests {
             log_file: None,
             log_filter: None,
             log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -1268,9 +1227,6 @@ mod tests {
             log_file: None,
             log_filter: None,
             log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -1290,9 +1246,6 @@ mod tests {
             log_file: None,
             log_filter: None,
             log_append: true,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         };
 
         let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
@@ -1301,34 +1254,6 @@ mod tests {
         assert!(resolved.retention.is_none());
         let path = resolved.path.to_string_lossy().replace('\\', "/");
         assert!(path.ends_with("claude-code-rust/logs/claude-rs.log"));
-    }
-
-    #[test]
-    fn resolve_perf_path_uses_default_when_enable_perf_is_set() {
-        let cli = Cli {
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: false,
-            enable_perf: true,
-            perf_log: None,
-            perf_append: false,
-        };
-
-        let resolved = resolve_perf_path(&cli).expect("resolve succeeds").expect("path exists");
-        let path = resolved.to_string_lossy().replace('\\', "/");
-        assert!(path.contains("claude-code-rust/logs/perf/claude-rs-perf-"));
-        assert!(
-            resolved
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
-        );
     }
 
     #[test]

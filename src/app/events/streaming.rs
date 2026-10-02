@@ -64,24 +64,14 @@ pub(super) fn append_agent_stream_text(
         blocks.push(new_text_block(chunk.to_owned(), source_message_uuid));
     }
 
-    let split_count = split_tail_text_block(blocks);
-    if split_count > 0 {
-        crate::perf::mark_with("text_block_split_count", "count", split_count);
-    }
-
-    if let Some(MessageBlock::Text(block)) = blocks.last() {
-        crate::perf::mark_with("text_block_active_tail_bytes", "bytes", block.text.len());
-    }
-    let text_block_count = blocks.iter().filter(|b| matches!(b, MessageBlock::Text(..))).count();
-    crate::perf::mark_with("text_block_frozen_count", "count", text_block_count.saturating_sub(1));
+    split_tail_text_block(blocks);
 }
 
 fn new_text_block(text: String, source_message_uuid: Option<&str>) -> MessageBlock {
     MessageBlock::Text(TextBlock::new(text).with_source_message_uuid(source_message_uuid))
 }
 
-fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
-    let mut split_count = 0usize;
+fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) {
     loop {
         let Some(tail_idx) = blocks.len().checked_sub(1) else {
             break;
@@ -115,9 +105,7 @@ fn split_tail_text_block(blocks: &mut Vec<MessageBlock>) -> usize {
                 .with_source_message_uuids(source_message_uuids.clone()),
         );
         blocks.insert(tail_idx, completed_text_block(completed, split, source_message_uuids));
-        split_count += 1;
     }
-    split_count
 }
 
 fn completed_text_block(

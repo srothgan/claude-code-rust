@@ -101,13 +101,9 @@ pub(super) fn render_text_cached(
     if cache.height_at(width).is_some()
         && let Some(cached_lines) = cache.get()
     {
-        crate::perf::mark_with("msg::cache_hit", "lines", cached_lines.len());
         out.extend_from_slice(cached_lines);
         return;
     }
-    crate::perf::mark("msg::cache_miss");
-
-    let _t = crate::perf::start("msg::render_text");
 
     let mut preprocessed = preprocess_markdown(text);
     if preserve_newlines {
@@ -118,10 +114,7 @@ pub(super) fn render_text_cached(
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
-    let h = {
-        let _t = crate::perf::start_with("msg::wrap_height", "lines", fresh.len());
-        wrap_markdown_lines_to_physical_rows(&fresh, width).len()
-    };
+    let h = wrap_markdown_lines_to_physical_rows(&fresh, width).len();
     cache.store(fresh);
     cache.set_height(h, width);
     if let Some(stored) = cache.get() {

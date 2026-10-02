@@ -14,7 +14,7 @@ Important Rust areas:
 
 | Area | Responsibility |
 | --- | --- |
-| `src/main.rs` | Process entrypoint, runtime setup, logging/perf setup, and exit behavior. |
+| `src/main.rs` | Process entrypoint, runtime setup, logging setup, and exit behavior. |
 | `src/lib.rs` | CLI arguments, subcommands, and diagnostics presets. |
 | `src/agent/` | Bridge process resolution, NDJSON client, wire types, and bridge error handling. |
 | `src/app/` | App state, lifecycle, sessions, config, permissions, input, slash commands, plugins, MCP, usage, and trust. |
