@@ -141,7 +141,11 @@ pub enum ClientEvent {
     /// A request-correlated resume-at operation failed before replacing the active session.
     SessionResumeFailed { session_id: String, operation_id: String, message: String },
     /// Terminal ownership was handed to a child process.
-    TerminalReleasedToChild { reason: ReleaseReason },
+    TerminalReleasedToChild {
+        reason: ReleaseReason,
+        ready_tx: tokio::sync::oneshot::Sender<()>,
+        cancel_tx: tokio::sync::oneshot::Sender<()>,
+    },
     /// Terminal ownership returned from a child process.
     TerminalReturnedFromChild { reason: ReleaseReason },
     /// Session runtime plugin reload completed successfully.

@@ -274,6 +274,11 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         SurfaceMode::Chat => {
             if app.composer_access().can_edit() {
                 reclaim_input_from_inline_prompt_if_needed(app);
+                // A terminal paste follows any characters still held by the
+                // key-burst detector. Flush them before queuing its payload.
+                if let Some(action) = app.paste.burst.on_non_char_key(std::time::Instant::now()) {
+                    super::apply_paste_burst_flush(app, action);
+                }
                 app.queue_paste_text(text);
                 return true;
             }

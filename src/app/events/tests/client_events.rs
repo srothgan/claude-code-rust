@@ -1352,7 +1352,11 @@ fn terminal_release_event_marks_child_process_lifecycle_without_redraw() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::TerminalReleasedToChild { reason: ReleaseReason::AuthFlow },
+        ClientEvent::TerminalReleasedToChild {
+            reason: ReleaseReason::AuthFlow,
+            ready_tx: tokio::sync::oneshot::channel().0,
+            cancel_tx: tokio::sync::oneshot::channel().0,
+        },
     );
 
     assert_eq!(

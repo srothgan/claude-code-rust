@@ -5,11 +5,18 @@ use crate::agent::events::ClientEvent;
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
-        ClientEvent::TerminalReleasedToChild { reason } => {
+        ClientEvent::TerminalReleasedToChild { reason, ready_tx, cancel_tx } => {
             app.terminal_lifecycle = crate::app::TerminalLifecycleState::ReleasedToChild(reason);
             app.surface_dirty.clear_for_child_release();
+            if app.shutdown_requested() {
+                let _ = cancel_tx.send(());
+            } else {
+                app.terminal_child_cancel = Some(cancel_tx);
+            }
+            let _ = ready_tx.send(());
         }
         ClientEvent::TerminalReturnedFromChild { reason: _ } => {
+            app.terminal_child_cancel = None;
             app.terminal_lifecycle =
                 crate::app::TerminalLifecycleState::Running(crate::app::SurfaceMode::Chat);
             app.surface_dirty.terminal_mode = true;

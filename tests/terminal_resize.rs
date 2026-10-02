@@ -115,12 +115,16 @@ struct TerminalTest {
     output: Arc<Mutex<CapturedTerminal>>,
     journal: PathBuf,
     release_file: PathBuf,
-    _temp: tempfile::TempDir,
+    temp: tempfile::TempDir,
 }
 
 #[allow(clippy::expect_used, clippy::panic)]
 impl TerminalTest {
     fn start(scenario: &str, lines: u16) -> Self {
+        Self::start_with_auth(scenario, lines, None)
+    }
+
+    fn start_with_auth(scenario: &str, lines: u16, auth_mode: Option<&str>) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
         let project = temp.path().join("project");
@@ -136,6 +140,9 @@ impl TerminalTest {
         let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
         command.arg("--no-update-check");
+        command.arg("--log-file");
+        command.arg(temp.path().join("runtime.log"));
+        command.env("RUST_LOG", "warn,app.lifecycle=debug,bridge.protocol=debug");
         command.arg("--dir");
         command.arg(&project);
         command.cwd(&project);
@@ -148,14 +155,46 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
+        if let Some(mode) = auth_mode {
+            let cli_dir = temp.path().join("bin");
+            std::fs::create_dir(&cli_dir).expect("fake CLI directory");
+            let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
+            if mode == "spawn-error" {
+                std::fs::write(&cli, b"invalid executable fixture").expect("invalid executable");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+                        .expect("executable permission");
+                }
+            } else {
+                let source =
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude.rs");
+                let output = std::process::Command::new("rustc")
+                    .arg("--edition=2024")
+                    .arg(source)
+                    .arg("-o")
+                    .arg(&cli)
+                    .output()
+                    .expect("compile native fake CLI");
+                assert!(
+                    output.status.success(),
+                    "fake CLI compile failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            let mut paths = vec![cli_dir];
+            paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+            command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
+            command.env("FAKE_AUTH_MODE", mode);
+        }
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
         let process = pair.slave.spawn_command(command).expect("spawn claude-rs");
         let child = TestChild { process, writer: Arc::clone(&writer) };
         drop(pair.slave);
         let output = capture_output(reader, writer);
-        let mut test =
-            Self { child, master: pair.master, output, journal, release_file, _temp: temp };
+        let mut test = Self { child, master: pair.master, output, journal, release_file, temp };
         test.wait_screen("Trust this project");
         test.send(b"y");
         test.wait_screen("Type a message");
@@ -182,9 +221,13 @@ impl TerminalTest {
     fn diagnostics(&self) -> String {
         let output = self.output.lock().expect("output lock");
         format!(
-            "{}\nRaw output tail:\n{}",
+            "{}\nRaw output tail:\n{}\nRuntime log tail:\n{}",
             output.parser.screen().contents(),
-            tail(&String::from_utf8_lossy(&output.raw), 2000)
+            tail(&String::from_utf8_lossy(&output.raw), 2000),
+            tail(
+                &std::fs::read_to_string(self.temp.path().join("runtime.log")).unwrap_or_default(),
+                6000
+            )
         )
     }
 
@@ -231,7 +274,11 @@ impl TerminalTest {
     }
 
     fn prompts(&self) -> Vec<Value> {
-        self.journal().into_iter().filter(|entry| entry["command"] == "prompt").collect()
+        self.commands("prompt")
+    }
+
+    fn commands(&self, name: &str) -> Vec<Value> {
+        self.journal().into_iter().filter(|entry| entry["command"] == name).collect()
     }
 
     fn assert_prompts(&self, expected: &[&str]) {
@@ -289,6 +336,273 @@ impl TerminalTest {
         let output = self.output.lock().expect("output lock");
         let text = String::from_utf8_lossy(&output.raw);
         assert!(!text.contains(OWNED_REGION_ERROR), "{}", tail(&text, 2000));
+    }
+}
+
+#[test]
+fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
+    for mode in ["success", "failure"] {
+        let mut test = TerminalTest::start_with_auth("stream", 3, Some(mode));
+        test.submit("/login", "/login");
+        test.wait_screen("AUTH_CHILD_READY");
+        // Once the child is waiting on stdin, the TUI must stop every output
+        // source, including animated OSC window-title updates.
+        let before = test.output.lock().expect("output lock").raw.len();
+        std::thread::sleep(Duration::from_millis(250));
+        let after = test.output.lock().expect("output lock").raw.len();
+        assert_eq!(after, before, "TUI wrote while auth child owned the terminal");
+        test.resize(25, 61);
+        test.send(b"child_only_407\r");
+        test.wait_screen("AUTH_CHILD_READ");
+        let profile = test.temp.path().join("profile");
+        let received =
+            std::fs::read_to_string(profile.join("auth-input")).expect("child stdin record");
+        assert_eq!(received.trim_end_matches(['\r', '\n']), "child_only_407");
+        std::fs::write(profile.join("auth-release"), b"continue").expect("release auth child");
+        if mode == "failure" {
+            test.wait_screen("/login failed (exit code: 7)");
+        }
+        test.wait_screen("[READY]");
+        test.resize(38, 87);
+        test.send("AFTER_AUTH 界".as_bytes());
+        test.wait_screen("AFTER_AUTH 界");
+        test.paste(" + PASTE 🦀");
+        test.wait_screen("PASTE 🦀");
+        test.submit_draft();
+        test.wait_screen("reply 1 started");
+        test.assert_prompts(&["AFTER_AUTH 界 + PASTE 🦀"]);
+        test.shutdown();
+    }
+}
+
+#[test]
+fn auth_spawn_failure_restores_terminal_ownership_and_input() {
+    let mut test = TerminalTest::start_with_auth("stream", 3, Some("spawn-error"));
+    test.submit("/login", "/login");
+    test.wait_screen("Failed to run claude auth login");
+    test.wait_screen("[READY]");
+    test.resize(25, 61);
+    test.resize(38, 87);
+    test.send(b"AFTER_SPAWN_ERROR");
+    test.wait_screen("AFTER_SPAWN_ERROR");
+    test.paste(" + PASTE");
+    test.wait_screen("+ PASTE");
+    test.submit_draft();
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["AFTER_SPAWN_ERROR + PASTE"]);
+    test.shutdown();
+}
+
+#[test]
+fn fatal_bridge_exit_during_auth_stops_the_owned_child_and_finishes_shutdown() {
+    let mut test = TerminalTest::start_with_auth("disconnect-during-auth", 3, Some("success"));
+    test.submit("/login", "/login");
+    test.wait_screen("AUTH_CHILD_READY");
+    // The fake CLI is blocked in read_line. Shutdown must stop and reap the
+    // owned child before returning the terminal and finishing the app exit.
+    test.release();
+    let status = test
+        .child
+        .wait_for_exit(Duration::from_secs(15))
+        .expect("bounded shutdown while auth owns stdin");
+    assert!(!status.success());
+    assert!(!test.temp.path().join("profile/auth-input").exists());
+    test.assert_prompts(&[]);
+    let output = test.output.lock().expect("output lock");
+    assert!(String::from_utf8_lossy(&output.raw).contains("exited before completing the protocol"));
+}
+
+#[test]
+fn concurrent_resize_typing_and_paste_deliver_every_prompt_exactly_once() {
+    let mut test = TerminalTest::start("stream", 3);
+    let mut expected = Vec::new();
+    for index in 0..15 {
+        test.resize(25, 61);
+        let typed = format!("RESIZE_INPUT_{index}");
+        test.send(typed.as_bytes());
+        test.resize(38, 87);
+        test.paste(" + PASTE 界 🦀");
+        test.wait_screen("+ PASTE 界 🦀");
+        test.submit_draft();
+        test.wait_screen(&format!("reply {} started", index + 1));
+        test.wait_screen("[READY]");
+        expected.push(format!("{typed} + PASTE 界 🦀"));
+        test.assert_prompts(&expected.iter().map(String::as_str).collect::<Vec<_>>());
+    }
+    test.shutdown();
+}
+
+#[test]
+fn queued_prompt_starts_once_after_active_reply_and_preserves_the_next_draft() {
+    let mut test = TerminalTest::start("hold-success", 3);
+    test.submit("FIRST", "FIRST");
+    test.wait_journal("reply-held");
+    test.submit("QUEUED 界", "QUEUED 界");
+    test.wait_journal("user_message_queued");
+    test.paste("UNSENT 🦀");
+    test.wait_screen("UNSENT 🦀");
+    test.resize(25, 61);
+    test.resize(38, 87);
+    test.assert_prompts(&["FIRST", "QUEUED 界"]);
+    let prompts = test.prompts();
+    let queued_id = &prompts[1]["message_uuid"];
+    assert!(
+        !test
+            .journal()
+            .iter()
+            .any(|e| e["event"] == "user_message_started" && &e["message_uuid"] == queued_id)
+    );
+
+    test.release();
+    test.wait_screen("reply 2 started");
+    test.wait_screen("[READY]");
+    test.wait_screen("UNSENT 🦀");
+    let journal = test.journal();
+    let queued = journal
+        .iter()
+        .position(|e| e["event"] == "user_message_queued" && &e["message_uuid"] == queued_id)
+        .expect("queued event");
+    let completed =
+        journal.iter().position(|e| e["event"] == "turn_complete").expect("first completion");
+    assert_eq!(journal[completed]["queued_turn_count"], 1);
+    let started: Vec<_> = journal
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e["event"] == "user_message_started" && &e["message_uuid"] == queued_id)
+        .collect();
+    assert_eq!(started.len(), 1, "queued message must start exactly once");
+    assert!(queued < completed && completed < started[0].0);
+    test.submit_draft();
+    test.wait_screen("reply 3 started");
+    test.assert_prompts(&["FIRST", "QUEUED 界", "UNSENT 🦀"]);
+    test.shutdown();
+}
+
+#[test]
+fn cancelling_a_stream_preserves_the_draft_and_allows_the_next_turn() {
+    let mut test = TerminalTest::start("hold-success", 3);
+    test.submit("CANCEL_ME", "CANCEL_ME");
+    test.wait_journal("reply-held");
+    test.paste("AFTER_CANCEL 界");
+    test.wait_screen("AFTER_CANCEL 界");
+    test.send(b"\x1b"); // Escape cancels a turn; Ctrl+C clears the composer.
+    test.wait_journal("turn_interrupt_receipt");
+    test.wait_screen("[READY]");
+    test.resize(25, 61);
+    test.resize(38, 87);
+    test.wait_screen("AFTER_CANCEL 界");
+    // Release the old barrier after cancel: a stray timer must not resume it.
+    let before = test.journal().iter().filter(|e| e["event"] == "session_update").count();
+    test.release();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(test.journal().iter().filter(|e| e["event"] == "session_update").count(), before);
+    assert_eq!(test.commands("cancel_turn").len(), 1);
+    assert!(test.journal().iter().any(|e| e["terminal_reason"] == "aborted_streaming"));
+    test.submit_draft();
+    test.wait_screen("reply 2 started");
+    test.assert_prompts(&["CANCEL_ME", "AFTER_CANCEL 界"]);
+    test.shutdown();
+}
+
+#[test]
+fn permission_accept_and_deny_survive_resize_and_send_one_correlated_response() {
+    for (keys, option) in [(b"\r".as_slice(), "allow-once"), (b"\x1b".as_slice(), "deny-once")] {
+        let mut test = TerminalTest::start("permission", 3);
+        test.submit("PERMISSION", "PERMISSION");
+        test.wait_screen("Allow once");
+        test.resize(25, 61);
+        test.resize(38, 87);
+        test.wait_screen("Deny once");
+        assert!(test.commands("permission_response").is_empty());
+        test.send(keys);
+        test.wait_screen("[READY]");
+        let responses = test.commands("permission_response");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["session_id"], "fake-session");
+        assert_eq!(responses[0]["tool_call_id"], "fixture-tool");
+        assert_eq!(
+            responses[0]["outcome"],
+            serde_json::json!({"outcome": "selected", "option_id": option})
+        );
+        test.submit("AFTER_DIALOG", "AFTER_DIALOG");
+        test.wait_screen("reply 2 started");
+        test.assert_prompts(&["PERMISSION", "AFTER_DIALOG"]);
+        test.shutdown();
+    }
+}
+
+#[test]
+fn question_selection_and_cancellation_survive_resize_without_submitting_a_prompt() {
+    for answered in [true, false] {
+        let mut test = TerminalTest::start("question", 3);
+        test.submit("QUESTION", "QUESTION");
+        test.wait_screen("Choose fixture destination");
+        test.resize(25, 61);
+        test.resize(38, 87);
+        test.wait_screen("Beta");
+        assert!(test.commands("question_response").is_empty());
+        if answered {
+            test.send(b"\x1b[C"); // Select Beta.
+            test.send(b"\t"); // Edit notes while the question owns focus.
+            test.send(b"fixture note");
+            test.wait_screen("fixture note");
+            test.resize(25, 61);
+            test.resize(38, 87);
+            test.wait_screen("fixture note");
+            test.send(b"\t");
+            test.send(b"\r");
+        } else {
+            test.send(b"\x1b");
+        }
+        test.wait_screen("[READY]");
+        let responses = test.commands("question_response");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["session_id"], "fake-session");
+        assert_eq!(responses[0]["tool_call_id"], "fixture-tool");
+        if answered {
+            assert_eq!(responses[0]["outcome"]["outcome"], "answered");
+            assert_eq!(responses[0]["outcome"]["selected_option_ids"], serde_json::json!(["beta"]));
+            assert_eq!(responses[0]["outcome"]["annotation"]["notes"], "fixture note");
+        } else {
+            assert_eq!(responses[0]["outcome"], serde_json::json!({"outcome": "cancelled"}));
+        }
+        test.submit("AFTER_QUESTION", "AFTER_QUESTION");
+        test.wait_screen("reply 2 started");
+        test.assert_prompts(&["QUESTION", "AFTER_QUESTION"]);
+        test.shutdown();
+    }
+}
+
+#[test]
+fn bridge_eof_and_malformed_output_report_failure_and_exit_without_extra_submission() {
+    for scenario in ["hold-eof", "hold-malformed"] {
+        let mut test = TerminalTest::start(scenario, 3);
+        test.submit("FAIL_BRIDGE", "FAIL_BRIDGE");
+        test.wait_journal("reply-held");
+        test.paste("UNSENT_AT_FAILURE 界");
+        test.wait_screen("UNSENT_AT_FAILURE 界");
+        test.resize(25, 61);
+        test.resize(38, 87);
+        test.release();
+        let status = test.child.wait_for_exit(Duration::from_secs(15)).expect("bounded fatal exit");
+        assert!(!status.success(), "protocol failure must produce a failing exit status");
+        test.assert_prompts(&["FAIL_BRIDGE"]);
+        let output = test.output.lock().expect("output lock");
+        let raw = String::from_utf8_lossy(&output.raw);
+        let expected = if scenario == "hold-eof" {
+            "exited before completing the protocol"
+        } else {
+            "failed to decode bridge event json"
+        };
+        assert!(raw.contains(expected), "missing user-facing error: {}", tail(&raw, 4000));
+        assert!(!raw.contains(OWNED_REGION_ERROR));
+        if scenario == "hold-malformed" {
+            assert_eq!(
+                test.commands("shutdown").len(),
+                1,
+                "a live failed bridge must be shut down"
+            );
+        }
     }
 }
 

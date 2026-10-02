@@ -12,6 +12,7 @@ pub(crate) struct PendingSessionResume {
 pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
+    pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     pub(crate) surface_dirty: SurfaceDirtyState,
     pub(crate) config: ConfigState,
     pub(crate) global_settings: crate::app::AppSettings,
@@ -135,12 +136,16 @@ impl App {
     }
 
     pub(crate) fn request_shutdown(&mut self) {
+        if let Some(cancel_tx) = self.terminal_child_cancel.take() {
+            let _ = cancel_tx.send(());
+        }
         if matches!(self.shutdown, ShutdownState::Running) {
             self.shutdown = ShutdownState::Requested;
         }
     }
 
     pub(crate) fn force_shutdown(&mut self) {
+        self.request_shutdown();
         self.shutdown = ShutdownState::Forced;
     }
 
@@ -235,6 +240,7 @@ impl App {
             show_session_overview: true,
             turn: TurnState::default(),
             shutdown: ShutdownState::Running,
+            terminal_child_cancel: None,
             exit_error: None,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),

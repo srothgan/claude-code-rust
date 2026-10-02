@@ -717,7 +717,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
- "futures-core",
+ "filedescriptor",
  "mio",
  "parking_lot",
  "rustix",

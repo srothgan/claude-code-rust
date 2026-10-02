@@ -112,9 +112,9 @@ fn save_update_install_result(app: &App) {
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
 use anyhow::Context as _;
-use crossterm::event::EventStream;
-use futures::{FutureExt as _, StreamExt};
+use futures::FutureExt as _;
 use std::time::{Duration, Instant};
+use terminal_runtime::TerminalInput;
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
 const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
@@ -158,9 +158,9 @@ async fn run_tui_loop(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
-    let mut os_shutdown = Box::pin(wait_for_shutdown_signal());
+    let mut os_shutdown = Box::pin(wait_for_shutdown_signal().fuse());
 
-    let mut events = EventStream::new();
+    let mut events = Some(TerminalInput::new());
     let mut event_loop_interval = event_loop_interval();
     let mut service_status_check_started = false;
 
@@ -169,7 +169,7 @@ async fn run_tui_loop(
 
         // Phase 1: wait for at least one event or the next frame tick
         tokio::select! {
-            Some(Ok(event)) = events.next() => {
+            Some(Ok(event)) = next_terminal_event(&mut events) => {
                 let outcome = events::handle_terminal_event(app, event);
                 handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
             }
@@ -179,6 +179,7 @@ async fn run_tui_loop(
                     terminal_runtime,
                     event,
                     &mut service_status_check_started,
+                    &mut events,
                 );
             }
             shutdown = &mut os_shutdown => {
@@ -200,7 +201,7 @@ async fn run_tui_loop(
         for _ in 0..READY_EVENT_DRAIN_ROUNDS {
             let mut handled_ready_event = false;
 
-            if let Some(Some(terminal_event)) = events.next().now_or_never() {
+            if let Some(Some(terminal_event)) = next_terminal_event(&mut events).now_or_never() {
                 handled_ready_event = true;
                 if let Ok(event) = terminal_event {
                     let outcome = events::handle_terminal_event(app, event);
@@ -219,6 +220,7 @@ async fn run_tui_loop(
                     terminal_runtime,
                     event,
                     &mut service_status_check_started,
+                    &mut events,
                 );
             }
 
@@ -267,6 +269,13 @@ async fn run_tui_loop(
             finalize_deferred_submit(app);
         }
 
+        if matches!(app.terminal_lifecycle, TerminalLifecycleState::ReleasedToChild(_)) {
+            // The child owns input and output, including window titles. Size
+            // is reconciled after return without polling the child's stdin.
+            app.surface_dirty.clear_for_child_release();
+            continue;
+        }
+
         if app.shutdown_requested() {
             prepare_app_shutdown(app);
         }
@@ -297,11 +306,7 @@ async fn run_tui_loop(
         let (width, height) =
             crossterm::terminal::size().context("failed to read terminal size before draw")?;
         events::reconcile_terminal_size(app, width, height);
-        if matches!(app.terminal_lifecycle, TerminalLifecycleState::ReleasedToChild(_)) {
-            app.surface_dirty.clear_for_child_release();
-        } else {
-            terminal_runtime.apply_surface_rebuilds(app)?;
-        }
+        terminal_runtime.apply_surface_rebuilds(app)?;
         if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             if let Some(ref mut perf) = app.perf {
                 perf.next_frame();
@@ -320,7 +325,11 @@ async fn run_tui_loop(
         }
 
         if app.shutdown_requested() {
-            shutdown_connection_with_interrupts(app, &mut events).await;
+            if let Some(events) = events.as_mut() {
+                shutdown_connection_with_interrupts(app, events).await;
+            } else {
+                connect::shutdown_connection(app).await;
+            }
             break;
         }
     }
@@ -339,6 +348,15 @@ fn handle_runtime_command(
     }
 }
 
+async fn next_terminal_event(
+    events: &mut Option<TerminalInput>,
+) -> Option<std::io::Result<crossterm::event::Event>> {
+    match events.as_mut() {
+        Some(events) => events.next().await,
+        None => std::future::pending().await,
+    }
+}
+
 fn suspend_tui_process(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
@@ -353,7 +371,7 @@ fn suspend_tui_process(
         suspend_current_process();
         Ok(())
     };
-    let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap_after_event_stream(app)
+    let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap_with_input_reader(app)
         .context("failed to restore terminal after process resume")?;
     *terminal_runtime = resumed_runtime;
     tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
@@ -389,6 +407,7 @@ fn handle_runtime_client_event(
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
     event: ClientEvent,
     service_status_check_started: &mut bool,
+    terminal_events: &mut Option<TerminalInput>,
 ) {
     let start_service_status_check =
         matches!(event, ClientEvent::Connected { .. }) && !*service_status_check_started;
@@ -396,6 +415,16 @@ fn handle_runtime_client_event(
         event,
         ClientEvent::TerminalReleasedToChild { .. } | ClientEvent::TerminalReturnedFromChild { .. }
     );
+    match &event {
+        ClientEvent::TerminalReleasedToChild { .. } => {
+            // Drop joins the reader before the release acknowledgement.
+            drop(terminal_events.take());
+        }
+        ClientEvent::TerminalReturnedFromChild { .. } => {
+            *terminal_events = Some(TerminalInput::new());
+        }
+        _ => {}
+    }
     events::handle_client_event(app, event);
     if invalidates_cached_chat_seed {
         terminal_runtime.invalidate_cached_chat_seed("external_terminal_owner");
@@ -462,7 +491,7 @@ fn restore_terminal_after_shutdown(
     terminal_runtime.restore(app);
 }
 
-async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut EventStream) {
+async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut TerminalInput) {
     let Some(mut shutdown) = connect::begin_shutdown_connection(app) else {
         return;
     };

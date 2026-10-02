@@ -5,6 +5,7 @@ mod chat_session;
 mod chat_terminal;
 mod fullscreen_session;
 mod history_insert;
+mod input;
 mod modes;
 mod panic_hook;
 mod release_guard;
@@ -13,6 +14,7 @@ mod tracked_cursor_backend;
 
 use self::chat_session::{ChatTerminalSeed, ChatTerminalSeedProvenance, ChatTerminalSession};
 use self::fullscreen_session::FullscreenTerminalSession;
+pub(super) use self::input::TerminalInput;
 use self::modes::{
     apply_actions, chat_startup_actions, enter_fullscreen_actions, exit_fullscreen_actions,
     shutdown_restore_actions,
@@ -50,14 +52,14 @@ pub(crate) struct TerminalRuntime {
 
 #[derive(Debug, Clone, Copy)]
 enum BootstrapSeedMode {
-    MeasureBeforeEventStream,
+    MeasureBeforeInputReader,
     ConservativeAfterResume,
 }
 
 impl BootstrapSeedMode {
     fn chat_seed(self) -> anyhow::Result<ChatTerminalSeed> {
         match self {
-            Self::MeasureBeforeEventStream => ChatTerminalSeed::read_before_event_stream(),
+            Self::MeasureBeforeInputReader => ChatTerminalSeed::read_before_input_reader(),
             Self::ConservativeAfterResume => ChatTerminalSeed::conservative_current(
                 ChatTerminalSeedProvenance::ConservativeAfterResume,
             ),
@@ -66,7 +68,7 @@ impl BootstrapSeedMode {
 
     fn chat_session(self) -> anyhow::Result<ChatTerminalSession> {
         match self {
-            Self::MeasureBeforeEventStream => ChatTerminalSession::new_before_event_stream(),
+            Self::MeasureBeforeInputReader => ChatTerminalSession::new_before_input_reader(),
             Self::ConservativeAfterResume => {
                 Ok(ChatTerminalSession::new_with_seed(self.chat_seed()?))
             }
@@ -76,10 +78,10 @@ impl BootstrapSeedMode {
 
 impl TerminalRuntime {
     pub(crate) fn bootstrap(app: &mut App) -> anyhow::Result<Self> {
-        Self::bootstrap_inner(app, BootstrapSeedMode::MeasureBeforeEventStream)
+        Self::bootstrap_inner(app, BootstrapSeedMode::MeasureBeforeInputReader)
     }
 
-    pub(crate) fn bootstrap_after_event_stream(app: &mut App) -> anyhow::Result<Self> {
+    pub(crate) fn bootstrap_with_input_reader(app: &mut App) -> anyhow::Result<Self> {
         Self::bootstrap_inner(app, BootstrapSeedMode::ConservativeAfterResume)
     }
 

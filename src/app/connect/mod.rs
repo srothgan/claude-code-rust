@@ -156,6 +156,7 @@ pub fn create_app(cli: &Cli) -> App {
     let mut app = App {
         surface_mode: SurfaceMode::Chat,
         terminal_lifecycle: TerminalLifecycleState::Bootstrapping,
+        terminal_child_cancel: None,
         surface_dirty: SurfaceDirtyState::initial_chat(),
         config: ConfigState::default(),
         global_settings: loaded_settings.settings,

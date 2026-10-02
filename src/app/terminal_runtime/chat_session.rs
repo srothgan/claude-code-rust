@@ -38,24 +38,24 @@ pub(super) struct ChatTerminalSeed {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChatTerminalSeedProvenance {
-    PreEventStreamMeasured,
+    BeforeInputReaderMeasured,
     CachedBeforeFullscreen,
     ConservativeAfterResume,
     ConservativeAfterFullscreen,
 }
 
 impl ChatTerminalSeed {
-    pub(super) fn read_before_event_stream() -> anyhow::Result<Self> {
+    pub(super) fn read_before_input_reader() -> anyhow::Result<Self> {
         let (terminal_width, terminal_height) =
             crossterm::terminal::size().context("failed to read chat terminal size")?;
-        let (cursor_x, cursor_y) = read_cursor_position_before_event_stream()
+        let (cursor_x, cursor_y) = read_cursor_position_before_input_reader()
             .context("failed to read chat terminal cursor")?;
         Ok(Self {
             terminal_width,
             terminal_height,
             cursor_x,
             cursor_y,
-            provenance: ChatTerminalSeedProvenance::PreEventStreamMeasured,
+            provenance: ChatTerminalSeedProvenance::BeforeInputReaderMeasured,
         })
     }
 
@@ -90,8 +90,8 @@ impl ChatTerminalSeed {
 }
 
 impl ChatTerminalSession {
-    pub(super) fn new_before_event_stream() -> anyhow::Result<Self> {
-        Ok(Self::new_with_seed(ChatTerminalSeed::read_before_event_stream()?))
+    pub(super) fn new_before_input_reader() -> anyhow::Result<Self> {
+        Ok(Self::new_with_seed(ChatTerminalSeed::read_before_input_reader()?))
     }
 
     pub(super) fn new_with_seed(seed: ChatTerminalSeed) -> Self {
@@ -537,10 +537,9 @@ impl ChatTerminalSession {
     }
 }
 
-fn read_cursor_position_before_event_stream() -> anyhow::Result<(u16, u16)> {
-    crossterm::cursor::position().context(
-        "cursor position may only be read before crossterm EventStream owns terminal input",
-    )
+fn read_cursor_position_before_input_reader() -> anyhow::Result<(u16, u16)> {
+    crossterm::cursor::position()
+        .context("cursor position may only be read before the terminal reader owns terminal input")
 }
 
 fn mark_chat_terminal_history_out_of_sync(app: &mut App) {
