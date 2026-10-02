@@ -17,7 +17,7 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Prerequisite
 
-- The Claude Code CLI must be installed as fallback for some SDK-unsupported features.
+- Install the Claude Code CLI and keep `claude` on `PATH` for `/login`, `/logout`, plugin management, removing persisted MCP servers, and the optional `/usage` CLI source or fallback. Core sessions run through the bundled Agent SDK. See the [dependency and feature overview](https://srothgan.github.io/claude-code-rust/about.html#claude-cli-dependencies) for details.
 
 ## Install
 
@@ -89,6 +89,8 @@ For the design history, including the move from fullscreen to inline rendering i
 ## Status
 
 This project is pre-1.0 and under active development. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get involved.
+
+Development follows new Agent SDK releases and problems found in daily use. The weekly Dependency Monitor tracks SDK updates. There is no fixed feature roadmap or date for 1.0.
 
 ## Limitations
 

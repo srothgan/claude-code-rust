@@ -2,7 +2,7 @@
 
 ## User Prerequisite
 
-The Claude Code CLI must be installed as fallback for some SDK-unsupported features. See [anthropics/claude-code](https://github.com/anthropics/claude-code) for how to install it.
+Install the Claude Code CLI and keep `claude` on `PATH` for the account and management operations listed in [Claude CLI dependencies](about.md#claude-cli-dependencies). Core sessions use the bundled Agent SDK; the CLI is also an optional usage-data source or fallback. See [anthropics/claude-code](https://github.com/anthropics/claude-code) for how to install it.
 
 The recommended script install includes the application and its runtime dependencies. It does not require a Rust toolchain, Node.js, npm, or a separate Bun installation.
 
