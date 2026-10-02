@@ -114,6 +114,26 @@ jobs:
       - name: Check lockfile
         run: cargo fetch --locked
 
+  terminal-tests:
+    name: Terminal tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Check fixture syntax
+        run: node --check tests/fixtures/fake-bridge.js
+      - name: Run real PTY regressions
+        run: cargo test --locked --all-features --test terminal_resize -- --test-threads=1
+
   cargo-deny-policy:
     name: Cargo Deny Policy
     runs-on: ubuntu-latest
@@ -310,6 +330,7 @@ jobs:
       - rustfmt
       - clippy
       - test-ubuntu
+      - terminal-tests
       - lockfile
       - cargo-deny-policy
       - cargo-deny-advisories
@@ -325,6 +346,7 @@ jobs:
           RUSTFMT: ${{ needs.rustfmt.result }}
           CLIPPY: ${{ needs.clippy.result }}
           TEST_UBUNTU: ${{ needs.test-ubuntu.result }}
+          TERMINAL_TESTS: ${{ needs.terminal-tests.result }}
           LOCKFILE: ${{ needs.lockfile.result }}
           CARGO_DENY_POLICY: ${{ needs.cargo-deny-policy.result }}
           CARGO_DENY_ADVISORIES: ${{ needs.cargo-deny-advisories.result }}
@@ -357,6 +379,7 @@ jobs:
           require_success "rustfmt" "$RUSTFMT"
           require_success "clippy" "$CLIPPY"
           require_success "test-ubuntu" "$TEST_UBUNTU"
+          require_success "terminal-tests" "$TERMINAL_TESTS"
           require_success "lockfile" "$LOCKFILE"
           require_success "cargo-deny-policy" "$CARGO_DENY_POLICY"
           require_success "duplicate-code" "$DUPLICATE_CODE"

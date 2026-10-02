@@ -2,14 +2,35 @@
 // then streams a long first reply and short follow-up replies. No model or
 // network is involved.
 const readline = require('node:readline');
+const fs = require('node:fs');
 
 const SESSION = 'fake-session';
 const LINES = Number(process.env.FAKE_BRIDGE_LINES ?? 1500);
 const FOLLOW_UP_LINES = Number(process.env.FAKE_BRIDGE_FOLLOW_UP_LINES ?? 3);
 const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
+// Only the first turn is gated. Tests release it after exercising the composer
+// or a fullscreen surface, rather than racing a fixed reply duration.
+const SCENARIO = process.env.FAKE_BRIDGE_SCENARIO ?? 'stream';
+const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
+const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
+let active = null;
+const pending = [];
 
-const send = event => process.stdout.write(`${JSON.stringify(event)}\n`);
+const record = entry => {
+  if (JOURNAL) fs.appendFileSync(JOURNAL, `${JSON.stringify(entry)}\n`);
+};
+const send = event => {
+  record({ type: 'event', ...event });
+  process.stdout.write(`${JSON.stringify(event)}\n`);
+};
+
+function finish(event) {
+  clearInterval(active.timer);
+  active = null;
+  send(event);
+  if (pending.length) streamReply(pending.shift());
+}
 
 const model = {
   requested_id: null,
@@ -38,8 +59,16 @@ function streamReply(messageUuid) {
   });
   // Follow-up replies stay short so their start marker remains on screen.
   const lines = replyNumber === 1 ? LINES : FOLLOW_UP_LINES;
+  const gated = replyNumber === 1 && SCENARIO !== 'stream';
   let line = 0;
   const timer = setInterval(() => {
+    if (gated && line >= lines) {
+      if (!fs.existsSync(RELEASE_FILE)) return;
+      finish(SCENARIO === 'hold-error'
+        ? { event: 'turn_error', session_id: SESSION, message: 'Fixture service unavailable', error_kind: 'transient_service' }
+        : { event: 'turn_complete', session_id: SESSION });
+      return;
+    }
     line++;
     send({
       event: 'session_update',
@@ -51,10 +80,11 @@ function streamReply(messageUuid) {
       },
     });
     if (line >= lines) {
-      clearInterval(timer);
-      send({ event: 'turn_complete', session_id: SESSION });
+      if (gated) record({ type: 'barrier', name: 'reply-held' });
+      else finish({ event: 'turn_complete', session_id: SESSION });
     }
   }, INTERVAL_MS);
+  active = { timer };
 }
 
 readline
@@ -66,6 +96,7 @@ readline
     } catch {
       return;
     }
+    record({ type: 'command', ...message });
     switch (message.command) {
       case 'initialize':
         send({
@@ -97,7 +128,10 @@ readline
         });
         break;
       case 'prompt':
-        streamReply(message.message_uuid);
+        if (active) {
+          pending.push(message.message_uuid);
+          send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
+        } else streamReply(message.message_uuid);
         break;
       case 'shutdown':
         process.exit(0);

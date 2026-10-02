@@ -66,7 +66,6 @@ pub(super) fn submit_input(app: &mut App) {
         }
     }
 
-    app.input.clear();
     dispatch_submission(app, submission, inline_pastes);
 }
 
@@ -105,16 +104,13 @@ fn dispatch_submission(
     inline_pastes: Vec<String>,
 ) {
     if slash::try_handle_submission(app, &submission) {
+        app.input.clear();
         return;
     }
-    dispatch_prompt_turn(app, submission.into_text(), inline_pastes);
+    dispatch_prompt_turn(app, &submission.into_text(), inline_pastes);
 }
 
-fn dispatch_prompt_turn(app: &mut App, text: String, inline_pastes: Vec<String>) {
-    // New turn started by user input: force-stop stale tool calls from older turns
-    // so their spinners don't continue during this turn.
-    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
-
+fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {
     let Some(conn) = app.session_runtime.conn.clone() else { return };
     let Some(sid) = app.session_runtime.session_id.clone() else {
         return;
@@ -123,10 +119,26 @@ fn dispatch_prompt_turn(app: &mut App, text: String, inline_pastes: Vec<String>)
     let session_id = sid.to_string();
     let message_uuid = uuid::Uuid::new_v4().to_string();
 
-    // Take pending images for this turn.
-    let images = std::mem::take(&mut app.pending_images);
+    // Queue admission is the commit point: retain the complete composer until
+    // the bridge accepts it, and do not create a transcript turn on failure.
+    let resp = match conn.prompt_with_images_and_pastes(
+        session_id.clone(),
+        message_uuid.clone(),
+        text.to_owned(),
+        app.pending_images.clone(),
+        inline_pastes,
+    ) {
+        Ok(resp) => resp,
+        Err(error) => {
+            crate::app::events::handle_local_prompt_dispatch_error(app, &error.to_string());
+            return;
+        }
+    };
+    app.input.clear();
+    app.pending_images.clear();
+    let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(&text))];
+    let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
 
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
     // Create empty assistant message immediately -- message.rs shows thinking indicator
@@ -135,33 +147,18 @@ fn dispatch_prompt_turn(app: &mut App, text: String, inline_pastes: Vec<String>)
     app.enforce_history_retention_tracked();
     app.status = AppStatus::Thinking;
 
-    // The text already contains [Image #N] badges from the textarea,
-    // so the model can correlate user references with image attachments.
-    match conn.prompt_with_images_and_pastes(
-        sid.to_string(),
-        message_uuid.clone(),
-        text,
-        images,
-        inline_pastes,
-    ) {
-        Ok(resp) => {
-            app.session_runtime.prompt_suggestion = None;
-            crate::app::session_runtime::request_context_usage_refresh(app);
-            tracing::info!(
-                target: crate::logging::targets::APP_INPUT,
-                event_name = "prompt_dispatched",
-                message = "prompt dispatched to the bridge",
-                outcome = "success",
-                session_id = %session_id,
-                message_uuid = %message_uuid,
-                input_chars,
-                stop_reason = ?resp.stop_reason,
-            );
-        }
-        Err(e) => {
-            crate::app::events::handle_local_prompt_dispatch_error(app, &e.to_string());
-        }
-    }
+    app.session_runtime.prompt_suggestion = None;
+    crate::app::session_runtime::request_context_usage_refresh(app);
+    tracing::info!(
+        target: crate::logging::targets::APP_INPUT,
+        event_name = "prompt_dispatched",
+        message = "prompt dispatched to the bridge",
+        outcome = "success",
+        session_id = %session_id,
+        message_uuid = %message_uuid,
+        input_chars,
+        stop_reason = ?resp.stop_reason,
+    );
 }
 
 fn dispatch_active_turn_prompt(app: &mut App, text: String, inline_pastes: Vec<String>) {
@@ -1018,6 +1015,35 @@ mod tests {
     }
 
     #[test]
+    fn idle_prompt_send_failure_preserves_exact_draft_and_attachments() {
+        let (mut app, rx) = app_with_connection();
+        drop(rx);
+        app.status = AppStatus::Ready;
+        app.input.set_text("retry [Image #1]\n");
+        app.input.insert_paste_block(&"Unicode 界 🦀\n".repeat(120));
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: "aGVsbG8=".to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+        let before = app.input.snapshot();
+        let images_before = app.pending_images.clone();
+
+        submit_input(&mut app);
+
+        assert_eq!(app.input.snapshot(), before);
+        assert_eq!(app.pending_images, images_before);
+        assert!(app.pending_user_messages.is_empty());
+        assert!(matches!(app.status, AppStatus::Error));
+        assert!(
+            app.transcript
+                .messages
+                .iter()
+                .all(|message| matches!(message.role, MessageRole::System(_)))
+        );
+        assert!(app.active_turn_assistant_idx().is_none());
+    }
+
+    #[test]
     fn active_turn_prompt_send_failure_preserves_exact_draft_and_images() {
         let (mut app, rx) = app_with_connection();
         drop(rx);
@@ -1455,7 +1481,7 @@ mod tests {
         app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         app.status = AppStatus::Ready;
 
-        dispatch_prompt_turn(&mut app, "hello".into(), Vec::new());
+        dispatch_prompt_turn(&mut app, "hello", Vec::new());
 
         assert!(app.transcript.messages.is_empty());
         assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("previous suggestion"));

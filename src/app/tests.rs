@@ -128,6 +128,38 @@ fn pending_paste_exact_1000_chars_stays_inline() {
 }
 
 #[test]
+fn timer_flushed_typing_repaints_and_submits_the_complete_draft() {
+    let mut app = App::test_default();
+    let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+    app.session_runtime.activate_session(model::SessionId::new("session-1"));
+    app.status = AppStatus::Ready;
+    let started = Instant::now();
+    assert_eq!(app.paste.burst.on_char('g', started), paste_burst::CharAction::Passthrough('g'));
+    app.input.set_text("g");
+    assert_eq!(
+        app.paste.burst.on_char('o', started + Duration::from_millis(1)),
+        paste_burst::CharAction::Consumed
+    );
+    app.surface_dirty.chat.repaint = false;
+    let action =
+        app.paste.burst.tick(started + Duration::from_millis(500)).expect("held character flush");
+
+    apply_paste_burst_flush(&mut app, action);
+
+    assert_eq!(app.input.text(), "go");
+    assert!(app.surface_dirty.chat.repaint);
+    input_submit::submit_input(&mut app);
+    let BridgeCommand::Prompt { chunks, .. } =
+        commands.try_recv().expect("prompt admitted").command
+    else {
+        panic!("expected prompt");
+    };
+    assert_eq!(chunks[0].value.as_str(), Some("go"));
+    assert!(app.input.is_empty());
+}
+
+#[test]
 fn pending_paste_finalization_marks_redraw() {
     let mut app = App::test_default();
     app.surface_dirty.chat.repaint = false;

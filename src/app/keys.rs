@@ -716,8 +716,11 @@ fn try_delete_input_atom(app: &mut App, direction: AtomicDeleteDirection) -> boo
 
 fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     let (KeyCode::Char(c), m) = (key.code, key.modifiers) else {
-        // Non-char key: reset burst state to prevent leakage.
-        app.paste.burst.on_non_char_key(Instant::now());
+        // A non-character key ends the burst but must not consume its text.
+        if let Some(action) = app.paste.burst.on_non_char_key(Instant::now()) {
+            super::apply_paste_burst_flush(app, action);
+            return true;
+        }
         return false;
     };
     if !is_printable_text_modifiers(m) {

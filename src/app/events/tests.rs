@@ -3680,6 +3680,39 @@ fn clipboard_paste_shortcut_dispatches_on_release() {
 }
 
 #[test]
+#[cfg(windows)]
+fn conpty_release_only_accent_survives_input_and_prompt_dispatch() {
+    let mut app = make_test_app();
+    let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(Rc::new(connection));
+    app.status = AppStatus::Ready;
+    for (ch, kind) in [
+        ('e', KeyEventKind::Press),
+        ('e', KeyEventKind::Release),
+        ('\u{301}', KeyEventKind::Release),
+    ] {
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new_with_kind(KeyCode::Char(ch), KeyModifiers::NONE, kind)),
+        );
+    }
+    if let Some(action) = app.paste.burst.tick(Instant::now() + Duration::from_millis(500)) {
+        crate::app::apply_paste_burst_flush(&mut app, action);
+    }
+    assert_eq!(app.input.text(), "e\u{301}");
+
+    crate::app::input_submit::submit_input(&mut app);
+
+    let crate::agent::wire::BridgeCommand::Prompt { chunks, .. } =
+        commands.try_recv().expect("prompt admitted").command
+    else {
+        panic!("expected prompt");
+    };
+    assert_eq!(chunks[0].value.as_str(), Some("e\u{301}"));
+    assert!(app.input.is_empty());
+}
+
+#[test]
 fn non_paste_shortcut_release_is_ignored() {
     let key = crossterm::event::KeyEvent {
         code: KeyCode::Char('q'),

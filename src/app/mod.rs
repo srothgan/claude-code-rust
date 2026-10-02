@@ -239,15 +239,7 @@ async fn run_tui_loop(
             && app.surface_mode == SurfaceMode::Chat
             && let Some(action) = app.paste.burst.tick(now)
         {
-            match action {
-                paste_burst::FlushAction::EmitChar(ch) => {
-                    let _ = app.input.textarea_insert_char(ch);
-                    slash::sync_with_cursor(app);
-                }
-                paste_burst::FlushAction::EmitPaste(text) => {
-                    app.queue_paste_text(&text);
-                }
-            }
+            apply_paste_burst_flush(app, action);
         }
 
         // Merge and process `Event::Paste` chunks as one paste action.
@@ -560,6 +552,19 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     {
         tokio::signal::ctrl_c().await
     }
+}
+
+/// Apply buffered input and request its paint through the same owner for timer
+/// expiry and non-character key boundaries.
+fn apply_paste_burst_flush(app: &mut App, action: paste_burst::FlushAction) {
+    match action {
+        paste_burst::FlushAction::EmitChar(ch) => {
+            let _ = app.input.textarea_insert_char(ch);
+            slash::sync_with_cursor(app);
+        }
+        paste_burst::FlushAction::EmitPaste(text) => app.queue_paste_text(&text),
+    }
+    app.request_active_surface_repaint();
 }
 
 /// Finalize queued `Event::Paste` chunks for this drain cycle.

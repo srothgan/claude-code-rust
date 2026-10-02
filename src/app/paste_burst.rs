@@ -313,17 +313,20 @@ impl PasteBurstDetector {
         matches!(self.state, BurstState::Buffering | BurstState::Pending { .. })
     }
 
-    /// Reset burst state on non-character key events (arrows, Esc, etc.).
-    /// Prevents state from leaking across unrelated input.
-    pub fn on_non_char_key(&mut self, now: Instant) {
-        if matches!(self.state, BurstState::Buffering) {
-            let _ = self.flush_buffer(now);
-        } else if let BurstState::Pending { .. } = &self.state {
-            // Drop the held char -- non-char input breaks any potential burst.
-            self.state = BurstState::Idle;
-        }
+    /// Finish buffered text before a non-character key breaks the burst.
+    /// The caller must apply the returned input rather than discarding it.
+    pub fn on_non_char_key(&mut self, now: Instant) -> Option<FlushAction> {
+        let action = match self.state {
+            BurstState::Buffering => Some(FlushAction::EmitPaste(self.flush_buffer(now))),
+            BurstState::Pending { held_char, .. } => {
+                self.state = BurstState::Idle;
+                Some(FlushAction::EmitChar(held_char))
+            }
+            BurstState::Idle => None,
+        };
         self.last_char_time = None;
         self.recent_passthrough.clear();
+        action
     }
 
     /// Drain the buffer and transition to Idle. If the buffer meets the
@@ -524,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn non_char_key_resets_state() {
+    fn non_char_key_returns_held_input_and_resets_state() {
         let mut d = PasteBurstDetector::new();
         let t0 = Instant::now();
 
@@ -532,10 +535,25 @@ mod tests {
         let t1 = fast(t0, 2);
         assert_eq!(d.on_char('b', t1), CharAction::Consumed);
 
-        // Non-char key resets.
         let t2 = fast(t1, 2);
-        d.on_non_char_key(t2);
+        assert_eq!(d.on_non_char_key(t2), Some(FlushAction::EmitChar('b')));
         assert!(!d.is_buffering());
+        assert_eq!(d.tick(after_idle(t2)), None);
+    }
+
+    #[test]
+    fn non_char_key_returns_a_confirmed_burst_exactly_once() {
+        let mut detector = PasteBurstDetector::new();
+        let started = Instant::now();
+        assert_eq!(detector.on_char('a', started), CharAction::Passthrough('a'));
+        assert_eq!(detector.on_char('b', fast(started, 1)), CharAction::Consumed);
+        assert_eq!(detector.on_char('c', fast(started, 2)), CharAction::RetroCapture(1));
+        assert_eq!(
+            detector.on_non_char_key(fast(started, 3)),
+            Some(FlushAction::EmitPaste("abc".to_owned()))
+        );
+        assert_eq!(detector.on_non_char_key(fast(started, 4)), None);
+        assert_eq!(detector.tick(after_idle(started)), None);
     }
 
     #[test]

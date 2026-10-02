@@ -135,8 +135,16 @@ pub fn reconcile_terminal_size(app: &mut App, width: u16, height: u16) {
 }
 
 fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
+    // ConPTY delivers zero-width text (for example a combining accent) as a
+    // release-only console event. Dropping it changes the user's input payload.
+    let zero_width_text_release = cfg!(windows)
+        && key.kind == KeyEventKind::Release
+        && super::keys::is_printable_text_modifiers(key.modifiers)
+        && matches!(key.code, crossterm::event::KeyCode::Char(ch)
+            if !ch.is_control() && unicode_width::UnicodeWidthChar::width(ch) == Some(0));
     key.kind == KeyEventKind::Press
         || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
+        || zero_width_text_release
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) -> bool {

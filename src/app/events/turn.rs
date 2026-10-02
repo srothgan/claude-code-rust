@@ -665,7 +665,8 @@ pub(super) fn handle_turn_error_event(
     );
     apply_turn_error_class_side_effects(app, error_class, &summary, api_error_status);
     app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
-    app.input.clear();
+    // The composer may already contain the next unsent message. An error in
+    // the active turn does not consume that draft or its paste/image atoms.
     app.pending_submit = None;
     app.status = AppStatus::Error;
     let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
@@ -1339,6 +1340,29 @@ mod tests {
         assert_eq!(app.transcript.messages.len(), 1);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
         assert_eq!(app.pending_user_messages.len(), 1);
+    }
+
+    #[test]
+    fn turn_error_preserves_the_next_draft_and_attachments() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Running;
+        app.transcript.messages.push(user_message("first prompt"));
+        app.transcript.messages.push(empty_assistant_message());
+        app.bind_active_turn_assistant_to_tail();
+        app.input.set_text("next [Image #1]\n");
+        app.input.insert_paste_block(&"draft 界 🦀\n".repeat(120));
+        app.pending_images.push(image("draft"));
+        let before = app.input.snapshot();
+        let images_before = app.pending_images.clone();
+
+        handle_turn_error_event(&mut app, "service unavailable", None, None, None, None);
+
+        assert_eq!(app.input.snapshot(), before);
+        assert_eq!(app.pending_images, images_before);
+        assert_eq!(app.status, AppStatus::Error);
+        assert!(app.active_turn_assistant_idx().is_none());
+        assert_eq!(app.transcript.messages.len(), 2);
+        assert!(matches!(app.transcript.messages[1].role, MessageRole::System(_)));
     }
 
     #[test]

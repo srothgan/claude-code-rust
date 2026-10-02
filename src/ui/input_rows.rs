@@ -171,7 +171,11 @@ fn fit_status_text(text: &str, max_width: usize) -> String {
     result
 }
 
-pub(crate) fn blocked_input_lines(app: &App, reason: ComposerBlockReason) -> Vec<Line<'static>> {
+pub(crate) fn blocked_input_lines(
+    app: &App,
+    reason: ComposerBlockReason,
+    width: u16,
+) -> Vec<Line<'static>> {
     match reason {
         ComposerBlockReason::CommandPending => {
             let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
@@ -182,16 +186,26 @@ pub(crate) fn blocked_input_lines(app: &App, reason: ComposerBlockReason) -> Vec
                 Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
             ])]
         }
-        ComposerBlockReason::Error => vec![
-            Line::from(Span::styled(
-                "Input disabled due to error",
-                Style::default().fg(theme::STATUS_ERROR),
-            )),
-            Line::from(Span::styled(
-                "Press Ctrl+Q to quit and try again.",
-                Style::default().fg(theme::DIM),
-            )),
-        ],
+        ComposerBlockReason::Error => {
+            let mut rows = vec![
+                Line::from(Span::styled(
+                    "Input disabled due to error",
+                    Style::default().fg(theme::STATUS_ERROR),
+                )),
+                Line::from(Span::styled(
+                    "Press Ctrl+Q to quit and try again.",
+                    Style::default().fg(theme::DIM),
+                )),
+            ];
+            if !app.input.is_empty() {
+                rows.push(Line::from(Span::styled(
+                    "Unsent draft:",
+                    Style::default().fg(theme::DIM),
+                )));
+                rows.extend(app.input.lines().iter().cloned().map(Line::from));
+            }
+            crate::ui::wrap::wrap_lines_to_physical_rows(&rows, width)
+        }
         ComposerBlockReason::Shutdown => vec![Line::from(Span::styled(
             "Shutting down... Press Ctrl+C again to force exit.",
             Style::default().fg(theme::DIM),
@@ -397,7 +411,7 @@ mod tests {
         app.status = AppStatus::CommandPending;
         app.turn.pending_command_label = Some("Switching model...".to_owned());
 
-        let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80);
 
         assert_eq!(rows.len(), 1);
         assert!(line_text(&rows[0]).contains("Switching model..."));
@@ -408,7 +422,7 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Error;
 
-        let rows = blocked_input_lines(&app, ComposerBlockReason::Error);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::Error, 80);
 
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Input disabled due to error"));
@@ -421,7 +435,7 @@ mod tests {
         app.status = AppStatus::Running;
         app.request_shutdown();
 
-        let rows = blocked_input_lines(&app, ComposerBlockReason::Shutdown);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::Shutdown, 80);
 
         assert_eq!(rows.len(), 1);
         assert_eq!(line_text(&rows[0]), "Shutting down... Press Ctrl+C again to force exit.");
