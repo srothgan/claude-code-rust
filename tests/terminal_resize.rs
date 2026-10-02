@@ -678,8 +678,11 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
     let mut test = TerminalTest::start("stream", 1500);
     test.submit("hello\n\nhow are you", "how are you");
     test.wait_screen("streamed line 5");
+    // Terminal padding can leave spaces on visually blank rows.
+    let screen = test.screen();
+    let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
     assert!(
-        test.screen().contains("hello\n\nhow are you"),
+        rows.windows(3).any(|rows| rows == ["hello", "", "how are you"]),
         "submitted paragraph gap disappeared:\n{}",
         test.diagnostics()
     );
