@@ -57,15 +57,6 @@ fn run() -> anyhow::Result<i32> {
     }
 
     let _logging = claude_code_rust::logging::LoggingRuntime::init(&cli)?;
-    let perf_path = claude_code_rust::logging::resolve_perf_path(&cli)?;
-
-    #[cfg(not(feature = "perf"))]
-    if perf_path.is_some() {
-        return Err(anyhow::anyhow!(
-            "perf telemetry requires a binary built with `--features perf`"
-        ));
-    }
-
     {
         let startup_bootstrap_span = info_span!(
             target: claude_code_rust::logging::targets::APP_LIFECYCLE,
@@ -74,7 +65,6 @@ fn run() -> anyhow::Result<i32> {
                 cli.command,
                 Some(claude_code_rust::Command::Resume { .. })
             ),
-            perf_telemetry_requested = perf_path.is_some(),
             explicit_bridge_script = cli.bridge_script.is_some(),
         );
         let _entered = startup_bootstrap_span.enter();

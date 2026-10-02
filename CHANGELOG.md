@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Removed
+
+- **Perf telemetry**: Remove the obsolete `perf` Cargo feature, `--enable-perf`, `--perf-log`, and `--perf-append` flags, and high-frequency telemetry sidecars. Runtime diagnostics remain available through the existing logging flags and presets. Doctor reports and debug bundles no longer advertise perf paths; the debug-bundle manifest schema is now `claude-rs-debug-bundle/v2`.
+
 ## [0.14.9] - 2026-10-01 [Changes][v0.14.9]
 
 ### Features

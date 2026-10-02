@@ -157,9 +157,7 @@ impl ToolCallInfo {
 
     /// Invalidate cached rendered lines for this tool call.
     pub fn invalidate_render_cache(&mut self) {
-        crate::perf::mark("tc_invalidations_requested");
         self.cache.invalidate();
-        crate::perf::mark("tc_invalidations_applied");
     }
 
     pub fn set_raw_input(&mut self, raw_input: Option<serde_json::Value>) -> bool {

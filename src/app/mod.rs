@@ -308,20 +308,7 @@ async fn run_tui_loop(
         events::reconcile_terminal_size(app, width, height);
         terminal_runtime.apply_surface_rebuilds(app)?;
         if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
-            if let Some(ref mut perf) = app.perf {
-                perf.next_frame();
-            }
-            if app.perf.is_some() {
-                app.mark_frame_presented(Instant::now());
-            }
-            #[allow(clippy::drop_non_drop)]
-            {
-                let timer = app.perf.as_ref().map(|p| p.start("frame_total"));
-                let draw_timer = app.perf.as_ref().map(|p| p.start("frame::terminal_draw"));
-                terminal_runtime.draw_active_surface(app)?;
-                drop(draw_timer);
-                drop(timer);
-            }
+            terminal_runtime.draw_active_surface(app)?;
         }
 
         if app.shutdown_requested() {

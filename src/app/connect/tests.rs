@@ -34,9 +34,6 @@ fn create_app_defers_file_index_and_routes_untrusted_cwd_to_trust_surface() {
         log_file: None,
         log_filter: None,
         log_append: false,
-        enable_perf: false,
-        perf_log: None,
-        perf_append: false,
     };
 
     let app = super::create_app(&cli);

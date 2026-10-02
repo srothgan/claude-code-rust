@@ -16,7 +16,7 @@ use zip::CompressionMethod;
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-const BUNDLE_SCHEMA: &str = "claude-rs-debug-bundle/v1";
+const BUNDLE_SCHEMA: &str = "claude-rs-debug-bundle/v2";
 const BUNDLE_RUNTIME_LOG_LIMIT: usize = 5;
 
 pub fn run(
@@ -68,7 +68,6 @@ fn write_summary(
     writeln!(stdout, "{}", style.heading("Locations"))?;
     write_path_row(stdout, style, "Runtime logs", &paths.runtime_dir)?;
     write_path_row(stdout, style, "Legacy log", &paths.legacy_log_path)?;
-    write_path_row(stdout, style, "Perf telemetry", &paths.perf_dir)?;
     writeln!(stdout)?;
 
     writeln!(stdout, "{}", style.heading("Latest"))?;
@@ -287,7 +286,6 @@ struct BundleManifest {
     diagnostics_root: String,
     runtime_log_dir: String,
     legacy_log_path: String,
-    perf_log_dir: String,
     included_files: Vec<String>,
     skipped: Vec<&'static str>,
     redaction: &'static str,
@@ -388,7 +386,6 @@ fn write_bundle_zip(
         diagnostics_root: paths.root_dir.display().to_string(),
         runtime_log_dir: paths.runtime_dir.display().to_string(),
         legacy_log_path: paths.legacy_log_path.display().to_string(),
-        perf_log_dir: paths.perf_dir.display().to_string(),
         included_files,
         skipped: vec![
             "full config files",
@@ -413,7 +410,6 @@ fn write_bundle_zip(
             "diagnostics_root": paths.root_dir.display().to_string(),
             "runtime_log_dir": paths.runtime_dir.display().to_string(),
             "legacy_log_path": paths.legacy_log_path.display().to_string(),
-            "perf_log_dir": paths.perf_dir.display().to_string(),
             "config_files": "excluded",
         }),
     )?;
@@ -588,16 +584,13 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("logs");
         let runtime_dir = root.join("runtime");
-        let perf_dir = root.join("perf");
         fs::create_dir_all(&runtime_dir).expect("runtime dir");
-        fs::create_dir_all(&perf_dir).expect("perf dir");
         fs::write(runtime_dir.join("claude-rs-20260614T075924Z-p1-rabc.log"), "runtime")
             .expect("runtime log");
         let paths = crate::logging::DiagnosticsPaths {
             root_dir: root.clone(),
             runtime_dir,
             legacy_log_path: root.join("claude-rs.log"),
-            perf_dir,
         };
         let mut stdout = Vec::new();
 
@@ -610,6 +603,7 @@ mod tests {
         assert!(output.contains("Locations"));
         assert!(output.contains("[DIR]"));
         assert!(output.contains("[MISS] Legacy log"));
+        assert!(!output.contains("Perf telemetry"));
         assert!(output.contains("Latest"));
         assert!(output.contains("[FOUND] Latest log"));
         assert!(output.contains("Commands"));
@@ -698,7 +692,6 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("logs");
         let runtime_dir = root.join("runtime");
-        let perf_dir = root.join("perf");
         fs::create_dir_all(&runtime_dir).expect("runtime dir");
         let runtime_log = runtime_dir.join("claude-rs-20260614T075924Z-p1-rabc.log");
         fs::write(
@@ -709,12 +702,8 @@ mod tests {
         let legacy_log_path = root.join("claude-rs.log");
         fs::write(&legacy_log_path, "accessToken=secret-token").expect("write legacy log");
         let output_path = dir.path().join("bundle.zip");
-        let paths = crate::logging::DiagnosticsPaths {
-            root_dir: root,
-            runtime_dir,
-            legacy_log_path,
-            perf_dir,
-        };
+        let paths =
+            crate::logging::DiagnosticsPaths { root_dir: root, runtime_dir, legacy_log_path };
         let plan = BundlePlan {
             output_path: output_path.clone(),
             runtime_logs: vec![runtime_log],
@@ -734,6 +723,29 @@ mod tests {
         assert!(names.contains(&"paths.json".to_owned()));
         assert!(names.contains(&"logs/bridge-diagnostics.jsonl".to_owned()));
 
+        for name in ["manifest.json", "paths.json"] {
+            let json: serde_json::Value =
+                serde_json::from_reader(archive.by_name(name).expect("JSON entry"))
+                    .expect("bundle JSON");
+            assert!(json.get("perf_log_dir").is_none(), "{name} contains removed perf path");
+            assert_eq!(json["diagnostics_root"], paths.root_dir.display().to_string());
+            assert_eq!(json["runtime_log_dir"], paths.runtime_dir.display().to_string());
+            assert_eq!(json["legacy_log_path"], paths.legacy_log_path.display().to_string());
+            if name == "manifest.json" {
+                assert_eq!(json["schema"], "claude-rs-debug-bundle/v2");
+            }
+        }
+        let doctor: serde_json::Value =
+            serde_json::from_reader(archive.by_name("doctor.json").expect("doctor entry"))
+                .expect("doctor JSON");
+        assert!(
+            doctor["checks"]
+                .as_array()
+                .expect("doctor checks")
+                .iter()
+                .all(|check| check["id"] != "perf_log_dir")
+        );
+
         let mut bridge = String::new();
         archive
             .by_name("logs/bridge-diagnostics.jsonl")
@@ -749,7 +761,6 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let root = dir.path().join("logs");
         let runtime_dir = root.join("runtime");
-        let perf_dir = root.join("perf");
         fs::create_dir_all(&runtime_dir).expect("runtime dir");
         fs::create_dir_all(&root).expect("root dir");
         let crash_path = root.join(crate::failure::LAST_CRASH_FILE_NAME);
@@ -763,7 +774,6 @@ mod tests {
             root_dir: root,
             runtime_dir,
             legacy_log_path: dir.path().join("claude-rs.log"),
-            perf_dir,
         };
         let plan = BundlePlan {
             output_path: output_path.clone(),
@@ -804,9 +814,6 @@ mod tests {
             log_file: None,
             log_filter: None,
             log_append: false,
-            enable_perf: false,
-            perf_log: None,
-            perf_append: false,
         }
     }
 }

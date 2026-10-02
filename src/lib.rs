@@ -9,7 +9,6 @@ pub mod error;
 pub mod failure;
 pub mod install_method;
 pub mod logging;
-pub mod perf;
 pub mod ui;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -33,14 +32,12 @@ impl DiagnosticsPreset {
             Self::Session => {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,app.session=debug,app.permission=debug,app.command=debug"
             }
-            Self::Render => {
-                "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug,app.perf=info"
-            }
+            Self::Render => "info,app.render=trace,app.cache=debug,app.input=debug,app.paste=debug",
             Self::Bridge => {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug"
             }
             Self::Full => {
-                "info,app.render=trace,app.perf=info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,app.file_index=debug"
+                "info,app.render=trace,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,app.session=debug,app.tool=debug,app.command=debug,app.permission=debug,app.network=debug,app.update=debug,app.cache=debug,app.input=debug,app.paste=debug,app.config=debug,app.auth=debug,app.file_index=debug"
             }
         }
     }
@@ -97,19 +94,6 @@ pub struct Cli {
     /// Without `--log-file`, appends to the legacy shared default log for compatibility.
     #[arg(long)]
     pub log_append: bool,
-
-    /// Enable perf telemetry using a default sidecar path when `--perf-log` is omitted.
-    /// Requires a binary built with `--features perf`.
-    #[arg(long)]
-    pub enable_perf: bool,
-
-    /// Write high-frequency perf telemetry to a sidecar JSON file (requires `--features perf` build).
-    #[arg(long, value_name = "PATH")]
-    pub perf_log: Option<std::path::PathBuf>,
-
-    /// Append to `--perf-log` instead of truncating on startup.
-    #[arg(long)]
-    pub perf_append: bool,
 }
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
@@ -243,6 +227,30 @@ mod tests {
     #[test]
     fn cli_rejects_legacy_resume_flag() {
         assert!(Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).is_err());
+    }
+
+    #[test]
+    fn cli_rejects_removed_perf_flags() {
+        let cases: &[&[&str]] = &[
+            &["claude-rs", "--enable-perf"],
+            &["claude-rs", "--perf-log", "perf.jsonl"],
+            &["claude-rs", "--perf-append"],
+        ];
+        for args in cases {
+            let error = Cli::try_parse_from(args.iter().copied()).expect_err("removed flag");
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        }
+    }
+
+    #[test]
+    fn cli_help_omits_perf_flags_and_retains_runtime_logging() {
+        let help = Cli::command().render_long_help().to_string();
+        for flag in ["--enable-perf", "--perf-log", "--perf-append"] {
+            assert!(!help.contains(flag), "help still advertises {flag}");
+        }
+        for flag in ["--enable-logs", "--log-file", "--log-append", "--diagnostics-preset"] {
+            assert!(help.contains(flag), "runtime logging flag {flag} missing");
+        }
     }
 
     #[test]

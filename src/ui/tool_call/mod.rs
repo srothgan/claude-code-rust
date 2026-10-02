@@ -104,11 +104,8 @@ pub fn render_tool_call_cached(
     let cached_body =
         if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
     if let Some(cached_body) = cached_body {
-        crate::perf::mark_with("tc::cache_hit_body", "lines", cached_body.len());
         out.extend_from_slice(cached_body);
     } else {
-        crate::perf::mark("tc::cache_miss_body");
-        let _t = crate::perf::start("tc::render_body");
         let body = standard::render_tool_call_body(tc, width);
         if body_depends_on_width {
             tc.cache.store_for_width(body, width);

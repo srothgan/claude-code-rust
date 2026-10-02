@@ -220,8 +220,6 @@ fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &To
         if changed {
             existing.invalidate_render_cache();
             layout_dirty = true;
-        } else {
-            crate::perf::mark("tool_update_noop_skips");
         }
     }
     if layout_dirty {

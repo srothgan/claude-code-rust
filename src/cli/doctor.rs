@@ -289,7 +289,7 @@ impl DoctorSection {
             "config_settings" | "config_local_settings" | "config_preferences" | "config_paths" => {
                 Self::Configuration
             }
-            "runtime_log_dir" | "legacy_log_path" | "perf_log_dir" => Self::Logs,
+            "runtime_log_dir" | "legacy_log_path" => Self::Logs,
             "npm_root_package" | "npm_platform_package" => Self::Npm,
             "claude_credentials" => Self::Credentials,
             _ => Self::Overview,
@@ -558,12 +558,6 @@ fn log_path_checks() -> Vec<DoctorCheck> {
             "legacy_log_path",
             "Legacy log path",
             crate::logging::default_legacy_log_path(),
-            false,
-        ),
-        result_path_check(
-            "perf_log_dir",
-            "Perf log directory",
-            crate::logging::default_perf_log_dir(),
             false,
         ),
     ]

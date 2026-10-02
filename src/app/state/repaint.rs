@@ -50,27 +50,6 @@ impl App {
         }
     }
 
-    /// Mark one presented frame at `now`, updating smoothed FPS.
-    pub fn mark_frame_presented(&mut self, now: Instant) {
-        let Some(prev) = self.last_frame_at.replace(now) else {
-            return;
-        };
-        let dt = now.saturating_duration_since(prev).as_secs_f32();
-        if dt <= f32::EPSILON {
-            return;
-        }
-        let fps = (1.0 / dt).clamp(0.0, 240.0);
-        self.fps_ema = Some(match self.fps_ema {
-            Some(current) => current * 0.9 + fps * 0.1,
-            None => fps,
-        });
-    }
-
-    #[must_use]
-    pub fn frame_fps(&self) -> Option<f32> {
-        self.fps_ema
-    }
-
     pub fn invalidate_layout(&mut self, _level: LayoutInvalidation) {
         self.chat_render.clear_measurements();
         self.chat_render.invalidate_live_anchor();
