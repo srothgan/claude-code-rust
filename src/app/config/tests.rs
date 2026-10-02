@@ -2752,7 +2752,7 @@ fn save_failure_keeps_previous_value_and_surfaces_error() {
 #[tokio::test(flavor = "current_thread")]
 async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             let mut commands = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
@@ -2797,6 +2797,6 @@ async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
             assert!(app.mcp.pending_elicitation.is_none());
             let snapshot = commands.recv_envelope().await.expect("follow-up snapshot");
             assert!(matches!(snapshot.command, BridgeCommand::GetMcpSnapshot { .. }));
-        })
+        }))
         .await;
 }

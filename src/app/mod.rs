@@ -231,6 +231,7 @@ async fn run_tui_loop(
 
         if !app.shutdown_requested() {
             file_index::drain_events(app);
+            input_submit::maybe_submit_initial_prompt(app);
         }
 
         let now = Instant::now();

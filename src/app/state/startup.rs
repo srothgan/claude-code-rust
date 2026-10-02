@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+use crate::StartupLaunch;
 use std::path::PathBuf;
 
 /// Bootstrap state resolved from CLI flags and consumed while the app
@@ -15,16 +16,8 @@ pub struct StartupState {
     bridge_script: Option<PathBuf>,
     launch: StartupLaunch,
     phase: StartupPhase,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum StartupLaunch {
-    #[default]
-    NewSession,
-    ResumeSession {
-        session_id: String,
-    },
-    SessionPicker,
+    session_options: Option<crate::SessionOptions>,
+    initial_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -48,38 +41,42 @@ pub enum StartupConnectionPhase {
 
 impl StartupState {
     #[must_use]
-    pub fn new(
-        bridge_script: Option<PathBuf>,
-        resume_id: Option<String>,
-        session_picker_requested: bool,
-    ) -> Self {
-        let launch = if session_picker_requested {
-            StartupLaunch::SessionPicker
-        } else if let Some(session_id) = resume_id {
-            StartupLaunch::ResumeSession { session_id }
-        } else {
-            StartupLaunch::NewSession
-        };
+    pub fn new(bridge_script: Option<PathBuf>, launch: StartupLaunch) -> Self {
+        Self { bridge_script, launch, ..Self::default() }
+    }
 
-        Self { bridge_script, launch, phase: StartupPhase::AwaitingConnection }
+    #[must_use]
+    pub fn from_cli(cli: &crate::Cli) -> Self {
+        Self {
+            session_options: Some(cli.session_options.clone()),
+            initial_prompt: cli.initial_prompt().map(str::to_owned),
+            ..Self::new(cli.bridge_script.clone(), cli.startup_launch())
+        }
+    }
+
+    pub fn session_options(&self) -> Option<&crate::SessionOptions> {
+        self.session_options.as_ref()
+    }
+
+    /// Release launch overrides once the initially selected session is ready.
+    pub fn complete_launch(&mut self) {
+        self.session_options = None;
+    }
+
+    pub fn take_initial_prompt(&mut self) -> Option<String> {
+        if self.session_options.is_some() {
+            return None;
+        }
+        self.initial_prompt.take()
+    }
+
+    pub fn launch(&self) -> &StartupLaunch {
+        &self.launch
     }
 
     #[must_use]
     pub fn bridge_script(&self) -> Option<&PathBuf> {
         self.bridge_script.as_ref()
-    }
-
-    #[must_use]
-    pub fn resume_id(&self) -> Option<&str> {
-        match &self.launch {
-            StartupLaunch::ResumeSession { session_id } => Some(session_id.as_str()),
-            StartupLaunch::NewSession | StartupLaunch::SessionPicker => None,
-        }
-    }
-
-    #[must_use]
-    pub fn resume_requested(&self) -> bool {
-        matches!(self.launch, StartupLaunch::ResumeSession { .. })
     }
 
     #[must_use]

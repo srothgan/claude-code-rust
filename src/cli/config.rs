@@ -815,6 +815,10 @@ mod tests {
 
     fn test_cli(project_root: &Path) -> Cli {
         Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: None,
             no_update_check: false,
             dir: Some(project_root.to_path_buf()),

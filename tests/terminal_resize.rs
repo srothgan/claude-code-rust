@@ -125,6 +125,15 @@ impl TerminalTest {
     }
 
     fn start_with_auth(scenario: &str, lines: u16, auth_mode: Option<&str>) -> Self {
+        Self::start_with_options(scenario, lines, auth_mode, &[])
+    }
+
+    fn start_with_options(
+        scenario: &str,
+        lines: u16,
+        auth_mode: Option<&str>,
+        args: &[&str],
+    ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
         let project = temp.path().join("project");
@@ -132,6 +141,9 @@ impl TerminalTest {
         let release_file = temp.path().join("release");
         std::fs::create_dir_all(&profile).expect("profile");
         std::fs::create_dir_all(&project).expect("project");
+        if !args.is_empty() {
+            std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}"#).expect("saved settings");
+        }
         let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-bridge.js");
         let runtime = which::which("bun")
             .or_else(|_| which::which("node"))
@@ -145,6 +157,9 @@ impl TerminalTest {
         command.env("RUST_LOG", "warn,app.lifecycle=debug,bridge.protocol=debug");
         command.arg("--dir");
         command.arg(&project);
+        for arg in args {
+            command.arg(arg);
+        }
         command.cwd(&project);
         command.env("CLAUDE_CONFIG_DIR", &profile);
         command.env("CLAUDE_RS_AGENT_BRIDGE", &bridge);
@@ -204,10 +219,14 @@ impl TerminalTest {
         let mut test = Self { child, master: pair.master, output, journal, release_file, temp };
         test.wait_screen("Trust this project");
         test.send(b"y");
-        test.wait_screen("Type a message");
-        // The composer is editable during Connecting, but Enter cannot submit
-        // until the connected event has been applied and painted.
-        test.wait_screen("[READY]");
+        if args.is_empty() {
+            test.wait_screen("Type a message");
+            // The composer is editable during Connecting, but Enter cannot submit
+            // until the connected event has been applied and painted.
+            test.wait_screen("[READY]");
+        } else {
+            test.wait_until("initial prompt", |test| !test.prompts().is_empty());
+        }
         test
     }
 
@@ -343,6 +362,47 @@ impl TerminalTest {
         let output = self.output.lock().expect("output lock");
         let text = String::from_utf8_lossy(&output.raw);
         assert!(!text.contains(OWNED_REGION_ERROR), "{}", tail(&text, 2000));
+    }
+}
+
+#[test]
+fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_them() {
+    let common =
+        ["--model", "opus", "--effort", "max", "--permission-mode", "plan", "--agent", "reviewer"];
+    for (selection, expected_session) in [
+        (vec![], "fake-session"),
+        (vec!["-r", "chosen-session"], "chosen-session"),
+        (vec!["-c"], "fake-recent-session"),
+        (vec!["resume", "chosen-session"], "chosen-session"),
+    ] {
+        let mut args = common.to_vec();
+        args.extend(selection);
+        args.push("Review this project");
+        let mut test = TerminalTest::start_with_options("stream", 3, None, &args);
+        test.wait_journal("turn_complete");
+        test.assert_prompts(&["Review this project"]);
+        assert_eq!(test.prompts()[0]["session_id"], expected_session);
+        let launch = test
+            .journal()
+            .into_iter()
+            .find(|entry| {
+                entry["command"] == "create_session" || entry["command"] == "resume_session"
+            })
+            .expect("session launch command");
+        assert_eq!(launch["launch_settings"]["settings"]["model"], "opus");
+        assert_eq!(launch["launch_settings"]["settings"]["permissions"]["defaultMode"], "plan");
+        assert_eq!(launch["launch_settings"]["effort"], "max");
+        assert_eq!(launch["launch_settings"]["agent"], "reviewer");
+        let saved: Value = serde_json::from_str(
+            &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
+                .expect("saved settings"),
+        )
+        .expect("settings JSON");
+        assert_eq!(
+            saved,
+            serde_json::json!({"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}})
+        );
+        test.shutdown();
     }
 }
 

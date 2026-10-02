@@ -24,13 +24,13 @@ pub(super) async fn run_connection_task(
     conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
     mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
 ) {
-    let request_kind = if params.resume_id.is_some() { "resume" } else { "create" };
-    let session_id = params.resume_id.clone().unwrap_or_default();
+    let request_kind = if params.launch.resume_requested() { "resume" } else { "create" };
+    let session_id = params.launch.resume_id().unwrap_or_default().to_owned();
     let connection_span = info_span!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
         "bridge_connection",
         request_kind,
-        resume_requested = params.resume_requested,
+        resume_requested = params.launch.resume_requested(),
         session_id = %session_id,
         cwd = %params.cwd_raw,
     );
@@ -42,7 +42,7 @@ pub(super) async fn run_connection_task(
             message = "bridge connection task started",
             outcome = "start",
             request_kind,
-            resume_requested = params.resume_requested,
+            resume_requested = params.launch.resume_requested(),
             session_id = %session_id,
         );
 
@@ -110,7 +110,7 @@ async fn drive_bridge_connection(
         &params.event_tx,
         &connection,
         &mut connected_once,
-        params.resume_requested,
+        params.launch.resume_requested(),
     )
     .await
     {
@@ -222,11 +222,11 @@ async fn send_initialize_command(
 }
 
 fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
-    if let Some(resume) = &params.resume_id {
+    if let Some(resume) = params.launch.resume_id() {
         CommandEnvelope {
             request_id: None,
             command: BridgeCommand::ResumeSession {
-                session_id: resume.clone(),
+                session_id: resume.to_owned(),
                 launch_settings: params.session_launch_settings.clone(),
                 metadata: std::collections::BTreeMap::new(),
             },
@@ -237,6 +237,7 @@ fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
             command: BridgeCommand::CreateSession {
                 cwd: params.cwd_raw.clone(),
                 resume: None,
+                continue_session: matches!(params.launch, crate::StartupLaunch::ContinueSession),
                 launch_settings: params.session_launch_settings.clone(),
                 metadata: std::collections::BTreeMap::new(),
             },
@@ -314,7 +315,7 @@ async fn bridge_event_loop(
                     &params.event_tx,
                     connection,
                     connected_once,
-                    params.resume_requested,
+                    params.launch.resume_requested(),
                     envelope,
                 )
                 .await;
@@ -491,8 +492,7 @@ mod tests {
             event_tx,
             cwd_raw: fixture.script_path.parent().expect("fixture directory").display().to_string(),
             bridge_script: None,
-            resume_id: None,
-            resume_requested: false,
+            launch: crate::StartupLaunch::NewSession,
             session_launch_settings: SessionLaunchSettings::default(),
         };
         let connection = bridge.connection();
@@ -589,8 +589,7 @@ mod tests {
                     event_tx,
                     cwd_raw: fixture_dir.path().display().to_string(),
                     bridge_script: Some(missing_bridge),
-                    resume_id: None,
-                    resume_requested: false,
+                    launch: crate::StartupLaunch::NewSession,
                     session_launch_settings: SessionLaunchSettings::default(),
                 };
                 let connection_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =

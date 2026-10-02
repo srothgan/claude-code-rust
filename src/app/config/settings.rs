@@ -110,9 +110,11 @@ pub struct SettingSpec {
     pub supported: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+#[value(rename_all = "camelCase")]
 pub enum DefaultPermissionMode {
     #[default]
+    #[value(alias = "manual")]
     Default,
     Auto,
     AcceptEdits,

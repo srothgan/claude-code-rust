@@ -2370,7 +2370,7 @@ fn mcp_appears_in_candidates() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ultracode_composer_wire_events_status_and_footer_workflow() {
-    tokio::task::LocalSet::new().run_until(async {
+    tokio::task::LocalSet::new().run_until(Box::pin(async {
         use crate::agent::{types, wire};
             use crate::agent::events::ClientEvent;
         let mut app = App::test_default();
@@ -2472,5 +2472,5 @@ async fn ultracode_composer_wire_events_status_and_footer_workflow() {
         let MessageBlock::Text(status) = &status.blocks[0] else { panic!("text") };
         assert_eq!(status.text, "Ultracode is requested but unavailable for this session.");
         assert!(commands.try_recv().is_err(), "status must not retry activation");
-    }).await;
+    })).await;
 }

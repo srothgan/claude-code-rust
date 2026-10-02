@@ -40,6 +40,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     if session_count == 0 {
         if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
             app.startup.resolve_session_picker();
+            app.startup.complete_launch();
             view::set_chat_surface(app);
         }
         return;
@@ -59,6 +60,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Right, KeyModifiers::NONE) => open_turn_selection(app),
         (KeyCode::Esc, KeyModifiers::NONE) => {
             app.startup.resolve_session_picker();
+            app.startup.complete_launch();
             view::set_chat_surface(app);
         }
         _ => {}
@@ -211,7 +213,8 @@ mod tests {
     fn picker_app() -> App {
         let mut app = App::test_default();
         app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
-        app.startup = crate::app::state::StartupState::new(None, None, true);
+        app.startup =
+            crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
         app.startup.request_connection();
         assert!(app.startup.mark_connection_started());
         app.startup.mark_recent_sessions_loaded();
@@ -244,7 +247,8 @@ mod tests {
     #[test]
     fn loading_state_ignores_navigation_keys() {
         let mut app = picker_app();
-        app.startup = crate::app::state::StartupState::new(None, None, true);
+        app.startup =
+            crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
         app.startup.request_connection();
         assert!(app.startup.mark_connection_started());
         app.session_runtime.conn = None;

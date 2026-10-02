@@ -111,9 +111,47 @@ fn dispatch_submission(
 }
 
 fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {
-    let Some(conn) = app.session_runtime.conn.clone() else { return };
-    let Some(sid) = app.session_runtime.session_id.clone() else {
+    if send_prompt_turn(app, text, app.pending_images.clone(), inline_pastes) {
+        app.input.clear();
+        app.pending_images.clear();
+    }
+}
+
+/// Send the launch prompt through normal queue admission while preserving a draft
+/// the user may already have typed during connection.
+pub(super) fn maybe_submit_initial_prompt(app: &mut App) {
+    if app.surface_mode != super::SurfaceMode::Chat
+        || app.update_prompt.is_some()
+        || !matches!(app.status, AppStatus::Ready)
+        || !app.composer_access().can_submit()
+    {
         return;
+    }
+    let Some(prompt) = app.startup.take_initial_prompt() else { return };
+    if prompt.trim().is_empty() || send_prompt_turn(app, &prompt, Vec::new(), Vec::new()) {
+        return;
+    }
+    // Keep a failed launch prompt recoverable without overwriting a draft.
+    if app.input.text().is_empty() {
+        app.input.set_text(&prompt);
+    } else {
+        crate::app::events::push_submission_feedback(
+            app,
+            super::SystemSeverity::Error,
+            &format!("Initial prompt could not be sent: {prompt}"),
+        );
+    }
+}
+
+fn send_prompt_turn(
+    app: &mut App,
+    text: &str,
+    images: Vec<super::clipboard_image::ImageAttachment>,
+    inline_pastes: Vec<String>,
+) -> bool {
+    let Some(conn) = app.session_runtime.conn.clone() else { return false };
+    let Some(sid) = app.session_runtime.session_id.clone() else {
+        return false;
     };
     let input_chars = text.chars().count();
     let session_id = sid.to_string();
@@ -125,17 +163,15 @@ fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {
         session_id.clone(),
         message_uuid.clone(),
         text.to_owned(),
-        app.pending_images.clone(),
+        images,
         inline_pastes,
     ) {
         Ok(resp) => resp,
         Err(error) => {
             crate::app::events::handle_local_prompt_dispatch_error(app, &error.to_string());
-            return;
+            return false;
         }
     };
-    app.input.clear();
-    app.pending_images.clear();
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
     let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
@@ -159,6 +195,7 @@ fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {
         input_chars,
         stop_reason = ?resp.stop_reason,
     );
+    true
 }
 
 fn dispatch_active_turn_prompt(app: &mut App, text: String, inline_pastes: Vec<String>) {
@@ -243,6 +280,40 @@ mod tests {
         app.session_runtime.conn = Some(std::rc::Rc::new(connection));
         app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
         (app, rx)
+    }
+
+    #[test]
+    fn initial_prompt_waits_for_session_selection_and_preserves_a_typed_draft() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["claude-rs", "--resume", "--", "initial prompt"])
+            .expect("CLI");
+        let (mut app, mut rx) = app_with_connection();
+        app.startup = crate::app::state::StartupState::from_cli(&cli);
+        app.input.set_text("draft typed while connecting");
+        app.status = AppStatus::Ready;
+        maybe_submit_initial_prompt(&mut app);
+        assert!(rx.try_recv().is_err(), "picker has not selected a session");
+        app.startup.complete_launch();
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
+        maybe_submit_initial_prompt(&mut app);
+        assert!(rx.try_recv().is_err(), "fullscreen dialog is still open");
+        app.surface_mode = SurfaceMode::Chat;
+        maybe_submit_initial_prompt(&mut app);
+        let envelope = rx.try_recv().expect("initial prompt");
+        let BridgeCommand::Prompt { chunks, session_id, .. } = envelope.command else {
+            panic!("prompt")
+        };
+        assert_eq!(session_id, "session-1");
+        assert_eq!(chunks[0].value, serde_json::json!("initial prompt"));
+        assert_eq!(app.input.text(), "draft typed while connecting");
+        app.status = AppStatus::Ready;
+        maybe_submit_initial_prompt(&mut app);
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(
+                !matches!(envelope.command, BridgeCommand::Prompt { .. }),
+                "prompt is sent only once"
+            );
+        }
     }
 
     #[test]

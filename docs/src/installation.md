@@ -31,9 +31,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 ```text
 ${XDG_DATA_HOME:-$HOME/.local/share}/claude-rs/
 $HOME/.local/bin/claude-rs
+$HOME/.local/share/man/man1/claude-rs*.1
 ```
 
-The app directory contains `claude-rs`, `claude-rs-bridge-bun`, `agent-sdk/`, and `node_modules/`. The file in `$HOME/.local/bin` is a launcher script that executes the app binary.
+The app directory contains `claude-rs`, `claude-rs-bridge-bun`, `agent-sdk/`, and `node_modules/`. The file in `$HOME/.local/bin` is a launcher script that executes the app binary. Unix archives also contain manuals under `share/man/man1/`; the installer links them into the sibling `share/man/man1/` directory beside `bin`. Uninstall removes its own manual links and preserves manuals from other installations. See [Usage](usage.md#man-pages) for viewing manuals and generating them with npm or source installations.
 
 **The default Windows install layout is:**
 

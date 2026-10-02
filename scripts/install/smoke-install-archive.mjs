@@ -101,6 +101,16 @@ function smokeExtractedApp(appRoot, platformPackage) {
   printCommandOutput("claude-rs --version", versionOutput);
   printCommandOutput("claude-rs --help", helpOutput);
 
+  const completionOutput = runCommand(commandState, ["completions", "powershell"]);
+  if (!completionOutput.stdout.includes("permission-mode")) {
+    throw new Error("Installed CLI completions do not include startup flags");
+  }
+  const manualDir = path.join(path.dirname(appRoot), "generated-manuals");
+  runCommand(commandState, ["man", manualDir]);
+  if (!fs.existsSync(path.join(manualDir, "claude-rs.1"))) {
+    throw new Error("Installed CLI did not generate its manual");
+  }
+
   const doctorOutput = runCommand(commandState, ["doctor", "--json", "--strict"]);
   const doctorDetails = assertDoctorReportsArchiveRuntime(doctorOutput.stdout, appRoot);
   printCommandOutput("claude-rs doctor --json --strict", doctorOutput);

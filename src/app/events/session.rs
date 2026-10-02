@@ -81,6 +81,9 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
     app.rebuild_chat_focus_from_state();
     crate::app::config::refresh_runtime_tabs_for_session_change(app);
     maybe_open_startup_session_picker(app);
+    if !app.startup.session_picker_requested() {
+        app.startup.complete_launch();
+    }
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_connected",
@@ -477,6 +480,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     // After session replacement, terminal scrollback is stale. Rebuild from
     // app.transcript.messages, which was rebuilt only from bridge-reported session history.
     app.request_chat_purge_replay_rebuild(crate::app::ChatPurgeReplayOptions::session_replacement());
+    app.startup.complete_launch();
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "session_replaced",
@@ -718,6 +722,7 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
 fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option<&str>) {
     let session_count = super::super::session_picker::picker_session_count(app);
     if session_count == 0 {
+        app.startup.complete_launch();
         app.session_picker.selected = 0;
         app.session_picker.scroll_offset = 0;
         return;

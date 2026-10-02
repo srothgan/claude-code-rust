@@ -190,6 +190,11 @@ function expectArchiveSpecifics(platformPackage, appRoot, context) {
   if (platformPackage.binaryName.endsWith(".exe") || platformPackage.bundledRuntimeName.endsWith(".exe")) {
     fail(`${context} Unix platform metadata must not use .exe names`);
   }
+  expectFilesExist(listRelativeFiles(appRoot), ["share/man/man1/claude-rs.1"], context);
+  const manPage = path.join(appRoot, "share", "man", "man1", "claude-rs.1");
+  if (fs.existsSync(manPage) && !fs.readFileSync(manPage, "utf8").includes(".TH")) {
+    fail(`${context} has an invalid generated man page`);
+  }
   if (process.platform !== "win32") {
     expectExecutable(path.join(appRoot, platformPackage.binaryName), `${context} native binary`);
     expectExecutable(path.join(appRoot, platformPackage.bundledRuntimeName), `${context} bundled Bun runtime`);

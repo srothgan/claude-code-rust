@@ -277,6 +277,6 @@ impl App {
 
     #[cfg(test)]
     pub fn test_request_startup_session_picker(&mut self) {
-        self.startup = StartupState::new(None, None, true);
+        self.startup = StartupState::new(None, crate::StartupLaunch::SessionPicker);
     }
 }

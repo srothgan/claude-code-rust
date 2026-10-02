@@ -72,7 +72,7 @@ fn initialize_routes_trusted_resume_picker_startup_to_picker_view() {
 
     let mut app = App::test_default();
     app.cwd_raw = project_path.to_owned();
-    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
     app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
     let mut prefs = json!({ "projects": {} });
     prefs["projects"][project_path] = json!({
@@ -94,7 +94,7 @@ fn accept_routes_resume_picker_startup_to_picker_view() {
 
     let mut app = App::test_default();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
-    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
     app.config.preferences_path = Some(path);
     app.trust.status = TrustStatus::Untrusted;
@@ -114,7 +114,7 @@ fn accept_routes_update_prompt_before_resume_picker() {
 
     let mut app = App::test_default();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
-    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
     app.config.preferences_path = Some(path);
     app.trust.status = TrustStatus::Untrusted;

@@ -1128,6 +1128,10 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_for_always_on_baseline() {
         let cli = Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: None,
             no_update_check: false,
             dir: None,
@@ -1148,6 +1152,10 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_explicit_path_when_provided() {
         let cli = Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: None,
             no_update_check: false,
             dir: None,
@@ -1169,6 +1177,10 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_filter_enables_logging() {
         let cli = Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: None,
             no_update_check: false,
             dir: None,
@@ -1199,6 +1211,10 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_enable_logs_is_set() {
         let cli = Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: None,
             no_update_check: false,
             dir: None,
@@ -1218,6 +1234,10 @@ mod tests {
     #[test]
     fn resolve_log_path_uses_default_when_preset_is_set() {
         let cli = Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: None,
             no_update_check: false,
             dir: None,
@@ -1237,6 +1257,10 @@ mod tests {
     #[test]
     fn resolve_log_path_keeps_legacy_default_for_append_without_explicit_path() {
         let cli = Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: None,
             no_update_check: false,
             dir: None,

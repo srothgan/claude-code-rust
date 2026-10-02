@@ -48,6 +48,10 @@ fn main() {
 
 fn run() -> anyhow::Result<i32> {
     let cli = Cli::parse();
+    if let Err(error) = cli.validate() {
+        error.print()?;
+        return Ok(error.exit_code());
+    }
     if let Some(exit_code) = claude_code_rust::cli::run_support_command(
         &cli,
         &mut std::io::stdout().lock(),
@@ -61,10 +65,7 @@ fn run() -> anyhow::Result<i32> {
         let startup_bootstrap_span = info_span!(
             target: claude_code_rust::logging::targets::APP_LIFECYCLE,
             "startup_bootstrap",
-            resume_requested = matches!(
-                cli.command,
-                Some(claude_code_rust::Command::Resume { .. })
-            ),
+            resume_requested = cli.startup_launch().resume_requested(),
             explicit_bridge_script = cli.bridge_script.is_some(),
         );
         let _entered = startup_bootstrap_span.enter();

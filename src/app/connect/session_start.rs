@@ -60,6 +60,8 @@ pub(crate) fn session_launch_settings_for_reason(
                 language,
                 settings: Some(build_session_settings_object(app)),
                 agent_progress_summaries: Some(true),
+                effort: app.startup.session_options().and_then(|options| options.effort),
+                agent: app.startup.session_options().and_then(|options| options.agent.clone()),
             }
         }
     }
@@ -73,14 +75,19 @@ fn build_session_settings_object(app: &App) -> Value {
         Value::Bool(app.config.always_thinking_effective()),
     );
 
-    if let Some(model) = app.config.model_effective() {
+    if let Some(model) = app
+        .startup
+        .session_options()
+        .and_then(|options| options.model.clone())
+        .or_else(|| app.config.model_effective())
+    {
         settings.insert("model".to_owned(), Value::String(model));
     }
 
     settings.insert(
         "permissions".to_owned(),
         json!({
-            "defaultMode": app.config.default_permission_mode_effective().as_stored()
+            "defaultMode": app.startup.session_options().and_then(|options| options.permission_mode).unwrap_or_else(|| app.config.default_permission_mode_effective()).as_stored()
         }),
     );
     settings.insert("fastMode".to_owned(), Value::Bool(app.config.fast_mode_effective()));
@@ -236,6 +243,41 @@ mod tests {
     use crate::app::App;
     use crate::app::config::{DefaultPermissionMode, store};
     use serde_json::{Map, Value};
+
+    #[test]
+    fn launch_overrides_survive_picker_selection_and_leave_saved_settings_unchanged() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from([
+            "claude-rs",
+            "--resume",
+            "--model",
+            "opus",
+            "--effort",
+            "max",
+            "--permission-mode",
+            "plan",
+            "--agent",
+            "reviewer",
+        ])
+        .expect("CLI");
+        let mut app = App::test_default();
+        app.startup = crate::app::state::StartupState::from_cli(&cli);
+        let saved = app.config.committed_settings_document.clone();
+        for reason in [SessionStartReason::Startup, SessionStartReason::Resume] {
+            let launch = session_launch_settings_for_reason(&app, reason);
+            assert_setting_value(&launch, "model", &Value::String("opus".into()));
+            assert_permission_mode(&launch, "plan");
+            assert_eq!(launch.effort, Some(EffortLevel::Max));
+            assert_eq!(launch.agent.as_deref(), Some("reviewer"));
+        }
+        assert_eq!(app.config.committed_settings_document, saved);
+        app.startup.complete_launch();
+        let next = session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
+        assert_setting_value(&next, "model", &Value::String("fable".into()));
+        assert_permission_mode(&next, "default");
+        assert_eq!(next.effort, None);
+        assert_eq!(next.agent, None);
+    }
 
     #[test]
     fn persisted_launch_settings_include_model_and_permission_mode() {

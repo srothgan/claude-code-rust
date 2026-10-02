@@ -239,6 +239,8 @@ function optionalLaunchSettings(
   const parsed = asRecord(value, `${context}.${key}`);
   const language = optionalString(parsed, "language", `${context}.${key}`);
   const settings = optionalJsonObject(parsed, "settings", `${context}.${key}`);
+  const agent = optionalString(parsed, "agent", `${context}.${key}`);
+  const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
   const agentProgressSummaries = optionalBoolean(
     parsed,
     "agent_progress_summaries",
@@ -247,6 +249,8 @@ function optionalLaunchSettings(
   return {
     ...(language ? { language } : {}),
     ...(settings ? { settings } : {}),
+    ...(agent ? { agent } : {}),
+    ...(effort !== undefined ? { effort } : {}),
     ...(agentProgressSummaries !== undefined
       ? { agent_progress_summaries: agentProgressSummaries }
       : {}),
@@ -361,6 +365,7 @@ export function parseCommandEnvelope(line: string): {
           command: "create_session",
           cwd: expectString(raw, "cwd", "create_session"),
           resume: optionalString(raw, "resume", "create_session"),
+          continue_session: optionalBoolean(raw, "continue_session", "create_session"),
           launch_settings: optionalLaunchSettings(
             raw,
             "launch_settings",

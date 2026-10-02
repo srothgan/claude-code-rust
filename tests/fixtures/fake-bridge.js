@@ -5,6 +5,7 @@ const readline = require('node:readline');
 const fs = require('node:fs');
 
 let SESSION = 'fake-session';
+let cwd = process.cwd();
 const LINES = Number(process.env.FAKE_BRIDGE_LINES ?? 1500);
 const FOLLOW_UP_LINES = Number(process.env.FAKE_BRIDGE_FOLLOW_UP_LINES ?? 3);
 const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
@@ -136,6 +137,7 @@ readline
     record({ type: 'command', ...message });
     switch (message.command) {
       case 'initialize':
+        cwd = message.cwd;
         send({
           event: 'initialized',
           result: {
@@ -153,11 +155,14 @@ readline
         break;
       case 'create_session':
       case 'new_session':
+      case 'resume_session':
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
+        if (message.command === 'resume_session') SESSION = message.session_id;
+        if (message.continue_session) SESSION = 'fake-recent-session';
         send({
           event: message.command === 'new_session' ? 'session_replaced' : 'connected',
           session_id: SESSION,
-          cwd: message.cwd,
+          cwd: message.cwd ?? cwd,
           current_model: model,
           available_models: [],
           mode: null,

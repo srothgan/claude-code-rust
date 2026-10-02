@@ -88,13 +88,14 @@ impl AvailableAgent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
     Low,
     Medium,
     High,
     #[serde(rename = "xhigh")]
+    #[value(name = "xhigh")]
     XHigh,
     Max,
 }

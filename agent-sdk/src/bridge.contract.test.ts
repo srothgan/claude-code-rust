@@ -375,10 +375,17 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
   const fixturePath = join(directory, "sdk-fixture.mjs");
   writeFileSync(fixturePath, `
     export * from ${JSON.stringify(sdkPath)};
-    export async function listSessions() { return [...saved.keys()].map(sessionId => ({ sessionId, cwd: process.cwd(), lastModified: 1 })); }
+    import { appendFileSync } from "node:fs";
+    function record(value) { if (process.env.STARTUP_JOURNAL) appendFileSync(process.env.STARTUP_JOURNAL, JSON.stringify(value) + "\\n"); }
+    export async function listSessions(options) {
+      record({ type: "list", options });
+      const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
+      return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: process.cwd(), lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
+    }
     export async function getSessionMessages() { return []; }
     const saved = new Map();
     export function query({ prompt, options }) {
+      record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high" };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
@@ -508,6 +515,42 @@ test("spawned bridge restores normalized command inventory after repeated clear 
   } finally {
     await cleanup();
   }
+});
+
+test("startup overrides and continue use the production session lifecycle", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-startup-"));
+  const journal = join(directory, "query-options.jsonl");
+  const cwd = process.cwd();
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([
+      { sessionId: "older", cwd, lastModified: 1 },
+      { sessionId: "newest-here", cwd, lastModified: 10 },
+      { sessionId: "other-project", cwd: join(cwd, "other"), lastModified: 20 },
+    ]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, continue_session: true, launch_settings: { settings: { model: "opus", permissions: { defaultMode: "plan" } }, effort: "max", agent: "reviewer" } });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    assert.equal(connected.session_id, "newest-here");
+    const entries = readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line) as BridgeEnvelope);
+    assert.deepEqual(entries.find(entry => entry.type === "query"), { type: "query", cwd, resume: "newest-here", model: "opus", effort: "max", permissionMode: "plan", agent: "reviewer" });
+    const list = entries.find(entry => entry.type === "list");
+    assert.deepEqual(list?.options, { dir: cwd, includeProgrammatic: true, includeWorktrees: true, limit: 50 });
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("continue with no previous session starts a new session", async () => {
+  const { bridge, cleanup } = ultracodeFixtureBridge();
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), continue_session: true, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    assert.equal(typeof connected.session_id, "string");
+    assert.notEqual(connected.session_id, "");
+  } finally { await cleanup(); }
 });
 
 test("spawned bridge Ultracode workflow covers enable, effort, model, reset, resume and replacement", async () => {

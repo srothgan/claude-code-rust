@@ -715,6 +715,8 @@ export interface SessionLaunchSettings {
   language?: string;
   settings?: { [key: string]: Json };
   agent_progress_summaries?: boolean;
+  effort?: EffortLevel;
+  agent?: string;
 }
 
 export interface RewindTarget {
@@ -815,6 +817,7 @@ export type BridgeCommand =
       command: "create_session";
       cwd: string;
       resume?: string;
+      continue_session?: boolean;
       launch_settings: SessionLaunchSettings;
       metadata?: Record<string, Json>;
     }

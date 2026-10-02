@@ -113,6 +113,9 @@ function generateInstallArchive(platformPackage) {
     removeInstallOnlyFiles(appRoot);
     writeJson(path.join(appRoot, "package.json"), buildInstallPackageJson());
     copyBinaries(platformPackage, appRoot);
+    if (!platformPackage.os.includes("win32")) {
+      generateManPages(appRoot);
+    }
     copyAgentSdkRuntime(path.join(appRoot, "agent-sdk"));
     copyFileFromRepo("LICENSE", path.join(appRoot, "LICENSE"));
     fs.writeFileSync(
@@ -136,6 +139,22 @@ function generateInstallArchive(platformPackage) {
       fs.rmSync(tempParent, { recursive: true, force: true });
     }
   }
+}
+
+function generateManPages(appRoot) {
+  const outDir = path.join(appRoot, "share", "man", "man1");
+  fs.mkdirSync(outDir, { recursive: true });
+  if (options.mockBinaries) {
+    // Layout fixtures only; real release manuals always come from the CLI.
+    fs.writeFileSync(path.join(outDir, "claude-rs.1"), '.TH CLAUDE-RS 1\n.SH NAME\nclaude-rs \\- mock manual for archive layout tests\n');
+    return;
+  }
+  const host = PLATFORM_PACKAGES.find((entry) => entry.os.includes(process.platform) && entry.cpu.includes(process.arch));
+  if (!host) {
+    throw new Error(`No man-page generator for packaging host ${process.platform}:${process.arch}`);
+  }
+  const binary = path.join(binaryRoot, host.dir, "bin", host.binaryName);
+  execFileSync(binary, ["man", outDir], { stdio: "inherit", windowsHide: true });
 }
 
 function installProductionDependencies(appRoot, platformPackage) {

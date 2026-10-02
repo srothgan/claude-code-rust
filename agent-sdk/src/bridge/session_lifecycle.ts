@@ -1233,6 +1233,8 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
     settings,
     ...modelOption,
     ...permissionModeOptions,
+    ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
+    ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
     ...(params.launchSettings.agent_progress_summaries !== undefined

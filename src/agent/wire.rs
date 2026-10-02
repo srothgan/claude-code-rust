@@ -13,6 +13,10 @@ pub struct SessionLaunchSettings {
     pub settings: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_progress_summaries: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<super::model::EffortLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 impl SessionLaunchSettings {
@@ -21,6 +25,8 @@ impl SessionLaunchSettings {
         self.language.is_none()
             && self.settings.is_none()
             && self.agent_progress_summaries.is_none()
+            && self.effort.is_none()
+            && self.agent.is_none()
     }
 }
 
@@ -43,6 +49,8 @@ pub enum BridgeCommand {
     CreateSession {
         cwd: String,
         resume: Option<String>,
+        #[serde(default)]
+        continue_session: bool,
         #[serde(default, skip_serializing_if = "SessionLaunchSettings::is_empty")]
         launch_settings: SessionLaunchSettings,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

@@ -25,6 +25,10 @@ fn map_session_update_preserves_config_option_update() {
 fn create_app_defers_file_index_and_routes_untrusted_cwd_to_trust_surface() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cli = Cli {
+        prompt: None,
+        resume: None,
+        continue_session: false,
+        session_options: crate::SessionOptions::default(),
         command: None,
         no_update_check: true,
         dir: Some(dir.path().to_path_buf()),

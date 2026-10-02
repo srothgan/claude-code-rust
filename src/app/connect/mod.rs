@@ -24,11 +24,11 @@ use super::trust;
 use super::view::SurfaceMode;
 use super::{App, AppStatus, FocusManager};
 use super::{SurfaceDirtyState, TerminalLifecycleState};
+use crate::Cli;
 use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
-use crate::{Cli, Command};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -60,8 +60,7 @@ struct StartConnectionParams {
     event_tx: mpsc::Sender<ClientEvent>,
     cwd_raw: String,
     bridge_script: Option<std::path::PathBuf>,
-    resume_id: Option<String>,
-    resume_requested: bool,
+    launch: crate::StartupLaunch,
     session_launch_settings: SessionLaunchSettings,
 }
 
@@ -130,9 +129,9 @@ pub fn create_app(cli: &Cli) -> App {
         input: super::InputState::new(),
         status: AppStatus::Connecting,
         pending_session_resume: None,
-        show_session_overview: !matches!(
-            &cli.command,
-            Some(Command::Resume { session_id: Some(_) })
+        show_session_overview: matches!(
+            cli.startup_launch(),
+            crate::StartupLaunch::NewSession | crate::StartupLaunch::SessionPicker
         ),
         turn: super::state::TurnState::default(),
         shutdown: super::ShutdownState::Running,
@@ -173,14 +172,7 @@ pub fn create_app(cli: &Cli) -> App {
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
         cache_metrics: CacheMetrics::default(),
-        startup: StartupState::new(
-            cli.bridge_script.clone(),
-            match &cli.command {
-                Some(Command::Resume { session_id: Some(id) }) => Some(id.clone()),
-                _ => None,
-            },
-            matches!(&cli.command, Some(Command::Resume { session_id: None })),
-        ),
+        startup: StartupState::from_cli(cli),
         bridge_task: None,
     };
 
@@ -212,8 +204,7 @@ pub fn start_connection(app: &mut App) {
         event_tx: app.event_tx.clone(),
         cwd_raw: app.cwd_raw.clone(),
         bridge_script: app.startup.bridge_script().cloned(),
-        resume_id: app.startup.resume_id().map(str::to_owned),
-        resume_requested: app.startup.resume_requested(),
+        launch: app.startup.launch().clone(),
         session_launch_settings: session_start::session_launch_settings_for_reason(
             app,
             session_start::SessionStartReason::Startup,

@@ -47,7 +47,11 @@ See the [installation guide](https://srothgan.github.io/claude-code-rust/install
 
 ```bash
 claude-rs
+claude-rs --model opus --permission-mode plan "Review this project"
+claude-rs --continue
 ```
+
+See [Usage](https://srothgan.github.io/claude-code-rust/usage.html) for startup flags, shell completion setup, and man pages.
 
 Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
 

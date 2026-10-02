@@ -5,6 +5,7 @@ mod config;
 mod doctor;
 mod logs;
 pub mod redaction;
+mod reference;
 mod style;
 
 use crate::{Cli, Command};
@@ -16,6 +17,8 @@ pub fn run_support_command(
     stderr: &mut impl Write,
 ) -> anyhow::Result<Option<i32>> {
     match &cli.command {
+        Some(Command::Completions { shell }) => reference::completions(*shell, stdout).map(Some),
+        Some(Command::Man { out_dir }) => reference::man(out_dir).map(Some),
         Some(Command::Doctor(args)) => doctor::run(cli, args, stdout).map(Some),
         Some(Command::Logs(args)) => logs::run(cli, args, stdout, stderr).map(Some),
         Some(Command::Config(args)) => config::run(cli, args, stdout, stderr).map(Some),
@@ -43,7 +46,10 @@ mod tests {
 
     #[test]
     fn resume_uses_interactive_path() {
-        let cli = test_cli(Some(Command::Resume { session_id: Some("abc-123".to_owned()) }));
+        let cli = test_cli(Some(Command::Resume {
+            session_id: Some("abc-123".to_owned()),
+            prompt: None,
+        }));
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
 
@@ -111,6 +117,10 @@ mod tests {
     fn test_cli(command: Option<Command>) -> Cli {
         Cli {
             command,
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             no_update_check: false,
             dir: None,
             bridge_script: None,

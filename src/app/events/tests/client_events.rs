@@ -1515,7 +1515,7 @@ fn sessions_listed_completes_pending_session_title_generation() {
 #[test]
 fn startup_picker_waits_for_connected_after_sessions_listed() {
     let mut app = make_test_app();
-    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
     app.startup.request_connection();
     assert!(app.startup.mark_connection_started());
 
@@ -1541,7 +1541,7 @@ fn startup_picker_waits_for_connected_after_sessions_listed() {
 #[test]
 fn startup_picker_empty_list_stays_in_chat_with_info_message() {
     let mut app = make_test_app();
-    app.startup = crate::app::state::StartupState::new(None, None, true);
+    app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
     app.startup.request_connection();
     assert!(app.startup.mark_connection_started());
     let (connection, _rx) = crate::agent::client::AgentConnection::test_channel();

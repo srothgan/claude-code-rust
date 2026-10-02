@@ -57,6 +57,23 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
+    /// Initial prompt to send after the interactive session is ready.
+    #[arg(value_name = "PROMPT")]
+    pub prompt: Option<String>,
+
+    /// Resume a session by ID, or open the session picker when no ID is given.
+    // Clap uses the nested option for absent flag, picker, and explicit ID.
+    #[allow(clippy::option_option)]
+    #[arg(long, short = 'r', num_args = 0..=1, value_name = "ID", conflicts_with = "continue_session")]
+    pub resume: Option<Option<String>>,
+
+    /// Continue the most recent session in the working directory (including git worktrees).
+    #[arg(long = "continue", short = 'c')]
+    pub continue_session: bool,
+
+    #[command(flatten)]
+    pub session_options: SessionOptions,
+
     /// Disable startup update checks.
     #[arg(long)]
     pub no_update_check: bool,
@@ -96,13 +113,120 @@ pub struct Cli {
     pub log_append: bool,
 }
 
+/// Per-launch options, separate from persisted application preferences.
+#[derive(Args, Debug, Clone, Default)]
+pub struct SessionOptions {
+    /// Starting model alias or full model ID; does not change saved preferences.
+    #[arg(long, global = true, value_name = "MODEL", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub model: Option<String>,
+
+    /// Starting reasoning effort; availability depends on the selected model.
+    #[arg(long, global = true, value_enum)]
+    pub effort: Option<agent::model::EffortLevel>,
+
+    /// Starting permission mode; does not change saved preferences.
+    #[arg(long, global = true, value_enum)]
+    pub permission_mode: Option<app::config::DefaultPermissionMode>,
+
+    /// Main-thread agent to use for this session.
+    #[arg(long, global = true, value_name = "NAME", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub agent: Option<String>,
+}
+
+impl Cli {
+    pub fn validate(&self) -> Result<(), clap::Error> {
+        use clap::CommandFactory;
+        let has_session_options = self.session_options.model.is_some()
+            || self.session_options.effort.is_some()
+            || self.session_options.permission_mode.is_some()
+            || self.session_options.agent.is_some();
+        let conflict = match &self.command {
+            Some(Command::Resume { .. }) => {
+                self.resume.is_some() || self.continue_session || self.prompt.is_some()
+            }
+            Some(_) => {
+                self.resume.is_some()
+                    || self.continue_session
+                    || self.prompt.is_some()
+                    || has_session_options
+            }
+            None => false,
+        };
+        if conflict {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "interactive startup arguments cannot be combined with this subcommand",
+            ));
+        }
+        Ok(())
+    }
+    /// Normalize both resume spellings into one startup intent.
+    #[must_use]
+    pub fn startup_launch(&self) -> StartupLaunch {
+        let resume = match &self.command {
+            Some(Command::Resume { session_id, .. }) => Some(session_id.as_ref()),
+            _ => self.resume.as_ref().map(Option::as_ref),
+        };
+        match resume {
+            Some(Some(id)) => StartupLaunch::ResumeSession { session_id: id.clone() },
+            Some(None) => StartupLaunch::SessionPicker,
+            None if self.continue_session => StartupLaunch::ContinueSession,
+            None => StartupLaunch::NewSession,
+        }
+    }
+
+    #[must_use]
+    pub fn initial_prompt(&self) -> Option<&str> {
+        match &self.command {
+            Some(Command::Resume { prompt, .. }) => prompt.as_deref(),
+            _ => self.prompt.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum StartupLaunch {
+    #[default]
+    NewSession,
+    ResumeSession {
+        session_id: String,
+    },
+    SessionPicker,
+    ContinueSession,
+}
+
+impl StartupLaunch {
+    #[must_use]
+    pub fn resume_id(&self) -> Option<&str> {
+        match self {
+            Self::ResumeSession { session_id } => Some(session_id),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn resume_requested(&self) -> bool {
+        matches!(self, Self::ResumeSession { .. } | Self::ContinueSession)
+    }
+}
+
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 pub enum Command {
     /// Resume a previous session by ID, or pick from recent sessions
     Resume {
         /// Session ID to resume directly. Omit to show a session picker.
         session_id: Option<String>,
+        /// Initial prompt to send after resuming.
+        prompt: Option<String>,
     },
+    /// Print a shell completion script.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Generate manual pages for the CLI and its subcommands.
+    #[command(hide = true)]
+    Man { out_dir: std::path::PathBuf },
     /// Run deterministic installation and runtime diagnostics
     Doctor(DoctorArgs),
     /// Find runtime logs or create a redacted debug bundle
@@ -215,18 +339,23 @@ mod tests {
     #[test]
     fn cli_resume_without_id_requests_picker() {
         let cli = Cli::try_parse_from(["claude-rs", "resume"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Resume { session_id: None }));
+        assert_eq!(cli.command, Some(Command::Resume { session_id: None, prompt: None }));
     }
 
     #[test]
     fn cli_resume_with_id_resumes_directly() {
         let cli = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Resume { session_id: Some("abc-123".to_owned()) }));
+        assert_eq!(
+            cli.command,
+            Some(Command::Resume { session_id: Some("abc-123".to_owned()), prompt: None })
+        );
     }
 
     #[test]
-    fn cli_rejects_legacy_resume_flag() {
-        assert!(Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).is_err());
+    fn cli_resume_flag_selects_the_same_session_as_the_subcommand() {
+        let flag = Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).expect("flag");
+        let command = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("command");
+        assert_eq!(flag.startup_launch(), command.startup_launch());
     }
 
     #[test]

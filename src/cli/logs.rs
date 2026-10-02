@@ -798,6 +798,10 @@ mod tests {
 
     fn test_cli() -> Cli {
         Cli {
+            prompt: None,
+            resume: None,
+            continue_session: false,
+            session_options: crate::SessionOptions::default(),
             command: Some(crate::Command::Logs(LogsArgs {
                 path: false,
                 latest: false,

@@ -825,6 +825,43 @@ write_launcher() {
   mv "$tmp_launcher" "$launcher"
 }
 
+man_link_dir() {
+  printf '%s/share/man/man1\n' "$(dirname "$bin_dir")"
+}
+
+man_source_dir() {
+  printf '%s/%s/share/man/man1\n' "$(CDPATH='' cd "$(dirname "$install_dir")" && pwd -P)" "$(basename "$install_dir")"
+}
+
+install_man_pages() {
+  remove_man_pages_if_owned
+  manual_dir="$(man_source_dir)"
+  [ -d "$manual_dir" ] || return 0
+  link_dir="$(man_link_dir)"
+  mkdir -p "$link_dir"
+  for manual in "$manual_dir"/claude-rs*.1; do
+    [ -f "$manual" ] || continue
+    destination="$link_dir/$(basename "$manual")"
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+      warn "not replacing existing manual $destination"
+      continue
+    fi
+    ln -s "$manual" "$destination"
+  done
+}
+
+remove_man_pages_if_owned() {
+  link_dir="$(man_link_dir)"
+  source_dir="$(man_source_dir)"
+  for destination in "$link_dir"/claude-rs*.1; do
+    [ -L "$destination" ] || continue
+    target="$(readlink "$destination")"
+    case "$target" in
+      "$source_dir/"claude-rs*.1) rm -f "$destination" ;;
+    esac
+  done
+}
+
 detect_npm_install() {
   command -v npm >/dev/null 2>&1 || return 1
   npm_root="$(npm root -g 2>/dev/null || true)"
@@ -1082,6 +1119,7 @@ uninstall_script_install() {
   lock_dir="$(acquire_lock "$install_parent")"
 
   remove_launcher_if_owned
+  remove_man_pages_if_owned
   remove_managed_path_blocks
 
   if [ -e "$install_dir" ]; then
@@ -1296,6 +1334,7 @@ mkdir -p "$install_parent"
 lock_dir="$(acquire_lock "$install_parent")"
 stop_if_selected_version_became_installed "$selected_version"
 replace_app_dir "$extracted_app" "$install_dir"
+install_man_pages
 if [ "$update" -eq 0 ]; then
   write_launcher
 fi

@@ -41,6 +41,7 @@ test("Unix installer keeps successful redirected output completed-step-only", { 
   assertScenarioResult(result, 0, successfulMessages);
   assert.equal(result.installed, true, "successful install did not create the installed command");
   assert.equal(result.launcherInstalled, true, "successful install did not create the launcher");
+  assert.equal(result.manualLinked, true, "successful install did not link the manual");
   const archiveInvocation = result.curlInvocations.find(
     (line) => line.includes(result.archiveName) && line.includes("--write-out"),
   );
@@ -122,7 +123,30 @@ test("Unix installer keeps NO_COLOR output plain and completed-step-only", { ski
   assertScenarioResult(result, 0, successfulMessages);
 });
 
-function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = false } = {}) {
+test("Unix installer removes owned manual links on upgrade and uninstall", { skip: skipReason }, () => {
+  const result = runInstallerScenario("success", { uninstall: true });
+  assertScenarioResult(result, 0, successfulMessages);
+  assert.equal(result.manualLinked, true);
+  assert.equal(result.staleManualExists, false, "upgrade kept an obsolete owned manual link");
+  assert.equal(result.manualExistsAfterUninstall, false, "uninstall kept its manual link");
+});
+
+test("Unix installer preserves another installation's manual", { skip: skipReason }, () => {
+  const result = runInstallerScenario("success", { preserveManual: true, uninstall: true });
+  assertScenarioResult(result, 0, successfulMessages);
+  assert.equal(result.manualLinked, false);
+  assert.equal(result.manualExistsAfterUninstall, true);
+  assert.equal(result.manualContentAfterUninstall, "externally managed manual");
+});
+
+test("Unix installer links manuals correctly with relative install directories", { skip: skipReason }, () => {
+  const result = runInstallerScenario("success", { relativeDirs: true, uninstall: true });
+  assertScenarioResult(result, 0, successfulMessages);
+  assert.equal(result.manualLinked, true);
+  assert.equal(result.manualExistsAfterUninstall, false);
+});
+
+function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = false, preserveManual = false, uninstall = false, relativeDirs = false } = {}) {
   const archiveName = installArchiveName(platformPackage, cargoPackage.version);
   const archivePath = path.join(repoRoot, "dist-install", archiveName);
   assert.ok(
@@ -140,6 +164,14 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = fa
   const curlLogPath = path.join(sandbox, "curl.log");
   for (const directory of [homeDir, tempDir, binDir, shimDir]) {
     fs.mkdirSync(directory, { recursive: true });
+  }
+  const manualDir = path.join(sandbox, "share", "man", "man1");
+  const manualPath = path.join(manualDir, "claude-rs.1");
+  const staleManualPath = path.join(manualDir, "claude-rs-old.1");
+  fs.mkdirSync(manualDir, { recursive: true });
+  fs.symlinkSync(path.join(installDir, "share", "man", "man1", "claude-rs-old.1"), staleManualPath);
+  if (preserveManual) {
+    fs.writeFileSync(manualPath, "externally managed manual", "utf8");
   }
 
   const archiveSha256 = crypto.createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
@@ -179,9 +211,9 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = fa
       "--release",
       releaseTag,
       "--install-dir",
-      installDir,
+      relativeDirs ? "app/claude-rs" : installDir,
       "--bin-dir",
-      binDir,
+      relativeDirs ? "bin" : binDir,
       "--yes",
       "--non-interactive",
       "--no-modify-path",
@@ -195,6 +227,7 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = fa
       installerArgs,
       {
         encoding: "utf8",
+        cwd: sandbox,
         env,
         maxBuffer: 10 * 1024 * 1024,
         timeout: 120_000,
@@ -208,7 +241,7 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = fa
     assert.equal(fs.existsSync(lockPath), false, `${scenario} left the install lock behind`);
     assert.deepEqual(fs.readdirSync(tempDir), [], `${scenario} left temporary installer files behind`);
 
-    return {
+    const result = {
       archiveName,
       curlInvocations: fs.existsSync(curlLogPath)
         ? fs.readFileSync(curlLogPath, "utf8").trim().split(/\r?\n/)
@@ -219,7 +252,17 @@ function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = fa
       signal: commandResult.signal,
       stderr: commandResult.stderr,
       stdout: commandResult.stdout,
+      manualLinked: fs.existsSync(manualPath) && fs.lstatSync(manualPath).isSymbolicLink(),
+      staleManualExists: fs.readdirSync(manualDir).includes("claude-rs-old.1"),
     };
+    if (uninstall) {
+      const removal = spawnSync("sh", [installerPath, "--uninstall", "--install-dir", relativeDirs ? "app/claude-rs" : installDir, "--bin-dir", relativeDirs ? "bin" : binDir, "--yes", "--non-interactive", "--no-modify-path"], { encoding: "utf8", cwd: sandbox, env, timeout: 120_000 });
+      assert.equal(removal.status, 0, `uninstall failed\n${removal.stderr}`);
+      result.manualExistsAfterUninstall = fs.existsSync(manualPath);
+      result.manualContentAfterUninstall = fs.existsSync(manualPath) ? fs.readFileSync(manualPath, "utf8") : undefined;
+      assert.equal(fs.existsSync(path.join(binDir, "claude-rs")), false, "uninstall kept its launcher");
+    }
+    return result;
   } finally {
     fs.rmSync(sandbox, { recursive: true, force: true });
   }
