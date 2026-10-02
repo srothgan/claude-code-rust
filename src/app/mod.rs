@@ -67,20 +67,19 @@ pub use lifecycle::{
 pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
 pub(crate) use state::ComposerBlockReason;
-pub(crate) use state::MarkdownRenderKey;
 pub use state::{
     ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, BtwExchangeBlock, CacheMetrics,
     ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
-    HistoryOutputId, ImageAttachmentBlock, IncrementalMarkdown, InlinePermission, InlineQuestion,
-    InvalidationLevel, LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState,
-    MessageBlock, MessageBlockId, MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock,
-    NoticeDedupKey, NoticeStage, PasteSessionState, PendingCommandAck, PostExitAction,
-    RateLimitIncidentKey, RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState,
-    SessionUsageSummary, ShutdownState, SubagentPermissionContext, SystemSeverity, TerminalSize,
-    TerminalSizeChange, TextBlock, TextBlockSpacing, ToolCallInfo, ToolCallScope,
-    TurnNoticeLocation, TurnNoticeRef, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
-    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
-    UsageSourceKind, UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
+    HistoryOutputId, ImageAttachmentBlock, InlinePermission, InlineQuestion, InvalidationLevel,
+    LayoutInvalidation, LiveRegionRenderState, LoginHint, McpState, MessageBlock, MessageBlockId,
+    MessageRole, MessageUsage, ModeInfo, ModeState, NoticeBlock, NoticeDedupKey, NoticeStage,
+    PasteSessionState, PendingCommandAck, PostExitAction, RateLimitIncidentKey, RecentSessionInfo,
+    SelectionPoint, SessionPickerState, SessionUsageState, SessionUsageSummary, ShutdownState,
+    SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock,
+    TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
+    UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
+    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
+    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
     hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
 };
 pub(crate) use state::{

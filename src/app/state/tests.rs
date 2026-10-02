@@ -502,6 +502,21 @@ fn assistant_tool_message_with_pending_permission(id: &str) -> ChatMessage {
 }
 
 #[test]
+fn history_retention_counts_canonical_text_allocation_once() {
+    let baseline = user_text_message("");
+    let baseline_bytes = App::measure_message_bytes(&baseline);
+    let mut source = String::with_capacity(4096);
+    source.push_str("hello\n\nhow are you");
+    let capacity = source.capacity();
+    let message =
+        ChatMessage::new(MessageRole::User, vec![MessageBlock::Text(TextBlock::new(source))], None);
+    assert_eq!(App::measure_message_bytes(&message) - baseline_bytes, capacity);
+    let mut app = make_test_app();
+    app.push_message_tracked(message);
+    assert_eq!(app.transcript.retained_history_bytes, baseline_bytes + capacity);
+}
+
+#[test]
 fn history_retention_accounts_for_mcp_resource_link_allocations() {
     let baseline =
         assistant_tool_message("resource-link-baseline", model::ToolCallStatus::Completed);
@@ -1190,130 +1205,6 @@ fn rebuild_tool_indices_includes_completed_tools() {
     app.rebuild_tool_indices();
 
     assert_eq!(app.lookup_tool_call("bash-1"), Some((0, 0)));
-}
-
-// IncrementalMarkdown
-
-/// Simple render function for tests: wraps each line in a `Line`.
-fn test_render(src: &str) -> Vec<Line<'static>> {
-    src.lines().map(|l| Line::from(l.to_owned())).collect()
-}
-
-fn test_render_key() -> super::messages::MarkdownRenderKey {
-    super::messages::MarkdownRenderKey { width: 80, bg: None, preserve_newlines: false }
-}
-
-#[test]
-fn incr_default_empty() {
-    let incr = IncrementalMarkdown::default();
-    assert!(incr.full_text().is_empty());
-}
-
-#[test]
-fn incr_from_complete() {
-    let incr = IncrementalMarkdown::from_complete("hello world");
-    assert_eq!(incr.full_text(), "hello world");
-}
-
-#[test]
-fn incr_append_single_chunk() {
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("hello");
-    assert_eq!(incr.full_text(), "hello");
-}
-
-#[test]
-fn incr_append_accumulates_chunks() {
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("line1");
-    incr.append("\nline2");
-    incr.append("\nline3");
-    assert_eq!(incr.full_text(), "line1\nline2\nline3");
-}
-
-#[test]
-fn incr_append_preserves_paragraph_delimiters() {
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("para1\n\npara2");
-    assert_eq!(incr.full_text(), "para1\n\npara2");
-}
-
-#[test]
-fn incr_full_text_reconstruction() {
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("p1\n\np2\n\np3");
-    assert_eq!(incr.full_text(), "p1\n\np2\n\np3");
-}
-
-#[test]
-fn incr_lines_renders_all() {
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("line1\n\nline2\n\nline3");
-    let lines = incr.lines(test_render_key(), &test_render);
-    // test_render maps each source line to one output line
-    assert_eq!(lines.len(), 5);
-}
-
-#[test]
-fn incr_ensure_rendered_preserves_text() {
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("p1\n\np2\n\ntail");
-    incr.ensure_rendered(test_render_key(), &test_render);
-    assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
-}
-
-#[test]
-fn incr_invalidate_renders_preserves_text() {
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("p1\n\np2\n\ntail");
-    incr.invalidate_renders();
-    assert_eq!(incr.full_text(), "p1\n\np2\n\ntail");
-}
-
-#[test]
-fn incr_reuses_rendered_prefix_chunks() {
-    use std::cell::Cell;
-
-    let calls = Cell::new(0usize);
-    let render = |src: &str| -> Vec<Line<'static>> {
-        calls.set(calls.get() + 1);
-        test_render(src)
-    };
-
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("p1\n\np2");
-    let _ = incr.lines(test_render_key(), &render);
-    assert_eq!(calls.get(), 2);
-
-    incr.append(" tail");
-    let _ = incr.lines(test_render_key(), &render);
-    assert_eq!(calls.get(), 3);
-}
-
-#[test]
-fn incr_does_not_split_inside_fenced_code_blocks() {
-    let calls = std::cell::Cell::new(0usize);
-    let render = |src: &str| -> Vec<Line<'static>> {
-        calls.set(calls.get() + 1);
-        test_render(src)
-    };
-
-    let mut incr = IncrementalMarkdown::default();
-    incr.append("```rust\nfn main() {\n\nprintln!(\"hi\");\n}\n```\n\nafter");
-    let _ = incr.lines(test_render_key(), &render);
-
-    assert_eq!(calls.get(), 2);
-}
-
-#[test]
-fn incr_streaming_simulation() {
-    // Simulate a realistic streaming scenario
-    let mut incr = IncrementalMarkdown::default();
-    let chunks = ["Here is ", "some text.\n", "\nNext para", "graph here.\n\n", "Final."];
-    for chunk in chunks {
-        incr.append(chunk);
-    }
-    assert_eq!(incr.full_text(), "Here is some text.\n\nNext paragraph here.\n\nFinal.");
 }
 
 fn focus_test_app_with_available_targets() -> App {

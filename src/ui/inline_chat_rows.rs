@@ -1696,6 +1696,27 @@ mod tests {
     }
 
     #[test]
+    fn user_paragraph_gap_survives_physical_wrapping_while_assistant_streams() {
+        let mut app = App::test_default();
+        app.push_message_tracked(user_text_message("hello hello hello hello\n\nhow are you"));
+        app.transcript.messages.push(assistant_text_message("still streaming"));
+
+        for width in [80, 12, 80] {
+            let rows = serialize_live_rows(&mut app, width);
+            let texts: Vec<_> =
+                line_texts(&rows).into_iter().map(|line| line.trim_end().to_owned()).collect();
+            let assistant =
+                texts.iter().position(|line| line == "Claude").expect("assistant label");
+            let expected = if width == 12 {
+                vec!["User", "hello hello", "hello hello", "", "how are you"]
+            } else {
+                vec!["User", "hello hello hello hello", "", "how are you"]
+            };
+            assert_eq!(&texts[..assistant], expected, "width={width}");
+        }
+    }
+
+    #[test]
     fn width_rebuild_wraps_same_canonical_transcript_to_different_row_counts() {
         let mut app = App::test_default();
         app.push_message_tracked(user_text_message(

@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 use crate::app::ChatMessage;
-use crate::app::{BlockCache, IncrementalMarkdown, MarkdownRenderKey, TextBlock};
+use crate::app::{BlockCache, TextBlock};
 use crate::ui::tool_call;
 use crate::ui::wrap::wrap_markdown_lines_to_physical_rows;
 use ratatui::style::Color;
@@ -84,16 +84,12 @@ fn preprocess_markdown(text: &str) -> String {
     result
 }
 
-/// Render a text block with caching. Uses paragraph-level incremental markdown
-/// during streaming to avoid re-parsing the entire text every frame.
-///
-/// Cache hierarchy:
-/// 1. `BlockCache` (full block) -- hit for completed messages (no changes).
-/// 2. `IncrementalMarkdown` (per-paragraph) -- only tail paragraph re-parsed during streaming.
+/// Render the complete canonical source so paragraph separators and Markdown
+/// context survive caching. Streaming splits stable prefixes into text blocks
+/// at message construction time; each block retains its own render cache.
 pub(super) fn render_text_cached(
     text: &str,
     cache: &mut BlockCache,
-    incr: &mut IncrementalMarkdown,
     width: u16,
     bg: Option<Color>,
     preserve_newlines: bool,
@@ -113,22 +109,11 @@ pub(super) fn render_text_cached(
 
     let _t = crate::perf::start("msg::render_text");
 
-    // Build a render function that handles preprocessing + tui_markdown
-    let render_fn = |src: &str| -> Vec<Line<'static>> {
-        let mut preprocessed = preprocess_markdown(src);
-        if preserve_newlines {
-            preprocessed = force_markdown_line_breaks(&preprocessed);
-        }
-        super::document_table::render_markdown_with_tables(&preprocessed, width, bg)
-    };
-    let render_key = MarkdownRenderKey { width, bg, preserve_newlines };
-
-    // Ensure any previously invalidated paragraph caches are re-rendered
-    let _ = text;
-    incr.ensure_rendered(render_key, &render_fn);
-
-    // Render: cached paragraphs + fresh tail
-    let fresh = incr.lines(render_key, &render_fn);
+    let mut preprocessed = preprocess_markdown(text);
+    if preserve_newlines {
+        preprocessed = force_markdown_line_breaks(&preprocessed);
+    }
+    let fresh = super::document_table::render_markdown_with_tables(&preprocessed, width, bg);
 
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
@@ -151,15 +136,7 @@ pub(super) fn render_text_block_cached(
     preserve_newlines: bool,
     out: &mut Vec<Line<'static>>,
 ) {
-    render_text_cached(
-        &block.text,
-        &mut block.cache,
-        &mut block.markdown,
-        width,
-        bg,
-        preserve_newlines,
-        out,
-    );
+    render_text_cached(&block.text, &mut block.cache, width, bg, preserve_newlines, out);
 }
 
 /// Convert single line breaks into hard breaks so user-entered newlines persist.
@@ -429,6 +406,80 @@ mod tests {
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect()
+    }
+
+    #[test]
+    fn user_paragraph_spacing_survives_cache_reuse_and_resize() {
+        for (source, expected) in [
+            ("hello\n\nhow are you", vec!["User", "hello", "", "how are you"]),
+            ("hello\nhow are you", vec!["User", "hello", "how are you"]),
+            ("one\n\ntwo\n\nthree", vec!["User", "one", "", "two", "", "three"]),
+            ("hello\n\n\nhow are you", vec!["User", "hello", "", "how are you"]),
+            ("hello\n \t\nhow are you", vec!["User", "hello", "", "how are you"]),
+            ("こんにちは\n\n😀 hello", vec!["User", "こんにちは", "", "😀 hello"]),
+        ] {
+            let mut msg = make_text_message(MessageRole::User, source);
+            for width in [80, 80, 12, 80] {
+                let mut lines = Vec::new();
+                render_message(&mut msg, width, &mut lines);
+                assert_eq!(
+                    render_lines_to_strings(&lines),
+                    expected,
+                    "source={source:?}, width={width}"
+                );
+                let MessageBlock::Text(block) = &msg.blocks[0] else {
+                    panic!("expected user text");
+                };
+                assert_eq!(block.text, source);
+                assert!(
+                    lines[1..]
+                        .iter()
+                        .all(|line| line.style.bg == Some(crate::ui::theme::USER_MSG_BG))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn user_paragraph_spacing_survives_source_append_and_cache_invalidation() {
+        let mut msg = make_text_message(MessageRole::User, "hello\n\n");
+        let mut before = Vec::new();
+        render_message(&mut msg, 80, &mut before);
+        let MessageBlock::Text(block) = &mut msg.blocks[0] else {
+            panic!("expected user text");
+        };
+        block.text.push_str("how are you");
+        block.cache.invalidate();
+
+        let mut after = Vec::new();
+        render_message(&mut msg, 80, &mut after);
+        assert_eq!(render_lines_to_strings(&after), vec!["User", "hello", "", "how are you"]);
+    }
+
+    #[test]
+    fn user_markdown_boundaries_retain_existing_document_spacing() {
+        for (source, expected) in [
+            ("before\n\n# Heading\n\nafter", vec!["User", "before", "", "Heading", "", "after"]),
+            (
+                "intro\n\n- one\n- two\n\noutro",
+                vec!["User", "intro", "  - one", "  - two", "outro"],
+            ),
+            (
+                "before\n\n```text\none\n\nthree\n```\n\nafter",
+                vec!["User", "before", "", "```text", "one", "", "three", "```", "", "after"],
+            ),
+            ("\n\nhello\n\n", vec!["User", "hello"]),
+            ("", vec!["User"]),
+        ] {
+            let mut msg = make_text_message(MessageRole::User, source);
+            let mut lines = Vec::new();
+            render_message(&mut msg, 80, &mut lines);
+            let text: Vec<_> = render_lines_to_strings(&lines)
+                .into_iter()
+                .map(|line| line.trim_end().to_owned())
+                .collect();
+            assert_eq!(text, expected, "source={source:?}");
+        }
     }
 
     #[test]

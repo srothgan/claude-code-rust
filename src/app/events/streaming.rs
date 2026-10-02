@@ -58,7 +58,6 @@ pub(super) fn append_agent_stream_text(
     }
     if let Some(MessageBlock::Text(block)) = blocks.last_mut() {
         block.text.push_str(chunk);
-        block.markdown.append(chunk);
         block.add_source_message_uuid(source_message_uuid);
         block.cache.invalidate();
     } else {

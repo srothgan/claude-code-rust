@@ -37,12 +37,11 @@ pub use cache_metrics::CacheMetrics;
 pub use chat_render::{
     ChatRenderState, ComposerRenderState, LiveRegionRenderState, TerminalSize, TerminalSizeChange,
 };
-pub(crate) use messages::MarkdownRenderKey;
 pub use messages::{
     BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, ImageAttachmentBlock,
-    IncrementalMarkdown, MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey,
-    RateLimitIncidentKey, SystemSeverity, TextBlock, TextBlockSpacing, UserDialogBlock,
-    WelcomeBlock, hash_text_block_content, hash_welcome_block_content,
+    MessageBlock, MessageBlockId, MessageRole, NoticeBlock, NoticeDedupKey, RateLimitIncidentKey,
+    SystemSeverity, TextBlock, TextBlockSpacing, UserDialogBlock, WelcomeBlock,
+    hash_text_block_content, hash_welcome_block_content,
 };
 pub use paste::PasteState;
 pub(crate) use pending_messages::{

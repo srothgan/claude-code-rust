@@ -196,7 +196,6 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
             block.text.push_str(&text.text);
-            block.markdown.append(&text.text);
             block.add_source_message_uuid(chunk.source_message_uuid.as_deref());
             block.cache.invalidate();
         } else {

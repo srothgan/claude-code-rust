@@ -272,8 +272,8 @@ mod tests {
     use super::*;
     use crate::app::keymap::KeyContext;
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, IncrementalMarkdown, InlinePermission,
-        MessageBlock, MessageRole, ToolCallInfo,
+        App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
+        ToolCallInfo,
     };
     use crossterm::event::KeyModifiers;
     use pretty_assertions::assert_eq;
@@ -451,7 +451,6 @@ mod tests {
     #[test]
     fn keeps_non_tool_blocks_untouched() {
         let app = App::test_default();
-        let _ = IncrementalMarkdown::default();
         assert!(app.transcript.messages.is_empty());
     }
 

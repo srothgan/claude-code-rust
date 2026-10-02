@@ -178,12 +178,23 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
         "composer never became available:\n{}",
         output_tail(&output)
     );
-    send(b"go");
+    send(b"\x1b[200~hello\n\nhow are you\x1b[201~");
     std::thread::sleep(Duration::from_millis(500));
     send(b"\r");
     assert!(
         wait_for(&output, "streamed line 5", Duration::from_secs(20)),
         "the fake bridge reply never rendered:\n{}",
+        output_tail(&output)
+    );
+    assert!(
+        output
+            .lock()
+            .expect("output lock")
+            .parser
+            .screen()
+            .contents()
+            .contains("hello\n\nhow are you"),
+        "the submitted user paragraph gap disappeared:\n{}",
         output_tail(&output)
     );
 

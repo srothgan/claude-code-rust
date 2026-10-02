@@ -1318,7 +1318,10 @@ fn startup_resume_history_renders_from_canonical_messages() {
     let mut app = make_test_app();
     let history_updates = vec![
         model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
-            model::ContentBlock::Text(model::TextContent::new("startup user line")),
+            model::ContentBlock::Text(model::TextContent::new("startup user line\n\n")),
+        )),
+        model::SessionUpdate::UserMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("second paragraph")),
         )),
         model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
             model::ContentBlock::Text(model::TextContent::new("startup assistant reply")),
@@ -1340,10 +1343,30 @@ fn startup_resume_history_renders_from_canonical_messages() {
         },
     );
 
-    assert!(canonical_messages_contain_text(&app, "startup user line"));
+    assert!(canonical_messages_contain_text(&app, "startup user line\n\nsecond paragraph"));
     assert!(canonical_messages_contain_text(&app, "startup assistant reply"));
     assert!(live_rows_contain_text(&mut app, "startup user line"));
     assert!(live_rows_contain_text(&mut app, "startup assistant reply"));
+    let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+        &mut app,
+        80,
+        &std::collections::BTreeSet::new(),
+    );
+    let texts: Vec<_> =
+        rows.rows().iter().map(|line| line.to_string().trim_end().to_owned()).collect();
+    assert!(
+        texts.windows(4).any(|rows| rows == ["User", "startup user line", "", "second paragraph"])
+    );
+    let user = app
+        .transcript
+        .messages
+        .iter()
+        .find(|msg| matches!(msg.role, MessageRole::User))
+        .expect("restored user");
+    let MessageBlock::Text(block) = &user.blocks[0] else {
+        panic!("expected restored user text");
+    };
+    assert_eq!(block.text, "startup user line\n\nsecond paragraph");
     assert!(!session_overview_has_welcome(&app));
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(!app.turn.cancel_requested);

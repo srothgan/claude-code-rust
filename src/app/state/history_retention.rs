@@ -7,8 +7,7 @@ use std::mem::{size_of, size_of_val};
 
 use super::LayoutInvalidation as InvalidationLevel;
 use super::messages::{
-    ChatMessage, IncrementalMarkdown, MessageBlock, MessageRole, NoticeDedupKey, TextBlock,
-    WelcomeBlock,
+    ChatMessage, MessageBlock, MessageRole, NoticeDedupKey, TextBlock, WelcomeBlock,
 };
 use super::tool_call_info::{InlinePermission, InlineQuestion, ToolCallInfo};
 use super::types::{HistoryRetentionStats, MessageUsage};
@@ -177,9 +176,7 @@ impl super::App {
         for block in &msg.blocks {
             match block {
                 MessageBlock::Text(block) => {
-                    total = total
-                        .saturating_add(block.text.capacity())
-                        .saturating_add(block.markdown.text_capacity());
+                    total = total.saturating_add(block.text.capacity());
                 }
                 MessageBlock::BtwExchange(block) => {
                     total = total
@@ -190,8 +187,7 @@ impl super::App {
                 MessageBlock::Notice(block) => {
                     total = total
                         .saturating_add(size_of_val(block))
-                        .saturating_add(block.text.text.capacity())
-                        .saturating_add(block.text.markdown.text_capacity());
+                        .saturating_add(block.text.text.capacity());
                     if let Some(dedup_key) = &block.dedup_key {
                         total = total.saturating_add(size_of_val(dedup_key));
                         total = total.saturating_add(match dedup_key {
@@ -500,7 +496,6 @@ impl super::App {
                 && block.text != marker_text
             {
                 block.text.clone_from(&marker_text);
-                block.markdown = IncrementalMarkdown::from_complete(&marker_text);
                 block.cache.invalidate();
                 self.sync_render_cache_slot(idx, 0);
                 self.recompute_message_retained_bytes(idx);

@@ -249,6 +249,88 @@ mod tests {
     }
 
     #[test]
+    fn user_paragraph_spacing_survives_submission_queueing_and_paste_expansion() {
+        for queued in [false, true] {
+            for pasted in [false, true] {
+                let (mut app, mut rx) = app_with_connection();
+                app.status = if queued { AppStatus::Running } else { AppStatus::Ready };
+                if queued {
+                    app.push_message_tracked(ChatMessage::new(
+                        MessageRole::Assistant,
+                        Vec::new(),
+                        None,
+                    ));
+                    app.bind_active_turn_assistant_to_tail();
+                }
+                let source = if pasted {
+                    format!("hello\n\nhow are you\n{}", "long pasted paragraph ".repeat(80))
+                } else {
+                    "hello\n\nhow are you".to_owned()
+                };
+                if pasted {
+                    app.input.insert_paste_block(&source);
+                    assert!(app.input.lines()[0].starts_with("[Pasted Text "));
+                } else {
+                    app.input.set_text(&source);
+                }
+                submit_input(&mut app);
+
+                let BridgeCommand::Prompt { message_uuid, chunks, inline_pastes, .. } =
+                    rx.try_recv().expect("prompt dispatched").command
+                else {
+                    panic!("expected prompt command");
+                };
+                assert_eq!(chunks.len(), 1);
+                assert_eq!(chunks[0].value.as_str(), Some(source.as_str()));
+                assert_eq!(inline_pastes, if pasted { vec![source.clone()] } else { Vec::new() });
+                assert!(app.input.is_empty());
+                if queued {
+                    assert_eq!(
+                        app.pending_user_messages.iter().next().expect("pending prompt").text,
+                        source
+                    );
+                    crate::app::events::handle_client_event(
+                        &mut app,
+                        ClientEvent::UserMessageQueued {
+                            session_id: "session-1".to_owned(),
+                            message_uuid: message_uuid.clone(),
+                        },
+                    );
+                    crate::app::events::handle_client_event(
+                        &mut app,
+                        ClientEvent::UserMessageStarted {
+                            session_id: "session-1".to_owned(),
+                            message_uuid,
+                            source: crate::agent::types::UserMessageStartSource::StreamEvent,
+                        },
+                    );
+                    assert!(app.pending_user_messages.is_empty());
+                }
+                let user = app
+                    .transcript
+                    .messages
+                    .iter()
+                    .find(|msg| matches!(msg.role, MessageRole::User))
+                    .expect("user inserted");
+                let MessageBlock::Text(block) = &user.blocks[0] else {
+                    panic!("expected user text");
+                };
+                assert_eq!(block.text, source);
+                let rows =
+                    crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+                        &mut app,
+                        80,
+                        &std::collections::BTreeSet::new(),
+                    );
+                let texts: Vec<_> =
+                    rows.rows().iter().map(|line| line.to_string().trim_end().to_owned()).collect();
+                let start = texts.iter().position(|line| line == "User").expect("user label");
+                assert_eq!(&texts[start..start + 4], ["User", "hello", "", "how are you"]);
+            }
+        }
+    }
+
+    #[test]
     fn btw_submission_and_result_follow_the_real_command_event_workflow() {
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
