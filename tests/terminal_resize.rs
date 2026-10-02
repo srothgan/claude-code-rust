@@ -160,7 +160,14 @@ impl TerminalTest {
             std::fs::create_dir(&cli_dir).expect("fake CLI directory");
             let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
             if mode == "spawn-error" {
-                std::fs::write(&cli, b"invalid executable fixture").expect("invalid executable");
+                let contents = if cfg!(unix) {
+                    // macOS can run executable text without a shebang through
+                    // a shell. A missing interpreter forces a spawn error.
+                    format!("#!{}\nexit 99\n", cli_dir.join("missing-interpreter").display())
+                } else {
+                    "invalid executable fixture".to_owned()
+                };
+                std::fs::write(&cli, contents).expect("invalid executable");
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
