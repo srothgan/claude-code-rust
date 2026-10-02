@@ -66,15 +66,15 @@ impl ChatRenderState {
         *self = Self::default();
     }
 
-    pub fn set_terminal_size(&mut self, width: u16, height: u16) {
-        self.terminal_width = width;
-        self.terminal_height = height;
+    pub const fn terminal_size(&self) -> TerminalSize {
+        TerminalSize::new(self.terminal_width, self.terminal_height)
     }
 
     pub fn observe_terminal_size(&mut self, width: u16, height: u16) -> TerminalSizeChange {
-        let previous = TerminalSize::new(self.terminal_width, self.terminal_height);
+        let previous = self.terminal_size();
         let current = TerminalSize::new(width, height);
-        self.set_terminal_size(width, height);
+        self.terminal_width = width;
+        self.terminal_height = height;
 
         if !previous.is_known() {
             TerminalSizeChange::Initial { current }

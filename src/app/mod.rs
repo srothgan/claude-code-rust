@@ -303,6 +303,9 @@ async fn run_tui_loop(
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
         }
+        let (width, height) =
+            crossterm::terminal::size().context("failed to read terminal size before draw")?;
+        events::reconcile_terminal_size(app, width, height);
         if matches!(app.terminal_lifecycle, TerminalLifecycleState::ReleasedToChild(_)) {
             app.surface_dirty.clear_for_child_release();
         } else {

@@ -186,11 +186,12 @@ impl ChatTerminalSession {
     pub(super) fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {
         ChatTerminal::ensure_line_wrap_disabled(&mut app.chat_render.line_wrap_disabled)?;
 
-        let screen_size =
-            crossterm::terminal::size().context("failed to read chat terminal size")?;
+        // The recorded size is owned by the resize path. A live size that differs
+        // from it fails the draw-start snapshot check and is replayed after reconcile.
+        let recorded_size = app.chat_render.terminal_size();
+        let screen_size = (recorded_size.width, recorded_size.height);
         let width = screen_size.0.max(1);
         let terminal_height = screen_size.1.max(1);
-        app.chat_render.set_terminal_size(screen_size.0, screen_size.1);
 
         let base_excluded_ids = self.base_history_excluded_ids();
         let serialized_rows =

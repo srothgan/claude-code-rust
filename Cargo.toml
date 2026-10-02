@@ -88,9 +88,11 @@ debug = false
 debug = false
 
 [dev-dependencies]
+portable-pty = "0.9"
 pretty_assertions = "1.4"
 tempfile = "3.25.0"
 tokio = { version = "1.52.3", features = ["test-util"] }
+vt100 = "0.16"
 
 [lints.clippy]
 # Deny panic-prone operations in production code (tests exempted via clippy.toml)

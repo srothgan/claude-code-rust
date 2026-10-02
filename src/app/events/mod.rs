@@ -16,7 +16,8 @@ mod turn;
 
 use super::{
     App, AppStatus, ChatMessage, ChatMessageId, FullscreenView, InvalidationLevel, MessageBlock,
-    MessageRole, PendingCommandAck, SurfaceMode, SystemSeverity, TerminalSizeChange, TextBlock,
+    MessageRole, PendingCommandAck, SurfaceMode, SystemSeverity, TerminalSize, TerminalSizeChange,
+    TextBlock,
 };
 use crate::agent::model;
 #[cfg(all(test, target_os = "macos"))]
@@ -122,6 +123,15 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
         app.request_active_surface_repaint();
     }
     outcome
+}
+
+/// Routes a live terminal size that differs from the recorded one through the
+/// same path as a delivered resize event.
+pub fn reconcile_terminal_size(app: &mut App, width: u16, height: u16) {
+    if app.chat_render.terminal_size() == TerminalSize::new(width, height) {
+        return;
+    }
+    let _ = handle_terminal_event(app, Event::Resize(width, height));
 }
 
 fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {

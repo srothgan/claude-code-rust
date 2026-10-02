@@ -1166,6 +1166,37 @@ fn same_size_resize_does_not_request_chat_purge() {
 }
 
 #[test]
+fn reconciling_an_unreported_size_requests_the_same_chat_purge_as_a_resize_event() {
+    let mut app = make_test_app();
+    app.surface_dirty = crate::app::SurfaceDirtyState::default();
+    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+    seed_resize_measurements(&mut app);
+
+    reconcile_terminal_size(&mut app, 90, 55);
+
+    assert_eq!(
+        app.surface_dirty.chat.rebuild,
+        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
+    );
+    assert!(app.surface_dirty.chat.repaint);
+    assert_resize_measurements_cleared(&app, 90, 55);
+}
+
+#[test]
+fn reconciling_the_recorded_size_changes_nothing() {
+    let mut app = make_test_app();
+    app.surface_dirty = crate::app::SurfaceDirtyState::default();
+    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
+    seed_resize_measurements(&mut app);
+
+    reconcile_terminal_size(&mut app, 90, 30);
+
+    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
+    assert!(!app.surface_dirty.chat.repaint);
+    assert_seed_resize_measurements_preserved(&app);
+}
+
+#[test]
 fn resize_marks_fullscreen_surface_dirty_when_running_fullscreen() {
     let mut app = make_test_app();
     app.surface_dirty = crate::app::SurfaceDirtyState::default();
