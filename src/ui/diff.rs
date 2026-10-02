@@ -363,6 +363,37 @@ mod tests {
     }
 
     #[test]
+    fn render_diff_numbers_lines_by_file_position() {
+        let old = (1..=130).fold(String::new(), |mut text, line| {
+            use std::fmt::Write;
+            writeln!(text, "line {line}").unwrap();
+            text
+        });
+        let new = old.replace("line 122\n", "first\nsecond\n");
+        let lines = render_diff(&model::Diff::new("tmp.rs", new).old_text(Some(old)), 80);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .collect();
+
+        assert_eq!(
+            rendered,
+            [
+                "(+2, -1)",
+                "119     line 119",
+                "120     line 120",
+                "121     line 121",
+                "122  -  line 122",
+                "122  +  first",
+                "123  +  second",
+                "124     line 123",
+                "125     line 124",
+                "126     line 125",
+            ]
+        );
+    }
+
+    #[test]
     fn render_diff_preserves_source_indentation() {
         let lines = render_diff(
             &model::Diff::new(

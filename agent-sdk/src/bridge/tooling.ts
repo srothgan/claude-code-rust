@@ -1172,19 +1172,85 @@ function editDiffFromResult(
       gitDiff.repository.trim().length > 0
         ? gitDiff.repository.trim()
         : undefined;
+    const fileTexts = editedFileTexts(candidate);
     return [
       {
         type: "diff",
         old_path: filePath,
         new_path: filePath,
-        old: oldText,
-        new: newText,
+        old: fileTexts?.old ?? oldText,
+        new: fileTexts?.new ?? newText,
         ...(repository ? { repository } : {}),
       },
     ];
   }
 
   return editDiffFromInput(rawInput);
+}
+
+/**
+ * Whole-file before/after texts for a structured Edit result, so the diff is
+ * numbered by file line instead of by position inside the replaced fragment.
+ * Returns undefined when the result cannot be reproduced exactly.
+ */
+function editedFileTexts(
+  result: Record<string, unknown>,
+): { old: string; new: string } | undefined {
+  const original = result.originalFile;
+  const oldString = result.oldString;
+  const newString = result.newString;
+  if (
+    typeof original !== "string" ||
+    typeof oldString !== "string" ||
+    typeof newString !== "string" ||
+    !Array.isArray(result.structuredPatch) ||
+    (oldString === "" && original !== "")
+  ) {
+    return undefined;
+  }
+
+  // Deleting text that is followed by a line break removes that break too.
+  const target =
+    newString === "" &&
+    !oldString.endsWith("\n") &&
+    original.includes(`${oldString}\n`)
+      ? `${oldString}\n`
+      : oldString;
+  if (!original.includes(target)) {
+    return undefined;
+  }
+  const edited =
+    result.replaceAll === true
+      ? original.split(target).join(newString)
+      : original.replace(target, () => newString);
+
+  let patchLineDelta = 0;
+  for (const hunk of result.structuredPatch) {
+    const record = asRecordOrNull(hunk);
+    if (
+      typeof record?.oldLines !== "number" ||
+      typeof record.newLines !== "number"
+    ) {
+      return undefined;
+    }
+    patchLineDelta += record.newLines - record.oldLines;
+  }
+  if (
+    result.structuredPatch.length > 0 &&
+    countLines(edited) - countLines(original) !== patchLineDelta
+  ) {
+    return undefined;
+  }
+
+  return { old: original, new: edited };
+}
+
+function countLines(text: string): number {
+  if (text === "") {
+    return 0;
+  }
+  const breaks = text.split("\n").length - 1;
+  return text.endsWith("\n") ? breaks : breaks + 1;
 }
 
 function findShellResultRecord(

@@ -837,6 +837,142 @@ test("buildToolResultFields preserves Edit diff content from input and structure
   ]);
 });
 
+test("buildToolResultFields maps structured Edit output to whole-file diff content", () => {
+  const original = "one\ntwo\nthree\nfour\nfive\n";
+  const input = { file_path: "src/main.ts", old_string: "four", new_string: "4a\n4b" };
+  const editResult = (overrides: Record<string, unknown>) =>
+    buildToolResultFields(
+      false,
+      [{ text: "Updated successfully" }],
+      createToolCall("tc-e-full", "Edit", input),
+      {
+        result: {
+          filePath: "src/main.ts",
+          oldString: "four",
+          newString: "4a\n4b",
+          originalFile: original,
+          structuredPatch: [
+            {
+              oldStart: 1,
+              oldLines: 5,
+              newStart: 1,
+              newLines: 6,
+              lines: [" one", " two", " three", "-four", "+4a", "+4b", " five"],
+            },
+          ],
+          userModified: false,
+          replaceAll: false,
+          ...overrides,
+        },
+      },
+    );
+  const diff = (old: string, next: string) => [
+    { type: "diff", old_path: "src/main.ts", new_path: "src/main.ts", old, new: next },
+  ];
+
+  assert.deepEqual(
+    editResult({}).content,
+    diff(original, "one\ntwo\nthree\n4a\n4b\nfive\n"),
+  );
+
+  // Deleting a whole line takes its line break with it.
+  assert.deepEqual(
+    editResult({
+      newString: "",
+      structuredPatch: [
+        { oldStart: 1, oldLines: 5, newStart: 1, newLines: 4, lines: [] },
+      ],
+    }).content,
+    diff(original, "one\ntwo\nthree\nfive\n"),
+  );
+
+  assert.deepEqual(
+    editResult({
+      oldString: "e",
+      newString: "E",
+      replaceAll: true,
+      structuredPatch: [
+        { oldStart: 1, oldLines: 5, newStart: 1, newLines: 5, lines: [] },
+      ],
+    }).content,
+    diff(original, "onE\ntwo\nthrEE\nfour\nfivE\n"),
+  );
+
+  // Replacement patterns in the new text are inserted literally.
+  for (const replaceAll of [false, true]) {
+    assert.deepEqual(
+      editResult({
+        newString: "$& $1 $$",
+        replaceAll,
+        structuredPatch: [
+          { oldStart: 1, oldLines: 5, newStart: 1, newLines: 5, lines: [] },
+        ],
+      }).content,
+      diff(original, "one\ntwo\nthree\n$& $1 $$\nfive\n"),
+    );
+  }
+
+  // Carriage returns are carried through untouched.
+  assert.deepEqual(
+    editResult({
+      originalFile: "one\r\nfour\r\nfive\r\n",
+      structuredPatch: [
+        { oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, lines: [] },
+      ],
+    }).content,
+    diff("one\r\nfour\r\nfive\r\n", "one\r\n4a\n4b\r\nfive\r\n"),
+  );
+
+  // An empty old string creates the file.
+  assert.deepEqual(
+    editResult({
+      oldString: "",
+      originalFile: "",
+      structuredPatch: [
+        { oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ["+4a", "+4b"] },
+      ],
+    }).content,
+    diff("", "4a\n4b"),
+  );
+
+  // Results that cannot be reproduced keep the fragment diff from the input.
+  for (const overrides of [
+    { originalFile: null },
+    { originalFile: undefined },
+    { oldString: "missing" },
+    { oldString: "", originalFile: original },
+    { oldString: "three\nfour", originalFile: "three\r\nfour\r\n" },
+    { filePath: "src/other.ts" },
+    { structuredPatch: undefined },
+    { structuredPatch: "@@ -1,5 +1,6 @@" },
+    { structuredPatch: [null] },
+    { structuredPatch: [{ oldStart: 1, oldLines: "5", newStart: 1, newLines: 6 }] },
+    {
+      structuredPatch: [
+        { oldStart: 1, oldLines: 5, newStart: 1, newLines: 9, lines: [] },
+      ],
+    },
+  ]) {
+    assert.deepEqual(
+      editResult(overrides).content,
+      diff("four", "4a\n4b"),
+      JSON.stringify(overrides),
+    );
+  }
+
+  // A resumed transcript carries only the tool_result block, not the structured output.
+  const base = createToolCall("tc-e-resumed", "Edit", input);
+  const block = {
+    type: "tool_result",
+    tool_use_id: "tc-e-resumed",
+    content: "The file src/main.ts has been updated successfully.",
+  };
+  assert.deepEqual(
+    buildToolResultFields(false, block.content, base, block).content,
+    diff("four", "4a\n4b"),
+  );
+});
+
 test("buildToolResultFields ignores model-facing Bash stale read hints", () => {
   const base = createToolCall("tc-bash", "Bash", { command: "npm test" });
   const fields = buildToolResultFields(
