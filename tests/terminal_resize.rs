@@ -153,6 +153,7 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
     command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", bridge_runtime());
     command.env("FAKE_BRIDGE_LINES", "1500");
     command.env("FAKE_BRIDGE_INTERVAL_MS", "15");
+    command.env("FAKE_BRIDGE_FOLLOW_UP_LINES", "3");
     let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
     let reader = pair.master.try_clone_reader().expect("pty reader");
     let process = pair.slave.spawn_command(command).expect("spawn claude-rs");

@@ -1,9 +1,11 @@
 // Minimal NDJSON bridge stand-in for terminal tests: completes the handshake,
-// then streams a long reply for every prompt. No model or network is involved.
+// then streams a long first reply and short follow-up replies. No model or
+// network is involved.
 const readline = require('node:readline');
 
 const SESSION = 'fake-session';
 const LINES = Number(process.env.FAKE_BRIDGE_LINES ?? 1500);
+const FOLLOW_UP_LINES = Number(process.env.FAKE_BRIDGE_FOLLOW_UP_LINES ?? 3);
 const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
 let replyNumber = 0;
 
@@ -34,6 +36,8 @@ function streamReply(messageUuid) {
       source_message_uuid: null,
     },
   });
+  // Follow-up replies stay short so their start marker remains on screen.
+  const lines = replyNumber === 1 ? LINES : FOLLOW_UP_LINES;
   let line = 0;
   const timer = setInterval(() => {
     line++;
@@ -46,7 +50,7 @@ function streamReply(messageUuid) {
         source_message_uuid: null,
       },
     });
-    if (line >= LINES) {
+    if (line >= lines) {
       clearInterval(timer);
       send({ event: 'turn_complete', session_id: SESSION });
     }
