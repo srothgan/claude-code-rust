@@ -161,6 +161,12 @@ Do not trigger releases, create tags, or publish npm packages from contributor P
 - **Comments**: Only where the logic isn't self-evident
 - **License headers**: Every new `.rs` file should include `// SPDX-License-Identifier: Apache-2.0`
 
+## AI Agents
+
+`AGENTS.md` holds the shared instructions for coding agents working in this repository. `CLAUDE.md` only imports it, so Claude Code and other agents follow the same rules.
+
+Keep `AGENTS.md` limited to what applies to every contributor. Put your own tooling and preferences, such as personal MCP servers, skills, or search tools, in a `PERSONAL.md` at the repository root. The file is gitignored and optional. The Personalization section of `AGENTS.md` pulls it in: Claude Code imports it automatically, and other agents are told to read it when it exists.
+
 ## Architecture
 
 The project is split into a Rust binary and an in-repo TypeScript bridge:

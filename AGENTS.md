@@ -4,7 +4,6 @@
 
 - Be precise, concise, and evidence-based. Avoid vague statements and unnecessary long explanations.
 - Inspect the relevant code, configuration, tests, and existing patterns before changing behavior.
-- For any file search or grep in the current Git-indexed directory, **always use the fff MCP tools**  (`find_files`, `grep`, or `multi_grep`) if the fff MCP is available to you.
 - For clear, scoped implementation requests, proceed without asking for another approval.
 - For open-ended feature or design requests with more than one viable approach, present the options and a recommendation before editing.
 - Ask for clarification only when ambiguity materially affects behavior, scope, data, security, or an irreversible/external action.
@@ -172,17 +171,7 @@ Run these only when the change touches the matching area:
 
 ### Diagnostics
 
-- Default TUI diagnostics logs on this Windows workspace are written under `C:\Users\Simon Peter Rothgang\AppData\Local\claude-code-rust\logs\runtime\`.
 - When logging is enabled without `--log-file`, the default filename is timestamped per run: `claude-rs-YYYYMMDDTHHMMSSZ-pPID-rRUN.log`.
-- Legacy append mode without `--log-file` still uses `C:\Users\Simon Peter Rothgang\AppData\Local\claude-code-rust\logs\claude-rs.log`.
-
-### Skills
-
-Detailed skill definitions exist in `.codex/skills/`.
-
-- Start with `rust-router` for Rust tasks.
-- Use `rust-learner` for version and crate-information tasks.
-- Use specialized skills only when their triggers match.
 
 ### Additional project restrictions
 
@@ -222,3 +211,9 @@ chore(agent-sdk): align integration with 0.3.286
 - align CLI rendering and ownership decisions with SDK metadata
 - add Rust and bridge regression coverage for migrated contracts
 ```
+
+## Personalization
+
+Personal, untracked instructions live in `PERSONAL.md` at the repository root. The file is optional and gitignored. If it exists, read it and apply it in addition to this document. It may add personal tooling and preferences; it does not relax the restrictions above.
+
+@PERSONAL.md
