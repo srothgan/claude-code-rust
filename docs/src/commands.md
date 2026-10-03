@@ -8,7 +8,6 @@ Use `/docs commands` in the app to render the live merged command list into chat
 
 | Command | Usage | Purpose |
 | --- | --- | --- |
-| `/1m-context` | `/1m-context <enable\|disable\|status>` | Enable, disable, or inspect project-local 1M context settings for future sessions. |
 | `/btw` | `/btw <question>` | Ask a contextual side question without adding it to the main conversation. |
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
@@ -21,7 +20,6 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/help` | `/help` | Open the fullscreen Help tab. |
 | `/mcp` | `/mcp` | Open MCP status and authorization. |
 | `/plugins` | `/plugins` | Open plugin management. |
-| `/opus-version` | `/opus-version <4.5\|4.6\|4.7\|4.8\|default\|status>` | Set, clear, or inspect the project-local Opus alias pin for future sessions. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
 | `/login` | `/login` | Run Claude CLI authentication and reconnect the session. |
@@ -65,11 +63,3 @@ to inspect the current session's full command list. The output includes app-owne
 If the SDK accepts `/ultracode on` but reports Ultracode unavailable, the command shows an error explaining that the request was saved but Ultracode remains inactive. The verified requested-but-unavailable state remains visible through `/ultracode status`, which reports it as information.
 
 `/fast` changes fast mode only for the active session. It does not rewrite the persisted Fast mode setting. Use the settings surface to choose the fast-mode preference applied when future sessions start.
-
-## Project-Local Commands
-
-`/1m-context` and `/opus-version` persist folder-local settings under `./.claude/settings.local.json`. The current session is not restarted automatically, so run `/new-session` after changing either setting.
-
-`/1m-context disable` writes the environment setting used to disable the 1M context window for future sessions in that folder. `enable` clears that override.
-
-`/opus-version <version>` pins the folder-local Opus alias. `default` clears the pin.

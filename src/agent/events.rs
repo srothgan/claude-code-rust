@@ -29,6 +29,11 @@ impl From<&str> for ConnectionFailure {
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
+    SettingsResultReceived {
+        session_id: String,
+        request_id: Option<String>,
+        result: super::settings::SettingsResult,
+    },
     /// Session update notification (streaming text, tool calls, etc.)
     SessionUpdate { session_id: String, update: model::SessionUpdate },
     /// One side question completed without entering the main conversation.
@@ -257,6 +262,7 @@ impl ClientEvent {
             | Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }

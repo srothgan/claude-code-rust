@@ -11,11 +11,15 @@ fn initialize_routes_untrusted_projects_to_trusted_view() {
     } else {
         "/home/user/work/project".to_owned()
     };
-    app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
-    app.config.committed_preferences_document = json!({
-        "projects": {}
-    });
+    let fixture = tempfile::tempdir().expect("tempdir");
+    app.trust.preferences_path = Some(fixture.path().join(".claude.json"));
+    let prefs = json!({ "projects": {} });
 
+    std::fs::write(
+        app.trust.preferences_path.as_ref().expect("path"),
+        serde_json::to_vec(&prefs).expect("serialize"),
+    )
+    .expect("fixture");
     initialize(&mut app);
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Trusted));
@@ -30,13 +34,18 @@ fn initialize_allows_trusted_projects_into_chat() {
 
     let mut app = App::test_default();
     app.cwd_raw = project_path.to_owned();
-    app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
+    let fixture = tempfile::tempdir().expect("tempdir");
+    app.trust.preferences_path = Some(fixture.path().join(".claude.json"));
     let mut prefs = json!({ "projects": {} });
     prefs["projects"][project_path] = json!({
         "hasTrustDialogAccepted": true
     });
-    app.config.committed_preferences_document = prefs;
 
+    std::fs::write(
+        app.trust.preferences_path.as_ref().expect("path"),
+        serde_json::to_vec(&prefs).expect("serialize"),
+    )
+    .expect("fixture");
     initialize(&mut app);
 
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
@@ -53,7 +62,7 @@ fn accept_persists_trust_and_switches_to_chat() {
     let mut app = App::test_default();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
-    app.config.preferences_path = Some(path.clone());
+    app.trust.preferences_path = Some(path.clone());
     app.trust.status = TrustStatus::Untrusted;
     app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
 
@@ -73,13 +82,18 @@ fn initialize_routes_trusted_resume_picker_startup_to_picker_view() {
     let mut app = App::test_default();
     app.cwd_raw = project_path.to_owned();
     app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
-    app.config.preferences_path = Some(std::path::PathBuf::from("prefs.json"));
+    let fixture = tempfile::tempdir().expect("tempdir");
+    app.trust.preferences_path = Some(fixture.path().join(".claude.json"));
     let mut prefs = json!({ "projects": {} });
     prefs["projects"][project_path] = json!({
         "hasTrustDialogAccepted": true
     });
-    app.config.committed_preferences_document = prefs;
 
+    std::fs::write(
+        app.trust.preferences_path.as_ref().expect("path"),
+        serde_json::to_vec(&prefs).expect("serialize"),
+    )
+    .expect("fixture");
     initialize(&mut app);
 
     assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
@@ -96,7 +110,7 @@ fn accept_routes_resume_picker_startup_to_picker_view() {
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
     app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
-    app.config.preferences_path = Some(path);
+    app.trust.preferences_path = Some(path);
     app.trust.status = TrustStatus::Untrusted;
     app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
 
@@ -116,7 +130,7 @@ fn accept_routes_update_prompt_before_resume_picker() {
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
     app.startup = crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
-    app.config.preferences_path = Some(path);
+    app.trust.preferences_path = Some(path);
     app.trust.status = TrustStatus::Untrusted;
     app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
     app.update_prompt = Some(crate::app::UpdatePromptState {
@@ -166,4 +180,45 @@ fn handle_key_enter_declines_when_no_is_selected() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(app.shutdown_requested());
+}
+
+#[test]
+fn accepting_trust_preserves_fresh_auth_and_project_data() {
+    let fixture = tempfile::tempdir().expect("tempdir");
+    let path = fixture.path().join(".claude.json");
+    let project = fixture.path().join("project");
+    let mut app = App::test_default();
+    app.cwd_raw = project.to_string_lossy().into_owned();
+    app.trust.preferences_path = Some(path.clone());
+    std::fs::write(&path, r#"{"projects": {}}"#).expect("fixture");
+    initialize(&mut app);
+    let key = store::normalize_project_key(&project);
+    let mut external =
+        json!({"oauthAccount": {"accountUuid": "keep"}, "unknown": [1,2], "projects": {}});
+    external["projects"][&key] = json!({"mcpServers": {"server": {"command": "keep"}}});
+    std::fs::write(&path, serde_json::to_vec(&external).expect("serialize"))
+        .expect("external edit");
+    accept(&mut app).expect("accept");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+    assert_eq!(saved["oauthAccount"], external["oauthAccount"]);
+    assert_eq!(saved["unknown"], external["unknown"]);
+    assert_eq!(saved["projects"][&key]["mcpServers"], external["projects"][&key]["mcpServers"]);
+    assert!(store::read_status(&saved, &project).trusted);
+}
+
+#[test]
+fn invalid_trust_structure_is_not_replaced_during_acceptance() {
+    let fixture = tempfile::tempdir().expect("tempdir");
+    let path = fixture.path().join(".claude.json");
+    let mut app = App::test_default();
+    app.cwd_raw = fixture.path().join("project").to_string_lossy().into_owned();
+    app.trust.preferences_path = Some(path.clone());
+    for raw in [r#"{"projects":42,"oauthAccount":{"keep":true}}"#, "{broken"] {
+        std::fs::write(&path, raw).expect("fixture");
+        initialize(&mut app);
+        assert!(accept(&mut app).is_err());
+        assert!(!app.is_project_trusted());
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), raw);
+    }
 }

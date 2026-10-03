@@ -174,9 +174,9 @@ fn push_badge(spans: &mut Vec<Span<'static>>, text: String, color: Color) {
 fn footer_model_badge(app: &App) -> Option<Vec<Span<'static>>> {
     let current_model = app.session_runtime.current_model.as_ref()?;
     let mut badge = current_model.display_name_short.clone();
-    if current_model.supports_effort {
+    if let Some(effort) = app.session_effort().filter(|_| current_model.supports_effort) {
         badge.push('/');
-        badge.push_str(footer_effort_label(app.session_thinking_effort_effective()));
+        badge.push_str(footer_effort_label(effort));
     }
     let model_style = Style::default().fg(FOOTER_CONTEXT_VALUE);
     let mut spans = vec![Span::styled("[", model_style), Span::styled(badge, model_style)];
@@ -529,6 +529,45 @@ mod tests {
 
         assert!(text.contains("[default]"));
         assert!(text.contains("[FAST:OFF]"));
+    }
+
+    #[test]
+    fn reported_session_effort_updates_the_model_badge() {
+        let mut app = app_with_mode();
+        app.session_runtime.session_id = Some("sess-1".into());
+        app.session_runtime.current_model =
+            Some(model::CurrentModel::new("opus", "Opus", "Opus").supports_effort(true));
+        for (value, label) in [
+            ("low", "Low"),
+            ("medium", "Med"),
+            ("high", "High"),
+            ("xhigh", "XHigh"),
+            ("max", "Max"),
+        ] {
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionUpdate {
+                    session_id: "sess-1".to_owned(),
+                    update: model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
+                        option_id: "effortLevel".to_owned(),
+                        value: serde_json::json!(value),
+                    }),
+                },
+            );
+            let footer = serialize_footer_rows(&app, 120);
+            assert!(line_text(&footer.rows[0]).contains(&format!("[Opus/{label}]")));
+        }
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::SessionUpdate {
+                session_id: "sess-1".to_owned(),
+                update: model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
+                    option_id: "effortLevel".to_owned(),
+                    value: serde_json::Value::Null,
+                }),
+            },
+        );
+        assert!(line_text(&serialize_footer_rows(&app, 120).rows[0]).contains("[Opus]"));
     }
 
     #[test]

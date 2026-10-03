@@ -32,6 +32,7 @@ use crossterm::event::{Event, KeyEventKind};
 use std::fmt::Write as _;
 
 pub use client::handle_client_event;
+pub(crate) use session::maybe_emit_fast_mode_disabled_notice;
 
 /// Apply the optimistic UI transition after a cancel command has entered the
 /// bridge command queue. This is local input state, not a bridge event.

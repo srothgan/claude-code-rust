@@ -1,4 +1,5 @@
 import { refreshUltracode } from "./ultracode.js";
+import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
@@ -1734,6 +1735,7 @@ export function handleSdkMessage(
     }
     closeSideQuestions(session.sessionId, session.query);
     void refreshUltracode(session);
+    void refreshSessionEffort(session);
     emitSessionUpdate(session.sessionId, {
       type: "conversation_reset",
       new_conversation_id: newConversationId,
@@ -1968,6 +1970,12 @@ export function handleSdkMessage(
         if (fastModeChanged) {
           emitFastModeUpdate(session);
         }
+      }
+
+      if (msg.effort !== undefined) {
+        observeSessionEffort(session, msg.effort);
+      } else {
+        void refreshSessionEffort(session);
       }
 
       if (Array.isArray(msg.slash_commands)) {

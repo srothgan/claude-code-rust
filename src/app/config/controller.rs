@@ -3,23 +3,19 @@
 
 use super::prelude::*;
 
-pub fn initialize_shared_state(app: &mut App) -> Result<(), String> {
-    let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
-    let notice = loaded.notice.clone();
-    app.config.apply_loaded(loaded, notice, false);
-    app.reconcile_runtime_from_persisted_settings_change();
-    Ok(())
+pub fn open(app: &mut App) -> Result<(), String> {
+    open_tab(app, ConfigTab::Settings)
 }
 
-pub fn open(app: &mut App) -> Result<(), String> {
+pub(crate) fn open_tab(app: &mut App, tab: ConfigTab) -> Result<(), String> {
     if !app.is_project_trusted() {
         return Err("Project trust must be accepted before opening settings".to_owned());
     }
 
-    let loaded = store::load(app.settings_home_override.as_deref(), Some(project_root(app)))?;
-    let notice = loaded.notice.clone();
-    app.config.apply_loaded(loaded, notice, false);
-    app.reconcile_runtime_from_persisted_settings_change();
+    app.config.clear_overlay();
+    app.config.status_message = None;
+    app.config.last_error = None;
+    app.config.active_tab = tab;
     view::set_fullscreen_view(app, FullscreenView::Config);
     request_active_tab_side_effects(app);
     Ok(())
@@ -69,24 +65,35 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     if mcp::handle_mcp_key(app, key) {
         return;
     }
+    if handle_settings_navigation(app, key) {
+        return;
+    }
 
     match (key.code, key.modifiers) {
         (KeyCode::Char(' '), KeyModifiers::NONE)
             if app.config.active_tab == ConfigTab::Settings =>
         {
-            if let Some(spec) = app.config.selected_setting_spec() {
-                edit::activate_setting(app, spec);
+            if let Some(spec) = app.config.selected_setting().cloned() {
+                edit::activate_setting(app, &spec);
             }
         }
-        (KeyCode::Left, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
-            if let Some(spec) = app.config.selected_setting_spec() {
-                edit::step_setting(app, spec, -1);
-            }
+        (KeyCode::Left | KeyCode::Right, KeyModifiers::NONE)
+            if app.config.active_tab == ConfigTab::Settings =>
+        {
+            edit::step_setting(app, if key.code == KeyCode::Left { -1 } else { 1 });
         }
-        (KeyCode::Right, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
-            if let Some(spec) = app.config.selected_setting_spec() {
-                edit::step_setting(app, spec, 1);
-            }
+        (KeyCode::Char('s'), KeyModifiers::NONE)
+            if app.config.active_tab == ConfigTab::Settings =>
+        {
+            app.config.selected_scope = app.config.selected_scope.next();
+        }
+        (KeyCode::Char('r'), KeyModifiers::NONE)
+            if app.config.active_tab == ConfigTab::Settings =>
+        {
+            super::service::request_settings(app);
+        }
+        (KeyCode::Delete, KeyModifiers::NONE) if app.config.active_tab == ConfigTab::Settings => {
+            super::service::reset_selected(app);
         }
         (KeyCode::Char(ch), modifiers)
             if app.config.active_tab == ConfigTab::Status
@@ -118,21 +125,24 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Tab, KeyModifiers::NONE) => {
             activate_tab(app, app.config.active_tab.next());
         }
-        (KeyCode::Up, KeyModifiers::NONE) => {
-            if app.config.active_tab == ConfigTab::Settings {
-                app.config.selected_setting_index =
-                    app.config.selected_setting_index.saturating_sub(1);
-            }
-        }
-        (KeyCode::Down, KeyModifiers::NONE) => {
-            if app.config.active_tab == ConfigTab::Settings {
-                let last_index = setting_specs().len().saturating_sub(1);
-                app.config.selected_setting_index =
-                    (app.config.selected_setting_index + 1).min(last_index);
-            }
-        }
         _ => {}
     }
+}
+
+fn handle_settings_navigation(app: &mut App, key: KeyEvent) -> bool {
+    if app.config.active_tab != ConfigTab::Settings || !key.modifiers.is_empty() {
+        return false;
+    }
+    let last =
+        app.config.snapshot.as_ref().map_or(0, |snapshot| snapshot.catalog.len().saturating_sub(1));
+    app.config.selected_setting_index = match key.code {
+        KeyCode::Up => app.config.selected_setting_index.saturating_sub(1),
+        KeyCode::Down => (app.config.selected_setting_index + 1).min(last),
+        KeyCode::Home => 0,
+        KeyCode::End => last,
+        _ => return false,
+    };
+    true
 }
 
 pub fn handle_paste(app: &mut App, text: &str) -> bool {
@@ -146,6 +156,9 @@ pub fn handle_paste(app: &mut App, text: &str) -> bool {
 }
 
 fn request_active_tab_side_effects(app: &mut App) {
+    if app.config.active_tab == ConfigTab::Settings {
+        super::service::request_settings(app);
+    }
     request_status_snapshot_if_needed(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {

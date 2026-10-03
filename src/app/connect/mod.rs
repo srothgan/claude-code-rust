@@ -80,7 +80,7 @@ pub fn create_app(cli: &Cli) -> App {
 
     let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
     let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
-    let loaded_settings = match settings::load_global_settings(env!("CARGO_PKG_VERSION")) {
+    let loaded_settings = match settings::load_global_settings() {
         Ok(loaded) => loaded,
         Err(err) => {
             tracing::warn!(
@@ -175,17 +175,6 @@ pub fn create_app(cli: &Cli) -> App {
         startup: StartupState::from_cli(cli),
         bridge_task: None,
     };
-
-    if let Err(err) = super::config::initialize_shared_state(&mut app) {
-        tracing::warn!(
-            target: crate::logging::targets::APP_CONFIG,
-            event_name = "shared_settings_init_failed",
-            message = "failed to initialize shared settings state",
-            outcome = "failure",
-            error_message = %err,
-        );
-        app.config.last_error = Some(err);
-    }
 
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();

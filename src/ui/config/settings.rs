@@ -1,325 +1,209 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::theme;
+use crate::agent::settings::{SettingsApplication, SettingsScope};
 use crate::app::App;
-use crate::app::config::{
-    resolved_setting, setting_detail_options, setting_display_value, setting_invalid_hint,
-    setting_specs,
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Cell, Paragraph, Row, Table, Wrap},
 };
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use std::fmt::Write as _;
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
-    if compact_settings_layout(area) {
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(super::MIN_SETTINGS_PANEL_HEIGHT),
-                Constraint::Length(reserved_hint_height(area)),
-            ])
-            .split(area);
-
+    let Some(snapshot) = &app.config.snapshot else {
         frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Settings")
-                .border_style(Style::default().fg(theme::DIM)),
-            sections[0],
+            Paragraph::new(
+                if app.config.pending_settings_request.is_some()
+                    || app.status == crate::app::AppStatus::Connecting
+                {
+                    "Loading settings..."
+                } else {
+                    "Settings are currently unavailable."
+                },
+            ),
+            area,
         );
-        render_settings_list(frame, panel_body(sections[0]), app, true);
-        render_settings_limitation_hint(frame, hint_area(area, sections[1]));
         return;
-    }
-
-    let content = padded_body_area(area);
-    let sections = Layout::default()
+    };
+    let panels = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(super::MIN_SETTINGS_PANEL_HEIGHT),
-            Constraint::Length(reserved_hint_height(content)),
+            Constraint::Length(u16::from(area.height >= 12)),
+            Constraint::Length(if area.width < 70 { 2 } else { 1 }),
+            Constraint::Length(u16::from(area.height >= 12)),
+            Constraint::Min(3),
+            Constraint::Length(u16::from(area.height >= 12)),
+            Constraint::Length(if area.height >= 18 {
+                4
+            } else if area.height >= 12 {
+                3
+            } else {
+                0
+            }),
         ])
-        .split(content);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
-        .spacing(1)
-        .split(sections[0]);
-
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Settings")
-            .border_style(Style::default().fg(theme::DIM)),
-        columns[0],
-    );
-    frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Details")
-            .border_style(Style::default().fg(theme::DIM)),
-        columns[1],
-    );
-
-    render_settings_list(frame, panel_body(columns[0]), app, false);
-    frame.render_widget(
-        Paragraph::new(setting_detail_lines(app)).wrap(Wrap { trim: false }),
-        panel_body(columns[1]),
-    );
-    render_settings_limitation_hint(frame, hint_area(content, sections[1]));
-}
-
-pub(super) fn compact_settings_layout(area: Rect) -> bool {
-    area.width < COMPACT_SETTINGS_MIN_WIDTH || area.height < COMPACT_SETTINGS_MIN_HEIGHT
-}
-
-pub(super) fn settings_hint_height(viewport_width: u16) -> u16 {
-    if viewport_width == 0 {
-        return 0;
-    }
-
-    let line_count = Paragraph::new(super::SETTINGS_LIMITATION_HINT)
-        .wrap(Wrap { trim: false })
-        .line_count(viewport_width);
-    u16::try_from(line_count).unwrap_or(u16::MAX)
-}
-
-pub(super) fn setting_detail_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(spec) = app.config.selected_setting_spec() else {
-        return vec![detail_text("No setting selected.")];
+        .split(area);
+    let headers = if area.width < 70 {
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(panels[1])
+    } else {
+        Layout::horizontal([Constraint::Min(25), Constraint::Length(19)]).split(panels[1])
     };
-    let resolved = resolved_setting(app, spec);
-
-    let mut lines = vec![detail_title(spec.label), detail_text(spec.description)];
-
-    if !spec.supported {
-        lines.push(Line::default());
-        lines.push(unsupported_hint());
-    }
-
-    let options = setting_detail_options(app, spec);
-    if !options.is_empty() {
-        lines.push(Line::default());
-        lines.push(detail_section_title("Options"));
-        lines.extend(options.into_iter().map(detail_option));
-    }
-
-    if let Some(hint) = setting_invalid_hint(spec, resolved.validation) {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            format!(
-                "Invalid persisted value detected. Runtime uses the fallback until you save a valid selection. {hint}"
-            ),
-            Style::default().fg(theme::STATUS_ERROR),
-        )));
-    }
-
-    lines
-}
-
-fn render_settings_list(frame: &mut Frame, area: Rect, app: &mut App, compact: bool) {
-    let mut state = ListState::default()
-        .with_selected(Some(app.config.selected_setting_index))
-        .with_offset(app.config.settings_scroll_offset);
-    let list = List::new(setting_items(app, compact, area.width));
-    frame.render_stateful_widget(list, area, &mut state);
-    app.config.settings_scroll_offset = state.offset();
-}
-
-fn padded_body_area(area: Rect) -> Rect {
-    area.inner(Margin { vertical: 1, horizontal: 2 })
-}
-
-fn panel_body(area: Rect) -> Rect {
-    area.inner(Margin { vertical: 1, horizontal: 2 })
-}
-
-fn reserved_hint_height(base_area: Rect) -> u16 {
-    if base_area.height == 0 {
-        return 0;
-    }
-
-    let desired = settings_hint_height(hint_text_width(base_area)).max(1);
-    let max_hint = base_area.height.saturating_sub(super::MIN_SETTINGS_PANEL_HEIGHT).max(1);
-    desired.min(max_hint)
-}
-
-fn hint_text_width(base_area: Rect) -> u16 {
-    base_area.width.saturating_sub(4)
-}
-
-fn hint_area(base_area: Rect, hint_row: Rect) -> Rect {
-    Rect {
-        x: base_area.x.saturating_add(2),
-        y: hint_row.y,
-        width: hint_text_width(base_area),
-        height: hint_row.height,
-    }
-}
-
-fn render_settings_limitation_hint(frame: &mut Frame, area: Rect) {
     frame.render_widget(
-        Paragraph::new(super::SETTINGS_LIMITATION_HINT)
-            .style(Style::default().fg(Color::White))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(Line::from(vec![
+            Span::styled("Save in: ", Style::default().fg(theme::DIM)),
+            Span::styled(
+                if headers[0].width < 40 {
+                    app.config.selected_scope.label()
+                } else {
+                    scope_label(app.config.selected_scope)
+                },
+                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        headers[0],
+    );
+
+    let row_height = if area.height >= 22 { 2 } else { 1 };
+    let visible = usize::from(panels[3].height.saturating_sub(2) / row_height).max(1);
+    let selected = app.config.selected_setting_index;
+    if selected < app.config.settings_scroll_offset {
+        app.config.settings_scroll_offset = selected;
+    }
+    if selected >= app.config.settings_scroll_offset.saturating_add(visible) {
+        app.config.settings_scroll_offset = selected.saturating_add(1).saturating_sub(visible);
+    }
+    let offset = app.config.settings_scroll_offset;
+    frame.render_widget(
+        Paragraph::new(format!(
+            "{}–{} of {}",
+            offset + 1,
+            (offset + visible).min(snapshot.catalog.len()),
+            snapshot.catalog.len()
+        ))
+        .alignment(ratatui::layout::Alignment::Right)
+        .style(Style::default().fg(theme::DIM)),
+        headers[1],
+    );
+    render_table(frame, panels[3], app, row_height, visible);
+    render_details(frame, panels[5], app);
+}
+
+fn render_table(frame: &mut Frame, area: Rect, app: &App, row_height: u16, visible: usize) {
+    let Some(snapshot) = &app.config.snapshot else {
+        return;
+    };
+    let offset = app.config.settings_scroll_offset;
+    let selected = app.config.selected_setting_index;
+    let rows =
+        snapshot.catalog.iter().enumerate().skip(offset).take(visible).map(|(index, setting)| {
+            let selected = index == selected;
+            let value = snapshot.value(&setting.id);
+            let label_style =
+                Style::default().fg(if setting.writable_at(app.config.selected_scope) {
+                    ratatui::style::Color::White
+                } else {
+                    theme::DIM
+                });
+            let value_style = Style::default()
+                .fg(if value.is_some() { theme::BTW_ACCENT } else { theme::DIM })
+                .add_modifier(if value.is_some() { Modifier::BOLD } else { Modifier::empty() });
+            Row::new(vec![
+                Cell::from(if selected { "›" } else { " " })
+                    .style(Style::default().fg(theme::RUST_ORANGE)),
+                Cell::from(setting.label.clone()).style(label_style),
+                Cell::from(value.map_or_else(|| "Default".to_owned(), display)).style(value_style),
+            ])
+            .style(if selected {
+                Style::default().bg(theme::USER_MSG_BG)
+            } else {
+                Style::default()
+            })
+            .height(row_height)
+        });
+    frame.render_widget(
+        Table::new(rows, [Constraint::Length(1), Constraint::Percentage(55), Constraint::Min(12)])
+            .column_spacing(2)
+            .header(
+                Row::new(["", "Setting", "Value"])
+                    .style(Style::default().fg(theme::DIM))
+                    .bottom_margin(1),
+            ),
         area,
     );
 }
 
-fn setting_items(app: &App, compact: bool, viewport_width: u16) -> Vec<ListItem<'static>> {
-    let mut items = Vec::new();
-    for (index, spec) in setting_specs().iter().enumerate() {
-        let resolved = resolved_setting(app, spec);
-        let mut lines = vec![config_line(
-            app.config.selected_setting_index == index,
-            spec.label,
-            &setting_display_value(app, spec, &resolved),
-            resolved.validation.is_invalid(),
-        )];
-        if let Some(hint) = setting_invalid_hint(spec, resolved.validation) {
-            lines.extend(wrap_styled_text(
-                &format!("  {hint}"),
-                Style::default().fg(theme::STATUS_ERROR),
-                viewport_width,
-            ));
-        }
-        if compact && !spec.supported {
-            lines.extend(unsupported_hint_lines(viewport_width));
-        }
-        if index + 1 < setting_specs().len() {
-            lines.push(Line::default());
-        }
-        items.push(ListItem::new(lines));
+fn render_details(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(snapshot) = &app.config.snapshot else {
+        return;
+    };
+    let Some(setting) = snapshot.catalog.get(app.config.selected_setting_index) else {
+        return;
+    };
+    let saved = snapshot
+        .scoped(&setting.id, app.config.selected_scope)
+        .and_then(|value| value.value.as_ref());
+    let mut context = format!(
+        "Saved in {}: {}",
+        app.config.selected_scope.label(),
+        saved.map_or_else(|| "not set".to_owned(), display)
+    );
+    if snapshot.values.iter().any(|value| value.id == setting.id && value.policy_restricted) {
+        context.push_str("  ·  Controlled by your organization");
+    } else if let Some(reason) = &setting.unavailable {
+        context.push_str("  ·  ");
+        context.push_str(reason);
+    } else if !setting.writable_at(app.config.selected_scope) {
+        context.push_str("  ·  Save in: ");
+        context.push_str(
+            &setting
+                .writable_scopes
+                .iter()
+                .map(|scope| scope.label())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    } else if saved.is_some()
+        && snapshot.value(&setting.id).is_some()
+        && saved != snapshot.value(&setting.id)
+    {
+        context.push_str("  ·  Another scope overrides this value");
+    } else if saved.is_none() && snapshot.value(&setting.id).is_some() {
+        context.push_str("  ·  Using another scope's value");
     }
-    items
-}
-
-fn detail_title(text: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        text.to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    ))
-}
-
-fn detail_text(text: &str) -> Line<'static> {
-    Line::from(Span::styled(text.to_owned(), Style::default().fg(Color::White)))
-}
-
-fn detail_section_title(text: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        text.to_owned(),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-    ))
-}
-
-fn detail_option(text: String) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("- ", Style::default().fg(theme::DIM)),
-        Span::styled(text, Style::default().fg(Color::White)),
-    ])
-}
-
-fn unsupported_hint() -> Line<'static> {
-    Line::from(Span::styled(
-        "  Warning: not supported yet; this setting will not affect sessions.".to_owned(),
-        Style::default().fg(Color::Yellow),
-    ))
-}
-
-fn unsupported_hint_lines(viewport_width: u16) -> Vec<Line<'static>> {
-    wrap_styled_text(
-        "  Warning: not supported yet; this setting will not affect sessions.",
-        Style::default().fg(Color::Yellow),
-        viewport_width,
-    )
-}
-
-fn wrap_styled_text(text: &str, style: Style, viewport_width: u16) -> Vec<Line<'static>> {
-    let width = usize::from(viewport_width.max(1));
-    if width == 0 {
-        return Vec::new();
+    if setting.application == SettingsApplication::Host {
+        context.push_str("  ·  Applies immediately");
     }
-
-    let indent_len = text.chars().take_while(|ch| ch.is_whitespace()).count();
-    let indent = text.chars().take(indent_len).collect::<String>();
-    let content = text.chars().skip(indent_len).collect::<String>();
-    let indent_width = Line::raw(indent.as_str()).width();
-    let available_width = width.saturating_sub(indent_width).max(1);
-
-    let mut wrapped = Vec::new();
-    let mut current = String::new();
-
-    for word in content.split_whitespace() {
-        push_wrapped_word(&mut wrapped, &mut current, word, available_width);
+    let mut lines = vec![
+        Line::from(setting.description.clone()),
+        Line::styled(context, Style::default().fg(theme::DIM)),
+    ];
+    if let Some(error) = snapshot
+        .sources
+        .iter()
+        .find(|source| source.scope == app.config.selected_scope)
+        .and_then(|source| source.error.as_ref())
+    {
+        lines.push(Line::styled(error.clone(), Style::default().fg(theme::STATUS_WARNING)));
     }
-
-    if !current.is_empty() {
-        wrapped.push(format!("{indent}{current}"));
-    }
-
-    if wrapped.is_empty() {
-        wrapped.push(indent);
-    }
-
-    wrapped.into_iter().map(|line| Line::from(Span::styled(line, style))).collect()
+    lines.push(Line::styled(
+        "Saved changes apply to new sessions unless marked immediate.",
+        Style::default().fg(theme::DIM),
+    ));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
-fn push_wrapped_word(
-    wrapped: &mut Vec<String>,
-    current: &mut String,
-    word: &str,
-    available_width: usize,
-) {
-    let mut remaining = word;
-    while !remaining.is_empty() {
-        let candidate = if current.is_empty() {
-            remaining.to_owned()
-        } else {
-            format!("{current} {remaining}")
-        };
-
-        if Line::raw(candidate.as_str()).width() <= available_width {
-            current.clear();
-            current.push_str(&candidate);
-            break;
-        }
-
-        if current.is_empty() {
-            let split = split_to_width(remaining, available_width);
-            let head = remaining[..split].to_owned();
-            wrapped.push(head);
-            remaining = &remaining[split..];
-        } else {
-            wrapped.push(std::mem::take(current));
-        }
+pub(super) fn display(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Bool(true) => "On".to_owned(),
+        serde_json::Value::Bool(false) => "Off".to_owned(),
+        _ => value.as_str().map_or_else(|| value.to_string(), str::to_owned),
     }
 }
 
-fn split_to_width(text: &str, available_width: usize) -> usize {
-    let mut width = 0;
-    let mut split = 0;
-    for (byte_index, ch) in text.char_indices() {
-        let ch_width = Line::raw(ch.to_string()).width();
-        if byte_index > 0 && width + ch_width > available_width {
-            break;
-        }
-        width += ch_width;
-        split = byte_index + ch.len_utf8();
+pub(super) const fn scope_label(scope: SettingsScope) -> &'static str {
+    match scope {
+        SettingsScope::User => "User (all projects)",
+        SettingsScope::Project => "Project (shared)",
+        SettingsScope::Local => "Local (this project, private)",
     }
-    split.max(1)
 }
-
-fn config_line(selected: bool, label: &str, value: &str, invalid: bool) -> Line<'static> {
-    let mut line = String::new();
-    line.push(if selected { '>' } else { ' ' });
-    line.push(' ');
-    line.push_str(label);
-    let marker = if invalid { " !" } else { "" };
-    let _ = write!(&mut line, ": {value}{marker}");
-    Line::from(Span::styled(line, Style::default().fg(Color::White)))
-}
-
-const COMPACT_SETTINGS_MIN_WIDTH: u16 = 90;
-const COMPACT_SETTINGS_MIN_HEIGHT: u16 = 20;

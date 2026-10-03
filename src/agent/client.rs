@@ -720,6 +720,24 @@ impl AgentConnection {
         })
     }
 
+    pub fn inspect_settings(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::InspectSettings { session_id },
+        })
+    }
+    pub fn mutate_setting(
+        &self,
+        session_id: String,
+        request_id: String,
+        mutation: super::settings::SettingsMutation,
+    ) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: Some(request_id),
+            command: BridgeCommand::MutateSetting { session_id, mutation },
+        })
+    }
+
     pub fn get_status_snapshot(&self, session_id: String) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,

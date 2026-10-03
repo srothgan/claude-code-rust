@@ -202,6 +202,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "initialized":
     case "sessions_listed":
     case "status_snapshot":
+    case "settings_result":
     case "context_usage":
     case "usage_snapshot":
     case "rewind_targets":
@@ -253,6 +254,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
       return "trace";
     case "sessions_listed":
     case "status_snapshot":
+    case "settings_result":
     case "context_usage":
     case "usage_snapshot":
     case "rewind_targets":

@@ -135,15 +135,11 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
     for input in ["/config", "/help", "/mcp", "/plugins", "/status", "/usage"] {
         assert_eq!(classify(input), SubmissionClass::Fullscreen, "unexpected class for {input}");
     }
-    for input in ["/docs commands", "/1m-context status", "/opus-version status"] {
-        assert_eq!(classify(input), SubmissionClass::Informational, "unexpected class for {input}");
-    }
+    assert_eq!(classify("/docs commands"), SubmissionClass::Informational);
     for input in [
         "next prompt",
         "/remote-command",
         "/compact",
-        "/1m-context enable",
-        "/opus-version 4.8",
         "/agent reviewer",
         "/effort high",
         "/fast",
@@ -230,14 +226,12 @@ fn login_logout_appear_in_candidates_as_builtins() {
     let app = App::test_default();
     let names: Vec<String> =
         supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-    assert!(names.iter().any(|n| n == "/1m-context"), "missing /1m-context");
     assert!(names.iter().any(|n| n == "/agent"), "missing /agent");
     assert!(names.iter().any(|n| n == "/config"), "missing /config");
     assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
     assert!(names.iter().any(|n| n == "/login"), "missing /login");
     assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
     assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
-    assert!(names.iter().any(|n| n == "/opus-version"), "missing /opus-version");
     assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
     assert!(names.iter().any(|n| n == "/rewind"), "missing /rewind");
     assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
@@ -529,321 +523,6 @@ fn config_with_extra_args_returns_usage_message() {
 }
 
 #[test]
-fn one_m_context_disable_persists_folder_local_override_and_hints_new_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/1m-context disable");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Disabled 1M context"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn one_m_context_enable_removes_folder_local_override_and_hints_new_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\",\n    \"KEEP_ME\": \"yes\"\n  }\n}\n",
-        )
-        .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/1m-context enable");
-
-    assert!(consumed);
-    let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
-    assert!(!raw.contains("CLAUDE_CODE_DISABLE_1M_CONTEXT"));
-    assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Enabled 1M context"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn one_m_context_status_reports_disabled_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-        &local_settings,
-        "{\n  \"env\": {\n    \"CLAUDE_CODE_DISABLE_1M_CONTEXT\": \"1\"\n  }\n}\n",
-    )
-    .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/1m-context status");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected status message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("1M context is disabled"));
-    assert!(block.text.contains(".claude/settings.local.json"));
-}
-
-#[test]
-fn opus_version_argument_candidates_are_static() {
-    let app = App::test_default();
-    let candidates = argument_candidates(&app, "/opus-version", 0);
-    assert!(candidates.iter().any(|c| c.insert_value == "4.5"));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "4.5"
-            && c.primary == "4.5"
-            && c.secondary.as_deref() == Some("Claude Opus 4.5")
-    }));
-    assert!(candidates.iter().any(|c| c.insert_value == "4.6"));
-    assert!(candidates.iter().any(|c| c.insert_value == "4.7"));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "4.8"
-            && c.primary == "4.8"
-            && c.secondary.as_deref() == Some("Claude Opus 4.8")
-    }));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "default"
-            && c.primary == "default"
-            && c.secondary.as_deref() == Some("Use Claude default Opus alias")
-    }));
-    assert!(candidates.iter().any(|c| {
-        c.insert_value == "status"
-            && c.primary == "status"
-            && c.secondary.as_deref() == Some("Show current project-local Opus pin")
-    }));
-}
-
-#[test]
-fn opus_version_45_persists_folder_local_override_and_hints_new_session() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.5");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-5-20251101\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Pinned Opus to 4.5"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn opus_version_46_persists_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.6");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-6\""));
-}
-
-#[test]
-fn opus_version_47_persists_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\""));
-}
-
-#[test]
-fn opus_version_48_persists_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.8");
-
-    assert!(consumed);
-    let settings_path = dir.path().join(".claude").join("settings.local.json");
-    let raw = std::fs::read_to_string(settings_path).expect("read settings.local.json");
-    assert!(raw.contains("\"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-8\""));
-}
-
-#[test]
-fn opus_version_default_removes_folder_local_override_and_preserves_neighbor_keys() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-            &local_settings,
-            "{\n  \"env\": {\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-7\",\n    \"KEEP_ME\": \"yes\"\n  }\n}\n",
-        )
-        .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version default");
-
-    assert!(consumed);
-    let raw = std::fs::read_to_string(local_settings).expect("read settings.local.json");
-    assert!(!raw.contains("ANTHROPIC_DEFAULT_OPUS_MODEL"));
-    assert!(raw.contains("\"KEEP_ME\": \"yes\""));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected success message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Cleared the project-local Opus version pin"));
-    assert!(block.text.contains("/new-session"));
-}
-
-#[test]
-fn opus_version_status_reports_known_folder_local_override() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let local_settings = dir.path().join(".claude").join("settings.local.json");
-    std::fs::create_dir_all(local_settings.parent().expect("settings parent")).expect("create dir");
-    std::fs::write(
-        &local_settings,
-        "{\n  \"env\": {\n    \"ANTHROPIC_DEFAULT_OPUS_MODEL\": \"claude-opus-4-6\"\n  }\n}\n",
-    )
-    .expect("write settings");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version status");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected status message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Opus is pinned to 4.6"));
-    assert!(block.text.contains(".claude/settings.local.json"));
-}
-
-#[test]
-fn opus_version_status_reports_default_when_unset() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version status");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected status message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Opus is using the default alias resolution"));
-}
-
-#[test]
-fn opus_version_with_missing_arg_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
-}
-
-#[test]
-fn opus_version_with_extra_args_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.7 extra");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
-}
-
-#[test]
-fn opus_version_with_unknown_arg_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 9.9");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>");
-}
-
-#[test]
-fn opus_version_requires_trusted_project_for_mutation() {
-    let mut app = App::test_default();
-    app.trust.status = crate::app::trust::TrustStatus::Untrusted;
-
-    let consumed = try_handle_submit(&mut app, "/opus-version 4.7");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected error message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert!(block.text.contains("Project trust must be accepted"));
-}
-
-#[test]
 fn plugins_without_args_opens_plugins_tab() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
@@ -1017,29 +696,6 @@ fn model_argument_candidates_include_sdk_default_option() {
     assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("Default (recommended)")));
     assert!(candidates.iter().any(|c| c.insert_value == "sonnet"));
     assert!(candidates.iter().any(|c| c.insert_value == "opus"));
-}
-
-#[test]
-fn model_argument_candidates_rewrite_opus_secondary_from_project_pin() {
-    let mut app = App::test_default();
-    app.config.committed_local_settings_document = json!({
-        "env": {
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
-        }
-    });
-    app.sdk_inventory.available_models = vec![
-        crate::agent::model::AvailableModel::new("opus", "Opus")
-            .description("Opus 4.7 · Most capable for complex work"),
-    ];
-
-    let candidates = argument_candidates(&app, "/model", 0);
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].insert_value, "opus");
-    assert_eq!(
-        candidates[0].secondary.as_deref(),
-        Some("Opus 4.5 · Most capable for complex work")
-    );
 }
 
 #[test]
@@ -1358,8 +1014,7 @@ fn docs_commands_reuse_help_rows() {
         panic!("expected text block");
     };
     assert!(block.text.contains("| Command | Description |"));
-    assert!(block.text.contains("/1m-context"));
-    assert!(block.text.contains("project-local 1M context"));
+    assert!(block.text.contains("Ask one contextual question"));
     assert!(block.text.contains("/cancel"));
     assert!(block.text.contains("/compact"));
     assert!(block.text.contains("/config"));
@@ -1850,10 +1505,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
                 app.session_runtime.config_options.get("effortLevel"),
                 Some(&serde_json::json!("xhigh"))
             );
-            assert_eq!(
-                app.session_thinking_effort_effective(),
-                crate::agent::model::EffortLevel::XHigh
-            );
+            assert_eq!(app.session_effort(), Some(crate::agent::model::EffortLevel::XHigh));
         })
         .await;
 }
@@ -2248,7 +1900,6 @@ fn single_argument_builtin_selection_closes_autocomplete() {
         ("/effort", "xhigh"),
         ("/mode", "plan"),
         ("/model", "sonnet"),
-        ("/opus-version", "4.7"),
         ("/resume", "session-1"),
     ] {
         let mut app = App::test_default();

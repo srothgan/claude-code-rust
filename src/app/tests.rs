@@ -608,10 +608,10 @@ fn spinner_advances_less_frequently_when_reduced_motion_enabled() {
     advance_spinner_frame(&mut app, base + Duration::from_millis(40));
     assert_eq!(app.spinner_frame, 2);
 
-    crate::app::config::store::set_prefers_reduced_motion(
-        &mut app.config.committed_local_settings_document,
-        true,
-    );
+    app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+        "prefersReducedMotion",
+        serde_json::json!(true),
+    ));
     app.spinner_last_advance_at = None;
     app.spinner_frame = 0;
 

@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 mod config;
+mod config_files;
 mod doctor;
 mod logs;
 pub mod redaction;

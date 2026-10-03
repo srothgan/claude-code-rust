@@ -845,6 +845,8 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
       }
       // Proactively detect missing auth from account info so the UI can
       // show the login hint immediately, without waiting for the first prompt.
+      const { refreshSessionEffort } = await import("./effort.js");
+      await refreshSessionEffort(session);
       if (shouldEmitStartupAuthRequiredForAccount(result.account)) {
         emitAuthRequired(session);
       }

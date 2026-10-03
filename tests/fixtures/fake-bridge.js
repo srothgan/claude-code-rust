@@ -3,6 +3,7 @@
 // network is involved.
 const readline = require('node:readline');
 const fs = require('node:fs');
+const path = require('node:path');
 
 let SESSION = 'fake-session';
 let cwd = process.cwd();
@@ -186,6 +187,19 @@ readline
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
+        break;
+      case 'inspect_settings':
+        send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
+          persistence: 'not_requested', application: 'blocked', snapshot: {
+            cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
+            catalog: [{ id: 'alwaysThinkingEnabled', label: 'Thinking', description: 'Saved thinking preference',
+              key_path: ['alwaysThinkingEnabled'], kind: 'boolean', options: [true, false], allows_custom: false,
+              writable_scopes: ['user', 'project', 'local'], reset: 'Reset removes the saved value here', application: 'next_session' }],
+            sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
+              values: [{ id: 'alwaysThinkingEnabled', revision: 'fixture-revision', value: false }] }],
+            values: [{ id: 'alwaysThinkingEnabled', value: false, contributors: ['user'], policy_restricted: false }],
+          },
+        } });
         break;
       case 'cancel_turn':
         send({ event: 'turn_interrupt_receipt', session_id: SESSION, still_queued: pending.slice(), request_id: message.request_id });

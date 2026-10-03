@@ -5,7 +5,6 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppSlashCommand {
-    OneMContext,
     Btw,
     Cancel,
     Compact,
@@ -18,7 +17,6 @@ pub(crate) enum AppSlashCommand {
     Help,
     Mcp,
     Plugins,
-    OpusVersion,
     Status,
     Usage,
     Login,
@@ -77,39 +75,7 @@ pub(crate) const DOCS_TOPICS: &[SlashArgSpec] = &[
     SlashArgSpec { value: "agents", description: "Show advertised subagents" },
 ];
 
-pub(crate) const ONE_M_CONTEXT_ARGS: &[SlashArgSpec] = &[
-    SlashArgSpec {
-        value: "disable",
-        description: "Disable 1M context for future sessions in this folder",
-    },
-    SlashArgSpec {
-        value: "enable",
-        description: "Enable 1M context for future sessions in this folder",
-    },
-    SlashArgSpec {
-        value: "status",
-        description: "Show the current 1M context setting for this folder",
-    },
-];
-
-pub(crate) const OPUS_VERSION_ARGS: &[SlashArgSpec] = &[
-    SlashArgSpec { value: "4.5", description: "Claude Opus 4.5" },
-    SlashArgSpec { value: "4.6", description: "Claude Opus 4.6" },
-    SlashArgSpec { value: "4.7", description: "Claude Opus 4.7" },
-    SlashArgSpec { value: "4.8", description: "Claude Opus 4.8" },
-    SlashArgSpec { value: "default", description: "Use Claude default Opus alias" },
-    SlashArgSpec { value: "status", description: "Show current project-local Opus pin" },
-];
-
 pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
-    AppSlashCommandSpec {
-        command: AppSlashCommand::OneMContext,
-        name: "/1m-context",
-        usage: "Usage: /1m-context <enable|disable|status>",
-        short_description: "Manage 1M context for this folder",
-        long_description: "Enable, disable, or inspect project-local 1M context settings for future sessions.",
-        args: ONE_M_CONTEXT_ARGS,
-    },
     AppSlashCommandSpec {
         command: AppSlashCommand::Btw,
         name: "/btw",
@@ -211,14 +177,6 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
-        command: AppSlashCommand::OpusVersion,
-        name: "/opus-version",
-        usage: "Usage: /opus-version <4.5|4.6|4.7|4.8|default|status>",
-        short_description: "Pin the Opus alias version for this folder",
-        long_description: "Set, clear, or inspect the project-local Opus alias pin for future sessions.",
-        args: OPUS_VERSION_ARGS,
-    },
-    AppSlashCommandSpec {
         command: AppSlashCommand::Status,
         name: "/status",
         usage: "Usage: /status",
@@ -299,7 +257,6 @@ impl AppSlashCommand {
 
     pub(crate) fn name(self) -> &'static str {
         match self {
-            Self::OneMContext => "/1m-context",
             Self::Btw => "/btw",
             Self::Cancel => "/cancel",
             Self::Compact => "/compact",
@@ -312,7 +269,6 @@ impl AppSlashCommand {
             Self::Help => "/help",
             Self::Mcp => "/mcp",
             Self::Plugins => "/plugins",
-            Self::OpusVersion => "/opus-version",
             Self::Status => "/status",
             Self::Usage => "/usage",
             Self::Login => "/login",
@@ -359,16 +315,6 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::OneMContext => match args {
-                ["status"] => SubmissionClass::Informational,
-                ["enable" | "disable"] => SubmissionClass::TurnExclusive,
-                _ => SubmissionClass::Invalid,
-            },
-            Self::OpusVersion => match args {
-                ["status"] => SubmissionClass::Informational,
-                ["4.5" | "4.6" | "4.7" | "4.8" | "default"] => SubmissionClass::TurnExclusive,
-                _ => SubmissionClass::Invalid,
-            },
             Self::Compact | Self::Fast | Self::Login | Self::Logout | Self::NewSession => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive

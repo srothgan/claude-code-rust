@@ -11,6 +11,7 @@ import { dispatchCancelTurnCommand } from "./command_dispatch.js";
 import { emitFastModeUpdate } from "./error_classification.js";
 import { emitSessionUpdate, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
 import {
   applyUltracode,
   emitUltracodeUpdate,
@@ -54,16 +55,12 @@ export type SessionControlCommandDeps = {
     query: Query,
     effort: EffortLevel,
     ultracodeEffective?: boolean,
-  ) => Promise<void>;
+  ) => Promise<EffortLevel | null>;
   applySessionAgent: (query: Query, agent: string | null) => Promise<void>;
   applySessionFastMode: (
     query: Query,
     enabled: boolean,
   ) => Promise<FastModeSnapshot>;
-  emitEffortConfigOptionUpdate: (
-    sessionId: string,
-    effort: EffortLevel,
-  ) => void;
   emitAgentConfigOptionUpdate: (
     sessionId: string,
     agent: string | null,
@@ -207,6 +204,7 @@ async function setModel(
       session.resolvedRuntimeModelId = undefined;
     }
     await refreshUltracode(session);
+    await refreshSessionEffort(session);
     const changed = refreshCurrentModel(session, true);
     const forcedCurrentModelUpdate =
       !changed && emitCurrentModelUpdate(session);
@@ -316,13 +314,13 @@ async function setEffort(
     return;
   }
   try {
-    await deps.applySessionEffort(
+    const effort = await deps.applySessionEffort(
       session.query,
       command.effort,
       session.ultracode?.effective === true,
     );
     await refreshUltracode(session);
-    deps.emitEffortConfigOptionUpdate(session.sessionId, command.effort);
+    observeSessionEffort(session, effort);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     slashError(
@@ -330,6 +328,7 @@ async function setEffort(
       `failed to set effort: ${message}`,
       requestId,
     );
+    await refreshSessionEffort(session);
   }
 }
 
@@ -379,6 +378,7 @@ async function handleUltracode(
   try {
     session.ultracode = await applyUltracode(session.query, command.enabled);
     emitUltracodeUpdate(session);
+    await refreshSessionEffort(session);
     if (command.enabled && !session.ultracode.effective) {
       slashError(
         command.session_id,
@@ -429,6 +429,7 @@ async function setFastMode(
     session.fastModeState = state;
     session.fastModeDisabledReason = snapshot.disabled_reason;
     emitFastModeUpdate(session);
+    await refreshSessionEffort(session);
     const reportedEnabled = state !== "off";
     if (reportedEnabled !== command.enabled) {
       bridgeLogger.warn({

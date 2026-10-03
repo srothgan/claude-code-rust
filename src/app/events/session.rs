@@ -495,7 +495,7 @@ pub(super) fn handle_session_replaced_event(app: &mut App, event: SessionReplace
     );
 }
 
-pub(super) fn maybe_emit_fast_mode_disabled_notice(app: &mut App, previous_reason: Option<&str>) {
+pub(crate) fn maybe_emit_fast_mode_disabled_notice(app: &mut App, previous_reason: Option<&str>) {
     if !app.config.fast_mode_effective()
         || !matches!(app.session_runtime.fast_mode_state, model::FastModeState::Off)
     {

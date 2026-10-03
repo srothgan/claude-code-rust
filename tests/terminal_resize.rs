@@ -679,13 +679,11 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
     test.submit("hello\n\nhow are you", "how are you");
     test.wait_screen("streamed line 5");
     // Terminal padding can leave spaces on visually blank rows.
-    let screen = test.screen();
-    let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
-    assert!(
-        rows.windows(3).any(|rows| rows == ["hello", "", "how are you"]),
-        "submitted paragraph gap disappeared:\n{}",
-        test.diagnostics()
-    );
+    test.wait_until("submitted paragraph gap", |test| {
+        let screen = test.screen();
+        let rows: Vec<_> = screen.lines().map(str::trim_end).collect();
+        rows.windows(3).any(|rows| rows == ["hello", "", "how are you"])
+    });
     test.assert_prompts(&["hello\n\nhow are you"]);
 
     for step in 0..RESIZES {
@@ -744,10 +742,14 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
 
     for (rows, cols) in [(55, 120), (25, 61), (38, 87)] {
         test.submit("/config", "/config");
-        test.wait_screen("Always Thinking");
+        test.wait_screen("Saved in user: Off");
         assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
+        test.send(b" ");
+        test.wait_screen("Value: Off");
         test.resize(rows, cols);
-        test.wait_screen("Always Thinking");
+        test.wait_screen("Value: Off");
+        test.send(b"\x1b");
+        test.wait_screen("Saved in user: Off");
         test.send(b"\x1b");
         test.wait_screen("streamed line 8");
         assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());

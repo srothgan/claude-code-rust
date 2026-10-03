@@ -56,7 +56,8 @@ export type UltracodeSnapshot = {
   effective: boolean;
 };
 
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export interface AvailableModel {
   id: string;
@@ -808,7 +809,33 @@ export interface BridgeCommandEnvelope {
   [key: string]: unknown;
 }
 
+export type SettingsScope = "user" | "project" | "local";
+export interface SettingDescriptor {
+  id: string; label: string; description: string; key_path: string[];
+  kind: "boolean" | "string"; options: Json[]; writable_scopes: SettingsScope[];
+  allows_custom: boolean; reset: string; application: "host" | "next_session"; unavailable?: string;
+}
+export interface SettingsSnapshot {
+  cwd: string; context: string; catalog: SettingDescriptor[];
+  sources: Array<{ scope: SettingsScope; path: string; status: string; error?: string; values: Array<{ id: string; revision: string; value?: Json }> }>;
+  values: Array<{ id: string; value?: Json; contributors: string[]; policy_restricted: boolean }>;
+  resolution_sources: Array<{ source: string; path?: string; policy_origin?: string }>;
+  provenance: Record<string, { source: string; path?: string; policy_origin?: string }>;
+  diagnostics: string[];
+}
+export interface SettingsMutation {
+  context: string; id: string; scope: SettingsScope; expected_revision: string;
+  operation: "set" | "remove"; value?: Json;
+}
+export interface SettingsResult {
+  persistence: "saved" | "unchanged" | "conflict" | "failure" | "not_requested";
+  application: "host" | "next_session" | "blocked";
+  snapshot?: SettingsSnapshot; error?: string;
+}
+
 export type BridgeCommand =
+  | { command: "inspect_settings"; session_id: string }
+  | { command: "mutate_setting"; session_id: string; mutation: SettingsMutation }
   | {
       command: "initialize";
       cwd: string;
@@ -1037,6 +1064,7 @@ export interface SideQuestionMetadata {
 }
 
 export type BridgeEvent =
+  | { event: "settings_result"; session_id: string; result: SettingsResult }
   | {
       event: "connected";
       session_id: string;

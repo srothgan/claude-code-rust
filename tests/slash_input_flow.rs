@@ -25,13 +25,11 @@ const NO_ARGUMENT_COMMANDS: &[&str] = &[
 ];
 
 const REQUIRED_ARGUMENT_COMMANDS: &[(&str, &str)] = &[
-    ("/1m-context", "status"),
     ("/btw", "Why does this work?"),
     ("/docs", "commands"),
     ("/agent", "reset"),
     ("/effort", "high"),
     ("/ultracode", "status"),
-    ("/opus-version", "status"),
     ("/mode", "plan"),
     ("/model", "opus"),
     ("/rewind", "user-1 conversation"),

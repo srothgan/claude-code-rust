@@ -1,3 +1,4 @@
+import { inspectSettings, mutateSetting } from "./bridge/settings_service.js";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -69,6 +70,7 @@ import { handleMcpCommand } from "./bridge/command_mcp.js";
 import { handleSessionControlCommand } from "./bridge/command_session_control.js";
 import { handleSessionDataCommand } from "./bridge/command_session_data.js";
 import { dispatchSideQuestion } from "./bridge/side_questions.js";
+import { readSessionEffort } from "./bridge/effort.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
@@ -267,11 +269,16 @@ export async function applySessionEffort(
   query: import("@anthropic-ai/claude-agent-sdk").Query,
   effort: EffortLevel,
   ultracodeEffective = false,
-): Promise<void> {
+): Promise<EffortLevel | null> {
   await query.applyFlagSettings({
     effortLevel: effort,
     ...(ultracodeEffective ? { ultracode: true } : {}),
   });
+  try {
+    return await readSessionEffort(query);
+  } catch (error) {
+    throw new Error("The effort change was accepted, but its applied level could not be verified.", { cause: error });
+  }
 }
 
 export async function applySessionFastMode(
@@ -343,17 +350,6 @@ export async function applySessionAgent(
 ): Promise<void> {
   const settings = { agent } as Parameters<typeof query.applyFlagSettings>[0];
   await query.applyFlagSettings(settings);
-}
-
-export function emitEffortConfigOptionUpdate(
-  sessionId: string,
-  effort: EffortLevel,
-): void {
-  emitSessionUpdate(sessionId, {
-    type: "config_option_update",
-    option_id: "effortLevel",
-    value: effort,
-  });
 }
 
 export function emitAgentConfigOptionUpdate(
@@ -1058,6 +1054,19 @@ async function handleCommand(
         buildRewindConversationPlan,
       });
       return;
+    case "inspect_settings":
+    case "mutate_setting": {
+      const session = sessionById(command.session_id);
+      let result: import("./types.js").SettingsResult;
+      try {
+        if (!session || session.closing) throw new Error("No active session for settings.");
+        result = command.command === "inspect_settings"
+          ? { persistence: "not_requested", application: "blocked", snapshot: await inspectSettings(session.cwd, session.availableModels) }
+          : await mutateSetting(session.cwd, command.mutation, session.availableModels);
+      } catch { result = { persistence: "not_requested", application: "blocked", error: "Cannot inspect settings for this session." }; }
+      writeEvent({ event: "settings_result", session_id: command.session_id, result }, requestId);
+      return;
+    }
     case "side_question": {
       const session = sessionById(command.session_id);
       if (!session || session.closing) {
@@ -1091,7 +1100,6 @@ async function handleCommand(
         applySessionEffort,
         applySessionAgent,
         applySessionFastMode,
-        emitEffortConfigOptionUpdate,
         emitAgentConfigOptionUpdate,
         handleReloadPluginsCommand,
       });

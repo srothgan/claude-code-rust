@@ -38,6 +38,13 @@ pub struct CommandEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum BridgeCommand {
+    InspectSettings {
+        session_id: String,
+    },
+    MutateSetting {
+        session_id: String,
+        mutation: super::settings::SettingsMutation,
+    },
     Initialize {
         cwd: String,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -225,6 +232,8 @@ impl BridgeCommand {
             Self::QuestionResponse { .. } => "question_response",
             Self::UserDialogResponse { .. } => "user_dialog_response",
             Self::ElicitationResponse { .. } => "elicitation_response",
+            Self::InspectSettings { .. } => "inspect_settings",
+            Self::MutateSetting { .. } => "mutate_setting",
             Self::GetStatusSnapshot { .. } => "get_status_snapshot",
             Self::GetContextUsage { .. } => "get_context_usage",
             Self::GetUsage { .. } => "get_usage",
@@ -263,6 +272,8 @@ impl BridgeCommand {
             | Self::QuestionResponse { session_id, .. }
             | Self::UserDialogResponse { session_id, .. }
             | Self::ElicitationResponse { session_id, .. }
+            | Self::InspectSettings { session_id }
+            | Self::MutateSetting { session_id, .. }
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
             | Self::GetUsage { session_id }
@@ -305,6 +316,8 @@ impl BridgeCommand {
             | Self::NewSession { .. }
             | Self::UserDialogResponse { .. }
             | Self::ElicitationResponse { .. }
+            | Self::InspectSettings { .. }
+            | Self::MutateSetting { .. }
             | Self::GetStatusSnapshot { .. }
             | Self::GetContextUsage { .. }
             | Self::GetUsage { .. }
@@ -341,6 +354,10 @@ pub struct SideQuestionMetadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum BridgeEvent {
+    SettingsResult {
+        session_id: String,
+        result: super::settings::SettingsResult,
+    },
     Connected {
         session_id: String,
         cwd: String,
@@ -560,6 +577,7 @@ impl BridgeEvent {
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
+            Self::SettingsResult { .. } => "settings_result",
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::ContextUsage { .. } => "context_usage",
             Self::UsageSnapshot { .. } => "usage_snapshot",
@@ -596,6 +614,7 @@ impl BridgeEvent {
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
+            | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
             | Self::UsageSnapshot { session_id, .. }
@@ -642,6 +661,7 @@ impl BridgeEvent {
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
+            | Self::SettingsResult { .. }
             | Self::StatusSnapshot { .. }
             | Self::ContextUsage { .. }
             | Self::UsageSnapshot { .. }

@@ -167,17 +167,17 @@ fn resolve_memory_path(app: &App) -> String {
 }
 
 fn setting_sources(app: &App) -> String {
-    let mut sources = Vec::new();
-    if app.config.settings_path.is_some() {
-        sources.push("User settings");
-    }
-    if app.config.local_settings_path.is_some() {
-        sources.push("Project local settings");
-    }
-    if app.config.preferences_path.is_some() {
-        sources.push("Preferences");
-    }
-    if sources.is_empty() { "(none loaded)".to_owned() } else { sources.join(", ") }
+    app.config.snapshot.as_ref().map_or_else(
+        || "(not inspected)".to_owned(),
+        |snapshot| {
+            snapshot
+                .sources
+                .iter()
+                .map(|source| format!("{} ({})", source.scope.label(), source.status))
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
+    )
 }
 
 #[cfg(test)]

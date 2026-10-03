@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::config::PreferredNotifChannel;
 use std::borrow::Cow;
 
 /// Events that can trigger a user notification.
@@ -383,5 +382,29 @@ mod tests {
             osc9_escape_sequence("hello\n\u{1b}world\u{07}").as_ref(),
             "\u{1b}]9;hello world\u{1b}\\"
         );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PreferredNotifChannel {
+    #[default]
+    Iterm2,
+    Iterm2WithBell,
+    TerminalBell,
+    NotificationsDisabled,
+    Ghostty,
+}
+
+impl PreferredNotifChannel {
+    #[must_use]
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "iterm2" => Some(Self::Iterm2),
+            "iterm2_with_bell" => Some(Self::Iterm2WithBell),
+            "terminal_bell" => Some(Self::TerminalBell),
+            "notifications_disabled" => Some(Self::NotificationsDisabled),
+            "ghostty" => Some(Self::Ghostty),
+            _ => None,
+        }
     }
 }

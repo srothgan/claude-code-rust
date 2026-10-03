@@ -1,4 +1,5 @@
 import test from "node:test";
+import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
 import {
   AsyncQueue,
@@ -17,7 +18,6 @@ import {
   applySessionEffort,
   applySessionFastMode,
   emitAgentConfigOptionUpdate,
-  emitEffortConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
   isShellToolName,
@@ -286,7 +286,6 @@ function promptControlDeps(): Parameters<
     applySessionEffort,
     applySessionAgent,
     applySessionFastMode,
-    emitEffortConfigOptionUpdate,
     emitAgentConfigOptionUpdate,
     handleReloadPluginsCommand,
   };
@@ -7833,13 +7832,14 @@ test("parseCommandEnvelope rejects invalid set_fast_mode values", () => {
 test("applySessionEffort uses live flag settings for xhigh and max", async () => {
   const calls: unknown[] = [];
   const query = {
+    async getSettings(): Promise<unknown> { return { applied: { effort: "high" } }; },
     async applyFlagSettings(settings: unknown): Promise<void> {
       calls.push(settings);
     },
-  } as import("@anthropic-ai/claude-agent-sdk").Query;
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
-  await applySessionEffort(query, "xhigh");
-  await applySessionEffort(query, "max");
+  assert.equal(await applySessionEffort(query, "xhigh"), "high");
+  assert.equal(await applySessionEffort(query, "max"), "high");
 
   assert.deepEqual(calls, [{ effortLevel: "xhigh" }, { effortLevel: "max" }]);
 });
@@ -8005,6 +8005,26 @@ test("emitEffortConfigOptionUpdate publishes effortLevel config option", () => {
       value: "max",
     },
   });
+});
+
+test("per-turn effort observations supersede an in-flight control read and null clears the level", async () => {
+  const session = makeSessionState();
+  let resolveSettings: ((value: unknown) => void) | undefined;
+  const pending = new Promise(resolve => { resolveSettings = resolve; });
+  session.query = {
+    getSettings: async () => pending,
+    supportedCommands: async () => [],
+    supportedAgents: async () => [],
+  } as unknown as SessionState["query"];
+  const events = await captureBridgeEventsAsync(async () => {
+    const read = refreshSessionEffort(session);
+    handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "opus", effort: "xhigh" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    resolveSettings?.({ applied: { effort: "high", ultracodeAvailable: true, ultracodeRequested: false, ultracode: false } });
+    await read;
+    handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "opus", effort: null } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
+  assert.deepEqual(events.filter(event => (event.update as Record<string, unknown>)?.option_id === "effortLevel").map(event => (event.update as Record<string, unknown>).value), ["xhigh", null]);
 });
 
 test("emitAgentConfigOptionUpdate publishes agent config option", () => {
@@ -10142,11 +10162,13 @@ test("Ultracode NDJSON control flow preserves effort and refreshes model support
   const session = makeSessionState();
   let enabled = false;
   let available = true;
+  let effort = "high";
   const calls: unknown[] = [];
   session.query = {
-    getSettings: async () => ({ applied: { ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled } }),
+    getSettings: async () => ({ applied: { ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled, effort: available ? effort : null } }),
     applyFlagSettings: async (settings: Record<string, unknown>) => {
       calls.push(settings);
+      if (typeof settings.effortLevel === "string") effort = settings.effortLevel;
       if ("effortLevel" in settings && !("ultracode" in settings)) enabled = false;
       if (typeof settings.ultracode === "boolean") enabled = settings.ultracode;
       return {};

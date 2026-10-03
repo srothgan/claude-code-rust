@@ -80,7 +80,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::McpConfigRemoveSucceeded { .. }
         | ClientEvent::McpConfigRemoveFailed { .. }
         | ClientEvent::McpSnapshotReceived { .. } => ClientEventFamily::Mcp,
-        ClientEvent::Connected { .. }
+        ClientEvent::SettingsResultReceived { .. }
+        | ClientEvent::Connected { .. }
         | ClientEvent::ConnectionFailed(_)
         | ClientEvent::AuthRequired { .. }
         | ClientEvent::SessionResumeFailed { .. }

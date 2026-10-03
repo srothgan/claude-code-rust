@@ -1,0 +1,341 @@
+// SPDX-License-Identifier: Apache-2.0
+
+use super::*;
+use crate::agent::client::AgentConnection;
+use crate::agent::events::ClientEvent;
+use crate::agent::settings::{SettingsOperation, SettingsScope, SettingsSnapshot};
+use crate::agent::wire::BridgeCommand;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use serde_json::json;
+use std::rc::Rc;
+
+fn snapshot(cwd: &str, value: &str) -> SettingsSnapshot {
+    serde_json::from_value(json!({
+        "cwd": cwd, "context": "context-1", "diagnostics": [], "resolution_sources": [], "provenance": {},
+        "catalog": [{ "id": "language", "label": "Language", "description": "Response language", "key_path": ["language"], "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
+        "sources": [{ "scope": "user", "path": "settings.json", "status": "valid", "values": [{ "id": "language", "revision": "revision-1", "value": value }] }],
+        "values": [{ "id": "language", "value": value, "contributors": ["user"], "policy_restricted": false }]
+    })).expect("snapshot contract")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut app = App::test_default();
+        let (connection, mut commands) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        crate::app::config::open(&mut app).expect("open");
+        let inspect = commands.recv_envelope().await.expect("inspect");
+        assert!(matches!(inspect.command, BridgeCommand::InspectSettings { .. }));
+        let initial = snapshot(&app.cwd_raw, "German");
+        crate::app::events::handle_client_event(&mut app, ClientEvent::SettingsResultReceived {
+            session_id: "session-1".to_owned(), request_id: inspect.request_id,
+            result: SettingsResult { persistence: SettingsPersistence::NotRequested, application: SettingsApplication::Blocked, snapshot: Some(initial), error: None },
+        });
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(app.config.setting_overlay().expect("editor").draft, "German");
+        for _ in 0..6 { crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)); }
+        assert!(crate::app::config::handle_paste(&mut app, "Greek"));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let save = commands.recv_envelope().await.expect("save");
+        let BridgeCommand::MutateSetting { mutation, .. } = save.command else { panic!("mutation") };
+        assert_eq!(mutation.id, "language");
+        assert_eq!(mutation.scope, SettingsScope::User);
+        assert_eq!(mutation.expected_revision, "revision-1");
+        assert_eq!(mutation.operation, SettingsOperation::Set);
+        assert_eq!(mutation.value, Some(json!("Greek")));
+        assert_eq!(app.config.saved_value("language"), Some(&json!("German")));
+        let updated = snapshot(&app.cwd_raw, "Greek");
+        apply_settings_result(&mut app, save.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(updated), error: None });
+        assert_eq!(app.config.saved_value("language"), Some(&json!("Greek")));
+        assert!(app.config.status_message.as_deref().is_some_and(|message| message.contains("next session")));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let reset = commands.recv_envelope().await.expect("reset");
+        assert!(matches!(reset.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.operation == SettingsOperation::Remove && mutation.id == "language"));
+    }).await;
+}
+
+#[test]
+fn request_correlation_and_session_epoch_protect_editor_state() {
+    let mut app = App::test_default();
+    app.config.pending_settings_request = Some("current".to_owned());
+    let saved = snapshot(&app.cwd_raw, "German");
+    app.config.snapshot = Some(saved.clone());
+    let incoming = snapshot(&app.cwd_raw, "Greek");
+    apply_settings_result(
+        &mut app,
+        Some("stale"),
+        SettingsResult {
+            persistence: SettingsPersistence::Saved,
+            application: SettingsApplication::NextSession,
+            snapshot: Some(incoming),
+            error: None,
+        },
+    );
+    assert_eq!(app.config.snapshot, Some(saved));
+    crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    app.bump_session_scope_epoch();
+    assert!(app.config.snapshot.is_none());
+    assert!(app.config.pending_settings_request.is_none());
+    assert!(app.config.setting_overlay().is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn inline_arrows_cycle_choices_and_render_acknowledged_values() {
+    use ratatui::{Terminal, backend::TestBackend};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            app.surface_mode =
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+            let mut resolved = snapshot(&app.cwd_raw, "small");
+            resolved.catalog[0].options = vec![json!("small"), json!("medium"), json!("large")];
+            resolved.catalog[0].allows_custom = false;
+            app.config.snapshot = Some(resolved);
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+            for (key, expected) in
+                [(KeyCode::Left, "large"), (KeyCode::Right, "small"), (KeyCode::Right, "medium")]
+            {
+                crate::app::config::handle_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
+                let save = commands.recv_envelope().await.expect("choice save");
+                let BridgeCommand::MutateSetting { mutation, .. } = save.command else {
+                    panic!("mutation")
+                };
+                assert_eq!(mutation.operation, SettingsOperation::Set);
+                assert_eq!(mutation.value, Some(json!(expected)));
+                let mut updated = app.config.snapshot.clone().expect("previous snapshot");
+                updated.sources[0].values[0].value = Some(json!(expected));
+                updated.values[0].value = Some(json!(expected));
+                crate::app::events::handle_client_event(
+                    &mut app,
+                    ClientEvent::SettingsResultReceived {
+                        session_id: "session-1".to_owned(),
+                        request_id: save.request_id,
+                        result: SettingsResult {
+                            persistence: SettingsPersistence::Saved,
+                            application: SettingsApplication::NextSession,
+                            snapshot: Some(updated),
+                            error: None,
+                        },
+                    },
+                );
+                assert_eq!(app.config.saved_value("language"), Some(&json!(expected)));
+                assert!(app.config.pending_settings_request.is_none());
+                terminal
+                    .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+                    .expect("saved choice");
+                let text: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect();
+                assert!(text.contains(&format!("Saved in user: {expected}")));
+            }
+            app.config.snapshot.as_mut().expect("snapshot").catalog[0].writable_scopes.clear();
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            );
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "read-only controls must preserve the saved value"
+            );
+            assert_eq!(app.config.saved_value("language"), Some(&json!("medium")));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn settings_load_automatically_after_startup_without_a_manual_refresh() {
+    use crate::agent::model;
+    use ratatui::{Terminal, backend::TestBackend};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            app.status = crate::app::AppStatus::Connecting;
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            crate::app::config::open(&mut app).expect("open during startup");
+            assert!(app.config.last_error.is_none(), "startup is not a settings error");
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+            terminal
+                .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+                .expect("startup render");
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(text.contains("Loading settings..."));
+            let cwd = app.cwd_raw.clone();
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::Connected {
+                    session_id: model::SessionId::new("session-1"),
+                    cwd,
+                    current_model: model::CurrentModel::new("opus", "Opus", "Opus"),
+                    available_models: Vec::new(),
+                    mode: None,
+                    fast_mode_state: model::FastModeState::Off,
+                    fast_mode_disabled_reason: None,
+                    ultracode: None,
+                    history_updates: Vec::new(),
+                },
+            );
+            assert!(
+                app.config.pending_settings_request.is_some(),
+                "startup must request settings automatically"
+            );
+            let inspect = loop {
+                let command = commands.recv_envelope().await.expect("startup command");
+                if matches!(command.command, BridgeCommand::InspectSettings { .. }) {
+                    break command;
+                }
+            };
+            let resolved = snapshot(&app.cwd_raw, "German");
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::SettingsResultReceived {
+                    session_id: "session-1".to_owned(),
+                    request_id: inspect.request_id,
+                    result: SettingsResult {
+                        persistence: SettingsPersistence::NotRequested,
+                        application: SettingsApplication::Blocked,
+                        snapshot: Some(resolved),
+                        error: None,
+                    },
+                },
+            );
+            terminal
+                .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+                .expect("loaded settings");
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(ratatui::buffer::Cell::symbol)
+                .collect();
+            assert!(text.contains("Saved in user: German"));
+            assert!(app.config.last_error.is_none());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
+    use crate::agent::settings::{ScopedSetting, SettingsSource};
+    use ratatui::{Terminal, backend::TestBackend};
+    tokio::task::LocalSet::new().run_until(async {
+        for inherited in [Some("English"), None] {
+            let mut app = App::test_default();
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+            app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            let mut initial = snapshot(&app.cwd_raw, "German");
+            initial.sources[0].scope = SettingsScope::Local;
+            initial.sources.push(SettingsSource {
+                scope: SettingsScope::User, path: "user/settings.json".to_owned(), status: "valid".to_owned(), error: None,
+                values: vec![ScopedSetting { id: "language".to_owned(), revision: "user-revision".to_owned(), value: inherited.map(|value| json!(value)) }],
+            });
+            initial.values[0].contributors = vec!["local".to_owned()];
+            app.config.snapshot = Some(initial);
+            app.config.selected_scope = SettingsScope::Local;
+            crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            for _ in 0..6 { crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)); }
+            crate::app::config::handle_paste(&mut app, "Greek");
+            crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            let save = commands.recv_envelope().await.expect("save");
+            assert!(matches!(save.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.scope == SettingsScope::Local && mutation.value == Some(json!("Greek"))));
+            let mut saved = app.config.snapshot.clone().expect("snapshot");
+            saved.sources[0].values[0].value = Some(json!("Greek"));
+            saved.values[0].value = Some(json!("Greek"));
+            crate::app::events::handle_client_event(&mut app, ClientEvent::SettingsResultReceived {
+                session_id: "session-1".to_owned(), request_id: save.request_id,
+                result: SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(saved), error: None },
+            });
+            crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            assert_eq!(app.config.setting_overlay().expect("reopened").draft, "Greek");
+            crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+            let reset = commands.recv_envelope().await.expect("reset");
+            assert!(matches!(reset.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.scope == SettingsScope::Local && mutation.operation == SettingsOperation::Remove));
+            let mut resolved = app.config.snapshot.clone().expect("saved snapshot");
+            resolved.sources[0].values[0].value = None;
+            resolved.values[0].value = inherited.map(|value| json!(value));
+            resolved.values[0].contributors = inherited.map_or_else(Vec::new, |_| vec!["user".to_owned()]);
+            crate::app::events::handle_client_event(&mut app, ClientEvent::SettingsResultReceived {
+                session_id: "session-1".to_owned(), request_id: reset.request_id,
+                result: SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(resolved), error: None },
+            });
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+                terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("reset render");
+            let lines: Vec<String> = terminal.backend().buffer().content.chunks(100).map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect()).collect();
+            assert!(lines.iter().any(|line| line.contains("Language") && line.contains(inherited.unwrap_or("Default"))));
+            assert!(lines.iter().any(|line| line.contains("Saved in local: not set")));
+            crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+            assert_eq!(app.config.setting_overlay().expect("reset editor").draft, inherited.unwrap_or(""));
+        }
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshed_value() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+            app.config.snapshot = Some(snapshot(&app.cwd_raw, "German"));
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            );
+            app.config.pending_settings_request = Some("save".to_owned());
+            // Keep the submitted draft frozen while its acknowledgement is pending.
+            assert!(crate::app::config::handle_paste(&mut app, "pending"));
+            assert_eq!(app.config.setting_overlay().expect("draft").draft, "German");
+            let mut refreshed = snapshot(&app.cwd_raw, "Japanese");
+            refreshed.sources[0].values[0].revision = "revision-2".to_owned();
+            apply_settings_result(
+                &mut app,
+                Some("save"),
+                SettingsResult {
+                    persistence: SettingsPersistence::Conflict,
+                    application: SettingsApplication::Blocked,
+                    snapshot: Some(refreshed),
+                    error: Some("Review the refreshed saved value".to_owned()),
+                },
+            );
+            assert_eq!(app.config.setting_overlay().expect("draft").draft, "German");
+            assert_eq!(app.config.saved_value("language"), Some(&json!("Japanese")));
+            assert_eq!(
+                app.config.overlay_message.as_ref().expect("message").text,
+                "Review the refreshed saved value"
+            );
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let retry = commands.recv_envelope().await.expect("deliberate retry");
+            let BridgeCommand::MutateSetting { mutation, .. } = retry.command else {
+                panic!("mutation")
+            };
+            assert_eq!(mutation.expected_revision, "revision-2");
+            assert_eq!(mutation.value, Some(json!("German")));
+        })
+        .await;
+}

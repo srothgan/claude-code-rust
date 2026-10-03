@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::edit::model_overlay_options;
 use super::prelude::*;
 
 pub fn request_status_snapshot_if_needed(app: &App) {
@@ -31,24 +30,5 @@ pub fn request_status_snapshot_if_needed(app: &App) {
             session_id = %session_id,
             error_message = %error,
         ),
-    }
-}
-
-pub(crate) fn model_status_label(model: Option<&str>, app: &App) -> String {
-    match model {
-        None => DEFAULT_MODEL_ALIAS_LABEL.to_owned(),
-        Some(model_id) => model_overlay_options(app)
-            .into_iter()
-            .find(|candidate| candidate.matches_model_id(model_id))
-            .map_or_else(
-                || {
-                    if model_id == DEFAULT_MODEL_ALIAS_ID {
-                        DEFAULT_MODEL_ALIAS_LABEL.to_owned()
-                    } else {
-                        model_id.to_owned()
-                    }
-                },
-                |candidate| candidate.display_name,
-            ),
     }
 }

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::redaction;
-use super::style::HumanStyle;
-use crate::app::config::store::{
+use super::config_files::{
     InspectedConfigDocuments, InspectedConfigFile, InspectedConfigFileKind,
     InspectedConfigFileStatus, inspect_read_only,
 };
+use super::redaction;
+use super::style::HumanStyle;
 use crate::{
     Cli, ConfigArgs, ConfigCommand, ConfigExportArgs, ConfigFileSelector, ConfigPathArgs,
     ConfigShowArgs,
@@ -292,6 +292,7 @@ fn selected_file(
     selector: ConfigFileSelector,
 ) -> Option<&InspectedConfigFile> {
     let kind = match selector {
+        ConfigFileSelector::ProjectSettings => InspectedConfigFileKind::ProjectSettings,
         ConfigFileSelector::Settings => InspectedConfigFileKind::Settings,
         ConfigFileSelector::LocalSettings => InspectedConfigFileKind::LocalSettings,
         ConfigFileSelector::Preferences => InspectedConfigFileKind::Preferences,
@@ -608,7 +609,7 @@ mod tests {
         assert_eq!(code, 0);
         let output = String::from_utf8(stdout).expect("utf8");
         assert!(output.contains("claude-rs config"));
-        assert!(output.contains("Summary: 0 files found, 3 missing, 0 invalid"));
+        assert!(output.contains("Summary: 0 files found, 4 missing, 0 invalid"));
         assert!(output.contains("Locations"));
         assert!(output.contains("[MISS] Global settings"));
         assert!(output.contains("Commands"));

@@ -5,6 +5,9 @@ use crate::agent::events::ClientEvent;
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
+        ClientEvent::SettingsResultReceived { request_id, result, .. } => {
+            crate::app::config::apply_settings_result(app, request_id.as_deref(), result);
+        }
         ClientEvent::Connected {
             session_id,
             cwd,
@@ -147,6 +150,7 @@ fn refresh_session_snapshots(app: &mut App) {
     crate::app::config::refresh_mcp_snapshot(app);
     crate::app::session_runtime::request_status_snapshot_refresh(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::config::request_settings(app);
 }
 
 fn apply_status_snapshot(

@@ -384,7 +384,7 @@ mod tests {
 
         assert_eq!(composer_hint_height(&app), 5);
         assert_eq!(rows.len(), 5);
-        assert!(line_text(&rows[0]).contains("/1m-context"));
+        assert!(line_text(&rows[0]).contains("/agent"));
     }
 
     #[test]

@@ -9,7 +9,6 @@ use super::{
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::types::RewindRestoreMode;
-use crate::app::config::{self, SettingFile, store};
 use crate::app::connect::{
     SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
 };
@@ -21,11 +20,6 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use tokio::sync::mpsc;
-
-const OPUS_4_5_MODEL_ID: &str = "claude-opus-4-5-20251101";
-const OPUS_4_6_MODEL_ID: &str = "claude-opus-4-6";
-const OPUS_4_7_MODEL_ID: &str = "claude-opus-4-7";
-const OPUS_4_8_MODEL_ID: &str = "claude-opus-4-8";
 
 /// Handle slash command submission.
 ///
@@ -46,7 +40,6 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
     }
 
     match command {
-        AppSlashCommand::OneMContext => handle_1m_context_submit(app, &args),
         AppSlashCommand::Btw => handle_btw_submit(app, text),
         AppSlashCommand::Cancel => handle_cancel_submit(app),
         AppSlashCommand::Compact => handle_compact_submit(app),
@@ -59,7 +52,6 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Help => handle_help_submit(app),
         AppSlashCommand::Mcp => handle_mcp_submit(app),
         AppSlashCommand::Plugins => handle_plugins_submit(app),
-        AppSlashCommand::OpusVersion => handle_opus_version_submit(app, &args),
         AppSlashCommand::Status => handle_status_submit(app),
         AppSlashCommand::Usage => handle_usage_submit(app),
         AppSlashCommand::Login => handle_login_submit(app),
@@ -105,227 +97,6 @@ pub fn try_handle_submit(app: &mut App, text: &str) -> bool {
     try_handle_submission(app, &ResolvedSubmission::resolve(text.to_owned()))
 }
 
-fn opus_model_id_for_version(version: &str) -> Option<&'static str> {
-    match version {
-        "4.5" => Some(OPUS_4_5_MODEL_ID),
-        "4.6" => Some(OPUS_4_6_MODEL_ID),
-        "4.7" => Some(OPUS_4_7_MODEL_ID),
-        "4.8" => Some(OPUS_4_8_MODEL_ID),
-        _ => None,
-    }
-}
-
-fn opus_version_label_for_model_id(model_id: &str) -> Option<&'static str> {
-    match model_id {
-        OPUS_4_5_MODEL_ID => Some("4.5"),
-        OPUS_4_6_MODEL_ID => Some("4.6"),
-        OPUS_4_7_MODEL_ID => Some("4.7"),
-        OPUS_4_8_MODEL_ID => Some("4.8"),
-        _ => None,
-    }
-}
-
-fn handle_opus_version_submit(app: &mut App, args: &[&str]) -> bool {
-    let [subcommand] = args else {
-        unreachable!("validated /opus-version arguments must contain one value");
-    };
-
-    match *subcommand {
-        "status" => {
-            match current_opus_version_pin(app) {
-                Ok(Some(model_id)) => {
-                    let message = if let Some(version) = opus_version_label_for_model_id(&model_id)
-                    {
-                        format!(
-                            "Opus is pinned to {version} in this folder via `.claude/settings.local.json`."
-                        )
-                    } else {
-                        format!(
-                            "Opus is pinned to {model_id} in this folder via `.claude/settings.local.json`."
-                        )
-                    };
-                    push_submission_feedback(app, SystemSeverity::Info, &message);
-                }
-                Ok(None) => push_submission_feedback(
-                    app,
-                    SystemSeverity::Info,
-                    "Opus is using the default alias resolution in this folder.",
-                ),
-                Err(err) => {
-                    push_system_message(app, format!("Failed to read /opus-version status: {err}"));
-                }
-            }
-            true
-        }
-        "default" => {
-            if let Err(err) = set_opus_version_pin(app, None) {
-                push_system_message(app, format!("Failed to run /opus-version default: {err}"));
-            }
-            true
-        }
-        _ => {
-            let Some(model_id) = opus_model_id_for_version(subcommand) else {
-                unreachable!("validated /opus-version argument must be supported");
-            };
-            if let Err(err) = set_opus_version_pin(app, Some(model_id)) {
-                push_system_message(
-                    app,
-                    format!("Failed to run /opus-version {subcommand}: {err}"),
-                );
-            }
-            true
-        }
-    }
-}
-
-fn handle_1m_context_submit(app: &mut App, args: &[&str]) -> bool {
-    let [subcommand] = args else {
-        unreachable!("validated /1m-context arguments must contain one value");
-    };
-
-    match *subcommand {
-        "status" => {
-            match current_1m_context_disabled(app) {
-                Ok(true) => push_submission_feedback(
-                    app,
-                    SystemSeverity::Info,
-                    "1M context is disabled for future sessions in this folder via `.claude/settings.local.json`.",
-                ),
-                Ok(false) => push_submission_feedback(
-                    app,
-                    SystemSeverity::Info,
-                    "1M context is enabled for future sessions in this folder.",
-                ),
-                Err(err) => {
-                    push_system_message(app, format!("Failed to read /1m-context status: {err}"));
-                }
-            }
-            true
-        }
-        "disable" => {
-            if let Err(err) = set_1m_context_disabled(app, true) {
-                push_system_message(app, format!("Failed to run /1m-context disable: {err}"));
-            }
-            true
-        }
-        "enable" => {
-            if let Err(err) = set_1m_context_disabled(app, false) {
-                push_system_message(app, format!("Failed to run /1m-context enable: {err}"));
-            }
-            true
-        }
-        _ => unreachable!("validated /1m-context argument must be supported"),
-    }
-}
-
-fn current_1m_context_disabled(app: &mut App) -> Result<bool, String> {
-    config::initialize_shared_state(app)?;
-    store::disable_1m_context(&app.config.committed_local_settings_document).map_err(|()| {
-        "Expected `.claude/settings.local.json` env.CLAUDE_CODE_DISABLE_1M_CONTEXT to be a string"
-            .to_owned()
-    })
-}
-
-fn set_1m_context_disabled(app: &mut App, disabled: bool) -> Result<(), String> {
-    if !app.is_project_trusted() {
-        return Err(
-            "Project trust must be accepted before editing folder-local 1M context settings"
-                .to_owned(),
-        );
-    }
-
-    config::initialize_shared_state(app)?;
-    let Some(path) = app.config.path_for(SettingFile::LocalSettings).cloned() else {
-        return Err("Local settings path is not available".to_owned());
-    };
-
-    let current = store::disable_1m_context(&app.config.committed_local_settings_document)
-        .map_err(|()| {
-            "Expected `.claude/settings.local.json` env.CLAUDE_CODE_DISABLE_1M_CONTEXT to be a string"
-                .to_owned()
-        })?;
-
-    let mut next_document = app.config.committed_local_settings_document.clone();
-    store::set_disable_1m_context(&mut next_document, disabled);
-    store::save(&path, &next_document)?;
-    app.config.committed_local_settings_document = next_document;
-    app.reconcile_runtime_from_persisted_settings_change();
-    app.config.last_error = None;
-
-    let message = match (disabled, current == disabled) {
-        (true, true) => {
-            "1M context is already disabled for future sessions in this folder. Run /new-session to apply it."
-        }
-        (true, false) => {
-            "Disabled 1M context for future sessions in this folder. Run /new-session to apply it."
-        }
-        (false, true) => {
-            "1M context is already enabled for future sessions in this folder. Run /new-session to apply it."
-        }
-        (false, false) => {
-            "Enabled 1M context for future sessions in this folder. Run /new-session to apply it."
-        }
-    };
-    push_submission_feedback(app, SystemSeverity::Info, message);
-    Ok(())
-}
-
-fn current_opus_version_pin(app: &mut App) -> Result<Option<String>, String> {
-    config::initialize_shared_state(app)?;
-    store::opus_version_pin(&app.config.committed_local_settings_document).map_err(|()| {
-        "Expected `.claude/settings.local.json` env.ANTHROPIC_DEFAULT_OPUS_MODEL to be a string"
-            .to_owned()
-    })
-}
-
-fn set_opus_version_pin(app: &mut App, model: Option<&str>) -> Result<(), String> {
-    if !app.is_project_trusted() {
-        return Err(
-            "Project trust must be accepted before editing folder-local Opus version settings"
-                .to_owned(),
-        );
-    }
-
-    config::initialize_shared_state(app)?;
-    let Some(path) = app.config.path_for(SettingFile::LocalSettings).cloned() else {
-        return Err("Local settings path is not available".to_owned());
-    };
-
-    let current =
-        store::opus_version_pin(&app.config.committed_local_settings_document).map_err(|()| {
-            "Expected `.claude/settings.local.json` env.ANTHROPIC_DEFAULT_OPUS_MODEL to be a string"
-                .to_owned()
-        })?;
-
-    let mut next_document = app.config.committed_local_settings_document.clone();
-    store::set_opus_version_pin(&mut next_document, model);
-    store::save(&path, &next_document)?;
-    app.config.committed_local_settings_document = next_document;
-    app.reconcile_runtime_from_persisted_settings_change();
-    app.config.last_error = None;
-
-    let message = match (model, current.as_deref()) {
-        (Some(next_model), Some(current_model)) if current_model == next_model => {
-            let version = opus_version_label_for_model_id(next_model).unwrap_or(next_model);
-            format!(
-                "Opus is already pinned to {version} for future sessions in this folder. Run /new-session to apply it."
-            )
-        }
-        (Some(next_model), _) => {
-            let version = opus_version_label_for_model_id(next_model).unwrap_or(next_model);
-            format!(
-                "Pinned Opus to {version} for future sessions in this folder. Run /new-session to apply it."
-            )
-        }
-        (None, None) => "Opus is already using the default alias in this folder.".to_owned(),
-        (None, Some(_)) => {
-            "Cleared the project-local Opus version pin for future sessions in this folder. Run /new-session to apply it.".to_owned()
-        }
-    };
-    push_submission_feedback(app, SystemSeverity::Info, &message);
-    Ok(())
-}
-
 fn handle_cancel_submit(app: &mut App) -> bool {
     if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
         return true;
@@ -359,11 +130,10 @@ fn handle_config_submit(app: &mut App) -> bool {
 }
 
 fn handle_help_submit(app: &mut App) -> bool {
-    if let Err(err) = crate::app::config::open(app) {
+    if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Help) {
         push_system_message(app, format!("Failed to open help: {err}"));
         return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Help);
     true
 }
 
@@ -386,38 +156,34 @@ fn handle_docs_submit(app: &mut App, args: &[&str]) -> bool {
 }
 
 fn handle_plugins_submit(app: &mut App) -> bool {
-    if let Err(err) = crate::app::config::open(app) {
+    if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Plugins) {
         push_system_message(app, format!("Failed to open plugins: {err}"));
         return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Plugins);
     true
 }
 
 fn handle_mcp_submit(app: &mut App) -> bool {
-    if let Err(err) = crate::app::config::open(app) {
+    if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Mcp) {
         push_system_message(app, format!("Failed to open MCP: {err}"));
         return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Mcp);
     true
 }
 
 fn handle_status_submit(app: &mut App) -> bool {
-    if let Err(err) = crate::app::config::open(app) {
+    if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Status) {
         push_system_message(app, format!("Failed to open status: {err}"));
         return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Status);
     true
 }
 
 fn handle_usage_submit(app: &mut App) -> bool {
-    if let Err(err) = crate::app::config::open(app) {
+    if let Err(err) = crate::app::config::open_tab(app, crate::app::ConfigTab::Usage) {
         push_system_message(app, format!("Failed to open usage: {err}"));
         return true;
     }
-    crate::app::config::activate_tab(app, crate::app::ConfigTab::Usage);
     true
 }
 

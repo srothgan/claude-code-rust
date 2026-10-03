@@ -9,6 +9,8 @@ type CommandLane =
 
 const LIFECYCLE_COMMANDS = new Set<BridgeCommand["command"]>([
   "initialize",
+  "inspect_settings",
+  "mutate_setting",
   "create_session",
   "resume_session",
   "resume_session_at",

@@ -172,13 +172,12 @@ impl App {
     }
 
     #[must_use]
-    pub fn session_thinking_effort_effective(&self) -> model::EffortLevel {
+    pub fn session_effort(&self) -> Option<model::EffortLevel> {
         self.session_runtime
             .config_options
             .get("effortLevel")
             .and_then(serde_json::Value::as_str)
             .and_then(model::EffortLevel::from_stored)
-            .unwrap_or_else(|| self.config.thinking_effort_effective())
     }
 
     #[must_use]

@@ -36,7 +36,7 @@ test("Ultracode runtime adapter rejects missing and non-boolean settings", async
     }
   }
   for (const settings of [undefined, null, [], {}, { applied: null }, { applied: [] }]) {
-    await assert.rejects(readUltracodeState({ getSettings: async () => settings } as unknown as Query), /Invalid Ultracode settings/);
+    await assert.rejects(readUltracodeState({ getSettings: async () => settings } as unknown as Query), /Invalid applied settings response/);
   }
 });
 

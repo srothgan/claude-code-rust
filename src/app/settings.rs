@@ -2,14 +2,10 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const SETTINGS_DIR_NAME: &str = "claude-code-rust";
 const SETTINGS_FILE: &str = "settings.json";
-const OLD_UPDATE_CACHE_FILE: &str = "update-check.json";
 const UPDATE_SOURCE_GITHUB_RELEASE: &str = "github_release";
 const GITHUB_RELEASE_BASE_URL: &str = "https://github.com/srothgan/claude-code-rust/releases/tag";
 
@@ -21,13 +17,13 @@ pub struct AppSettings {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_result: Option<UpdateCheckResult>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub skip_until_unix_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub skipped_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_install_error: Option<String>,
 }
 
@@ -54,68 +50,43 @@ pub struct LoadedAppSettings {
     pub settings: AppSettings,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-struct OldUpdateCheckCache {
-    checked_at_unix_secs: u64,
-    latest_version: String,
-}
-
-pub fn load_global_settings(current_version: &str) -> Result<LoadedAppSettings, String> {
+pub fn load_global_settings() -> Result<LoadedAppSettings, String> {
     let Some(path) = global_settings_path() else {
         return Ok(LoadedAppSettings { path: None, settings: AppSettings::default() });
     };
-
-    let mut settings = load_from_path(&path)?;
-    migrate_old_update_cache(
-        &path,
-        old_update_cache_path().as_deref(),
-        &mut settings,
-        current_version,
-    )?;
-
+    let settings = load_from_path(&path)?;
     Ok(LoadedAppSettings { path: Some(path), settings })
 }
 
-#[cfg(test)]
-fn load_global_settings_from_paths(
-    settings_path: &Path,
-    old_cache_path: Option<&Path>,
-    current_version: &str,
-) -> Result<AppSettings, String> {
-    let mut settings = load_from_path(settings_path)?;
-    migrate_old_update_cache(settings_path, old_cache_path, &mut settings, current_version)?;
-    Ok(settings)
-}
-
 pub fn save_global_settings(path: &Path, settings: &AppSettings) -> Result<(), String> {
-    let parent =
-        path.parent().ok_or_else(|| "App settings path has no parent directory".to_owned())?;
-    std::fs::create_dir_all(parent)
-        .map_err(|err| format!("Failed to create app settings directory: {err}"))?;
-
-    let temp_path = unique_temp_path(parent, path.file_name().and_then(std::ffi::OsStr::to_str));
-    let mut temp = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp_path)
-        .map_err(|err| format!("Failed to create app settings temp file: {err}"))?;
-    serde_json::to_writer_pretty(&mut temp, settings)
-        .map_err(|err| format!("Failed to serialize app settings: {err}"))?;
-    temp.write_all(b"\n").map_err(|err| format!("Failed to finalize app settings file: {err}"))?;
-    temp.flush().map_err(|err| format!("Failed to flush app settings file: {err}"))?;
-    temp.sync_all().map_err(|err| format!("Failed to sync app settings file: {err}"))?;
-    drop(temp);
-    std::fs::rename(&temp_path, path)
-        .map_err(|err| format!("Failed to move app settings file into place: {err}"))?;
-    Ok(())
+    let mut document = match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .map_err(|error| format!("Invalid app settings: {error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(format!("Cannot read app settings: {error}")),
+    };
+    let root =
+        document.as_object_mut().ok_or_else(|| "App settings must be a JSON object".to_owned())?;
+    let updates = root.entry("updates").or_insert_with(|| serde_json::json!({}));
+    let updates = updates
+        .as_object_mut()
+        .ok_or_else(|| "App update settings must be an object".to_owned())?;
+    let serialized = serde_json::to_value(&settings.updates).map_err(|error| error.to_string())?;
+    if let serde_json::Value::Object(values) = serialized {
+        for (key, value) in values {
+            if value.is_null() {
+                updates.remove(&key);
+            } else {
+                updates.insert(key, value);
+            }
+        }
+    }
+    crate::json_file::replace(path, &document)
+        .map_err(|error| format!("Cannot save app settings: {error}"))
 }
 
 pub fn global_settings_path() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join(SETTINGS_DIR_NAME).join(SETTINGS_FILE))
-}
-
-pub fn old_update_cache_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|dir| dir.join(SETTINGS_DIR_NAME).join(OLD_UPDATE_CACHE_FILE))
 }
 
 pub fn update_prompt_candidate(
@@ -196,80 +167,6 @@ fn load_from_path(path: &Path) -> Result<AppSettings, String> {
     }
 }
 
-fn migrate_old_update_cache(
-    settings_path: &Path,
-    old_path: Option<&Path>,
-    settings: &mut AppSettings,
-    current_version: &str,
-) -> Result<(), String> {
-    if settings.updates.last_result.is_some() {
-        return Ok(());
-    }
-    let Some(old_path) = old_path else {
-        return Ok(());
-    };
-    let raw = match std::fs::read_to_string(old_path) {
-        Ok(raw) => raw,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            tracing::warn!(
-                target: crate::logging::targets::APP_UPDATE,
-                event_name = "old_update_cache_read_failed",
-                message = "failed to read old update cache during migration",
-                outcome = "failure",
-                cache_path = %old_path.display(),
-                error_message = %err,
-            );
-            return Ok(());
-        }
-    };
-    let Ok(cache) = serde_json::from_str::<OldUpdateCheckCache>(&raw) else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_UPDATE,
-            event_name = "old_update_cache_parse_failed",
-            message = "failed to parse old update cache during migration",
-            outcome = "failure",
-            cache_path = %old_path.display(),
-        );
-        return Ok(());
-    };
-    if !super::update_check::is_valid_version(&cache.latest_version) {
-        return Ok(());
-    }
-    let Some(release_url) = release_url_for_version(&cache.latest_version) else {
-        return Ok(());
-    };
-
-    record_update_check_result(
-        settings,
-        current_version,
-        &cache.latest_version,
-        &release_url,
-        cache.checked_at_unix_secs,
-    );
-    save_global_settings(settings_path, settings)?;
-    if let Err(err) = std::fs::remove_file(old_path)
-        && err.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            target: crate::logging::targets::APP_UPDATE,
-            event_name = "old_update_cache_cleanup_failed",
-            message = "failed to delete old update cache after migration",
-            outcome = "failure",
-            cache_path = %old_path.display(),
-            error_message = %err,
-        );
-    }
-    Ok(())
-}
-
-fn unique_temp_path(parent: &Path, filename_hint: Option<&str>) -> PathBuf {
-    let stamp =
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-    let filename = filename_hint.unwrap_or(SETTINGS_FILE);
-    parent.join(format!(".{filename}.{stamp}.tmp"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,33 +212,20 @@ mod tests {
             Some("https://github.com/srothgan/claude-code-rust/releases/tag/v0.14.0")
         );
     }
-
     #[test]
-    fn migrates_old_update_cache_into_global_settings_and_deletes_old_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let settings_path = dir.path().join("config").join("settings.json");
-        let old_cache_path = dir.path().join("cache").join("update-check.json");
-        std::fs::create_dir_all(old_cache_path.parent().expect("old cache parent"))
-            .expect("create cache dir");
+    fn updater_save_preserves_personal_preferences_and_unknown_update_fields() {
+        let fixture = tempfile::tempdir().expect("tempdir");
+        let path = fixture.path().join("settings.json");
         std::fs::write(
-            &old_cache_path,
-            r#"{"checked_at_unix_secs":1783580000,"latest_version":"0.14.0"}"#,
+            &path,
+            r#"{"personal":{"future":true},"updates":{"future":42,"skipped_version":"old"}}"#,
         )
-        .expect("write old cache");
-
-        let settings =
-            load_global_settings_from_paths(&settings_path, Some(&old_cache_path), "0.13.4")
-                .expect("load settings");
-
-        let result = settings.updates.last_result.expect("last result");
-        assert_eq!(result.checked_at_unix_secs, 1_783_580_000);
-        assert_eq!(result.current_version, "0.13.4");
-        assert_eq!(result.latest_version, "0.14.0");
-        assert_eq!(
-            result.release_url,
-            "https://github.com/srothgan/claude-code-rust/releases/tag/v0.14.0"
-        );
-        assert!(!old_cache_path.exists());
-        assert!(settings_path.exists());
+        .expect("fixture");
+        save_global_settings(&path, &AppSettings::default()).expect("save");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).expect("read")).expect("JSON");
+        assert_eq!(saved["personal"]["future"], true);
+        assert_eq!(saved["updates"]["future"], 42);
+        assert!(saved["updates"].get("skipped_version").is_none());
     }
 }

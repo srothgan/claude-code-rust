@@ -37,6 +37,11 @@ impl App {
 
     pub fn bump_session_scope_epoch(&mut self) {
         self.session_runtime.bump_session_scope_epoch();
+        self.config.snapshot = None;
+        self.config.pending_settings_request = None;
+        if matches!(self.config.overlay, Some(crate::app::config::ConfigOverlayState::Setting(_))) {
+            self.config.clear_overlay();
+        }
         // Side-question work belongs to this conversation scope, not the next one.
         self.btw.clear();
     }
@@ -47,26 +52,7 @@ impl App {
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {
-        let lookup = crate::app::trust::store::read_status(
-            &self.config.committed_preferences_document,
-            Path::new(&self.cwd_raw),
-        );
-        self.trust.project_key = lookup.project_key;
-        self.trust.status = if lookup.trusted {
-            crate::app::trust::TrustStatus::Trusted
-        } else {
-            crate::app::trust::TrustStatus::Untrusted
-        };
-        self.trust.selection = crate::app::trust::TrustSelection::Yes;
-        self.trust.last_error = self
-            .config
-            .preferences_path
-            .is_none()
-            .then(|| "Trust preferences path is not available".to_owned());
-    }
-
-    pub fn reconcile_runtime_from_persisted_settings_change(&mut self) {
-        self.reconcile_trust_state_from_preferences_and_cwd();
+        crate::app::trust::refresh(self);
     }
 
     pub(crate) fn shift_active_turn_assistant_for_insert(&mut self, idx: usize) {

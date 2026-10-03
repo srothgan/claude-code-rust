@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::app::config::{ConfigOverlayState, OutputStyle, OutputStyleOverlayState};
+use crate::app::config::{ConfigOverlayState, SessionRenameOverlayState};
 use crate::app::dialog::DialogState;
 use crate::app::slash::{SlashContext, SlashState};
 use crate::app::subagent::SubagentState;
@@ -109,8 +109,9 @@ fn set_surface_mode_keeps_permission_unfocused_when_returning_to_chat_with_draft
 fn leaving_config_clears_config_overlay() {
     let mut app = App::test_default();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-    app.config.overlay = Some(ConfigOverlayState::OutputStyle(OutputStyleOverlayState {
-        selected: OutputStyle::Default,
+    app.config.overlay = Some(ConfigOverlayState::SessionRename(SessionRenameOverlayState {
+        draft: String::new(),
+        cursor: 0,
     }));
 
     set_surface_mode(&mut app, SurfaceMode::Fullscreen(FullscreenView::Trusted));

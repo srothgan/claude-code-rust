@@ -2248,7 +2248,10 @@ fn fast_mode_update_sets_state() {
 #[test]
 fn fast_mode_disabled_reason_updates_clears_and_notifies_once_when_requested() {
     let mut app = make_test_app();
-    app.config.committed_settings_document = serde_json::json!({ "fastMode": true });
+    app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+        "fastMode",
+        serde_json::json!(true),
+    ));
 
     let update = model::SessionUpdate::FastModeUpdate {
         state: model::FastModeState::Off,
@@ -2294,7 +2297,10 @@ fn fast_mode_disabled_reason_does_not_warn_when_unrequested_or_cooling_down() {
     assert!(unrequested.transcript.messages.is_empty());
 
     let mut cooling_down = make_test_app();
-    cooling_down.config.committed_settings_document = serde_json::json!({ "fastMode": true });
+    cooling_down.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+        "fastMode",
+        serde_json::json!(true),
+    ));
     handle_client_event(
         &mut cooling_down,
         session_update(model::SessionUpdate::FastModeUpdate {
@@ -3616,31 +3622,6 @@ fn mention_owner_releases_back_to_input() {
 }
 
 #[test]
-fn settings_view_routes_space_to_settings_handler_not_chat_input() {
-    let mut app = make_test_app();
-    let dir = tempfile::tempdir().expect("tempdir");
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-    crate::app::config::open(&mut app).expect("open settings");
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-    app.config.selected_setting_index = crate::app::config::setting_specs()
-        .iter()
-        .position(|spec| spec.id == crate::app::config::SettingId::FastMode)
-        .expect("fast mode setting row");
-    app.input.set_text("seed");
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "seed");
-    assert!(app.pending_submit.is_none());
-    assert!(app.config.fast_mode_effective());
-    assert!(app.config.last_error.is_none());
-}
-
-#[test]
 fn settings_view_routes_enter_to_close_not_chat_submit() {
     let mut app = make_test_app();
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3733,7 +3714,7 @@ fn trusted_view_accept_key_does_not_edit_chat_input() {
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
     app.input.set_text("seed");
     app.cwd_raw = dir.path().join("project").to_string_lossy().to_string();
-    app.config.preferences_path = Some(path);
+    app.trust.preferences_path = Some(path);
     app.trust.status = crate::app::trust::TrustStatus::Untrusted;
     app.trust.project_key =
         crate::app::trust::store::normalize_project_key(std::path::Path::new(&app.cwd_raw));

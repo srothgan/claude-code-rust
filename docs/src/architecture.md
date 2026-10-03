@@ -74,3 +74,9 @@ Source builds are different: `cargo build` or `cargo install --path .` produce o
 Claude Code Rust owns the terminal UI, local settings surface, bridge process management, and event rendering. Anthropic owns the Agent SDK, authentication, service behavior, billing, models, and upstream Claude Code semantics.
 
 The project does not depend on Agent SDK package subpath exports such as `/browser`, `/bridge`, or `/assistant` as the runtime path. The runtime path is the local TypeScript bridge in this repository.
+
+## Settings and trust ownership
+
+The bridge settings service owns the Claude settings catalog, scoped mutation validation, and targeted JSON persistence. Public SDK `resolveSettings()` owns saved-value resolution. Rust receives catalog descriptors and sanitized snapshots over NDJSON, owns the config window and edit drafts, and tracks correlated acknowledgements without mirroring scope rules or merging files. Saved defaults remain separate from active SDK session choices. Settings snapshots and pending drafts are invalidated when the session scope changes.
+
+Workspace trust has its own state and store under `src/app/trust`; it never uses the config snapshot as authority. Trust acceptance reads the current preferences document and preserves unrelated authentication and MCP data. App preferences retain their separate owner under `src/app/settings.rs`, with no legacy update-cache import. Shared atomic file replacement is an I/O mechanism rather than a domain resolver. Offline CLI config inspection is a separate read-only physical-file view.

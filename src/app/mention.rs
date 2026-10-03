@@ -1477,10 +1477,10 @@ mod tests {
         let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs"]);
         std::fs::create_dir_all(tmp.path().join(".git")).expect("create .git");
         std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").expect("write .gitignore");
-        crate::app::config::store::set_respect_gitignore(
-            &mut app.config.committed_preferences_document,
-            false,
-        );
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "respectGitignore",
+            serde_json::json!(false),
+        ));
         start_session_index(&mut app);
         app.input.set_text("@rs");
         let _ = app.input.set_cursor(0, 3);

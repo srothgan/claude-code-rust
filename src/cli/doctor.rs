@@ -6,7 +6,7 @@ use crate::agent::bridge::{
     BRIDGE_RUNTIME_ENV_VAR, BRIDGE_SCRIPT_ENV_VAR, BridgeRuntimeInspection, BridgeScriptInspection,
     inspect_bridge_runtime, inspect_bridge_script,
 };
-use crate::app::{auth, config};
+use crate::app::auth;
 use crate::{Cli, DoctorArgs};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -532,9 +532,15 @@ fn bridge_script_check(inspection: &BridgeScriptInspection) -> DoctorCheck {
 }
 
 fn config_path_checks(project_root: Option<&Path>) -> Vec<DoctorCheck> {
-    match config::store::resolve_paths(None, project_root) {
+    match super::config_files::resolve_paths(None, project_root) {
         Ok(paths) => vec![
             path_check("config_settings", "Global settings", &paths.settings, false),
+            path_check(
+                "config_project_settings",
+                "Project settings",
+                &paths.project_settings,
+                false,
+            ),
             path_check("config_local_settings", "Local settings", &paths.local_settings, false),
             path_check("config_preferences", "Preferences", &paths.preferences, false),
         ],

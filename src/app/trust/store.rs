@@ -11,6 +11,27 @@ pub struct TrustLookup {
     pub trusted: bool,
 }
 
+/// Trust persistence is independent of the Claude settings cascade.
+pub(super) fn read_document(path: &Path) -> Result<Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(document @ Value::Object(_)) => Ok(document),
+            _ => Err(format!("Invalid trust preferences: {}", path.display())),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(error) => Err(format!("Cannot read trust preferences: {error}")),
+    }
+}
+
+pub(super) fn accept_at(path: &Path, project_root: &Path) -> Result<String, String> {
+    // Reread at the operation boundary: a UI snapshot must never overwrite another owner's data.
+    let mut document = read_document(path)?;
+    let project_key = set_trusted(&mut document, project_root)?;
+    crate::json_file::replace(path, &document)
+        .map_err(|error| format!("Cannot save trust preferences: {error}"))?;
+    Ok(project_key)
+}
+
 pub fn read_status(document: &Value, project_root: &Path) -> TrustLookup {
     let project_key = normalize_project_key(project_root);
     let projects = document.get(PROJECTS_FIELD).and_then(Value::as_object);
@@ -23,54 +44,40 @@ pub fn read_status(document: &Value, project_root: &Path) -> TrustLookup {
     TrustLookup { project_key, trusted }
 }
 
-pub fn set_trusted(document: &mut Value, project_root: &Path) -> String {
+pub fn set_trusted(document: &mut Value, project_root: &Path) -> Result<String, String> {
     let project_key = normalize_project_key(project_root);
-    let root = ensure_object_mut(document);
+    let root =
+        document.as_object_mut().ok_or_else(|| "Trust preferences must be an object".to_owned())?;
+    if root.get(PROJECTS_FIELD).is_some_and(|value| !value.is_object()) {
+        return Err("Trust projects must be a JSON object".to_owned());
+    }
+    let matching_keys =
+        root.get(PROJECTS_FIELD).and_then(Value::as_object).map_or_else(Vec::new, |projects| {
+            projects
+                .keys()
+                .filter(|key| project_keys_match(key, &project_key))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+    if root
+        .get(PROJECTS_FIELD)
+        .and_then(Value::as_object)
+        .is_some_and(|projects| matching_keys.iter().any(|key| !projects[key].is_object()))
+    {
+        return Err("Trust project entry must be a JSON object".to_owned());
+    }
     let projects =
         root.entry(PROJECTS_FIELD.to_owned()).or_insert_with(|| Value::Object(Map::new()));
-    if !projects.is_object() {
-        *projects = Value::Object(Map::new());
-    }
-
-    let Value::Object(projects) = projects else {
-        unreachable!("projects must be an object after normalization");
-    };
-
-    let matching_keys = projects
-        .keys()
-        .filter(|key| project_keys_match(key, &project_key))
-        .cloned()
-        .collect::<Vec<_>>();
-
-    if matching_keys.is_empty() {
-        let entry =
-            projects.entry(project_key.clone()).or_insert_with(|| Value::Object(Map::new()));
-        if !entry.is_object() {
-            *entry = Value::Object(Map::new());
-        }
-        match entry {
-            Value::Object(project) => {
+    if let Value::Object(projects) = projects {
+        let keys = if matching_keys.is_empty() { vec![project_key.clone()] } else { matching_keys };
+        for key in keys {
+            let entry = projects.entry(key).or_insert_with(|| Value::Object(Map::new()));
+            if let Value::Object(project) = entry {
                 project.insert(TRUST_FIELD.to_owned(), Value::Bool(true));
             }
-            _ => unreachable!("project entry must be an object after normalization"),
-        }
-        return project_key;
-    }
-
-    for key in matching_keys {
-        let entry = projects.entry(key).or_insert_with(|| Value::Object(Map::new()));
-        if !entry.is_object() {
-            *entry = Value::Object(Map::new());
-        }
-        match entry {
-            Value::Object(project) => {
-                project.insert(TRUST_FIELD.to_owned(), Value::Bool(true));
-            }
-            _ => unreachable!("project entry must be an object after normalization"),
         }
     }
-
-    project_key
+    Ok(project_key)
 }
 
 pub fn normalize_project_key(project_root: &Path) -> String {
@@ -204,17 +211,6 @@ fn trust_value(value: &Value) -> Option<bool> {
     value.as_object()?.get(TRUST_FIELD)?.as_bool()
 }
 
-fn ensure_object_mut(document: &mut Value) -> &mut Map<String, Value> {
-    if !document.is_object() {
-        *document = Value::Object(Map::new());
-    }
-
-    match document {
-        Value::Object(object) => object,
-        _ => unreachable!("document must be an object after normalization"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,7 +306,7 @@ mod tests {
             "hasTrustDialogAccepted": false
         });
 
-        let project_key = set_trusted(&mut document, Path::new(project_path));
+        let project_key = set_trusted(&mut document, Path::new(project_path)).expect("set trust");
 
         let mut expected = json!({
             "projects": {},
@@ -416,7 +412,7 @@ mod tests {
             }
         });
 
-        let project_key = set_trusted(&mut document, &project_root);
+        let project_key = set_trusted(&mut document, &project_root).expect("set trust");
 
         assert_eq!(project_key, canonical_key);
         assert_eq!(
@@ -453,7 +449,7 @@ mod tests {
             }
         });
 
-        let project_key = set_trusted(&mut document, &project_root);
+        let project_key = set_trusted(&mut document, &project_root).expect("set trust");
 
         assert_eq!(project_key, normalize_project_key(&project_root));
         assert_eq!(

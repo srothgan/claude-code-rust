@@ -1382,7 +1382,10 @@ mod tests {
         assert!(app.input.text().is_empty());
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
-        assert!(rx.try_recv().is_err(), "config open should not dispatch a prompt turn");
+        assert!(matches!(
+            rx.try_recv().expect("settings inspection").command,
+            BridgeCommand::InspectSettings { .. }
+        ));
 
         crate::app::view::set_chat_surface(&mut app);
 
@@ -1393,25 +1396,6 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(hint_text.contains("Suggestion: Write focused tests"));
-    }
-
-    #[test]
-    fn local_custom_slash_submit_is_consumed() {
-        let (mut app, mut rx) = app_with_connection();
-        let dir = tempfile::tempdir().expect("tempdir");
-        app.settings_home_override = Some(dir.path().to_path_buf());
-        app.cwd_raw = dir.path().to_string_lossy().to_string();
-        app.input.set_text("/1m-context status");
-
-        submit_input(&mut app);
-
-        assert!(app.input.text().is_empty());
-        assert!(matches!(app.status, AppStatus::Ready));
-        let Some(last) = app.transcript.messages.last() else {
-            panic!("expected /1m-context status message");
-        };
-        assert!(matches!(last.role, MessageRole::System(Some(super::super::SystemSeverity::Info))));
-        assert!(rx.try_recv().is_err(), "local custom slash command should not dispatch a prompt");
     }
 
     #[test]

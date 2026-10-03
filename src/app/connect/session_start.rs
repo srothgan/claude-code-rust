@@ -177,11 +177,11 @@ mod tests {
         .expect("CLI");
         let mut app = App::test_default();
         app.startup = crate::app::state::StartupState::from_cli(&cli);
-        app.config.committed_settings_document = serde_json::json!({
-            "model": "haiku", "permissions": {"defaultMode": "default"},
-            "modelSettings": {"claude-opus-5-5": {"effortLevel": "low"}}
-        });
-        let saved = app.config.committed_settings_document.clone();
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "model",
+            serde_json::json!("haiku"),
+        ));
+        let saved = app.config.snapshot.clone();
         for reason in [SessionStartReason::Startup, SessionStartReason::Resume] {
             let launch = session_launch_settings_for_reason(&app, reason);
             assert_eq!(launch.model.as_deref(), Some("opus"));
@@ -189,7 +189,7 @@ mod tests {
             assert_eq!(launch.effort, Some(EffortLevel::Max));
             assert_eq!(launch.agent.as_deref(), Some("reviewer"));
         }
-        assert_eq!(app.config.committed_settings_document, saved);
+        assert_eq!(app.config.snapshot, saved);
         app.startup.complete_launch();
         let next = session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
         assert_eq!(next, crate::agent::wire::SessionLaunchSettings::default());

@@ -1335,7 +1335,7 @@ mod tests {
             handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert!(handled.changed());
-        assert_eq!(app.input.text(), "/1m-context ");
+        assert_eq!(app.input.text(), "/agent ");
         assert!(app.slash.is_visible());
     }
 

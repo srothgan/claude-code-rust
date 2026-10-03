@@ -1,4 +1,5 @@
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
+import { isEffortLevel } from "./effort.js";
 import type {
   BridgeCommand,
   BridgeCommandEnvelope,
@@ -12,6 +13,7 @@ import type {
   RefusalFallbackPromptChoice,
   RewindRestoreMode,
   SessionLaunchSettings,
+  SettingsMutation,
   UserDialogOutcome,
 } from "../types.js";
 import { parseMcpServersRecord } from "./mcp_metadata.js";
@@ -160,13 +162,7 @@ function expectEffortLevel(
   context: string,
 ): EffortLevel {
   const value = expectString(record, key, context);
-  if (
-    value !== "low" &&
-    value !== "medium" &&
-    value !== "high" &&
-    value !== "xhigh" &&
-    value !== "max"
-  ) {
+  if (!isEffortLevel(value)) {
     throw new Error(
       `${context}.${key} must be one of low, medium, high, xhigh, max`,
     );
@@ -349,6 +345,21 @@ export function parseCommandEnvelope(line: string): {
 
   const command: BridgeCommand = (() => {
     switch (commandName) {
+      case "inspect_settings":
+        return { command: "inspect_settings", session_id: expectString(raw, "session_id", commandName) };
+      case "mutate_setting": {
+        const input = asRecord(raw.mutation, "mutate_setting.mutation");
+        const scope = expectString(input, "scope", commandName);
+        const operation = expectString(input, "operation", commandName);
+        if (!["user", "project", "local"].includes(scope) || !["set", "remove"].includes(operation)) throw new Error("Invalid settings scope or operation.");
+        const mutation: SettingsMutation = {
+          context: expectString(input, "context", commandName), id: expectString(input, "id", commandName),
+          scope: scope as SettingsMutation["scope"], operation: operation as SettingsMutation["operation"],
+          expected_revision: expectString(input, "expected_revision", commandName),
+          ...(operation === "set" ? { value: input.value as Json } : {}),
+        };
+        return { command: "mutate_setting", session_id: expectString(raw, "session_id", commandName), mutation };
+      }
       case "initialize":
         return {
           command: "initialize",
