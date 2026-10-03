@@ -300,9 +300,8 @@ pub struct UserDialogBlock {
     /// Whether this dialog currently has keyboard focus (shows the selection
     /// arrow and accepts navigation/confirm input).
     pub focused: bool,
-    /// Set once the user has answered; the block then renders as resolved and is
-    /// removed from the focus queue.
-    pub answered: bool,
+    /// The resolved choice or cancellation; None means the dialog is pending.
+    pub outcome: Option<model::RequestUserDialogOutcome>,
     pub response_tx: Option<tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>>,
     pub cache: BlockCache,
 }
@@ -320,10 +319,16 @@ impl UserDialogBlock {
             options: request.options,
             selected_index: 0,
             focused: false,
-            answered: false,
+            outcome: None,
             response_tx: Some(response_tx),
             cache: BlockCache::default(),
         }
+    }
+
+    pub fn resolve(&mut self, outcome: model::RequestUserDialogOutcome) {
+        self.outcome = Some(outcome);
+        self.focused = false;
+        self.cache.invalidate();
     }
 }
 

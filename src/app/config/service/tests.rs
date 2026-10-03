@@ -19,6 +19,212 @@ fn snapshot(cwd: &str, value: &str) -> SettingsSnapshot {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_fixed() {
+    use crate::agent::settings::SettingKind;
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut app = App::test_default();
+    app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+    let mut saved = snapshot(&app.cwd_raw, "");
+    saved.catalog[0].id = "permissions.deny".to_owned();
+    saved.catalog[0].label = "Permissions: deny rules".to_owned();
+    saved.catalog[0].kind = SettingKind::StringList;
+    saved.catalog[0].key_path = vec!["permissions".to_owned(), "deny".to_owned()];
+    saved.values[0].id = "permissions.deny".to_owned();
+    saved.values[0].value = Some(json!(["Read(./.env)", "Bash(git push *)", "Bash(rm *)"]));
+    let template = saved.sources[0].clone();
+    let cases = [
+        (SettingsScope::User, vec!["Read(./.env)"]),
+        (SettingsScope::Project, vec!["Bash(git push *)", "Bash(rm *)"]),
+        (SettingsScope::Local, vec![]),
+    ];
+    saved.sources = cases
+        .iter()
+        .map(|(scope, rules)| {
+            let mut source = template.clone();
+            source.scope = *scope;
+            source.values[0].id = "permissions.deny".to_owned();
+            source.values[0].value = Some(json!(rules));
+            source
+        })
+        .collect();
+    app.config.snapshot = Some(saved);
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+    for (scope, rules) in cases {
+        assert_eq!(app.config.selected_scope, scope);
+        terminal
+            .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+            .expect("scope list");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        let count =
+            if rules.len() == 1 { "1 item".to_owned() } else { format!("{} items", rules.len()) };
+        assert!(rendered.contains(&count), "{rendered}");
+        crate::app::config::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        let editor = app.config.setting_overlay().expect("scoped list");
+        assert_eq!(editor.scope, scope);
+        assert_eq!(editor.draft, rules.join("\n"));
+        crate::app::config::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.config.selected_scope, scope);
+        assert_eq!(app.config.setting_overlay().expect("fixed scope").scope, scope);
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        crate::app::config::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn multiline_rule_editor_preserves_draft_across_resize_conflict_and_acknowledged_save() {
+    use ratatui::{Terminal, backend::TestBackend};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            app.surface_mode =
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some("session-1".into());
+            let mut saved = snapshot(&app.cwd_raw, "");
+            saved.catalog[0].id = "permissions.allow".to_owned();
+            saved.catalog[0].label = "Permissions: allow rules".to_owned();
+            saved.catalog[0].kind = crate::agent::settings::SettingKind::StringList;
+            saved.catalog[0].key_path = vec!["permissions".to_owned(), "allow".to_owned()];
+            saved.values[0].id = "permissions.allow".to_owned();
+            saved.values[0].value = Some(json!(["Read(./src/**)"]));
+            saved.sources[0].values[0].id = "permissions.allow".to_owned();
+            saved.sources[0].values[0].value = Some(json!(["Read(./src/**)"]));
+            app.config.snapshot = Some(saved.clone());
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            );
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            assert!(crate::app::config::handle_paste(
+                &mut app,
+                "Read(./docs/**)\r\nBash(npm test *)"
+            ));
+            assert_eq!(
+                app.config.setting_overlay().expect("editor").draft,
+                "Read(./src/**)\nRead(./docs/**)\nBash(npm test *)"
+            );
+            for (width, height) in [(100, 35), (42, 16), (87, 25)] {
+                let mut terminal =
+                    Terminal::new(TestBackend::new(width, height)).expect("terminal");
+                terminal
+                    .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+                    .expect("render");
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect::<String>();
+                assert!(rendered.contains("Bash(npm test *)"), "{rendered}");
+            }
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            );
+            let save = commands.recv_envelope().await.expect("save");
+            let BridgeCommand::MutateSetting { mutation, .. } = save.command else {
+                panic!("mutation");
+            };
+            assert_eq!(
+                mutation.value,
+                Some(json!(["Read(./src/**)", "Read(./docs/**)", "Bash(npm test *)"]))
+            );
+            assert_eq!(
+                app.config.saved_value("permissions.allow"),
+                Some(&json!(["Read(./src/**)"]))
+            );
+            saved.sources[0].values[0].revision = "external-revision".to_owned();
+            saved.sources[0].values[0].value = Some(json!(["Read(./external)"]));
+            saved.values[0].value = Some(json!(["Read(./external)"]));
+            apply_settings_result(
+                &mut app,
+                save.request_id.as_deref(),
+                SettingsResult {
+                    persistence: SettingsPersistence::Conflict,
+                    application: SettingsApplication::Blocked,
+                    snapshot: Some(saved.clone()),
+                    error: Some("Review the external edit".to_owned()),
+                },
+            );
+            assert!(
+                app.config.setting_overlay().expect("draft").draft.contains("Bash(npm test *)")
+            );
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            );
+            let retry = commands.recv_envelope().await.expect("retry");
+            let BridgeCommand::MutateSetting { mutation, .. } = retry.command else {
+                panic!("mutation");
+            };
+            assert_eq!(mutation.expected_revision, "external-revision");
+            saved.values[0].value.clone_from(&mutation.value);
+            saved.sources[0].values[0].value = mutation.value;
+            apply_settings_result(
+                &mut app,
+                retry.request_id.as_deref(),
+                SettingsResult {
+                    persistence: SettingsPersistence::Saved,
+                    application: SettingsApplication::NextSession,
+                    snapshot: Some(saved),
+                    error: None,
+                },
+            );
+            assert_eq!(
+                app.config.saved_value("permissions.allow"),
+                Some(&json!(["Read(./src/**)", "Read(./docs/**)", "Bash(npm test *)"]))
+            );
+            assert!(app.config.setting_overlay().is_none());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_flattening() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut app = App::test_default();
+        let (connection, mut commands) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        app.session_runtime.session_id = Some("session-1".into());
+        let mut saved = snapshot(&app.cwd_raw, "{}");
+        saved.catalog[0].kind = crate::agent::settings::SettingKind::Json;
+        saved.values[0].value = Some(json!({}));
+        saved.sources[0].values[0].value = Some(json!({}));
+        app.config.snapshot = Some(saved);
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(app.config.overlay_message.as_ref().expect("error").text.contains("Check the value"));
+        assert_eq!(app.config.setting_overlay().expect("draft").draft, "{");
+        assert!(crate::app::config::handle_paste(&mut app, "\n\"PreToolUse\": [{\"matcher\": \"Bash\", \"hooks\": [{\"type\": \"command\", \"command\": \"echo checked\"}]}]\n}"));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let envelope = commands.recv_envelope().await.expect("save");
+        let BridgeCommand::MutateSetting { mutation, .. } = envelope.command else { panic!("mutation"); };
+        assert_eq!(mutation.value, Some(json!({"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"echo checked"}]}]})));
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
     tokio::task::LocalSet::new().run_until(async {
         let mut app = App::test_default();

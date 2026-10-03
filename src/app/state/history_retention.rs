@@ -61,7 +61,7 @@ impl super::App {
                     || tc.pending_question.is_some()
                     || !tc.status.is_terminal()
             }
-            MessageBlock::UserDialog(dialog) => !dialog.answered,
+            MessageBlock::UserDialog(dialog) => dialog.outcome.is_none(),
             _ => false,
         })
     }
@@ -212,6 +212,11 @@ impl super::App {
                         total.saturating_add(size_of::<super::messages::ImageAttachmentBlock>());
                 }
                 MessageBlock::UserDialog(dialog) => {
+                    if let Some(crate::agent::model::RequestUserDialogOutcome::Selected(selected)) =
+                        &dialog.outcome
+                    {
+                        total = total.saturating_add(selected.option_id.capacity());
+                    }
                     total = total
                         .saturating_add(size_of::<super::messages::UserDialogBlock>())
                         .saturating_add(dialog.request_id.capacity())
@@ -373,7 +378,7 @@ impl super::App {
                         self.transcript
                             .tool_call_index
                             .insert(dialog.request_id.clone(), (msg_idx, block_idx));
-                        if !dialog.answered {
+                        if dialog.outcome.is_none() {
                             dialog.focused = false;
                             pending_interaction_ids.push(dialog.request_id.clone());
                         }
@@ -438,7 +443,7 @@ impl super::App {
                             question.focused = true;
                         }
                     }
-                    MessageBlock::UserDialog(dialog) if !dialog.answered => {
+                    MessageBlock::UserDialog(dialog) if dialog.outcome.is_none() => {
                         dialog.focused = true;
                     }
                     _ => {}

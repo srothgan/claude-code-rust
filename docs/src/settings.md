@@ -74,15 +74,44 @@ The window states once that saved changes apply to new sessions and marks immedi
 
 ## Current catalog
 
-The catalog exposes 24 rows, sorted alphabetically by their displayed names. It enables validated boolean and string editors for auto-compaction, flagged-message model switching, thinking, fast mode, prompt suggestions, checkpoints, workflows, keyword triggers, workflow size, default permission mode, worktree base reference, file-picker Gitignore behavior, output style, language, default model, and reduced motion. The catalog describes per-row writable scopes; not every setting can be saved at every scope. Default model cycles only through the session's SDK-advertised choices; it does not accept typed model IDs. Existing externally configured values remain preserved on disk until explicitly changed or reset. Output style still accepts custom style names. Default agent uses the SDK-advertised agent inventory.
+The catalog exposes 67 rows, sorted alphabetically by their displayed names. It enables validated boolean and string editors for auto-compaction, flagged-message model switching, thinking, fast mode, prompt suggestions, checkpoints, workflows, keyword triggers, workflow size, default permission mode, worktree base reference, file-picker Gitignore behavior, output style, language, default model, and reduced motion. The catalog describes per-row writable scopes; not every setting can be saved at every scope. Default model cycles only through the session's SDK-advertised choices; it does not accept typed model IDs. Existing externally configured values remain preserved on disk until explicitly changed or reset. Output style still accepts custom style names. Default agent uses the SDK-advertised agent inventory.
 
 Default effort is one inline choice control for the currently saved Default model, using the same Left/Right/Space interaction as Default model. Its choices come from that model's SDK capabilities, excluding session-only `max`. Saving writes `modelSettings.<canonical model>.effortLevel` at the chosen scope and preserves other models' preferences and sibling fields. Changing Default model retargets the effort control; mutation context checks prevent an outdated edit from silently targeting a different model. An unsupported or unresolved model leaves the effort editor read-only. Reset removes only that model's effort at the selected scope. SDK model metadata determines the target; aliases and dated/context/provider spellings are normalized to Claude's canonical key, while unknown model identities remain read-only. The saved snapshot is the SDK's file cascade; environment settings, top-level effort fallbacks, trust, and policy caps can still change the running effort, which is shown in the footer.
 
 `Default` means no configured value was returned for this preference. It does not promise On or Off. The installed SDK's file resolver does not fill in built-in defaults; its applied-settings response exposes selected session values rather than effective defaults for the whole catalog. Keep this label until the fallback for an individual setting can be determined reliably, without treating a current-session override as its default.
 
-Continuation at usage limits, auto mode during planning, notification transport, question timeout, dialog expiry, and cross-session inbound policy are visible with explicit read-only reasons until their host workflows are completed. Themes and Vim/editor modes are omitted. Advanced structured editors, notification delivery, additional presentation controls, and updater preferences are subsequent implementation groups in `config.md`.
+Continuation at usage limits, notification transport, and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification delivery, additional presentation controls, and updater preferences are subsequent implementation groups in `config.md`.
 
 When Reduce motion is On, active thinking, tool execution, compaction, cancellation, and pending commands use a static diamond (`◆`) instead of an animated spinner. Animation-only redraws stop; incoming state changes still update normally. This setting is ready and applies immediately after saving, with reset following the remaining scopes or Default.
+
+## Behavioral and structured settings
+
+Question timeout offers Never, 60 seconds, 5 minutes, or 10 minutes. After the configured idle time, the current question submits only answers explicitly selected by navigation or toggling, plus any notes; untouched questions are skipped. Keyboard, paste, and mouse activity restart the idle interval. The timer pauses while another screen or input owns focus. It starts afresh when the question regains focus. Timeout comes from trusted user or managed settings, rather than a checked-in repository preference. The default waits for confirmation.
+
+Dialog expiry offers 60 seconds, 5 minutes, 10 minutes, or Never. Reset restores the native fallback of 5 minutes. It expires forwarded remote dialogs and held cross-session messages with safe cancellation; ordinary local-only permission prompts have no added deadline. `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` takes precedence. Native cancellation removes the affected question, permission, or user dialog from the interaction queue, preserving other pending interactions and the composer draft.
+
+Permission rules and additional directories, memory exclusions, worktree directories, sandbox paths/domains, and hook allowlists open a multiline list editor. Enter inserts a newline, Ctrl+S saves, Ctrl+U clears, Ctrl+R resets the setting, and Escape cancels. Each nonempty line is one item; paths and rule whitespace are retained. Clearing and saving writes an explicit empty list, while reset deletes the setting. Many native lists merge across scopes, so an empty list does not necessarily remove rules contributed elsewhere. The editor opens this scope's own entries, not a copy of the merged list. List rows show the selected scope's item count. Change scope on the settings list with `s`; an open dialog keeps its scope fixed until it closes.
+
+Hooks, sandbox credentials, ignored violations, TLS termination, and the ripgrep helper use a multiline JSON-object editor with the same shortcuts. Object rows show their entry count. Syntax errors and native schema errors retain the draft for correction. Validation checks only the edited leaf through the installed SDK's public resolver; it does not run hooks, read credential contents, or change unrelated settings. Organization restrictions can make permission rules, hooks, and sandbox allowlists read-only. Numeric proxy ports accept whole numbers from 1 through 65535.
+
+For example, a Hooks: definitions value can be:
+
+```json
+{
+  "PreToolUse": [
+    {
+      "matcher": "Bash",
+      "hooks": [
+        { "type": "command", "command": "echo Check shell operation", "timeout": 10 }
+      ]
+    }
+  ]
+}
+```
+
+Supported hook actions include command, prompt, agent, HTTP, and MCP tool actions. Event names come from the installed SDK. Saving replaces the `hooks` object at the chosen scope; hooks from other sources retain their native merging behavior. Disable all hooks is a separate boolean. Opening or validating hook definitions does not execute them.
+
+Workflow size is an advisory agent-count guideline: Small aims below 5, Medium below 10, Large below 50, and Unrestricted supplies no guideline. Workflow availability still depends on the account and runtime. Worktree settings configure fresh/head base reference, symlink directories, sparse-checkout paths, and background isolation with worktree/none choices. Memory controls configure automatic memory, its directory, excluded instruction paths/globs, and the plans directory. Project settings cannot redirect automatic memory. Sandbox descriptions identify platform restrictions; native enforcement and workspace trust still determine which saved values take effect.
 
 ## Offline inspection
 

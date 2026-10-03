@@ -416,6 +416,10 @@ pub enum BridgeEvent {
         session_id: String,
         request: types::UserDialogRequest,
     },
+    InteractionCancelled {
+        session_id: String,
+        interaction_id: String,
+    },
     ElicitationRequest {
         session_id: String,
         request: types::ElicitationRequest,
@@ -565,6 +569,7 @@ impl BridgeEvent {
             Self::PermissionRequest { .. } => "permission_request",
             Self::QuestionRequest { .. } => "question_request",
             Self::UserDialogRequest { .. } => "user_dialog_request",
+            Self::InteractionCancelled { .. } => "interaction_cancelled",
             Self::ElicitationRequest { .. } => "elicitation_request",
             Self::ElicitationComplete { .. } => "elicitation_complete",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
@@ -604,6 +609,7 @@ impl BridgeEvent {
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::UserDialogRequest { session_id, .. }
+            | Self::InteractionCancelled { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
             | Self::ElicitationComplete { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
@@ -649,6 +655,7 @@ impl BridgeEvent {
             | Self::BtwResult { .. }
             | Self::BtwFailed { .. }
             | Self::UserDialogRequest { .. }
+            | Self::InteractionCancelled { .. }
             | Self::ElicitationRequest { .. }
             | Self::ElicitationComplete { .. }
             | Self::McpAuthRedirect { .. }

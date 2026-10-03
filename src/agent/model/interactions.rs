@@ -278,6 +278,7 @@ impl PermissionDisplay {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestQuestionRequest {
+    pub idle_timeout_ms: Option<u64>,
     pub session_id: SessionId,
     pub tool_call: ToolCallUpdate,
     pub prompt: QuestionPrompt,
@@ -294,6 +295,19 @@ impl RequestQuestionRequest {
         question_index: usize,
         total_questions: usize,
     ) -> Self {
-        Self { session_id: session_id.into(), tool_call, prompt, question_index, total_questions }
+        Self {
+            session_id: session_id.into(),
+            tool_call,
+            prompt,
+            question_index,
+            total_questions,
+            idle_timeout_ms: None,
+        }
+    }
+
+    #[must_use]
+    pub fn idle_timeout_ms(mut self, timeout: Option<u64>) -> Self {
+        self.idle_timeout_ms = timeout;
+        self
     }
 }

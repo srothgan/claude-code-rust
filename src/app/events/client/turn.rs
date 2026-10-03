@@ -23,6 +23,9 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::UserDialogRequest { session_id: _, request, response_tx } => {
             turn::handle_user_dialog_request_event(app, request, response_tx);
         }
+        ClientEvent::InteractionCancelled { session_id: _, interaction_id } => {
+            crate::app::inline_interactions::cancel_pending_interaction(app, &interaction_id);
+        }
         ClientEvent::UserMessageQueued { session_id: _, message_uuid } => {
             turn::handle_user_message_queued_event(app, &message_uuid);
         }

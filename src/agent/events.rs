@@ -65,6 +65,8 @@ pub enum ClientEvent {
         request: model::RequestUserDialogRequest,
         response_tx: tokio::sync::oneshot::Sender<model::RequestUserDialogResponse>,
     },
+    /// The native runtime cancelled or expired a pending interaction.
+    InteractionCancelled { session_id: String, interaction_id: String },
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { session_id: String, request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
@@ -246,6 +248,7 @@ impl ClientEvent {
             | Self::PermissionRequest { session_id, .. }
             | Self::QuestionRequest { session_id, .. }
             | Self::UserDialogRequest { session_id, .. }
+            | Self::InteractionCancelled { session_id, .. }
             | Self::McpElicitationRequest { session_id, .. }
             | Self::McpElicitationCompleted { session_id, .. }
             | Self::McpElicitationResponseQueued { session_id, .. }

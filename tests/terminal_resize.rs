@@ -767,6 +767,53 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
 }
 
 #[test]
+fn structured_settings_editor_preserves_multiline_rules_on_resize_and_saves_them() {
+    let mut test = TerminalTest::start("hold-success", 8);
+    std::fs::write(
+        test.temp.path().join("profile/settings.json"),
+        r#"{"permissions":{"defaultMode":"default"}}"#,
+    )
+    .expect("initial settings");
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.submit("/config", "/config");
+    test.wait_screen("Saved in user: German");
+    test.send(b"\x1b[B");
+    test.wait_screen("Permissions: deny rules");
+    test.send(b" ");
+    test.wait_screen("Ctrl+S save");
+    test.send(b"\x15");
+    test.paste("Read(./.env)\nBash(git push *)");
+    for (rows, cols) in [(18, 61), (38, 87), (55, 120)] {
+        test.resize(rows, cols);
+        test.wait_screen("Bash(git push *)");
+    }
+    test.send(b"\x13");
+    test.wait_until("settings mutation", |test| test.commands("mutate_setting").len() == 1);
+    assert_eq!(
+        test.commands("mutate_setting")[0]["mutation"]["value"],
+        serde_json::json!(["Read(./.env)", "Bash(git push *)"])
+    );
+    test.wait_screen("2 items");
+    let document: Value = serde_json::from_str(
+        &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
+            .expect("saved file"),
+    )
+    .expect("settings object");
+    assert_eq!(
+        document["permissions"]["deny"],
+        serde_json::json!(["Read(./.env)", "Bash(git push *)"])
+    );
+    assert_eq!(document["permissions"]["defaultMode"], "default");
+    test.send(b"\x1b");
+    test.wait_screen("streamed line 8");
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
+    test.shutdown();
+}
+
+#[test]
 fn unicode_pastes_cross_the_placeholder_boundary_without_payload_loss() {
     let mut test = TerminalTest::start("stream", 3);
     let mut expected = Vec::new();

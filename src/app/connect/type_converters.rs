@@ -669,7 +669,8 @@ pub(super) fn map_question_request(
             prompt,
             usize::try_from(request.question_index).unwrap_or(0),
             usize::try_from(request.total_questions).unwrap_or(0),
-        ),
+        )
+        .idle_timeout_ms(request.idle_timeout_ms),
         tool_call_id,
     )
 }
@@ -1560,6 +1561,7 @@ mod tests {
         let (request, tool_call_id) = map_question_request(
             "session-1",
             types::QuestionRequest {
+                idle_timeout_ms: Some(60_000),
                 tool_call: types::ToolCall {
                     tool_call_id: "tool-1".to_owned(),
                     title: "Pick target".to_owned(),
@@ -1632,6 +1634,7 @@ mod tests {
                 1,
                 3,
             )
+            .idle_timeout_ms(Some(60_000))
         );
     }
 

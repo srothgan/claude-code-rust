@@ -281,6 +281,16 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
             opt.description.as_deref().is_none_or(str::is_empty) && opt.label.chars().count() <= 20
         });
 
+    if let Some(timeout) = question.idle_timeout {
+        lines.push(Line::styled(
+            format!(
+                "  Auto-continue after {}s idle; unselected questions are skipped.",
+                timeout.as_secs()
+            ),
+            Style::default().fg(theme::DIM),
+        ));
+    }
+
     if horizontal {
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (i, opt) in question.prompt.options.iter().enumerate() {
@@ -429,6 +439,8 @@ mod tests {
     fn test_question() -> InlineQuestion {
         let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
         InlineQuestion {
+            idle_timeout: None,
+            last_activity: std::time::Instant::now(),
             prompt: QuestionPrompt::new(
                 "Which mode should we use?",
                 "Mode",

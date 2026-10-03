@@ -217,6 +217,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "sessions_listed":
     case "status_snapshot":
     case "settings_result":
+    case "interaction_cancelled":
     case "context_usage":
     case "usage_snapshot":
     case "rewind_targets":
@@ -259,6 +260,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "session_update":
     case "permission_request":
     case "question_request":
+    case "interaction_cancelled":
     case "user_dialog_request":
     case "elicitation_request":
     case "elicitation_complete":

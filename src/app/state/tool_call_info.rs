@@ -208,6 +208,8 @@ pub struct InlinePermission {
 }
 
 pub struct InlineQuestion {
+    pub idle_timeout: Option<std::time::Duration>,
+    pub last_activity: std::time::Instant,
     pub prompt: model::QuestionPrompt,
     pub response_tx: tokio::sync::oneshot::Sender<model::RequestQuestionResponse>,
     pub focused_option_index: usize,

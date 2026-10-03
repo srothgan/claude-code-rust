@@ -255,6 +255,7 @@ async fn run_tui_loop(
         if !app.shutdown_requested() {
             app.tick_git_context(now);
             session_runtime::tick_context_usage_refresh(app, now);
+            questions::tick_idle_timeout(app, now);
             if app.btw.expire_failed(now) {
                 app.request_active_surface_repaint();
             }

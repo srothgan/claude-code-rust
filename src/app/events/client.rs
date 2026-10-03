@@ -63,6 +63,7 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::PermissionRequest { .. }
         | ClientEvent::QuestionRequest { .. }
         | ClientEvent::UserDialogRequest { .. }
+        | ClientEvent::InteractionCancelled { .. }
         | ClientEvent::UserMessageQueued { .. }
         | ClientEvent::UserMessageStarted { .. }
         | ClientEvent::UserMessageRejected { .. }

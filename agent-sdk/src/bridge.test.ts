@@ -68,6 +68,7 @@ import {
   beginSessionClose,
   closeAllSessions,
   handleUserDialogResponse,
+  handleQuestionResponse,
   closeSession,
   closeSessionsBeforeRegister,
   commitDeferredSession,
@@ -5886,6 +5887,59 @@ test("parseCommandEnvelope rejects unsupported user_dialog_response choices", ()
       ),
     /user_dialog_response\.outcome\.option_id must be 'retry_fallback' or 'edit_prompt'/,
   );
+});
+
+test("question workflow uses trusted timing, preserves selected answers and skips untouched questions", async () => {
+  for (const [sources, timeout] of [
+    [[{ source: "projectSettings", settings: { askUserQuestionTimeout: "60s" } }], undefined],
+    [[{ source: "projectSettings", settings: { askUserQuestionTimeout: "never" } }, { source: "userSettings", settings: { askUserQuestionTimeout: "5m" } }], 300_000],
+    [[{ source: "userSettings", settings: { askUserQuestionTimeout: "60s" } }, { source: "policySettings", settings: { askUserQuestionTimeout: "never" } }], undefined],
+  ] as const) {
+    const session = makeSessionState();
+    session.query = { getSettings: async () => ({ sources }) } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+    const base: import("./types.js").ToolCall = { tool_call_id: "timed-question", title: "Questions", kind: "other", status: "in_progress", content: [], locations: [] };
+    sessions.set(session.sessionId, session);
+    const events = await captureBridgeEventsAsync(async () => {
+      const resultPromise = requestAskUserQuestionAnswers(session, base.tool_call_id, { questions: [
+        { question: "Choose target", header: "Target", multiSelect: false, options: [{ label: "Staging", description: "" }, { label: "Production", description: "" }] },
+        { question: "Choose region", header: "Region", multiSelect: false, options: [{ label: "West", description: "" }, { label: "East", description: "" }] },
+      ] }, base);
+      await new Promise(resolve => setImmediate(resolve));
+      handleQuestionResponse({ command: "question_response", session_id: session.sessionId, tool_call_id: base.tool_call_id, outcome: { outcome: "answered", selected_option_ids: ["question_1"], annotation: { notes: "Use production" } } });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(session.pendingQuestions.size, 1);
+      handleQuestionResponse({ command: "question_response", session_id: session.sessionId, tool_call_id: base.tool_call_id, outcome: { outcome: "answered", selected_option_ids: [] } });
+      const result = await resultPromise;
+      assert.equal(result.behavior, "allow");
+      if (result.behavior !== "allow") throw new Error("expected answered questions");
+      assert.ok(result.updatedInput);
+      assert.deepEqual(result.updatedInput.answers, { "Choose target": "Production" });
+      assert.deepEqual(result.updatedInput.annotations, { "Choose target": { notes: "Use production" } });
+      assert.equal(session.pendingQuestions.size, 0);
+    });
+    sessions.delete(session.sessionId);
+    const requests = events.filter(event => event.event === "question_request");
+    assert.equal(requests.length, 2);
+    for (const event of requests) {
+      assert.equal((event.request as { idle_timeout_ms?: number }).idle_timeout_ms, timeout);
+    }
+  }
+});
+
+test("native cancellation closes a pending question and denies execution", async () => {
+  const session = makeSessionState();
+  session.query = { getSettings: async () => ({ sources: [] }) } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const controller = new AbortController();
+  const events = await captureBridgeEventsAsync(async () => {
+    const result = requestAskUserQuestionAnswers(session, "cancelled-question", { questions: [{ question: "Continue?", header: "Choice", multiSelect: false, options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }] },
+      { tool_call_id: "cancelled-question", title: "Question", kind: "other", status: "in_progress", content: [], locations: [] }, controller.signal);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(session.pendingQuestions.size, 1);
+    controller.abort();
+    assert.equal((await result).behavior, "deny");
+    assert.equal(session.pendingQuestions.size, 0);
+  });
+  assert.ok(events.some(event => event.event === "interaction_cancelled" && event.interaction_id === "cancelled-question"));
 });
 
 test("requestAskUserQuestionAnswers preserves previews and annotations in updated input", async () => {

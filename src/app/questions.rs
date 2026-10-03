@@ -10,6 +10,38 @@ use crate::agent::model;
 use crate::app::keymap::InteractionAction;
 use crate::app::keys::KeyOutcome;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::Instant;
+
+/// Question activity and expiry belong to the rendered interaction, not app settings.
+pub(super) fn record_activity(app: &mut App, now: Instant) {
+    let ids = app.turn.pending_interaction_ids.clone();
+    for id in ids {
+        let Some((mi, bi)) = app.lookup_tool_call(&id) else {
+            continue;
+        };
+        if let Some(MessageBlock::ToolCall(tool)) =
+            app.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+            && let Some(question) = tool.pending_question.as_mut()
+        {
+            question.last_activity = now;
+        }
+    }
+}
+
+pub(super) fn tick_idle_timeout(app: &mut App, now: Instant) {
+    if app.surface_mode != super::SurfaceMode::Chat || !focused_interaction_is_active(app) {
+        record_activity(app, now);
+        return;
+    }
+    if focused_question(app).is_some_and(|question| {
+        question
+            .idle_timeout
+            .is_some_and(|timeout| now.saturating_duration_since(question.last_activity) >= timeout)
+    }) {
+        respond_question_with_selection(app, true);
+        app.request_active_surface_repaint();
+    }
+}
 
 fn focused_question(app: &App) -> Option<&crate::app::InlineQuestion> {
     focused_interaction(app)?.pending_question.as_ref()
@@ -36,13 +68,14 @@ pub(super) fn execute_question_action(
     if !has_focused_question(app) || !focused_interaction_is_active(app) {
         return KeyOutcome::Ignored;
     }
+    record_activity(app, Instant::now());
 
     if focused_question_is_editing_notes(app) {
         return execute_question_note_action(app, action, key);
     }
 
     let option_count = focused_question_option_count(app);
-    match action {
+    let outcome = match action {
         InteractionAction::MovePrevious => {
             if option_count == 0 {
                 return KeyOutcome::Handled(false);
@@ -94,7 +127,27 @@ pub(super) fn execute_question_action(
             KeyOutcome::Handled(true)
         }
         InteractionAction::FocusNext => KeyOutcome::Ignored,
+    };
+    if matches!(
+        action,
+        InteractionAction::MovePrevious
+            | InteractionAction::MoveNext
+            | InteractionAction::MoveStart
+            | InteractionAction::MoveEnd
+    ) {
+        // Navigation is an explicit single-choice selection; initial focus isn't.
+        let dirty_idx = focused_interaction_dirty_idx(app);
+        if let Some(tool) = get_focused_interaction_tc(app)
+            && let Some(question) = tool.pending_question.as_mut()
+            && !question.prompt.multi_select
+        {
+            question.selected_option_indices.clear();
+            question.selected_option_indices.insert(question.focused_option_index);
+            tool.invalidate_render_cache();
+        }
+        invalidate_if_changed(app, dirty_idx, true);
     }
+    outcome
 }
 
 fn execute_question_note_action(
@@ -403,6 +456,10 @@ fn question_annotation(
 }
 
 fn respond_question(app: &mut App) {
+    respond_question_with_selection(app, false);
+}
+
+fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
     let Some(tool_id) = pop_next_valid_interaction_id(app) else {
         return;
     };
@@ -418,7 +475,11 @@ fn respond_question(app: &mut App) {
     let tc = tc.as_mut();
     let mut invalidated = false;
     if let Some(pending) = tc.pending_question.take() {
-        let selected_indices = question_selected_indices(&pending);
+        let selected_indices = if auto_continue {
+            pending.selected_option_indices.iter().copied().collect()
+        } else {
+            question_selected_indices(&pending)
+        };
         let selected_option_ids = selected_indices
             .iter()
             .filter_map(|idx| pending.prompt.options.get(*idx))
@@ -426,7 +487,7 @@ fn respond_question(app: &mut App) {
             .collect::<Vec<_>>();
         let annotation = question_annotation(&pending, &selected_indices);
 
-        if selected_option_ids.is_empty() {
+        if selected_option_ids.is_empty() && !auto_continue {
             tracing::warn!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "question_response_rejected",
@@ -548,6 +609,8 @@ mod tests {
             app.transcript.messages.get_mut(msg_idx).and_then(|m| m.blocks.get_mut(0))
         {
             tc.pending_question = Some(InlineQuestion {
+                idle_timeout: None,
+                last_activity: std::time::Instant::now(),
                 prompt,
                 response_tx: tx,
                 focused_option_index: 0,
@@ -696,5 +759,109 @@ mod tests {
                     .notes(Some("note".to_owned())),
             )
         );
+    }
+
+    #[test]
+    fn question_idle_workflow_submits_explicit_selection_and_skips_untouched_question() {
+        use crate::app::{AppStatus, FocusTarget};
+        use std::time::Duration;
+        for selected in [false, true] {
+            let mut app = App::test_default();
+            app.status = AppStatus::Running;
+            let mut response = add_question(
+                &mut app,
+                "idle-question",
+                model::QuestionPrompt::new(
+                    "Choose a target",
+                    "Target",
+                    false,
+                    vec![
+                        model::QuestionOption::new("a", "Staging"),
+                        model::QuestionOption::new("b", "Production"),
+                    ],
+                ),
+                true,
+            );
+            app.claim_focus_target(FocusTarget::Permission);
+            let started = Instant::now();
+            let (mi, bi) = app.lookup_tool_call("idle-question").expect("tool");
+            let Some(MessageBlock::ToolCall(tool)) =
+                app.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+            else {
+                panic!("tool");
+            };
+            let question = tool.pending_question.as_mut().expect("question");
+            question.idle_timeout = Some(Duration::from_secs(60));
+            question.last_activity = started;
+            if selected {
+                crate::app::events::handle_terminal_event(
+                    &mut app,
+                    crossterm::event::Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+                );
+            }
+            let activity = focused_question(&app).expect("pending").last_activity;
+            tick_idle_timeout(&mut app, activity + Duration::from_secs(59));
+            assert!(matches!(response.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+            tick_idle_timeout(&mut app, activity + Duration::from_secs(60));
+            let result = response.try_recv().expect("continued");
+            let model::RequestQuestionOutcome::Answered(answer) = result.outcome else {
+                panic!("answer");
+            };
+            assert_eq!(
+                answer.selected_option_ids,
+                if selected { vec!["b".to_owned()] } else { Vec::new() }
+            );
+            assert!(app.turn.pending_interaction_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn question_idle_workflow_preserves_notes_selection_and_waits_while_settings_are_open() {
+        use crate::app::{AppStatus, FocusTarget, FullscreenView, SurfaceMode};
+        use std::time::Duration;
+        let mut app = App::test_default();
+        app.status = AppStatus::Running;
+        let mut response = add_question(
+            &mut app,
+            "idle-notes",
+            model::QuestionPrompt::new(
+                "Choose targets",
+                "Targets",
+                true,
+                vec![
+                    model::QuestionOption::new("a", "Staging"),
+                    model::QuestionOption::new("b", "Production"),
+                ],
+            ),
+            true,
+        );
+        app.claim_focus_target(FocusTarget::Permission);
+        let question = get_focused_interaction_tc(&mut app)
+            .expect("tool")
+            .pending_question
+            .as_mut()
+            .expect("question");
+        question.idle_timeout = Some(Duration::from_secs(60));
+        for key in [KeyCode::Char(' '), KeyCode::Tab, KeyCode::Char('x')] {
+            crate::app::events::handle_terminal_event(
+                &mut app,
+                crossterm::event::Event::Key(KeyEvent::new(key, KeyModifiers::NONE)),
+            );
+        }
+        let activity = focused_question(&app).expect("question").last_activity;
+        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
+        tick_idle_timeout(&mut app, activity + Duration::from_secs(90));
+        assert!(matches!(response.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+        app.surface_mode = SurfaceMode::Chat;
+        tick_idle_timeout(&mut app, activity + Duration::from_secs(149));
+        assert!(matches!(response.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+        tick_idle_timeout(&mut app, activity + Duration::from_secs(150));
+        let model::RequestQuestionOutcome::Answered(answer) =
+            response.try_recv().expect("continued").outcome
+        else {
+            panic!("answer");
+        };
+        assert_eq!(answer.selected_option_ids, vec!["a"]);
+        assert_eq!(answer.annotation.and_then(|annotation| annotation.notes), Some("x".to_owned()));
     }
 }

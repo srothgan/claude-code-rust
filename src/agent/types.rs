@@ -797,6 +797,9 @@ pub struct QuestionPrompt {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionRequest {
+    /// Trusted-source inactivity interval; None waits for explicit confirmation.
+    #[serde(default)]
+    pub idle_timeout_ms: Option<u64>,
     pub tool_call: ToolCall,
     pub prompt: QuestionPrompt,
     pub question_index: u64,

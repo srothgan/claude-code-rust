@@ -95,7 +95,13 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App, row_height: u16, visib
     let rows =
         snapshot.catalog.iter().enumerate().skip(offset).take(visible).map(|(index, setting)| {
             let selected = index == selected;
-            let value = snapshot.value(&setting.id);
+            let value = if setting.kind.is_structured() {
+                snapshot
+                    .scoped(&setting.id, app.config.selected_scope)
+                    .and_then(|value| value.value.as_ref())
+            } else {
+                snapshot.value(&setting.id)
+            };
             let label_style =
                 Style::default().fg(if setting.writable_at(app.config.selected_scope) {
                     ratatui::style::Color::White
@@ -168,7 +174,11 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         && snapshot.value(&setting.id).is_some()
         && saved != snapshot.value(&setting.id)
     {
-        context.push_str("  ·  Another scope overrides this value");
+        context.push_str(if setting.kind.is_structured() {
+            "  ·  Other scopes also supply values"
+        } else {
+            "  ·  Another scope overrides this value"
+        });
     } else if saved.is_none() && snapshot.value(&setting.id).is_some() {
         context.push_str("  ·  Using another scope's value");
     }
@@ -198,6 +208,12 @@ pub(super) fn display(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Bool(true) => "On".to_owned(),
         serde_json::Value::Bool(false) => "Off".to_owned(),
+        serde_json::Value::Array(items) => {
+            format!("{} {}", items.len(), if items.len() == 1 { "item" } else { "items" })
+        }
+        serde_json::Value::Object(entries) => {
+            format!("{} {}", entries.len(), if entries.len() == 1 { "entry" } else { "entries" })
+        }
         _ => value.as_str().map_or_else(|| value.to_string(), str::to_owned),
     }
 }

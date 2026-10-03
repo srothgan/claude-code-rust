@@ -27,6 +27,28 @@ const send = event => {
   process.stdout.write(`${JSON.stringify(event)}\n`);
 };
 
+
+const preferences = { language: 'German', 'permissions.deny': ['Read(./.env)'], alwaysThinkingEnabled: false };
+let settingsRevision = 0;
+const settingDefinitions = [
+  ['language', 'Language', 'Saved response language', 'string', ['language']],
+  ['permissions.deny', 'Permissions: deny rules', 'One denied tool rule per line', 'string_list', ['permissions', 'deny']],
+  ['alwaysThinkingEnabled', 'Thinking', 'Saved thinking preference', 'boolean', ['alwaysThinkingEnabled']],
+];
+function settingsSnapshot() {
+  return {
+    cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
+    catalog: settingDefinitions.map(([id, label, description, kind, key_path]) => ({
+      id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : [],
+      allows_custom: kind !== 'boolean', writable_scopes: ['user'],
+      reset: 'Reset removes the saved value here', application: 'next_session',
+    })),
+    sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
+      values: Object.entries(preferences).map(([id, value]) => ({ id, value, revision: String(settingsRevision) })) }],
+    values: Object.entries(preferences).map(([id, value]) => ({ id, value, contributors: ['user'], policy_restricted: false })),
+  };
+}
+
 function finish(event) {
   clearInterval(active.timer);
   active = null;
@@ -190,20 +212,32 @@ readline
         break;
       case 'inspect_settings':
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
-          persistence: 'not_requested', application: 'blocked', snapshot: {
-            cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
-            catalog: [{ id: 'language', label: 'Language', description: 'Saved response language',
-              key_path: ['language'], kind: 'string', options: [], allows_custom: true,
-              writable_scopes: ['user', 'project', 'local'], reset: 'Reset removes the saved value here', application: 'next_session' },
-              { id: 'alwaysThinkingEnabled', label: 'Thinking', description: 'Saved thinking preference',
-              key_path: ['alwaysThinkingEnabled'], kind: 'boolean', options: [true, false], allows_custom: false,
-              writable_scopes: ['user', 'project', 'local'], reset: 'Reset removes the saved value here', application: 'next_session' }],
-            sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
-              values: [{ id: 'language', revision: 'fixture-revision', value: 'German' }, { id: 'alwaysThinkingEnabled', revision: 'fixture-revision', value: false }] }],
-            values: [{ id: 'language', value: 'German', contributors: ['user'], policy_restricted: false }, { id: 'alwaysThinkingEnabled', value: false, contributors: ['user'], policy_restricted: false }],
-          },
+          persistence: 'not_requested', application: 'blocked', snapshot: settingsSnapshot(),
         } });
         break;
+      case 'mutate_setting': {
+        const mutation = message.mutation;
+        const definition = settingDefinitions.find(([id]) => id === mutation.id);
+        if (!definition || mutation.scope !== 'user' || mutation.expected_revision !== String(settingsRevision)) throw new Error('Unexpected settings mutation');
+        const file = path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json');
+        const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const keys = definition[4];
+        let parent = document;
+        for (const key of keys.slice(0, -1)) parent = parent[key] ??= {};
+        if (mutation.operation === 'remove') {
+          delete parent[keys.at(-1)];
+          preferences[mutation.id] = undefined;
+        } else {
+          parent[keys.at(-1)] = mutation.value;
+          preferences[mutation.id] = mutation.value;
+        }
+        fs.writeFileSync(file, JSON.stringify(document));
+        settingsRevision++;
+        send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
+          persistence: 'saved', application: 'next_session', snapshot: settingsSnapshot(),
+        } });
+        break;
+      }
       case 'cancel_turn':
         send({ event: 'turn_interrupt_receipt', session_id: SESSION, still_queued: pending.slice(), request_id: message.request_id });
         if (active) finish({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'aborted_streaming', queued_turn_count: pending.length });

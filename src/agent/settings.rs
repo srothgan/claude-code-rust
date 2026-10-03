@@ -8,6 +8,15 @@ use serde_json::Value;
 pub enum SettingKind {
     Boolean,
     String,
+    StringList,
+    Number,
+    Json,
+}
+impl SettingKind {
+    #[must_use]
+    pub const fn is_structured(self) -> bool {
+        matches!(self, Self::StringList | Self::Json)
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

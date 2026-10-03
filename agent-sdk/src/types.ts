@@ -491,6 +491,7 @@ export interface QuestionPrompt {
 }
 
 export interface QuestionRequest {
+  idle_timeout_ms?: number;
   tool_call: ToolCall;
   prompt: QuestionPrompt;
   question_index: number;
@@ -811,7 +812,7 @@ export interface BridgeCommandEnvelope {
 export type SettingsScope = "user" | "project" | "local";
 export interface SettingDescriptor {
   id: string; label: string; description: string; key_path: string[];
-  kind: "boolean" | "string"; options: Json[]; writable_scopes: SettingsScope[];
+  kind: "boolean" | "string" | "string_list" | "number" | "json"; options: Json[]; writable_scopes: SettingsScope[];
   allows_custom: boolean; reset: string; application: "host" | "next_session"; unavailable?: string;
 }
 export interface SettingsSnapshot {
@@ -1109,6 +1110,7 @@ export type BridgeEvent =
       request: PermissionRequest;
     }
   | { event: "question_request"; session_id: string; request: QuestionRequest }
+  | { event: "interaction_cancelled"; session_id: string; interaction_id: string }
   | {
       event: "user_dialog_request";
       session_id: string;

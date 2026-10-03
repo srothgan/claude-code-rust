@@ -16,7 +16,7 @@ fn interaction_id_is_valid(app: &App, tool_id: &str) -> bool {
         Some(MessageBlock::ToolCall(tc)) => {
             tc.pending_permission.is_some() || tc.pending_question.is_some()
         }
-        Some(MessageBlock::UserDialog(dialog)) => !dialog.answered,
+        Some(MessageBlock::UserDialog(dialog)) => dialog.outcome.is_none(),
         _ => false,
     }
 }
@@ -82,6 +82,9 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
                     && question.focused != focused
                 {
                     question.focused = focused;
+                    if focused {
+                        question.last_activity = std::time::Instant::now();
+                    }
                     tc.invalidate_render_cache();
                     invalidated = true;
                 }
@@ -115,9 +118,38 @@ pub(super) fn focused_interaction_is_active(app: &App) -> bool {
             tc.pending_permission.as_ref().is_some_and(|permission| permission.focused)
                 || tc.pending_question.as_ref().is_some_and(|question| question.focused)
         }
-        Some(MessageBlock::UserDialog(dialog)) => dialog.focused && !dialog.answered,
+        Some(MessageBlock::UserDialog(dialog)) => dialog.focused && dialog.outcome.is_none(),
         _ => false,
     }
+}
+
+pub(crate) fn cancel_pending_interaction(app: &mut App, id: &str) {
+    let Some((mi, bi)) = app.lookup_tool_call(id) else {
+        return;
+    };
+    let Some(block) =
+        app.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+    else {
+        return;
+    };
+    match block {
+        MessageBlock::ToolCall(tool) => {
+            tool.pending_permission.take();
+            tool.pending_question.take();
+            tool.invalidate_render_cache();
+        }
+        MessageBlock::UserDialog(dialog) => {
+            dialog.response_tx.take();
+            dialog.resolve(crate::agent::model::RequestUserDialogOutcome::Cancelled);
+        }
+        _ => return,
+    }
+    app.turn.pending_interaction_ids.retain(|pending| pending != id);
+    app.sync_render_cache_slot(mi, bi);
+    app.recompute_message_retained_bytes(mi);
+    app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    app.request_chat_mutable_rebuild();
+    focus_next_inline_interaction(app);
 }
 
 /// Whether the head of the interaction queue is a focused, unanswered user
@@ -131,7 +163,7 @@ pub(super) fn has_focused_user_dialog(app: &App) -> bool {
     };
     matches!(
         app.transcript.messages.get(mi).and_then(|msg| msg.blocks.get(bi)),
-        Some(MessageBlock::UserDialog(dialog)) if dialog.focused && !dialog.answered
+        Some(MessageBlock::UserDialog(dialog)) if dialog.focused && dialog.outcome.is_none()
     )
 }
 

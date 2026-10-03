@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-use super::input::render_text_input_field;
+use super::input::{render_multiline_input_field, render_text_input_field};
 use super::overlay::{OverlayChrome, OverlayLayoutSpec, render_overlay_shell};
 use super::theme;
 use crate::agent::settings::{SettingDescriptor, SettingsApplication};
@@ -25,6 +25,7 @@ pub(super) fn render_setting_overlay(frame: &mut Frame, area: Rect, app: &App) {
     else {
         return;
     };
+    let multiline = setting.kind.is_structured();
     let rendered = render_overlay_shell(
         frame,
         area,
@@ -32,8 +33,8 @@ pub(super) fn render_setting_overlay(frame: &mut Frame, area: Rect, app: &App) {
             min_width: 56,
             min_height: 14,
             width_percent: 80,
-            height_percent: 55,
-            preferred_height: 14,
+            height_percent: if multiline { 85 } else { 55 },
+            preferred_height: if multiline { 32 } else { 14 },
             fullscreen_below: Some((56, 14)),
             inner_margin: Margin { vertical: 1, horizontal: 2 },
         },
@@ -42,6 +43,8 @@ pub(super) fn render_setting_overlay(frame: &mut Frame, area: Rect, app: &App) {
             subtitle: Some(super::settings::scope_label(overlay.scope)),
             help: Some(if app.config.pending_settings_request.is_some() {
                 "Saving..."
+            } else if multiline {
+                "Ctrl+S save | Enter new line | Ctrl+U clear | Ctrl+R reset | Esc cancel"
             } else {
                 "Enter save | Ctrl+R reset | Esc cancel"
             }),
@@ -50,9 +53,23 @@ pub(super) fn render_setting_overlay(frame: &mut Frame, area: Rect, app: &App) {
     );
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
+        .constraints(if multiline {
+            [Constraint::Min(3), Constraint::Length(1), Constraint::Length(5)]
+        } else {
+            [Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)]
+        })
         .split(rendered.body_area);
-    render_text_input_field(frame, sections[0], &overlay.draft, overlay.cursor, "Enter a value");
+    if multiline {
+        render_multiline_input_field(frame, sections[0], &overlay.draft, overlay.cursor);
+    } else {
+        render_text_input_field(
+            frame,
+            sections[0],
+            &overlay.draft,
+            overlay.cursor,
+            "Enter a value",
+        );
+    }
     frame.render_widget(
         Paragraph::new(setting_details(app, setting, overlay)).wrap(Wrap { trim: false }),
         sections[2],

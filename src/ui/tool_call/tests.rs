@@ -496,6 +496,8 @@ fn tool_display_title_uses_stable_question_title_for_pending_ask_user_question()
     );
     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
     tc.pending_question = Some(crate::app::InlineQuestion {
+        idle_timeout: None,
+        last_activity: std::time::Instant::now(),
         prompt: model::QuestionPrompt::new(
             "What is your favorite language?",
             "Language",
@@ -859,6 +861,8 @@ fn ask_user_question_pending_body_hides_answer_transcript() {
     )];
     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
     tc.pending_question = Some(crate::app::InlineQuestion {
+        idle_timeout: None,
+        last_activity: std::time::Instant::now(),
         prompt: model::QuestionPrompt::new(
             "Which features should be enabled by default?",
             "Features",

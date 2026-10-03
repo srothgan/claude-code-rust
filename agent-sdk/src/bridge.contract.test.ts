@@ -829,6 +829,24 @@ test("spawned bridge inspects, saves, conflicts and resets scoped settings over 
     assert.equal(reset.persistence, "saved");
     assert.equal(reset.snapshot?.values.find(value => value.id === "language")?.value, "German");
     assert.deepEqual(JSON.parse(readFileSync(localPath, "utf8")), { future: { keep: true }, external: "preserve" });
+    for (const [id, value] of [
+      ["permissions.deny", ["Read(./.env)"]],
+      ["worktree.sparsePaths", ["src", "docs"]],
+      ["hooks", { Stop: [{ hooks: [{ type: "command", command: "unused-preview-command" }] }] }],
+    ] as const) {
+      const fresh = await result(`inspect-${id}`, { command: "inspect_settings" });
+      assert.ok(fresh.snapshot);
+      const scoped = fresh.snapshot.sources.find(source => source.scope === "local")?.values.find(entry => entry.id === id);
+      assert.ok(scoped);
+      const mutation = { context: fresh.snapshot.context, id, scope: "local", expected_revision: scoped.revision, operation: "set", value };
+      const saved = await result(`save-${id}`, { command: "mutate_setting", mutation });
+      assert.equal(saved.persistence, "saved", saved.error ?? id);
+      assert.deepEqual(saved.snapshot?.values.find(entry => entry.id === id)?.value, value);
+    }
+    const document = JSON.parse(readFileSync(localPath, "utf8"));
+    assert.deepEqual(document.future, { keep: true });
+    assert.equal(document.external, "preserve");
+    assert.deepEqual(document.permissions.deny, ["Read(./.env)"]);
     bridge.writeCommand({ command: "shutdown" });
     assert.equal(await bridge.waitForExit(), 0);
   } finally {
@@ -846,7 +864,7 @@ test("spawned bridge displays SDK managed policy and blocks scoped edits to its 
   const file = join(profile, "settings.json");
   const original = JSON.stringify({ language: "German", unrelated: true });
   writeFileSync(file, original);
-  const { bridge, cleanup } = ultracodeFixtureBridge({ CLAUDE_CONFIG_DIR: profile, SETTINGS_POLICY_FIXTURE: JSON.stringify({ language: "Policy language" }) });
+  const { bridge, cleanup } = ultracodeFixtureBridge({ CLAUDE_CONFIG_DIR: profile, SETTINGS_POLICY_FIXTURE: JSON.stringify({ language: "Policy language", allowManagedPermissionRulesOnly: true, allowManagedHooksOnly: true, sandbox: { network: { allowManagedDomainsOnly: true }, filesystem: { allowManagedReadPathsOnly: true } } }) });
   try {
     bridge.writeCommand({ command: "create_session", cwd });
     const connected = await nextMatching(bridge, event => event.event === "connected");
@@ -860,6 +878,16 @@ test("spawned bridge displays SDK managed policy and blocks scoped edits to its 
     assert.ok(snapshot.resolution_sources.some(source => source.source === "managed"));
     assert.equal(snapshot.resolution_sources.find(source => source.source === "managed")?.policy_origin, "remote");
     assert.deepEqual(snapshot.catalog.find(setting => setting.id === "language")?.writable_scopes, []);
+    for (const id of ["permissions.allow", "permissions.ask", "permissions.deny", "hooks", "sandbox.network.allowedDomains", "sandbox.network.httpProxyPort", "sandbox.network.socksProxyPort", "sandbox.filesystem.allowRead"]) {
+      assert.equal(snapshot.values.find(value => value.id === id)?.policy_restricted, true, id);
+      assert.deepEqual(snapshot.catalog.find(setting => setting.id === id)?.writable_scopes, [], id);
+      const saved: SettingsSnapshot["sources"][number]["values"][number] | undefined = snapshot.sources.find(source => source.scope === "user")?.values.find(value => value.id === id);
+      assert.ok(saved);
+      bridge.writeCommand({ command: "mutate_setting", session_id: connected.session_id, request_id: id, mutation: { context: snapshot.context, id, scope: "user", expected_revision: saved.revision, operation: "set", value: id.endsWith("ProxyPort") ? 3128 : id === "hooks" ? {} : [] } });
+      const rejected = await nextMatching(bridge, event => event.event === "settings_result");
+      assert.equal((rejected.result as SettingsResult).persistence, "failure", id);
+    }
+    assert.deepEqual(snapshot.catalog.find(setting => setting.id === "permissions.additionalDirectories")?.writable_scopes, ["user", "project", "local"]);
     const previous = snapshot.sources.find(source => source.scope === "user")?.values.find(value => value.id === "language");
     assert.ok(previous);
     bridge.writeCommand({ command: "mutate_setting", session_id: connected.session_id, request_id: "policy-save", mutation: { context: snapshot.context, id: "language", scope: "user", expected_revision: previous.revision, operation: "set", value: "French" } });

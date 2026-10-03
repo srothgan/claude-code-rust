@@ -459,6 +459,10 @@ export function emitAvailableAgentsSnapshot(session: SessionState): void {
   });
 }
 
+export function emitInteractionCancelled(sessionId: string, interactionId: string): void {
+  writeEvent({ event: "interaction_cancelled", session_id: sessionId, interaction_id: interactionId });
+}
+
 /** Replay the current authority after the host resets its session inventory. */
 export function emitAvailableCommandsSnapshot(session: SessionState): void {
   const snapshot = session.availableCommands;

@@ -144,10 +144,8 @@ fn respond_dialog(app: &mut App, resolution: DialogResolution) {
             );
             model::RequestUserDialogOutcome::Cancelled
         };
+        dialog.resolve(outcome.clone());
         let _ = response_tx.send(model::RequestUserDialogResponse::new(outcome));
-        dialog.answered = true;
-        dialog.focused = false;
-        dialog.cache.invalidate();
         app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
@@ -226,10 +224,53 @@ mod tests {
     }
 
     #[test]
+    fn native_expiry_closes_only_its_dialog_and_keeps_the_next_interaction_usable() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
+        app.input.set_text("keep this draft");
+        let mut expired = add_user_dialog(&mut app, "expired", true);
+        let mut next = add_user_dialog(&mut app, "next", false);
+        app.claim_focus_target(crate::app::FocusTarget::Permission);
+        crate::app::events::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::InteractionCancelled {
+                session_id: "old-session".to_owned(),
+                interaction_id: "expired".to_owned(),
+            },
+        );
+        assert!(matches!(expired.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+        crate::app::events::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::InteractionCancelled {
+                session_id: "session-1".to_owned(),
+                interaction_id: "expired".to_owned(),
+            },
+        );
+        assert!(matches!(expired.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
+        assert_eq!(app.turn.pending_interaction_ids, vec!["next"]);
+        assert_eq!(app.input.text(), "keep this draft");
+        let MessageBlock::UserDialog(dialog) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expired dialog");
+        };
+        assert_eq!(dialog.outcome, Some(model::RequestUserDialogOutcome::Cancelled));
+        assert_eq!(
+            execute_user_dialog_action(&mut app, InteractionAction::Confirm, key(KeyCode::Enter)),
+            KeyOutcome::Handled(true)
+        );
+        assert!(matches!(
+            next.try_recv().expect("next dialog answered").outcome,
+            model::RequestUserDialogOutcome::Selected(_)
+        ));
+        assert!(app.turn.pending_interaction_ids.is_empty());
+    }
+
+    #[test]
     fn confirm_sends_retry_fallback_by_default() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
         let mut rx = add_user_dialog(&mut app, "dialog-1", true);
+        let pending_bytes = app.measure_history_bytes();
 
         let outcome =
             execute_user_dialog_action(&mut app, InteractionAction::Confirm, key(KeyCode::Enter));
@@ -240,6 +281,7 @@ mod tests {
             panic!("expected a selected outcome");
         };
         assert_eq!(selected.option_id, "retry_fallback");
+        assert_eq!(app.measure_history_bytes(), pending_bytes + selected.option_id.capacity());
         assert!(!app.turn.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
     }
 

@@ -3190,6 +3190,8 @@ fn attach_pending_question(
     let (response_tx, response_rx) = oneshot::channel();
     let mut tc = tool_call(tool_id, model::ToolCallStatus::InProgress);
     tc.pending_question = Some(InlineQuestion {
+        idle_timeout: None,
+        last_activity: std::time::Instant::now(),
         prompt,
         response_tx,
         focused_option_index: 0,

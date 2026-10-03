@@ -4,7 +4,7 @@ use super::{
     PendingSessionTitleChangeKind, PendingSessionTitleChangeState, SessionRenameOverlayState,
     SettingOverlayState,
 };
-use crate::agent::settings::{SettingDescriptor, SettingsMutation, SettingsOperation};
+use crate::agent::settings::{SettingDescriptor, SettingKind, SettingsMutation, SettingsOperation};
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -32,13 +32,27 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
     let Some(value) = snapshot.scoped(&setting.id, scope) else {
         return;
     };
-    let draft = value
+    let initial = value
         .value
         .as_ref()
-        .or_else(|| snapshot.value(&setting.id))
-        .map_or_else(String::new, |value| {
-            value.as_str().map_or_else(|| value.to_string(), str::to_owned)
-        });
+        .or_else(|| (!setting.kind.is_structured()).then(|| snapshot.value(&setting.id)).flatten());
+    let draft = initial.map_or_else(
+        || if setting.kind == SettingKind::Json { "{}".to_owned() } else { String::new() },
+        |value| match setting.kind {
+            SettingKind::StringList => value.as_array().map_or_else(
+                || value.to_string(),
+                |items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                },
+            ),
+            SettingKind::Json => serde_json::to_string_pretty(value).unwrap_or_default(),
+            _ => value.as_str().map_or_else(|| value.to_string(), str::to_owned),
+        },
+    );
     let cursor = draft.chars().count();
     app.config.replace_overlay(ConfigOverlayState::Setting(SettingOverlayState {
         id: setting.id.clone(),
@@ -142,7 +156,12 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
     match app.config.overlay {
         Some(ConfigOverlayState::Setting(_)) => {
             if app.config.pending_settings_request.is_none() && setting_accepts_text(app) {
-                insert_text_str(app.config.setting_overlay_mut(), text);
+                if setting_is_multiline(app) {
+                    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                    insert_multiline_text(app.config.setting_overlay_mut(), &normalized);
+                } else {
+                    insert_text_str(app.config.setting_overlay_mut(), text);
+                }
             }
             true
         }
@@ -162,7 +181,22 @@ fn handle_setting_key(app: &mut App, key: KeyEvent) {
         return;
     }
     match (key.code, key.modifiers) {
+        // Windows terminal pastes can deliver line feed as a modified Enter.
+        (KeyCode::Enter, _) | (KeyCode::Char('j'), KeyModifiers::CONTROL)
+            if setting_is_multiline(app) =>
+        {
+            insert_text_char(app.config.setting_overlay_mut(), '\n');
+        }
         (KeyCode::Enter, KeyModifiers::NONE) => confirm_setting(app, false),
+        (KeyCode::Char('s'), KeyModifiers::CONTROL) if setting_is_multiline(app) => {
+            confirm_setting(app, false);
+        }
+        (KeyCode::Char('u'), KeyModifiers::CONTROL) if setting_is_multiline(app) => {
+            if let Some(editor) = app.config.setting_overlay_mut() {
+                editor.draft.clear();
+                editor.cursor = 0;
+            }
+        }
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => confirm_setting(app, true),
         (KeyCode::Esc, KeyModifiers::NONE) => {
             if app.config.pending_settings_request.is_none() {
@@ -174,6 +208,12 @@ fn handle_setting_key(app: &mut App, key: KeyEvent) {
         }
         (KeyCode::Right, KeyModifiers::NONE) => {
             move_text_cursor_right(app.config.setting_overlay_mut());
+        }
+        (KeyCode::Up, KeyModifiers::NONE) if setting_is_multiline(app) => {
+            move_setting_line(app, false);
+        }
+        (KeyCode::Down, KeyModifiers::NONE) if setting_is_multiline(app) => {
+            move_setting_line(app, true);
         }
         (KeyCode::Home, KeyModifiers::NONE) => set_text_cursor(app.config.setting_overlay_mut(), 0),
         (KeyCode::End, KeyModifiers::NONE) => {
@@ -198,11 +238,77 @@ fn setting_accepts_text(app: &App) -> bool {
         })
     })
 }
+fn setting_kind(app: &App) -> Option<SettingKind> {
+    let editor = app.config.setting_overlay()?;
+    app.config
+        .snapshot
+        .as_ref()?
+        .catalog
+        .iter()
+        .find(|setting| setting.id == editor.id)
+        .map(|setting| setting.kind)
+}
+fn setting_is_multiline(app: &App) -> bool {
+    setting_kind(app).is_some_and(SettingKind::is_structured)
+}
+fn insert_multiline_text(overlay: Option<&mut SettingOverlayState>, text: &str) {
+    let Some(overlay) = overlay else {
+        return;
+    };
+    let byte = char_to_byte_index(&overlay.draft, overlay.cursor);
+    overlay.draft.insert_str(byte, text);
+    overlay.cursor += text.chars().count();
+}
+fn move_setting_line(app: &mut App, down: bool) {
+    let Some(editor) = app.config.setting_overlay_mut() else {
+        return;
+    };
+    let chars = editor.draft.chars().collect::<Vec<_>>();
+    let start =
+        chars[..editor.cursor].iter().rposition(|ch| *ch == '\n').map_or(0, |index| index + 1);
+    let column = editor.cursor - start;
+    let next_start = if down {
+        let Some(end) = chars[editor.cursor..].iter().position(|ch| *ch == '\n') else {
+            return;
+        };
+        editor.cursor + end + 1
+    } else {
+        if start == 0 {
+            return;
+        }
+        chars[..start - 1].iter().rposition(|ch| *ch == '\n').map_or(0, |index| index + 1)
+    };
+    let len =
+        chars[next_start..].iter().position(|ch| *ch == '\n').unwrap_or(chars.len() - next_start);
+    editor.cursor = next_start + column.min(len);
+}
 fn confirm_setting(app: &mut App, remove: bool) {
     let Some(overlay) = app.config.setting_overlay().cloned() else {
         return;
     };
-    let value = (!remove).then_some(serde_json::Value::String(overlay.draft));
+    let value = if remove {
+        None
+    } else {
+        let parsed = match setting_kind(app) {
+            Some(SettingKind::StringList) => Ok(serde_json::Value::Array(
+                overlay
+                    .draft
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| serde_json::Value::String(line.to_owned()))
+                    .collect(),
+            )),
+            Some(SettingKind::Json | SettingKind::Number) => serde_json::from_str(&overlay.draft),
+            _ => Ok(serde_json::Value::String(overlay.draft)),
+        };
+        match parsed {
+            Ok(value) => Some(value),
+            Err(error) => {
+                app.config.set_overlay_error(format!("Check the value: {error}"));
+                return;
+            }
+        }
+    };
     super::service::send_mutation(
         app,
         SettingsMutation {

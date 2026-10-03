@@ -186,7 +186,7 @@ fn message_has_pending_user_dialog(message: &ChatMessage) -> bool {
     message
         .blocks
         .iter()
-        .any(|block| matches!(block, MessageBlock::UserDialog(dialog) if !dialog.answered))
+        .any(|block| matches!(block, MessageBlock::UserDialog(dialog) if dialog.outcome.is_none()))
 }
 
 fn render_assistant_live_rows(
@@ -1587,6 +1587,8 @@ mod tests {
         if focused_question {
             let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
             tool.pending_question = Some(crate::app::InlineQuestion {
+                idle_timeout: None,
+                last_activity: std::time::Instant::now(),
                 prompt: model::QuestionPrompt::new(
                     "Choose an option",
                     "Question",

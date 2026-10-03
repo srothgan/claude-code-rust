@@ -61,6 +61,37 @@ pub(super) fn render_text_input_field(
     );
 }
 
+pub(super) fn render_multiline_input_field(
+    frame: &mut Frame,
+    area: Rect,
+    draft: &str,
+    cursor: usize,
+) {
+    let cursor = cursor.min(draft.chars().count());
+    let prefix = draft.chars().take(cursor).collect::<String>();
+    let cursor_line = prefix.chars().filter(|ch| *ch == '\n').count();
+    let cursor_column = prefix.rsplit('\n').next().map_or(0, |line| line.chars().count());
+    let height = usize::from(area.height);
+    let offset = cursor_line.saturating_sub(height.saturating_sub(1));
+    for (index, line) in draft.split('\n').enumerate().skip(offset).take(height) {
+        let row = Rect::new(
+            area.x,
+            area.y.saturating_add(u16::try_from(index - offset).unwrap_or(0)),
+            area.width,
+            1,
+        );
+        if index == cursor_line {
+            render_text_input_field(frame, row, line, cursor_column, "");
+        } else {
+            frame.render_widget(
+                Paragraph::new(format!(" {line}"))
+                    .style(Style::default().fg(Color::White).bg(theme::USER_MSG_BG)),
+                row,
+            );
+        }
+    }
+}
+
 fn text_input_line_for_width(
     draft: &str,
     cursor: usize,

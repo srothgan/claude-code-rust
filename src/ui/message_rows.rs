@@ -217,11 +217,15 @@ fn render_user_dialog_lines(dialog: &UserDialogBlock) -> Vec<Line<'static>> {
     )));
     lines.push(Line::default());
 
-    if dialog.answered {
-        let resolved = dialog
-            .options
-            .get(dialog.selected_index)
-            .map_or_else(|| "Declined".to_owned(), |option| option.label.clone());
+    if let Some(outcome) = &dialog.outcome {
+        let resolved = match outcome {
+            crate::agent::model::RequestUserDialogOutcome::Cancelled => "Cancelled".to_owned(),
+            crate::agent::model::RequestUserDialogOutcome::Selected(selected) => dialog
+                .options
+                .iter()
+                .find(|option| option.option_id == selected.option_id)
+                .map_or_else(|| "Selected".to_owned(), |option| option.label.clone()),
+        };
         lines.push(Line::from(Span::styled(
             format!("  Resolved: {resolved}"),
             Style::default().fg(theme::DIM),
@@ -506,6 +510,47 @@ mod tests {
                 assert!(texts.iter().any(|line| line.contains("Question:")));
                 assert!(texts.iter().any(|line| line.contains("Answer:")));
             }
+        }
+    }
+
+    #[test]
+    fn resolved_dialog_renders_its_actual_outcome_instead_of_the_highlighted_option() {
+        use crate::agent::model;
+        use crate::app::UserDialogBlock;
+        for outcome in [
+            model::RequestUserDialogOutcome::Cancelled,
+            model::RequestUserDialogOutcome::Selected(model::SelectedUserDialogOutcome::new(
+                "edit_prompt",
+            )),
+        ] {
+            let (sender, _receiver) = tokio::sync::oneshot::channel();
+            let request = model::RequestUserDialogRequest::new(
+                model::SessionId::new("session-1"),
+                "dialog-1",
+                "refusal_fallback_prompt",
+                model::RefusalFallbackPayload {
+                    original_model: "Original".to_owned(),
+                    fallback_model: "Fallback".to_owned(),
+                    ..Default::default()
+                },
+                vec![
+                    model::UserDialogOption::new("retry_fallback", "Switch model"),
+                    model::UserDialogOption::new("edit_prompt", "Edit prompt"),
+                ],
+            );
+            let mut dialog = UserDialogBlock::new(request, sender);
+            dialog.resolve(outcome.clone());
+            dialog.selected_index = 0;
+            let mut message =
+                system_message(vec![MessageBlock::UserDialog(dialog)], SystemSeverity::Warning);
+            let texts =
+                segment_texts(&build_user_system_message_rows(&mut message, render_context()));
+            let expected = if outcome == model::RequestUserDialogOutcome::Cancelled {
+                "Resolved: Cancelled"
+            } else {
+                "Resolved: Edit prompt"
+            };
+            assert!(texts.iter().any(|line| line.contains(expected)), "{texts:?}");
         }
     }
 

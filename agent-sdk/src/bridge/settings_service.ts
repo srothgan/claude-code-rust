@@ -7,17 +7,12 @@ import { promisify } from "node:util";
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type { Json, SettingDescriptor, SettingsMutation, SettingsScope, SettingsSnapshot, SettingsResult, AvailableModel, AvailableAgent } from "../types.js";
 import { settingsCatalog } from "./settings_catalog.js";
+import { settingLeaf as leaf, validateSettingValue } from "./settings_values.js";
 
 const SCOPES: SettingsScope[] = ["user", "project", "local"];
 const NOT_LOADED = "not loaded";
 const runFile = promisify(execFile);
 const object = (value: unknown): value is Record<string, Json> => typeof value === "object" && value !== null && !Array.isArray(value);
-function leaf(document: unknown, keys: string[]): Json | undefined {
-  if (keys.length === 0) return undefined;
-  let value: unknown = document;
-  for (const key of keys) value = object(value) ? value[key] : undefined;
-  return value as Json | undefined;
-}
 function revision(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("hex");
 }
@@ -61,11 +56,18 @@ export async function inspectSettings(cwd: string, models: AvailableModel[] = []
       return { id: setting.id, revision: revision(value), ...(value !== undefined ? { value } : {}) };
     }) };
   }));
-  // Only catalog values cross stdio. Auth, environment secrets, hook commands, and opaque keys stay on disk.
+  // Only explicitly editable catalog values cross stdio, never opaque profile/auth data.
   const values = catalog.map(setting => {
     const value = leaf(resolved.effective, setting.key_path);
     const contributors = resolved.sources.filter(source => leaf(source.settings, setting.key_path) !== undefined);
-    const policy = contributors.some(source => source.source === "managed");
+    const managed = resolved.sources.find(source => source.source === "managed")?.settings;
+    const pluginOnly = managed?.strictPluginOnlyCustomization;
+    const policy = contributors.some(source => source.source === "managed")
+      || (["permissions.allow", "permissions.ask", "permissions.deny"].includes(setting.id) && managed?.allowManagedPermissionRulesOnly === true)
+      || (setting.id === "hooks" && (managed?.allowManagedHooksOnly === true || pluginOnly === true || (Array.isArray(pluginOnly) && pluginOnly.includes("hooks"))))
+      || (["sandbox.network.allowedDomains", "sandbox.network.httpProxyPort", "sandbox.network.socksProxyPort"].includes(setting.id) && managed?.sandbox?.network?.allowManagedDomainsOnly === true)
+      || (setting.id === "sandbox.filesystem.allowRead" && managed?.sandbox?.filesystem?.allowManagedReadPathsOnly === true)
+      || (setting.id === "sandbox.filesystem.disabled" && (managed?.sandbox?.filesystem !== undefined || managed?.sandbox?.credentials?.files?.some(entry => entry.mode === "deny") === true));
     return { id: setting.id, ...(value !== undefined ? { value } : {}), contributors: contributors.map(source => source.source), policy_restricted: policy };
   });
   for (const value of values) {
@@ -83,11 +85,6 @@ export async function inspectSettings(cwd: string, models: AvailableModel[] = []
   return { cwd, context: revision({ cwd, paths, effortPath: catalog.find(setting => setting.id === "defaultEffort")?.key_path }), catalog, sources, values, resolution_sources, provenance, diagnostics: ["SDK raw cascade: active session choices and trust filtering are separate. policyHelper is not executed by resolveSettings."] };
 }
 
-function validate(setting: SettingDescriptor, value: Json): void {
-  if (typeof value !== setting.kind) throw new Error(`Expected ${setting.kind}.`);
-  if (!setting.allows_custom && !setting.options.includes(value)) throw new Error("Choose one of the available options.");
-  if (typeof value === "string" && value.length === 0) throw new Error("Use reset to remove the saved value instead of storing an empty value.");
-}
 function patch(document: Record<string, Json>, keys: string[], value: Json | undefined): void {
   let current = document;
   const parents: Array<[Record<string, Json>, string]> = [];
@@ -184,7 +181,7 @@ export async function mutateSetting(cwd: string, mutation: SettingsMutation, mod
     if (!setting?.writable_scopes.includes(mutation.scope)) throw new Error("This setting cannot be edited at this scope.");
     if (mutation.operation === "set") {
       if (mutation.value === undefined) throw new Error("A set operation requires a value.");
-      validate(setting, mutation.value);
+      await validateSettingValue(setting, mutation.value);
     }
     const source = snapshot.sources.find(entry => entry.scope === mutation.scope);
     if (!source) throw new Error("Settings source is unavailable.");

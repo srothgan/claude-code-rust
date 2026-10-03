@@ -112,6 +112,11 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::UserDialogRequest { session_id, request } => {
             handle_user_dialog_request_event(event_tx, connection, session_id, request).await;
         }
+        crate::agent::wire::BridgeEvent::InteractionCancelled { session_id, interaction_id } => {
+            let _ = event_tx
+                .send(ClientEvent::InteractionCancelled { session_id, interaction_id })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::ElicitationRequest { session_id, request } => {
             handle_elicitation_request_event(event_tx, &session_id, request).await;
         }

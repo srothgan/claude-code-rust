@@ -903,7 +903,7 @@ fn enforce_history_retention_preserves_and_rebuilds_pending_user_dialog() {
         panic!("expected user dialog block");
     };
     assert!(dialog.focused);
-    assert!(!dialog.answered);
+    assert!(dialog.outcome.is_none());
 }
 
 #[test]

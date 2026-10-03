@@ -41,6 +41,7 @@ import type {
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
 import { AsyncQueue, asRecordOrNull } from "./shared.js";
 import { beginSessionModeRead, observeSessionMode } from "./commands.js";
+import { waitForAnswer } from "./pending_answer.js";
 import {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
@@ -52,6 +53,7 @@ import {
   emitPermissionRequestEvent,
   emitElicitationRequestEvent,
   emitUserDialogRequestEvent,
+  emitInteractionCancelled,
 } from "./events.js";
 import { ensureToolCallVisible, setToolCallStatus } from "./tool_calls.js";
 import { isToolSearchToolName } from "./tooling.js";
@@ -533,6 +535,7 @@ export async function createSession(params: {
         toolUseId,
         inputData,
         existing,
+        options.signal,
       );
     }
     const existing = ensureToolCallVisible(
@@ -548,6 +551,7 @@ export async function createSession(params: {
         toolUseId,
         inputData,
         existing,
+        options.signal,
       );
     }
 
@@ -587,16 +591,18 @@ export async function createSession(params: {
         mcp_server_source: request.mcp_server?.source,
       },
     });
-    emitPermissionRequestEvent(session.sessionId, request);
-
-    return await new Promise<PermissionResult>((resolve) => {
-      session.pendingPermissions.set(toolUseId, {
+    return await waitForAnswer<PermissionResult, PendingPermission>(
+      session.pendingPermissions, toolUseId, resolve => ({
         resolve,
         toolName,
         inputData: inputData,
         suggestions: options.suggestions,
+      }), () => emitPermissionRequestEvent(session.sessionId, request), options.signal,
+      () => {
+        emitInteractionCancelled(session.sessionId, toolUseId);
+        setToolCallStatus(session, toolUseId, "failed", "Permission cancelled");
+        return { behavior: "deny", message: "Permission cancelled", toolUseID: toolUseId };
       });
-    });
   };
 
   const claudeCodeExecutable = process.env.CLAUDE_CODE_EXECUTABLE;
@@ -1256,63 +1262,13 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
           has_url: normalized.url !== undefined,
         },
       });
-      emitElicitationRequestEvent(params.sessionIdForLogs(), normalized);
-      return await new Promise<{
-        action: ElicitationAction;
-        content?: Record<string, string | number | boolean | string[]>;
-      }>((resolve) => {
-        const currentSession = sessions.get(params.sessionIdForLogs());
-        if (!currentSession) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.BRIDGE_PERMISSION,
-            eventName: "elicitation_request_dropped",
-            message: "elicitation request dropped without an active session",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "unknown_session" },
-          });
-          resolve({ action: "cancel" });
-          return;
-        }
-        if (currentSession.pendingElicitations.has(requestId)) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.BRIDGE_PERMISSION,
-            eventName: "elicitation_request_dropped",
-            message: "duplicate elicitation request dropped",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "duplicate_request_id" },
-          });
-          resolve({ action: "cancel" });
-          return;
-        }
-        let settled = false;
-        const settle = (result: {
-          action: ElicitationAction;
-          content?: Record<string, string | number | boolean | string[]>;
-        }) => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          currentSession.pendingElicitations.delete(requestId);
-          options.signal.removeEventListener("abort", onAbort);
-          resolve(result);
-        };
-        const onAbort = () => settle({ action: "cancel" });
-        if (options.signal.aborted) {
-          settle({ action: "cancel" });
-          return;
-        }
-        options.signal.addEventListener("abort", onAbort);
-        currentSession.pendingElicitations.set(requestId, {
-          resolve: settle,
-          serverName: normalized.server_name,
-          elicitationId: normalized.elicitation_id,
-        });
-      });
+      const currentSession = sessions.get(params.sessionIdForLogs());
+      if (!currentSession || currentSession.closing || currentSession.pendingElicitations.has(requestId)) return { action: "cancel" as const };
+      return await waitForAnswer<{ action: ElicitationAction; content?: Record<string, string | number | boolean | string[]> }, PendingElicitation>(
+        currentSession.pendingElicitations, requestId,
+        resolve => ({ resolve, serverName: normalized.server_name, elicitationId: normalized.elicitation_id }),
+        () => emitElicitationRequestEvent(params.sessionIdForLogs(), normalized), options.signal,
+        () => ({ action: "cancel" }));
     },
     // The SDK "fails closed" and never emits a dialog kind unless it is declared
     // here. We declare the one refusal-related kind we render: when the API
@@ -1369,55 +1325,12 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
         },
       });
 
-      const choice = await new Promise<
-        RefusalFallbackPromptChoice | "cancelled"
-      >((resolve) => {
-        const currentSession = sessions.get(params.sessionIdForLogs());
-        if (!currentSession) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.APP_SESSION,
-            eventName: "user_dialog_request_dropped",
-            message: "user dialog request dropped without an active session",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "unknown_session" },
-          });
-          resolve("cancelled");
-          return;
-        }
-        if (currentSession.pendingUserDialogs.has(requestId)) {
-          bridgeLogger.warn({
-            target: LOG_TARGETS.APP_SESSION,
-            eventName: "user_dialog_request_dropped",
-            message: "duplicate user dialog request dropped",
-            outcome: "dropped",
-            sessionId: params.sessionIdForLogs(),
-            requestId,
-            fields: { reason: "duplicate_request_id" },
-          });
-          resolve("cancelled");
-          return;
-        }
-        let settled = false;
-        const settle = (value: RefusalFallbackPromptChoice | "cancelled") => {
-          if (settled) {
-            return;
-          }
-          settled = true;
-          currentSession.pendingUserDialogs.delete(requestId);
-          options.signal.removeEventListener("abort", onAbort);
-          resolve(value);
-        };
-        const onAbort = () => settle("cancelled");
-        if (options.signal.aborted) {
-          settle("cancelled");
-          return;
-        }
-        options.signal.addEventListener("abort", onAbort);
-        currentSession.pendingUserDialogs.set(requestId, { resolve: settle });
-        emitUserDialogRequestEvent(params.sessionIdForLogs(), dialogRequest);
-      });
+      const currentSession = sessions.get(params.sessionIdForLogs());
+      if (!currentSession || currentSession.closing || currentSession.pendingUserDialogs.has(requestId)) return { behavior: "cancelled" };
+      const choice = await waitForAnswer<RefusalFallbackPromptChoice | "cancelled", PendingUserDialog>(
+        currentSession.pendingUserDialogs, requestId, resolve => ({ resolve }),
+        () => emitUserDialogRequestEvent(params.sessionIdForLogs(), dialogRequest), options.signal,
+        () => { emitInteractionCancelled(currentSession.sessionId, requestId); return "cancelled"; });
 
       return choice === "cancelled"
         ? { behavior: "cancelled" }
@@ -1470,7 +1383,6 @@ export function handlePermissionResponse(
     });
     return;
   }
-  session.pendingPermissions.delete(command.tool_call_id);
 
   const outcome = command.outcome as PermissionOutcome;
   if (resolver.onOutcome) {
@@ -1591,7 +1503,6 @@ export function handleQuestionResponse(
     });
     return;
   }
-  session.pendingQuestions.delete(command.tool_call_id);
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_PERMISSION,
     eventName: "question_response_applied",
@@ -1660,7 +1571,6 @@ export function handleUserDialogResponse(
     });
     return;
   }
-  session.pendingUserDialogs.delete(command.request_id);
   const choice =
     command.outcome.outcome === "selected"
       ? command.outcome.option_id
@@ -1720,7 +1630,6 @@ export function handleElicitationResponse(
     });
     return;
   }
-  session.pendingElicitations.delete(command.elicitation_request_id);
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_PERMISSION,
     eventName: "elicitation_response_applied",

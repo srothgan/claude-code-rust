@@ -19,6 +19,9 @@ import {
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { emitToolCallUpdate, setToolCallStatus } from "./tool_calls.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { questionIdleTimeout } from "./question_timing.js";
+import { waitForAnswer } from "./pending_answer.js";
+import { emitInteractionCancelled } from "./events.js";
 
 export type AskUserQuestionOption = {
   label: string;
@@ -45,6 +48,7 @@ export async function requestExitPlanModeApproval(
   toolUseId: string,
   inputData: Record<string, unknown>,
   baseToolCall: ToolCall,
+  signal?: AbortSignal,
 ): Promise<PermissionResult> {
   const options: PermissionOption[] = [
     {
@@ -66,12 +70,12 @@ export async function requestExitPlanModeApproval(
     options,
   };
 
-  const outcome = await new Promise<PermissionOutcome>((resolve) => {
-    session.pendingPermissions.set(toolUseId, {
-      onOutcome: resolve,
+  const outcome = await waitForAnswer<PermissionOutcome, import("./session_lifecycle.js").PendingPermission>(
+    session.pendingPermissions, toolUseId, onOutcome => ({
+      onOutcome,
       toolName: EXIT_PLAN_MODE_TOOL_NAME,
       inputData,
-    });
+    }), () => {
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_PERMISSION,
       eventName: "permission_request_created",
@@ -86,7 +90,7 @@ export async function requestExitPlanModeApproval(
       },
     });
     emitPermissionRequestEvent(session.sessionId, request);
-  });
+  }, signal, () => { emitInteractionCancelled(session.sessionId, toolUseId); return { outcome: "cancelled" }; });
 
   if (outcome.outcome !== "selected" || outcome.option_id === "reject") {
     setToolCallStatus(session, toolUseId, "failed", "Plan rejected");
@@ -298,6 +302,7 @@ export async function requestAskUserQuestionAnswers(
   toolUseId: string,
   inputData: Record<string, unknown>,
   baseToolCall: ToolCall,
+  signal?: AbortSignal,
 ): Promise<PermissionResult> {
   const prompts = parseAskUserQuestionPrompts(inputData);
   if (prompts.length === 0) {
@@ -312,6 +317,7 @@ export async function requestAskUserQuestionAnswers(
     answer: string;
   }> = [];
   const questionResults: Json[] = [];
+  const idleTimeout = await questionIdleTimeout(session.query);
 
   for (const [index, prompt] of prompts.entries()) {
     const promptToolCall = askUserQuestionPromptToolCall(
@@ -333,12 +339,13 @@ export async function requestAskUserQuestionAnswers(
       index,
       prompts.length,
     );
-    const outcome = await new Promise<QuestionOutcome>((resolve) => {
-      session.pendingQuestions.set(toolUseId, {
-        onOutcome: resolve,
+    if (idleTimeout !== undefined) request.idle_timeout_ms = idleTimeout;
+    const outcome = await waitForAnswer<QuestionOutcome, import("./session_lifecycle.js").PendingQuestion>(
+      session.pendingQuestions, toolUseId, onOutcome => ({
+        onOutcome,
         toolName: ASK_USER_QUESTION_TOOL_NAME,
         inputData,
-      });
+      }), () => {
       bridgeLogger.info({
         target: LOG_TARGETS.BRIDGE_PERMISSION,
         eventName: "question_request_created",
@@ -354,7 +361,7 @@ export async function requestAskUserQuestionAnswers(
         },
       });
       emitQuestionRequestEvent(session.sessionId, request);
-    });
+    }, signal, () => { emitInteractionCancelled(session.sessionId, toolUseId); return { outcome: "cancelled" }; });
 
     if (outcome.outcome !== "answered") {
       setToolCallStatus(session, toolUseId, "failed", "Question cancelled");
@@ -369,8 +376,8 @@ export async function requestAskUserQuestionAnswers(
       outcome.selected_option_ids.includes(option.option_id),
     );
     if (
-      selectedOptions.length === 0 ||
-      (!prompt.multiSelect && selectedOptions.length !== 1)
+      outcome.selected_option_ids.length !== selectedOptions.length ||
+      (!prompt.multiSelect && selectedOptions.length > 1)
     ) {
       setToolCallStatus(
         session,
@@ -385,8 +392,8 @@ export async function requestAskUserQuestionAnswers(
       };
     }
 
-    const answer = selectedOptions.map((option) => option.label).join(", ");
-    answers[prompt.question] = answer;
+    const answer = selectedOptions.length === 0 ? "Skipped" : selectedOptions.map((option) => option.label).join(", ");
+    if (selectedOptions.length > 0) answers[prompt.question] = answer;
     const annotation = deriveAnnotation(selectedOptions, outcome.annotation);
     if (annotation) {
       annotations[prompt.question] = annotation;
