@@ -12,7 +12,9 @@ Install scripts are available in GitHub Releases starting with `v0.14.0` and are
 
 The scripts download a complete release archive from GitHub, verify the release archive integrity, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run a quiet `claude-rs --version` check. Download diagnostics and strict runtime diagnostics are available with the opt-in verify flag.
 
-Interactive terminals display a fixed-width 10-cell progress bar while downloading the release archive and a spinner for other longer installation steps. The verify flag adds transferred size, total size, average speed, and ETA to the live download bar, followed by the final transfer size, elapsed time, average speed, and HTTP status. Redirected output and CI remain plain and log-friendly, and `NO_COLOR` disables colored status output.
+Interactive terminals display a fixed-width 20-cell progress bar while downloading the release archive and a spinner for other longer installation steps. Transferred size and total size are shown when they fit; the verify flag adds average speed and ETA, followed by the final transfer size, elapsed time, average speed, and HTTP status. Details that would wrap are omitted from the live line. Redirected output and CI remain plain and log-friendly, and `NO_COLOR` disables colored status output.
+
+On supported interactive terminals, confirmation prompts show `y Yes / N No` and accept either answer key immediately, without Enter. Other keys are ignored. Terminals without single-key input use a line prompt instead, where Enter selects No.
 
 **macOS/Linux:**
 
@@ -93,6 +95,8 @@ Update mode always treats an already-installed selected version as a successful 
 
 ### Custom Install Locations
 
+Choosing a custom install directory creates or updates the installation at that location; it does not move or automatically uninstall a copy in the default directory. A temporary test installation can therefore coexist with your normal installation. Decline its optional cleanup prompt to keep the normal copy.
+
 On macOS/Linux, pass installer flags after `sh -s --`:
 
 ```bash
@@ -162,7 +166,7 @@ Install archives are published for Linux x64/arm64 with glibc, Windows x64/arm64
 
 Linux musl distributions are not supported by the install archives yet. Use npm if your platform has a matching package, or [build from source](development.md).
 
-The scripts do not require user-installed Node.js or Bun. If npm is available and a global `claude-code-rust` install is present, the installer reports it and can remove it after explicit confirmation so the script install owns `claude-rs` on `PATH`. If the selected release does not contain install archives, the installer exits with:
+The scripts do not require user-installed Node.js or Bun. If npm is available and a global `claude-code-rust` install is present, the installer identifies its location and offers to uninstall it through npm after the new script installation has passed verification. If the selected release does not contain install archives, the installer exits with:
 
 ```text
 install script is currently not available for this release
@@ -171,6 +175,10 @@ install script is currently not available for this release
 ### Switching Install Methods
 
 `claude-rs` is resolved by normal `PATH` order. npm and script installs use different app layouts, and one method does not automatically own files created by the other. If both are installed, whichever `claude-rs` appears first on `PATH` runs.
+
+After verifying a new installation, the installer reports recognized other script installations on `PATH` and offers to uninstall each one with `y Yes / N No`. The question names the exact app directory; another copy is not necessarily older. Confirming removes that copy and its owned launcher, manual links, and managed PATH configuration where applicable. Unknown copies receive manual guidance, and installations whose directories overlap the current app or launcher are kept. Different PATH spellings, symlinks, and junctions pointing to the current installation do not produce a duplicate-install prompt.
+
+Declining keeps the other installation. `--yes` / `-Yes` and non-interactive runs skip optional cleanup and preserve other script copies. They also keep a detected npm installation unless you explicitly request npm removal with `--remove-npm`, `-RemoveNpm`, or `CLAUDE_RS_REMOVE_NPM=1`. Update mode preserves other installations and does not offer cleanup. Cleanup failures are reported without failing the completed new installation.
 
 To see every visible `claude-rs` on macOS/Linux:
 

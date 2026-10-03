@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -35,6 +35,40 @@ const successfulMessages = [
   "Installed files",
   "Verified claude-rs 0.0.0-mock",
 ];
+
+test("Unix y/n confirmations ignore trailing input without a timed drain", { skip: process.platform !== "linux" }, async () => {
+  for (const [input, expected, suffix] of [
+    ["y", "yes"],
+    ["n", "no"],
+    ["y\n", "yes"],
+    ["yes\n", "yes"],
+    ["no\n", "no"],
+    ["YES\n", "yes"],
+    ["NO\n", "no"],
+    ["y", "yes", "es\n"],
+    ["n", "no", "o\n"],
+  ]) {
+    const result = await runConfirmationScenario(input, { suffix, suffixDelay: 300, secondAnswerDelay: suffix ? 500 : 75 });
+    assertConfirmationResult(result, expected);
+    assert.equal(result.prematureSecondAnswer, false, `${JSON.stringify(input)} answered the next prompt\n${result.output}`);
+    assert.match(result.output, /y Yes \/ N No/);
+  }
+});
+
+test("Unix y/n confirmation ignores Enter and navigation; typed fallback reads a line", { skip: process.platform !== "linux" }, async () => {
+  for (const [input, expected, typed] of [
+    ["\ny", "yes"],
+    ["\u001b[Cy", "yes"],
+    ["\u001b[D\u001b[C\nn", "no"],
+    ["\t\nhjkly", "yes"],
+    ["\u001by", "yes"],
+    ["\n", "no", true],
+    ["yes\n", "yes", true],
+    ["no\n", "no", true],
+  ]) {
+    assertConfirmationResult(await runConfirmationScenario(input, { typed }), expected);
+  }
+});
 
 test("Unix installer keeps successful redirected output completed-step-only", { skip: skipReason }, () => {
   const result = runInstallerScenario("success");
@@ -145,6 +179,69 @@ test("Unix installer links manuals correctly with relative install directories",
   assert.equal(result.manualLinked, true);
   assert.equal(result.manualExistsAfterUninstall, false);
 });
+
+async function runConfirmationScenario(input, { suffix, suffixDelay = 75, secondAnswerDelay = 75, typed = false } = {}) {
+  // Run the real prompt functions in a controlling terminal, without installing anything.
+  const source = fs.readFileSync(installerPath, "utf8").replace(/\r\n/gu, "\n");
+  const functionsEnd = source.indexOf("\nneed_cmd() {");
+  assert.ok(functionsEnd > 0, "installer prompt functions were not found");
+  const harness = `${source.slice(0, functionsEnd)}
+non_interactive=0
+progress_enabled=${typed ? 0 : 1}
+trap restore_tty EXIT
+before=$(stty -g < /dev/tty)
+if confirm_default_no "FIRST_QUESTION"; then echo FIRST_ANSWER=yes; else echo FIRST_ANSWER=no; fi
+if confirm_default_no "SECOND_QUESTION"; then echo SECOND_ANSWER=yes; else echo SECOND_ANSWER=no; fi
+after=$(stty -g < /dev/tty)
+[ "$before" != "$after" ] || echo TTY_RESTORED
+`;
+  const encoded = Buffer.from(harness).toString("base64");
+  const env = { ...process.env, TERM: "xterm", LC_ALL: "C", NO_COLOR: "1" };
+  delete env.CI;
+  const child = spawn("script", ["-q", "-e", "-c", `printf '%s' '${encoded}' | base64 -d | timeout 5 sh`, "/dev/null"], { env });
+  let output = "";
+  let firstSent = false;
+  let secondSent = false;
+  let prematureSecondAnswer = false;
+  const timers = [];
+
+  return await new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.stdin.on("error", reject);
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (!firstSent && output.includes("FIRST_QUESTION")) {
+        firstSent = true;
+        child.stdin.write(input);
+        if (suffix) {
+          timers.push(setTimeout(() => child.stdin.write(suffix), suffixDelay));
+        }
+      }
+      if (!secondSent && output.includes("SECOND_QUESTION")) {
+        secondSent = true;
+        // Leave the second prompt unanswered long enough to detect a leaked Enter.
+        timers.push(setTimeout(() => {
+          prematureSecondAnswer = output.includes("SECOND_ANSWER=");
+          child.stdin.write(typed ? "yes\n" : "y");
+        }, secondAnswerDelay));
+      }
+    });
+    child.on("close", (status) => {
+      for (const timer of timers) clearTimeout(timer);
+      child.stdin.end();
+      resolve({ status, output, prematureSecondAnswer });
+    });
+  });
+}
+
+function assertConfirmationResult(result, expectedFirstAnswer) {
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, new RegExp(`FIRST_ANSWER=${expectedFirstAnswer}`));
+  assert.match(result.output, /SECOND_ANSWER=yes/);
+  assert.match(result.output, /TTY_RESTORED/);
+  assert.match(result.output, /\u001b\[\?25h|\[y\/N\]/u);
+}
 
 function runInstallerScenario(scenario, { claudeCliAvailable = true, verify = false, preserveManual = false, uninstall = false, relativeDirs = false } = {}) {
   const archiveName = installArchiveName(platformPackage, cargoPackage.version);

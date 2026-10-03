@@ -61,6 +61,8 @@ claude-rs --enable-logs --diagnostics-preset session
 
 The script install and the npm install use different layouts, and neither owns the other's files. If both are present, `PATH` order decides which one runs, so an update can appear to do nothing.
 
+Multiple script installations can also coexist after installing into a [custom directory](installation.md#custom-install-locations). The installer shows the current and other locations, then offers `y Yes / N No` cleanup for recognized copies after the new installation passes verification. Check the named directory before confirming; a temporary test installation may be offering to remove your normal copy. Unknown copies receive manual guidance instead.
+
 List every `claude-rs` that is visible on macOS/Linux:
 
 ```bash

@@ -4,6 +4,7 @@
 
 - Be precise, concise, and evidence-based. Avoid vague statements and unnecessary long explanations.
 - Inspect the relevant code, configuration, tests, and existing patterns before changing behavior.
+- For any file search or grep in the current Git-indexed directory, **always use the fff MCP tools**  (`find_files`, `grep`, or `multi_grep`) if the fff MCP is available to you.
 - For clear, scoped implementation requests, proceed without asking for another approval.
 - For open-ended feature or design requests with more than one viable approach, present the options and a recommendation before editing.
 - Ask for clarification only when ambiguity materially affects behavior, scope, data, security, or an irreversible/external action.

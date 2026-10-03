@@ -17,7 +17,7 @@ Claude Code Rust replaces the stock Claude Code terminal interface with a native
 
 ## Prerequisite
 
-- Install the Claude Code CLI and keep `claude` on `PATH` for `/login`, `/logout`, plugin management, removing persisted MCP servers, and the optional `/usage` CLI source or fallback. Core sessions run through the bundled Agent SDK. See the [dependency and feature overview](https://srothgan.github.io/claude-code-rust/about.html#claude-cli-dependencies) for details.
+Install the Claude Code CLI and keep `claude` on `PATH` for some functionality not yet supported by the Anthropic SDK. See the [dependency and feature overview](https://srothgan.github.io/claude-code-rust/about.html#claude-cli-dependencies) for details.
 
 ## Install
 
@@ -35,11 +35,16 @@ curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scri
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
-### npm (global)
+<details>
+<summary><b>Already have Node.js 24+? Use npm instead</b></summary>
 
 ```bash
 npm install -g claude-code-rust
 ```
+
+<sub>The package ships prebuilt platform binaries and its own Bun runtime for the Agent SDK bridge, so no Rust toolchain, Bun install, or `postinstall` script is needed. Node.js 24+ is still required to run the `claude-rs` launcher.</sub>
+
+</details>
 
 See the [installation guide](https://srothgan.github.io/claude-code-rust/installation.html) for release pinning, custom install locations, switching install methods, uninstall, and troubleshooting.
 
@@ -55,8 +60,7 @@ See [Usage](https://srothgan.github.io/claude-code-rust/usage.html) for startup 
 
 Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
 
-> [!NOTE]
-> **Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+> **Note — Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
 ## Why
 

@@ -30,13 +30,15 @@ $helperNames = @(
     "Start-InstallerProgress",
     "Complete-InstallerProgress",
     "Write-InstallerLine",
+    "Write-InstallerText",
+    "Write-InstallerDetail",
+    "Write-Info",
     "Write-Ok",
     "Write-WarnLine",
     "Write-WarnDetail",
     "Write-FailLine",
-    "Write-InstallerDiagnostic",
     "Format-DownloadBytes",
-    "Write-DownloadDiagnostic",
+    "Format-DownloadDiagnostic",
     "Format-DownloadEta",
     "Format-DownloadProgress",
     "Write-DownloadProgress",
@@ -76,7 +78,16 @@ function Assert-Equal {
 }
 
 $UseColor = $false
-$OkMark = [char]0x2713
+$glyphAssignment = $installerAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and
+        $node.Left.VariablePath.UserPath -eq "Glyph"
+}, $true)
+Invoke-Expression $glyphAssignment.Extent.Text
+$SpinnerFrames = @("|", "/", "-", "\")
+$DownloadBarWidth = 20
+$OkMark = $Glyph.Step
 $FailMark = [char]0x2717
 $NonInteractive = $true
 $script:InstallerProgressSupported = $true
@@ -110,36 +121,22 @@ try {
     Remove-Item Function:\Get-Command
 }
 
-Assert-Equal "[>.........]   0% Downloading release archive" `
-    (Format-DownloadProgress -DownloadedBytes 0 -TotalBytes 1000 -ElapsedSeconds 0 -IncludeDiagnostics $false) `
-    "Download progress did not render the empty fixed-width bar"
-Assert-Equal "[=====>....]  50% Downloading release archive" `
-    (Format-DownloadProgress -DownloadedBytes 500 -TotalBytes 1000 -ElapsedSeconds 2 -IncludeDiagnostics $false) `
-    "Download progress did not render the half-filled fixed-width bar"
-Assert-Equal "[==========] 100% Downloading release archive" `
-    (Format-DownloadProgress -DownloadedBytes 1000 -TotalBytes 1000 -ElapsedSeconds 4 -IncludeDiagnostics $false) `
-    "Download progress did not render the completed fixed-width bar"
-Assert-Equal "[...>......]  --% Downloading release archive" `
-    (Format-DownloadProgress -DownloadedBytes 0 -TotalBytes 0 -ElapsedSeconds 0 -IncludeDiagnostics $false -UnknownPosition 3) `
-    "Download progress did not render the fixed-width unknown-length bar"
-Assert-Equal "[=====>....]  50% Downloading release archive | 512.0 KiB / 1.0 MiB | 256.0 KiB/s | ETA 00:02" `
-    (Format-DownloadProgress -DownloadedBytes 524288 -TotalBytes 1048576 -ElapsedSeconds 2 -IncludeDiagnostics $true) `
-    "Download diagnostics did not include fixed-width transfer details"
-
-$downloadOutputWriter = New-Object System.IO.StringWriter
+$emptyProgress = Format-DownloadProgress -DownloadedBytes 0 -TotalBytes 1000 -ElapsedSeconds 0
+Assert-Equal 0 $emptyProgress.Fill "Empty download filled the bar"
+Assert-Equal "  0%" $emptyProgress.Percent "Empty download had the wrong percentage"
+$halfProgress = Format-DownloadProgress -DownloadedBytes 500 -TotalBytes 1000 -ElapsedSeconds 2
+Assert-Equal 10 $halfProgress.Fill "Half download did not fill half the bar"
+Assert-Equal " 50%" $halfProgress.Percent "Half download had the wrong percentage"
+$completeProgress = Format-DownloadProgress -DownloadedBytes 1000 -TotalBytes 1000 -ElapsedSeconds 4
+Assert-Equal 20 $completeProgress.Fill "Completed download did not fill the bar"
+Assert-Equal "100%" $completeProgress.Percent "Completed download had the wrong percentage"
+$unknownProgress = Format-DownloadProgress -DownloadedBytes 0 -TotalBytes 0 -ElapsedSeconds 0 -Tick 3
+Assert-Equal 3 $unknownProgress.Lead "Unknown-length download did not move with the tick"
+Assert-Equal "" $unknownProgress.Percent "Unknown-length download invented a percentage"
+$transferProgress = Format-DownloadProgress -DownloadedBytes 524288 -TotalBytes 1048576 -ElapsedSeconds 2
+Assert-Equal "512.0 KiB / 1.0 MiB" $transferProgress.Sizes "Download size details changed"
+Assert-Equal "256.0 KiB/s  ETA 00:02" $transferProgress.Rate "Download rate or ETA changed"
 $originalConsoleOut = [Console]::Out
-[Console]::SetOut($downloadOutputWriter)
-try {
-    Write-DownloadProgress -Text "[=====>....]  50% Downloading release archive"
-    Write-DownloadProgress -Text "[==========] 100% Downloading release archive" -Complete
-} finally {
-    [Console]::SetOut($originalConsoleOut)
-    $downloadOutput = $downloadOutputWriter.ToString()
-    $downloadOutputWriter.Dispose()
-}
-Assert-True $downloadOutput.Contains("`r[=====>....]  50% Downloading release archive") "Download progress did not update in place"
-Assert-True $downloadOutput.Contains("`r[==========] 100% Downloading release archive") "Download progress did not render completion"
-Assert-Equal 0 $script:DownloadProgressWidth "Download progress retained width after completion"
 
 $downloadSandbox = Join-Path ([IO.Path]::GetTempPath()) "claude-rs-download-test-$PID"
 $downloadSource = Join-Path $downloadSandbox "source.bin"
@@ -182,10 +179,10 @@ try {
     $spinnerOutput = $spinnerOutputWriter.ToString()
     $spinnerOutputWriter.Dispose()
 }
-Assert-True $spinnerOutput.Contains("`r| Downloading release archive") "Inline spinner did not render its vertical frame"
-Assert-True $spinnerOutput.Contains("`r/ Downloading release archive") "Inline spinner did not render its slash frame"
-Assert-True $spinnerOutput.Contains("`r- Downloading release archive") "Inline spinner did not render its dash frame"
-Assert-True $spinnerOutput.Contains("`r\ Downloading release archive") "Inline spinner did not render its backslash frame"
+Assert-True $spinnerOutput.Contains("`r|  Downloading release archive") "Inline spinner did not render its vertical frame"
+Assert-True $spinnerOutput.Contains("`r/  Downloading release archive") "Inline spinner did not render its slash frame"
+Assert-True $spinnerOutput.Contains("`r-  Downloading release archive") "Inline spinner did not render its dash frame"
+Assert-True $spinnerOutput.Contains("`r\  Downloading release archive") "Inline spinner did not render its backslash frame"
 Assert-True (-not $spinnerOutput.Contains("Installing claude-rs")) "Inline spinner rendered a host-style progress banner"
 Assert-True (-not $script:InstallerProgressActive) "Real inline spinner remained active after stop"
 Assert-True ($null -eq $script:InstallerProgressWorker) "Real inline spinner retained its worker after stop"
@@ -280,10 +277,10 @@ Assert-True $script:InstallerProgressActive "Progress start did not become activ
 Assert-True ($null -ne $script:InstallerProgressWorker) "Progress start did not retain its worker"
 
 Complete-InstallerProgress "Downloaded release archive"
-Assert-Equal 3 $script:RecordedEvents.Count "Progress completion emitted an unexpected event sequence"
+Assert-Equal 4 $script:RecordedEvents.Count "Progress completion emitted an unexpected event sequence"
 Assert-Equal "SpinnerStop" $script:RecordedEvents[1].Kind "Progress completion did not stop the spinner"
 Assert-Equal "Host" $script:RecordedEvents[2].Kind "Progress completion did not print the success line last"
-Assert-Equal "$OkMark Downloaded release archive" $script:RecordedEvents[2].Text "Progress completion changed the success line"
+Assert-Equal "$OkMark  Downloaded release archive" (($script:RecordedEvents | Where-Object Kind -eq "Host" | ForEach-Object Text) -join "") "Progress completion changed the success line"
 Assert-True (-not $script:InstallerProgressActive) "Progress completion left the spinner active"
 Assert-True ($null -eq $script:InstallerProgressWorker) "Progress completion retained the worker"
 
@@ -303,7 +300,24 @@ Assert-OutputBoundaryClearsProgress "warning" { Write-WarnLine "warning" }
 Assert-OutputBoundaryClearsProgress "warning detail" { Write-WarnDetail "warning detail" }
 Assert-OutputBoundaryClearsProgress "failure" { Write-FailLine "failure" }
 Assert-OutputBoundaryClearsProgress "prompt" { [void](Confirm-DefaultNo "prompt") }
-Assert-OutputBoundaryClearsProgress "diagnostic" { Write-InstallerDiagnostic "diagnostic" }
+Assert-OutputBoundaryClearsProgress "diagnostic" { Write-Info "diagnostic" }
+
+Reset-RecordedEvents
+try {
+    $null = [Console]::WindowWidth
+    $canRenderDownload = $true
+} catch {
+    $canRenderDownload = $false
+}
+if ($canRenderDownload) {
+    Write-DownloadProgress -Progress $halfProgress -Tick 0
+    Write-DownloadProgress -Progress $completeProgress -Tick 1
+    $downloadOutput = ($script:RecordedEvents | ForEach-Object Text) -join ""
+    Assert-True $downloadOutput.Contains("`r|  Downloading") "Download progress did not update in place"
+    Assert-True $downloadOutput.Contains("100%") "Download progress did not render completion"
+}
+Clear-DownloadProgress
+Assert-Equal 0 $script:DownloadProgressWidth "Download progress retained width after clearing"
 
 $originalPath = $env:PATH
 $originalConsoleError = [Console]::Error

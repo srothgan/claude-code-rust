@@ -50,5 +50,4 @@ node_modules/
 /analysis/
 /recordings/inspection/
 
-# Benchmark profiles contain subscription credentials and private transcripts.
-/benchmarks/state/
+.codegraph/

@@ -126,6 +126,7 @@ if ($Mode -eq "Yes") {
     $installerArgs["Yes"] = $true
 }
 & $InstallerPath @installerArgs
+exit $LASTEXITCODE
 '@
     [IO.File]::WriteAllText($wrapperPath, $wrapper)
 
@@ -153,7 +154,7 @@ if ($Mode -eq "Yes") {
         $installedPackage = Get-Content -LiteralPath (Join-Path $installDir "package.json") -Raw | ConvertFrom-Json
         return [pscustomobject]@{
             Status = $status
-            Output = ($outputLines | Out-String)
+            Output = (($outputLines | ForEach-Object { [string]$_ }) -join [Environment]::NewLine)
             Downloads = $downloads
             InstalledVersion = [string]$installedPackage.version
         }
