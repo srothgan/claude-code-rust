@@ -47,7 +47,7 @@ import {
   handleReloadPluginsCommand,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
-import type { Options, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionMessages, type Options, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   availableModesForSession,
   buildModeState,
@@ -8728,8 +8728,160 @@ test("looksLikeAuthRequired detects login hints", () => {
   assert.equal(looksLikeAuthRequired("normal tool output"), false);
 });
 
+test("revoked claude.ai login retains SDK guidance and uses the auth-required path", () => {
+  const detail = "Failed to authenticate: OAuth token revoked";
+  assert.equal(looksLikeAuthRequired(detail), true);
+  assert.equal(looksLikeAuthRequired("MCP OAuth token revoked"), false);
+  const events = captureBridgeEvents(() => {
+    handleResultMessage(makeSessionState(), {
+      type: "result", subtype: "error_during_execution", errors: [detail],
+    });
+  });
+  assert.ok(events.some(event => event.event === "auth_required" && event.method_description === detail));
+  assert.ok(events.some(event => event.event === "turn_error" && event.error_kind === "auth_required"));
+});
+
+function deferredNotification(toolUseId: string, status = "completed", output = "Fetched page") {
+  return {
+    type: "user", origin: { kind: "task-notification" }, uuid: "deferred-result",
+    message: { role: "user", content: `<task-notification>\n<tool-use-id>${toolUseId}</tool-use-id>\n<task-type>tool_call</task-type>\n<status>${status}</status>\n<summary>SDK continuation instructions</summary>\n<result>\n${output}\n</result>\n</task-notification>` },
+  };
+}
+
+test("detached web calls survive turn boundaries and settle on their SDK notification", () => {
+  for (const name of ["WebFetch", "WebSearch"]) {
+    for (const finalStatus of ["completed", "failed"]) {
+      const session = makeSessionState();
+      const emit = (message: unknown) => handleSdkMessage(session, message as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      const events = captureBridgeEvents(() => {
+        emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "web-1", name, input: {} }] } });
+        emit({ type: "user", tool_use_result: { detachedToolCall: true }, message: { content: [{ type: "tool_result", tool_use_id: "web-1", content: "SDK instructions: do not wait" }] } });
+        assert.equal(session.toolCalls.get("web-1")?.status, "detached");
+        assert.deepEqual(session.toolCalls.get("web-1")?.content, []);
+        emit({ type: "tool_progress", tool_use_id: "web-1", tool_name: name });
+        assert.equal(session.toolCalls.get("web-1")?.status, "detached");
+        emit({ type: "tool_use_summary", preceding_tool_use_ids: ["web-1"], summary: "Still running" });
+        assert.equal(session.toolCalls.get("web-1")?.status, "detached");
+        assert.equal(session.toolCalls.get("web-1")?.raw_output, "");
+        emit({ type: "result", subtype: "success" });
+        emit({ type: "result", subtype: "error_during_execution", errors: ["Unrelated later turn failure"] });
+        assert.equal(session.toolCalls.get("web-1")?.status, "detached");
+        const notification = deferredNotification("web-1", finalStatus, "Actual web result");
+        emit({ ...notification, origin: { kind: "peer" } });
+        assert.equal(session.toolCalls.get("web-1")?.status, "detached");
+        emit(notification);
+        assert.equal(session.toolCalls.get("web-1")?.status, finalStatus);
+        assert.equal(session.toolCalls.get("web-1")?.raw_output, "Actual web result");
+        emit(notification);
+      });
+      const actualResults = events.filter(event => {
+        const update = event.update as { tool_call_update?: { fields?: { raw_output?: string } } };
+        return update?.tool_call_update?.fields?.raw_output === "Actual web result";
+      });
+      assert.equal(actualResults.length, 1);
+    }
+  }
+});
+
+test("closing a session settles detached calls without waiting for another turn", () => {
+  const session = makeSessionState();
+  const call = createToolCall("web-close", "WebFetch", {});
+  call.status = "detached";
+  session.toolCalls.set(call.tool_call_id, call);
+  captureBridgeEvents(() => beginSessionClose(session));
+  assert.equal(call.status, "killed");
+});
+
+test("MCP structured-content omission keeps readable output and resource links", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, { type: "assistant", message: { content: [{ type: "tool_use", id: "mcp-omit", name: "mcp__docs__export", input: {} }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user", tool_use_result: { structuredContentOmitted: true, resourceLinks: [{ uri: "mcp://report", name: "report" }] },
+      message: { content: [{ type: "tool_result", tool_use_id: "mcp-omit", content: "Readable export" }] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  const update = events.at(-1)?.update as { tool_call_update: { fields: { status: string; output_metadata: unknown; content: Array<{ type: string }> } } };
+  assert.equal(update.tool_call_update.fields.status, "completed");
+  assert.deepEqual(update.tool_call_update.fields.output_metadata, { structured_content_omitted: true });
+  assert.deepEqual(update.tool_call_update.fields.content.map(block => block.type), ["content", "resource_link"]);
+});
+
+test("SDK history omits live-only result flags and meta task notifications", async () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const entry = (type: string, message: unknown, extra = {}) => ({ type, message, ...extra });
+  const records = [
+    entry("assistant", { role: "assistant", content: [{ type: "tool_use", id: "history-web", name: "WebFetch", input: {} }] }),
+    entry("user", { role: "user", content: [{ type: "tool_result", tool_use_id: "history-web", content: "Do not wait" }] }, { tool_use_result: { detachedToolCall: true } }),
+    entry("user", deferredNotification("history-web").message, { isMeta: true, origin: { kind: "task-notification" } }),
+    entry("assistant", { role: "assistant", content: [{ type: "tool_use", id: "history-mcp", name: "mcp__docs__read", input: {} }] }),
+    entry("user", { role: "user", content: [{ type: "tool_result", tool_use_id: "history-mcp", content: "Readable" }] }, { tool_use_result: { structuredContentOmitted: true } }),
+    entry("assistant", { role: "assistant", content: [{ type: "text", text: "Done" }] }),
+  ].map((record, index) => ({
+    ...record,
+    uuid: `22222222-2222-4222-8222-${String(index + 1).padStart(12, "0")}`,
+    parentUuid: index === 0 ? null : `22222222-2222-4222-8222-${String(index).padStart(12, "0")}`,
+    sessionId,
+    isSidechain: false,
+    timestamp: `2026-10-03T10:00:0${index}.000Z`,
+  }));
+  const messages = await getSessionMessages(sessionId, {
+    dir: process.cwd(),
+    sessionStore: {
+      load: async () => records,
+      append: async () => assert.fail("history reads must not write"),
+    },
+  });
+  assert.equal(messages.length, records.length - 1);
+  assert.ok(messages.every(message => !Object.hasOwn(message, "tool_use_result")));
+  const updates = mapSessionMessagesToUpdates(messages);
+  const results = updates.filter(update => update.type === "tool_call_update");
+  assert.deepEqual(results.map(update => update.tool_call_update.fields.status), ["completed", "completed"]);
+  assert.equal(results[1].tool_call_update.fields.raw_output, "Readable");
+  assert.equal(results[1].tool_call_update.fields.output_metadata, undefined);
+  assert.ok(!updates.some(update => update.type === "user_message_chunk"));
+});
+
+test("unknown informational tags retain the existing notice policy", () => {
+  const events = captureBridgeEvents(() => handleSdkMessage(makeSessionState(), {
+    type: "system", subtype: "informational", level: "notice", tag: "future-feature", content: "SDK notice",
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage));
+  assert.deepEqual(events.map(event => event.update), [{ type: "system_notice_update", severity: "info", message: "SDK notice" }]);
+});
+
+test("startup command metadata survives init names without an initial commands_changed", async () => {
+  const session = makeSessionState();
+  session.query = { supportedCommands: async () => [] } as unknown as SessionState["query"];
+  const initial = [{ name: "startup", description: "Registered at startup", aliases: ["start"], builtin: true }];
+  const events = await captureBridgeEventsAsync(async () => {
+    updateAvailableCommands(session, "session_result_commands", initial);
+    handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, slash_commands: ["startup"] } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(session.availableCommands?.commands, initial);
+    handleSdkMessage(session, { type: "system", subtype: "commands_changed", commands: [{ name: "later", description: "Added later" }] } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    assert.equal(session.availableCommands?.commands[0]?.name, "later");
+    handleSdkMessage(session, { type: "system", subtype: "commands_changed", commands: [] } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    assert.deepEqual(session.availableCommands?.commands, []);
+  });
+  const snapshots = events.map(event => event.update as { type?: string; generation?: number }).filter(update => update?.type === "available_commands_update");
+  assert.deepEqual(snapshots.map(update => update.generation), [1, 2, 3]);
+});
+
+test("cut-short message_stop does not duplicate text or complete the model turn", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    const emit = (message: unknown) => handleSdkMessage(session, message as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    emit({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Partial reply" } } });
+    emit({ type: "stream_event", event: { type: "message_stop" } });
+  });
+  assert.equal(events.filter(event => event.event === "turn_complete").length, 0);
+  assert.equal(events.filter(event => (event.update as { type?: string })?.type === "agent_message_chunk").length, 1);
+  const finalEvents = captureBridgeEvents(() => handleResultMessage(session, { type: "result", subtype: "success" }));
+  assert.equal(finalEvents.filter(event => event.event === "turn_complete").length, 1);
+});
+
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.286");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.288");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 

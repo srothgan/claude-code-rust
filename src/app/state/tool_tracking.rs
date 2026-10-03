@@ -63,6 +63,14 @@ impl App {
     /// Force-finish any lingering in-progress tool calls.
     /// Returns the number of tool calls that were transitioned.
     pub fn finalize_in_progress_tool_calls(&mut self, new_status: model::ToolCallStatus) -> usize {
+        self.finalize_tool_calls(new_status, false)
+    }
+
+    fn finalize_tool_calls(
+        &mut self,
+        new_status: model::ToolCallStatus,
+        include_detached: bool,
+    ) -> usize {
         let mut changed = 0usize;
         let mut cleared_interaction = false;
         let mut changed_message_indices = Vec::new();
@@ -72,10 +80,9 @@ impl App {
             for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
                 if let MessageBlock::ToolCall(tc) = block {
                     let tc = tc.as_mut();
-                    if matches!(
-                        tc.status,
-                        model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending
-                    ) {
+                    if !tc.status.is_terminal()
+                        && (include_detached || tc.status != model::ToolCallStatus::Detached)
+                    {
                         tc.status = new_status;
                         tc.invalidate_render_cache();
                         changed_slots.push((msg_idx, block_idx));
@@ -165,7 +172,19 @@ impl App {
 
     /// Clear runtime-only turn tracking while preserving the message history itself.
     pub fn finalize_turn_runtime_artifacts(&mut self, new_status: model::ToolCallStatus) {
-        let _ = self.finalize_in_progress_tool_calls(new_status);
+        self.finalize_runtime_artifacts(new_status, false);
+    }
+
+    pub(crate) fn finalize_session_runtime_artifacts(&mut self, new_status: model::ToolCallStatus) {
+        self.finalize_runtime_artifacts(new_status, true);
+    }
+
+    fn finalize_runtime_artifacts(
+        &mut self,
+        new_status: model::ToolCallStatus,
+        include_detached: bool,
+    ) {
+        let _ = self.finalize_tool_calls(new_status, include_detached);
         let _ = self.clear_inline_tool_interactions();
         self.clear_tool_scope_tracking();
     }

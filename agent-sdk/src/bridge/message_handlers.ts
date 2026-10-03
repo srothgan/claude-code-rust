@@ -27,6 +27,7 @@ import {
   isToolSearchToolResultType,
   unwrapToolUseResult,
   parseToolNonExecutionMetadata,
+  parseDetachedToolNotification,
 } from "./tooling.js";
 import {
   emitToolCall,
@@ -2393,6 +2394,21 @@ export function handleSdkMessage(
   }
 
   if (type === "user") {
+    const notification = parseDetachedToolNotification(msg);
+    if (notification && session.toolCalls.has(notification.toolUseId)) {
+      const toolCall = session.toolCalls.get(notification.toolUseId);
+      if (toolCall?.status === "detached") {
+        emitToolResultUpdate(
+          session,
+          notification.toolUseId,
+          notification.isError,
+          notification.output,
+          undefined,
+          sourceMessageUuid(msg),
+        );
+      }
+      return;
+    }
     const externalMessageUpdate = externalMessageUpdateFromSdkUser(msg);
     if (externalMessageUpdate) {
       emitSessionUpdate(session.sessionId, externalMessageUpdate);

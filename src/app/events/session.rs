@@ -177,7 +177,7 @@ pub(super) fn handle_auth_required_event(
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
-    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
     app.turn.reset_for_new_session();
     tracing::warn!(
         target: crate::logging::targets::APP_AUTH,
@@ -200,7 +200,7 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.config.pending_session_title_change = None;
     crate::app::usage::reset_for_session_change(app);
     app.clear_pending_session_resume();
-    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
     app.pending_submit = None;
     app.status = AppStatus::Error;
     app.turn.reset_for_new_session();
@@ -675,7 +675,7 @@ pub(super) fn handle_service_status_event(
 }
 
 pub(super) fn handle_fatal_error_event(app: &mut App, error: AppError) {
-    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
     app.turn.reset_for_new_session();
     app.exit_error = Some(error);
     app.request_shutdown();

@@ -468,6 +468,8 @@ pub struct BashOutputMetadata {
 pub struct ToolOutputMetadata {
     #[serde(default)]
     pub staged: bool,
+    #[serde(default)]
+    pub structured_content_omitted: bool,
     pub bash: Option<BashOutputMetadata>,
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,

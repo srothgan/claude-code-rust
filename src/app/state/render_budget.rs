@@ -3,7 +3,6 @@
 
 use super::messages::MessageBlock;
 use super::types::{AppStatus, CacheBudgetEnforceStats};
-use crate::agent::model;
 use std::cmp::Reverse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,10 +63,7 @@ impl super::App {
         let tool_protected = matches!(
             block,
             MessageBlock::ToolCall(tc)
-                if matches!(
-                    tc.status,
-                    model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-                )
+                if !tc.status.is_terminal()
         );
         tail_protected || tool_protected
     }
@@ -114,10 +110,7 @@ impl super::App {
                     || matches!(
                         block,
                         MessageBlock::ToolCall(tc)
-                            if matches!(
-                                tc.status,
-                                model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-                            )
+                            if !tc.status.is_terminal()
                     );
                 let slot = RenderCacheSlotState {
                     cached_bytes,

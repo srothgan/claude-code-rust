@@ -77,6 +77,18 @@ fn status_icon_in_progress() {
 }
 
 #[test]
+fn mcp_omission_badge_preserves_readable_output() {
+    let mut tool = test_tool_call("export", "mcp__docs__export", model::ToolCallStatus::Completed);
+    tool.output_metadata = Some(model::ToolOutputMetadata::new().structured_content_omitted(true));
+    tool.content = vec![model::ToolCallContent::from("Readable export")];
+    let mut lines = Vec::new();
+    render_tool_call_cached(&mut tool, ToolCallRenderContext::default(), 120, 0, &mut lines);
+    let text = rendered_line_texts(&lines).join("\n");
+    assert!(text.contains("structured output omitted"));
+    assert!(text.contains("Readable export"));
+}
+
+#[test]
 fn status_icon_completed() {
     let (icon, color) = status_icon(model::ToolCallStatus::Completed, 0);
     assert_eq!(icon, theme::ICON_COMPLETED);

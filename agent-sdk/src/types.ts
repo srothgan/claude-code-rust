@@ -227,6 +227,7 @@ export interface ToolNonExecutionMetadata {
 
 export interface ToolOutputMetadata {
   staged?: boolean;
+  structured_content_omitted?: boolean;
   bash?: BashOutputMetadata;
   agent?: AgentOutputMetadata;
   web_fetch?: WebFetchOutputMetadata;
@@ -277,6 +278,7 @@ export interface ToolCall {
   tool_call_id: string;
   title: string;
   kind: string;
+  /** "detached" is an SDK call still running across model turns. */
   status: string;
   source_message_uuid?: string;
   content: ToolCallContent[];

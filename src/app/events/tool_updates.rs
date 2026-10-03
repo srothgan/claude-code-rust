@@ -75,7 +75,9 @@ fn apply_tool_scope_status_update(
     };
     match tool_scope {
         Some(ToolCallScope::SubagentRoot) => match status {
-            model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {
+            model::ToolCallStatus::Pending
+            | model::ToolCallStatus::InProgress
+            | model::ToolCallStatus::Detached => {
                 app.insert_active_task(id_str.to_owned());
             }
             model::ToolCallStatus::Completed
@@ -548,7 +550,9 @@ fn tool_update_log_spec(
                 outcome: "failure",
             }
         }
-        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => ToolUpdateLogSpec {
+        model::ToolCallStatus::Pending
+        | model::ToolCallStatus::InProgress
+        | model::ToolCallStatus::Detached => ToolUpdateLogSpec {
             level: ToolUpdateLogLevel::Debug,
             event_name: "tool_call_updated",
             message: "tool call updated",
@@ -646,7 +650,9 @@ fn log_command_update_applied(
             has_terminal = tc.terminal_id.is_some(),
             assistant_auto_backgrounded = tc.assistant_auto_backgrounded(),
         ),
-        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => {}
+        model::ToolCallStatus::Pending
+        | model::ToolCallStatus::InProgress
+        | model::ToolCallStatus::Detached => {}
     }
 }
 
@@ -841,6 +847,46 @@ mod tests {
         assert!(matches!(spec.level, ToolUpdateLogLevel::Info));
         assert_eq!(spec.event_name, "tool_call_completed");
         assert_eq!(spec.outcome, "success");
+    }
+
+    #[test]
+    fn deferred_web_output_updates_the_original_card_after_turn_completion() {
+        let mut app = App::test_default();
+        let mut tool = make_task_tool_call("web-1", model::ToolCallStatus::InProgress);
+        tool.sdk_tool_name = "WebFetch".to_owned();
+        app.transcript.messages.push(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tool))],
+            None,
+        ));
+        app.index_tool_call("web-1".to_owned(), 0, 0);
+        handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                "web-1",
+                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Detached),
+            ),
+        );
+        app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Completed);
+        let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected web call")
+        };
+        assert_eq!(tool.status, model::ToolCallStatus::Detached);
+        handle_tool_call_update_session(
+            &mut app,
+            &model::ToolCallUpdate::new(
+                "web-1",
+                model::ToolCallUpdateFields::new()
+                    .status(model::ToolCallStatus::Completed)
+                    .content(vec![model::ToolCallContent::from("Actual web output")]),
+            ),
+        );
+        let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected web call")
+        };
+        assert_eq!(tool.status, model::ToolCallStatus::Completed);
+        assert_eq!(tool.content, vec![model::ToolCallContent::from("Actual web output")]);
+        assert_eq!(app.transcript.messages.len(), 1);
     }
 
     #[test]

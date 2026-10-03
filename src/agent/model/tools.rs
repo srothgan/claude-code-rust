@@ -27,9 +27,18 @@ pub enum ToolKind {
 pub enum ToolCallStatus {
     Pending,
     InProgress,
+    /// The SDK call continues independently of the current model turn.
+    Detached,
     Completed,
     Failed,
     Killed,
+}
+
+impl ToolCallStatus {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Killed)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +367,8 @@ impl BashOutputMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
     pub staged: bool,
+    #[serde(default)]
+    pub structured_content_omitted: bool,
     pub bash: Option<BashOutputMetadata>,
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
@@ -403,6 +414,12 @@ impl ToolOutputMetadata {
     #[must_use]
     pub fn staged(mut self, staged: bool) -> Self {
         self.staged = staged;
+        self
+    }
+
+    #[must_use]
+    pub fn structured_content_omitted(mut self, omitted: bool) -> Self {
+        self.structured_content_omitted = omitted;
         self
     }
 

@@ -82,7 +82,9 @@ pub(super) fn update_subagent_scope_state(
     match scope {
         ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent => {}
         ToolCallScope::SubagentRoot => match status {
-            model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending => {
+            model::ToolCallStatus::InProgress
+            | model::ToolCallStatus::Pending
+            | model::ToolCallStatus::Detached => {
                 app.insert_active_task(id.to_owned());
             }
             model::ToolCallStatus::Completed
@@ -336,7 +338,9 @@ pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {
     }
 
     match tc.status {
-        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress => tracing::info!(
+        model::ToolCallStatus::Pending
+        | model::ToolCallStatus::InProgress
+        | model::ToolCallStatus::Detached => tracing::info!(
             target: crate::logging::targets::APP_COMMAND,
             event_name = "command_started",
             message = "command execution started",

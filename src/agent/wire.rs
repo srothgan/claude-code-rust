@@ -664,6 +664,30 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn sdk_result_alignment_metadata_survives_the_wire() {
+        let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "session_update", "session_id": "s1",
+            "update": { "type": "tool_call_update", "tool_call_update": {
+                "tool_call_id": "tool-1", "fields": {
+                    "status": "detached", "output_metadata": { "structured_content_omitted": true }
+                }
+            }}
+        }))
+        .expect("SDK result update");
+        let BridgeEvent::SessionUpdate {
+            update: types::SessionUpdate::ToolCallUpdate { tool_call_update },
+            ..
+        } = event.event
+        else {
+            panic!("expected tool update")
+        };
+        assert_eq!(tool_call_update.fields.status.as_deref(), Some("detached"));
+        assert!(
+            tool_call_update.fields.output_metadata.expect("metadata").structured_content_omitted
+        );
+    }
+
+    #[test]
     fn connection_failure_preserves_open_startup_reasons_and_older_messages() {
         for reason in [
             None,

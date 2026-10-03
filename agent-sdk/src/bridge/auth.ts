@@ -4,7 +4,7 @@ export function looksLikeAuthRequired(input: string): boolean {
     normalized.includes("/login") ||
     normalized.includes("auth required") ||
     normalized.includes("authentication failed") ||
-    normalized.includes("please log in")
+    normalized.includes("please log in") ||
+    normalized.includes("failed to authenticate: oauth token revoked")
   );
 }
-

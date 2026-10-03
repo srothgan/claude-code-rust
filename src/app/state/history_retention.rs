@@ -59,10 +59,7 @@ impl super::App {
             MessageBlock::ToolCall(tc) => {
                 tc.pending_permission.is_some()
                     || tc.pending_question.is_some()
-                    || matches!(
-                        tc.status,
-                        model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-                    )
+                    || !tc.status.is_terminal()
             }
             MessageBlock::UserDialog(dialog) => !dialog.answered,
             _ => false,
@@ -396,10 +393,7 @@ impl super::App {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
                 };
-                if !matches!(
-                    tc.status,
-                    model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress
-                ) {
+                if tc.status.is_terminal() {
                     continue;
                 }
                 match self.tool_call_scopes.get(&tc.id) {

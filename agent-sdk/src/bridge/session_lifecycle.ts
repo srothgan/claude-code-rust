@@ -379,6 +379,11 @@ export function updateSessionId(
 
 export function beginSessionClose(session: SessionState): void {
   session.closing = true;
+  for (const [toolUseId, toolCall] of session.toolCalls) {
+    if (toolCall.status === "detached") {
+      setToolCallStatus(session, toolUseId, "killed");
+    }
+  }
   session.ultracode = undefined;
   closeSideQuestions(session.sessionId, session.query);
   for (const monitor of session.mcpAuthMonitors.values()) {

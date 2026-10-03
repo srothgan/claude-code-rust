@@ -642,7 +642,7 @@ export function emitToolProgressUpdate(
   }
 
   const fields: ToolCallUpdateFields = {};
-  if (existing.status !== "in_progress") {
+  if (existing.status !== "in_progress" && existing.status !== "detached") {
     fields.status = "in_progress";
   }
   if (Object.keys(taskMetadata).length > 0) {
@@ -662,7 +662,7 @@ export function emitToolSummaryUpdate(
   if (!base) {
     return;
   }
-  if (!toolUsesSummaryOutput(base)) {
+  if (!toolUsesSummaryOutput(base) || base.status === "detached") {
     return;
   }
   const fields: ToolCallUpdateFields = {

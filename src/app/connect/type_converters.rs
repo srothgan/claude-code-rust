@@ -920,6 +920,7 @@ fn convert_tool_output_metadata(
 ) -> model::ToolOutputMetadata {
     model::ToolOutputMetadata::new()
         .staged(output_metadata.staged)
+        .structured_content_omitted(output_metadata.structured_content_omitted)
         .bash(output_metadata.bash.map(|bash| {
             model::BashOutputMetadata::new()
                 .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
@@ -1067,6 +1068,7 @@ pub(super) fn convert_tool_kind(kind: &str) -> model::ToolKind {
 pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
     match status {
         "in_progress" => model::ToolCallStatus::InProgress,
+        "detached" => model::ToolCallStatus::Detached,
         "completed" => model::ToolCallStatus::Completed,
         "failed" => model::ToolCallStatus::Failed,
         "killed" => model::ToolCallStatus::Killed,
@@ -1643,6 +1645,7 @@ mod tests {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
                 staged: false,
+                structured_content_omitted: true,
                 bash: Some(types::BashOutputMetadata {
                     assistant_auto_backgrounded: Some(true),
                     timed_out_after_ms: Some(10_000),
@@ -1676,6 +1679,7 @@ mod tests {
             fields.output_metadata,
             Some(
                 model::ToolOutputMetadata::new()
+                    .structured_content_omitted(true)
                     .bash(Some(
                         model::BashOutputMetadata::new()
                             .assistant_auto_backgrounded(Some(true))

@@ -91,6 +91,15 @@ function shouldAcceptAvailableCommandsSnapshot(
       reason: "bootstrap source cannot replace dynamic command snapshot",
     };
   }
+  if (
+    source === "init_slash_commands" &&
+    current.source === "session_result_commands"
+  ) {
+    return {
+      accept: false,
+      reason: "init names cannot replace full initialization command metadata",
+    };
+  }
   if (source === "supportedCommands" && current.commands.length > 0) {
     return {
       accept: false,

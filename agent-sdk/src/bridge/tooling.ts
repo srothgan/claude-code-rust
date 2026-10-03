@@ -711,6 +711,13 @@ function extractToolOutputMetadata(
   const candidates = collectResultCandidates(rawResult, rawContent);
   const metadata: import("../types.js").ToolOutputMetadata = {};
 
+  if (
+    toolName.startsWith("mcp__") &&
+    candidates.some((candidate) => candidate.structuredContentOmitted === true)
+  ) {
+    metadata.structured_content_omitted = true;
+  }
+
   if (toolName === "Edit" || toolName === "Write") {
     for (const candidate of candidates) {
       if (candidate.staged === true) {
@@ -800,6 +807,7 @@ function extractToolOutputMetadata(
   }
 
   return metadata.staged ||
+    metadata.structured_content_omitted ||
     metadata.bash ||
     metadata.agent ||
     metadata.web_fetch ||
@@ -2796,6 +2804,37 @@ function webFetchResultText(
   return undefined;
 }
 
+/** SDK-owned deferred tool notification, never ordinary user or peer text. */
+export function parseDetachedToolNotification(message: Record<string, unknown>): {
+  toolUseId: string;
+  isError: boolean;
+  output: string;
+} | undefined {
+  if (asRecordOrNull(message.origin)?.kind !== "task-notification") {
+    return undefined;
+  }
+  const content = asRecordOrNull(message.message)?.content;
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter((block) => asRecordOrNull(block)?.type === "text")
+            .map((block) => asRecordOrNull(block)?.text)
+            .filter((value): value is string => typeof value === "string")
+            .join("\n")
+        : "";
+  const match = /^<task-notification>\r?\n<tool-use-id>([^<\r\n]+)<\/tool-use-id>\r?\n<task-type>tool_call<\/task-type>\r?\n<status>(completed|failed)<\/status>\r?\n<summary>[^\r\n]*<\/summary>(?:\r?\n<result>\r?\n([\s\S]*)\r?\n<\/result>)?\r?\n<\/task-notification>$/.exec(text);
+  if (!match) {
+    return undefined;
+  }
+  return {
+    toolUseId: match[1],
+    isError: match[2] === "failed",
+    output: match[3] ?? "",
+  };
+}
+
 export function buildToolResultFields(
   isError: boolean,
   rawContent: unknown,
@@ -2804,6 +2843,15 @@ export function buildToolResultFields(
   _context: TaskTitleContext = {},
 ): ToolCallUpdateFields {
   const toolName = resolveToolName(base);
+  if (
+    !isError &&
+    (toolName === "WebFetch" || toolName === "WebSearch") &&
+    resultRecordCandidates(rawResult, rawContent).some(
+      (candidate) => candidate.detachedToolCall === true,
+    )
+  ) {
+    return { status: "detached", raw_output: "", content: [] };
+  }
   const fields: ToolCallUpdateFields = {
     status: isError ? "failed" : "completed",
   };

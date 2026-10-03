@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-use crate::agent::model;
 use crate::app::{
     App, AppStatus, BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
     MessageRole, NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo,
@@ -840,12 +839,8 @@ fn last_visible_assistant_block_idx(message: &ChatMessage) -> Option<usize> {
 }
 
 fn tool_call_commit_ready(tool: &ToolCallInfo) -> bool {
-    matches!(
-        tool.status,
-        model::ToolCallStatus::Completed
-            | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed
-    ) && tool.pending_permission.is_none()
+    tool.status.is_terminal()
+        && tool.pending_permission.is_none()
         && tool.pending_question.is_none()
         && tool.terminal_id.is_none()
 }
@@ -1836,6 +1831,41 @@ mod tests {
         assert_eq!(
             serialized.first_mutable_boundary_kind(),
             Some(LiveRowBoundaryKind::AssistantLabel)
+        );
+    }
+
+    #[test]
+    fn detached_web_rows_remain_mutable_between_turns_until_the_result_arrives() {
+        let mut app = App::test_default();
+        let mut block = tool_call_block_with_status_interaction(
+            "web-1",
+            model::ToolCallStatus::Detached,
+            false,
+            false,
+            false,
+        );
+        let MessageBlock::ToolCall(tool) = &mut block else {
+            unreachable!("tool helper returns a tool call")
+        };
+        tool.title = "Deferred web fetch".to_owned();
+        tool.sdk_tool_name = "WebFetch".to_owned();
+        app.transcript.messages.push(assistant_blocks_message(vec![block]));
+        app.status = AppStatus::Ready;
+
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
+        let mutable = line_texts(&serialized.rows()[serialized.stable_row_count()..]);
+        assert!(mutable.iter().any(|line| line.contains("Deferred web fetch")));
+
+        let MessageBlock::ToolCall(tool) = &mut app.transcript.messages[0].blocks[0] else {
+            unreachable!("original web call")
+        };
+        tool.status = model::ToolCallStatus::Completed;
+        tool.content = vec![model::ToolCallContent::from("Actual web output")];
+        tool.invalidate_render_cache();
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+        assert!(
+            line_texts(serialized.rows()).iter().any(|line| line.contains("Actual web output"))
         );
     }
 

@@ -814,26 +814,29 @@ fn enforce_history_retention_drops_oldest_and_adds_marker() {
 }
 
 #[test]
-fn enforce_history_retention_preserves_in_progress_tool_message() {
-    let mut app = make_test_app();
-    app.transcript.messages = vec![
-        ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
-        user_text_message("droppable"),
-        assistant_tool_message("tool-keep", model::ToolCallStatus::InProgress),
-    ];
-    app.history_retention.max_bytes = 1;
+fn enforce_history_retention_preserves_in_progress_and_detached_tool_messages() {
+    for status in [model::ToolCallStatus::InProgress, model::ToolCallStatus::Detached] {
+        let mut app = make_test_app();
+        app.transcript.messages = vec![
+            ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-"),
+            user_text_message("droppable"),
+            assistant_tool_message("tool-keep", status),
+        ];
+        app.history_retention.max_bytes = 1;
 
-    let stats = app.enforce_history_retention();
-    assert_eq!(stats.dropped_messages, 1);
-    assert!(app.transcript.messages.iter().any(|msg| {
-        msg.blocks.iter().any(|block| {
-            matches!(
-                block,
-                MessageBlock::ToolCall(tc) if tc.id == "tool-keep"
-                    && matches!(tc.status, model::ToolCallStatus::InProgress)
-            )
-        })
-    }));
+        let stats = app.enforce_history_retention();
+        assert_eq!(stats.dropped_messages, 1);
+        assert!(app.transcript.messages.iter().any(|msg| {
+            msg.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    MessageBlock::ToolCall(tc) if tc.id == "tool-keep"
+                        && tc.status == status
+                )
+            })
+        }));
+        assert!(app.transcript.tool_call_index.contains_key("tool-keep"));
+    }
 }
 
 #[test]
@@ -1119,6 +1122,31 @@ fn clear_tool_scope_tracking_also_clears_active_task_ids() {
     assert!(!app.turn.active_task_ids.is_empty());
     app.clear_tool_scope_tracking();
     assert!(app.turn.active_task_ids.is_empty(), "active_task_ids must be cleared at turn end");
+}
+
+#[test]
+fn detached_calls_survive_turn_exits_but_finish_when_the_session_ends() {
+    let mut app = make_test_app();
+    let mut tool =
+        crate::app::test_support::tool_call_info("web-1", model::ToolCallStatus::Detached);
+    tool.sdk_tool_name = "WebFetch".to_owned();
+    app.transcript.messages.push(ChatMessage::new(
+        MessageRole::Assistant,
+        vec![MessageBlock::ToolCall(Box::new(tool))],
+        None,
+    ));
+    for status in [model::ToolCallStatus::Completed, model::ToolCallStatus::Failed] {
+        app.finalize_turn_runtime_artifacts(status);
+        let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected tool call")
+        };
+        assert_eq!(tool.status, model::ToolCallStatus::Detached);
+    }
+    app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
+    let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {
+        panic!("expected tool call")
+    };
+    assert_eq!(tool.status, model::ToolCallStatus::Failed);
 }
 
 #[test]

@@ -65,7 +65,7 @@ pub struct ToolCallRenderContext<'a> {
 pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
     match status {
         model::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
-        model::ToolCallStatus::InProgress => {
+        model::ToolCallStatus::InProgress | model::ToolCallStatus::Detached => {
             let s = SPINNER_STRS[spinner_frame % SPINNER_STRS.len()];
             (s, theme::RUST_ORANGE)
         }
@@ -169,6 +169,10 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
 
 fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     let mut badges = Vec::new();
+
+    if tc.output_metadata.as_ref().is_some_and(|metadata| metadata.structured_content_omitted) {
+        badges.push(Span::styled("  [structured output omitted]", Style::default().fg(theme::DIM)));
+    }
 
     if let Some(timeout_ms) = tc.timed_out_after_ms() {
         badges.push(Span::styled(
