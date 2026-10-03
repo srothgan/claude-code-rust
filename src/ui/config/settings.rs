@@ -46,7 +46,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let headers = if area.width < 70 {
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(panels[1])
     } else {
-        Layout::horizontal([Constraint::Min(25), Constraint::Length(19)]).split(panels[1])
+        Layout::horizontal([Constraint::Min(25), Constraint::Length(8)]).split(panels[1])
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -72,12 +72,10 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if selected >= app.config.settings_scroll_offset.saturating_add(visible) {
         app.config.settings_scroll_offset = selected.saturating_add(1).saturating_sub(visible);
     }
-    let offset = app.config.settings_scroll_offset;
     frame.render_widget(
         Paragraph::new(format!(
-            "{}–{} of {}",
-            offset + 1,
-            (offset + visible).min(snapshot.catalog.len()),
+            "{}/{}",
+            if snapshot.catalog.is_empty() { 0 } else { selected + 1 },
             snapshot.catalog.len()
         ))
         .alignment(ratatui::layout::Alignment::Right)
@@ -105,7 +103,11 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App, row_height: u16, visib
                     theme::DIM
                 });
             let value_style = Style::default()
-                .fg(if value.is_some() { theme::BTW_ACCENT } else { theme::DIM })
+                .fg(if value.is_some() && setting.writable_at(app.config.selected_scope) {
+                    theme::BTW_ACCENT
+                } else {
+                    theme::DIM
+                })
                 .add_modifier(if value.is_some() { Modifier::BOLD } else { Modifier::empty() });
             Row::new(vec![
                 Cell::from(if selected { "›" } else { " " })

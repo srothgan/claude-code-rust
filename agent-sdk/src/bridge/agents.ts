@@ -1,10 +1,9 @@
 import type { AvailableAgent } from "../types.js";
-import { emitSessionUpdate } from "./events.js";
+import { emitAvailableAgentsSnapshot } from "./events.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { SessionObservations } from "./session_observations.js";
 
-function availableAgentsSignature(agents: AvailableAgent[]): string {
-  return JSON.stringify(agents);
-}
+const observations = new SessionObservations();
 
 function normalizeAvailableAgentName(value: unknown): string {
   if (typeof value !== "string") {
@@ -72,24 +71,25 @@ export function emitAvailableAgentsIfChanged(
   session: SessionState,
   agents: AvailableAgent[],
 ): void {
-  const signature = availableAgentsSignature(agents);
-  if (session.lastAvailableAgentsSignature === signature) {
+  observations.begin(session);
+  if (JSON.stringify(session.availableAgents) === JSON.stringify(agents)) {
     return;
   }
-  session.lastAvailableAgentsSignature = signature;
-  emitSessionUpdate(session.sessionId, {
-    type: "available_agents_update",
-    agents,
-  });
+  session.availableAgents = agents;
+  if (session.connected && !session.deferConnect) {
+    emitAvailableAgentsSnapshot(session);
+  }
 }
 
 export function refreshAvailableAgents(session: SessionState): void {
   if (typeof session.query.supportedAgents !== "function") {
     return;
   }
+  const current = observations.begin(session);
   void session.query
     .supportedAgents()
     .then((agents) => {
+      if (!current()) return;
       emitAvailableAgentsIfChanged(session, mapAvailableAgents(agents));
     })
     .catch(() => {

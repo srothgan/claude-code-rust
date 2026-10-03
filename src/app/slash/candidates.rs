@@ -7,7 +7,6 @@ use super::{
     APP_SLASH_COMMANDS, AppSlashCommand, CompletionRequest, SlashCandidate, SlashCommandToken,
     SlashContext, SlashDetection, SlashState, SubmissionClass, command_spec, normalize_slash_name,
 };
-use crate::agent::model::EffortLevel;
 use crate::app::App;
 use crate::app::dialog::DialogState;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -275,25 +274,27 @@ fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
 }
 
 fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
-    let mut levels = match app.session_runtime.current_model.as_ref() {
+    let levels = match app.session_runtime.current_model.as_ref() {
         Some(model) if !model.supports_effort => Vec::new(),
         Some(model) if !model.supported_effort_levels.is_empty() => {
             model.supported_effort_levels.clone()
         }
-        _ => EffortLevel::ALL.to_vec(),
+        _ => Vec::new(),
     };
-    if !levels.contains(&EffortLevel::Max) {
-        levels.push(EffortLevel::Max);
-    }
-
-    levels
+    let mut candidates: Vec<_> = levels
         .into_iter()
         .map(|level| SlashCandidate {
             insert_value: level.as_stored().to_owned(),
             primary: level.as_stored().to_owned(),
             secondary: Some(format!("{} - {}", level.label(), level.description())),
         })
-        .collect()
+        .collect();
+    candidates.push(SlashCandidate {
+        insert_value: "reset".to_owned(),
+        primary: "reset".to_owned(),
+        secondary: Some("Use the model's session default".to_owned()),
+    });
+    candidates
 }
 
 fn agent_argument_candidates(app: &App) -> Vec<SlashCandidate> {
@@ -369,7 +370,7 @@ pub(super) fn argument_candidates(
     }
 
     match command_name {
-        "/docs" | "/ultracode" => static_argument_candidates(command_name),
+        "/docs" | "/ultracode" | "/thinking" | "/fast" => static_argument_candidates(command_name),
         "/agent" => agent_argument_candidates(app),
         "/effort" => effort_argument_candidates(app),
         "/resume" => app

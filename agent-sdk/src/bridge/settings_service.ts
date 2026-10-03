@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
-import type { Json, SettingDescriptor, SettingsMutation, SettingsScope, SettingsSnapshot, SettingsResult, AvailableModel } from "../types.js";
+import type { Json, SettingDescriptor, SettingsMutation, SettingsScope, SettingsSnapshot, SettingsResult, AvailableModel, AvailableAgent } from "../types.js";
 import { settingsCatalog } from "./settings_catalog.js";
 
 const SCOPES: SettingsScope[] = ["user", "project", "local"];
@@ -13,6 +13,7 @@ const NOT_LOADED = "not loaded";
 const runFile = promisify(execFile);
 const object = (value: unknown): value is Record<string, Json> => typeof value === "object" && value !== null && !Array.isArray(value);
 function leaf(document: unknown, keys: string[]): Json | undefined {
+  if (keys.length === 0) return undefined;
   let value: unknown = document;
   for (const key of keys) value = object(value) ? value[key] : undefined;
   return value as Json | undefined;
@@ -43,13 +44,11 @@ async function readDocument(file: string): Promise<Document> {
   }
 }
 
-export async function inspectSettings(cwd: string, models: AvailableModel[] = []): Promise<SettingsSnapshot> {
+export async function inspectSettings(cwd: string, models: AvailableModel[] = [], agents: AvailableAgent[] = []): Promise<SettingsSnapshot> {
   const resolved = await resolveSettings({ cwd, settingSources: SCOPES });
   const paths = sourcePaths(cwd);
   for (const source of resolved.sources) if (SCOPES.includes(source.source as SettingsScope) && source.path) paths[source.source as SettingsScope] = source.path;
-  const catalog = settingsCatalog();
-  const model = catalog.find(setting => setting.id === "model");
-  if (model) model.options = models.map(model => model.id);
+  const catalog = settingsCatalog(models, agents, resolved.effective.model);
   const sources = await Promise.all(SCOPES.map(async scope => {
     const file = paths[scope];
     const read = await readDocument(file);
@@ -81,7 +80,7 @@ export async function inspectSettings(cwd: string, models: AvailableModel[] = []
     const source = resolved.provenance[setting.key_path[0] as keyof typeof resolved.provenance];
     if (source) provenance[setting.id] = { source: source.source, ...(source.path ? { path: source.path } : {}), ...(source.policyOrigin ? { policy_origin: source.policyOrigin } : {}) };
   }
-  return { cwd, context: revision({ cwd, paths }), catalog, sources, values, resolution_sources, provenance, diagnostics: ["SDK raw cascade: active session choices and trust filtering are separate. policyHelper is not executed by resolveSettings."] };
+  return { cwd, context: revision({ cwd, paths, effortPath: catalog.find(setting => setting.id === "defaultEffort")?.key_path }), catalog, sources, values, resolution_sources, provenance, diagnostics: ["SDK raw cascade: active session choices and trust filtering are separate. policyHelper is not executed by resolveSettings."] };
 }
 
 function validate(setting: SettingDescriptor, value: Json): void {
@@ -175,11 +174,11 @@ async function excludeLocalSettings(file: string, temp: string): Promise<void> {
   await git(["check-ignore", "--quiet", "--", relativeTemp]);
 }
 
-export async function mutateSetting(cwd: string, mutation: SettingsMutation, models: AvailableModel[] = []): Promise<SettingsResult> {
+export async function mutateSetting(cwd: string, mutation: SettingsMutation, models: AvailableModel[] = [], agents: AvailableAgent[] = []): Promise<SettingsResult> {
   let persistence: SettingsResult["persistence"] = "failure";
   let snapshot: SettingsSnapshot | undefined;
   try {
-    snapshot = await inspectSettings(cwd, models);
+    snapshot = await inspectSettings(cwd, models, agents);
     if (snapshot.context !== mutation.context) throw new Error("Settings context changed; refresh before editing.");
     const setting = snapshot.catalog.find(entry => entry.id === mutation.id);
     if (!setting?.writable_scopes.includes(mutation.scope)) throw new Error("This setting cannot be edited at this scope.");
@@ -190,7 +189,7 @@ export async function mutateSetting(cwd: string, mutation: SettingsMutation, mod
     const source = snapshot.sources.find(entry => entry.scope === mutation.scope);
     if (!source) throw new Error("Settings source is unavailable.");
     persistence = await writeTarget(source.path, setting, mutation);
-    const refreshed = await inspectSettings(cwd, models);
+    const refreshed = await inspectSettings(cwd, models, agents);
     const notLoaded = mutation.operation === "set" && refreshed.sources.find(source => source.scope === mutation.scope)?.status === NOT_LOADED;
     const error = persistence === "conflict" ? "This value changed since it was displayed. Review the refreshed saved value before retrying."
       : notLoaded ? "Your change was saved, but Claude did not load this settings file. Check its values before the change can take effect." : undefined;

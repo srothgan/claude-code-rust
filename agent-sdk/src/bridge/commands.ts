@@ -19,6 +19,21 @@ import type {
 import { parseMcpServersRecord } from "./mcp_metadata.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { resolveCurrentModel } from "./session_lifecycle.js";
+import { SessionObservations } from "./session_observations.js";
+
+const modeObservations = new SessionObservations();
+
+export function beginSessionModeRead(session: SessionState): () => boolean {
+  return modeObservations.begin(session);
+}
+
+export function observeSessionMode(session: SessionState, value: unknown): boolean {
+  const mode = typeof value === "string" ? toPermissionMode(value) : null;
+  if (!mode) return false;
+  modeObservations.begin(session);
+  session.mode = mode;
+  return true;
+}
 
 const MODE_NAMES: Record<PermissionMode, string> = {
   default: "Default",
@@ -465,7 +480,13 @@ export function parseCommandEnvelope(line: string): {
         return {
           command: "set_effort",
           session_id: expectString(raw, "session_id", "set_effort"),
-          effort: expectEffortLevel(raw, "effort", "set_effort"),
+          effort: raw.effort === null ? null : expectEffortLevel(raw, "effort", "set_effort"),
+        };
+      case "set_thinking":
+        return {
+          command: "set_thinking",
+          session_id: expectString(raw, "session_id", "set_thinking"),
+          enabled: raw.enabled === null ? null : expectBoolean(raw, "enabled", "set_thinking"),
         };
       case "set_agent":
         return {
@@ -779,9 +800,6 @@ function parseQuestionAnnotation(value: unknown): {
 }
 
 export function toPermissionMode(mode: string): PermissionMode | null {
-  if (mode === "manual") {
-    return "default";
-  }
   if (
     mode === "default" ||
     mode === "auto" ||
@@ -797,11 +815,11 @@ export function toPermissionMode(mode: string): PermissionMode | null {
 
 export function buildModeState(
   session: SessionState,
-  mode: PermissionMode,
+  mode: PermissionMode | null,
 ): ModeState {
   return {
-    current_mode_id: mode,
-    current_mode_name: MODE_NAMES[mode],
+    current_mode_id: mode ?? "unknown",
+    current_mode_name: mode ? MODE_NAMES[mode] : "Unknown",
     available_modes: availableModesForSession(session),
   };
 }

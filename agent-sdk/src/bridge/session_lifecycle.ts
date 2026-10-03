@@ -39,7 +39,8 @@ import type {
   UserDialogOption,
 } from "../types.js";
 import { bridgeLogger, LOG_TARGETS, logSdkStderrLine } from "./logger.js";
-import { AsyncQueue } from "./shared.js";
+import { AsyncQueue, asRecordOrNull } from "./shared.js";
+import { beginSessionModeRead, observeSessionMode } from "./commands.js";
 import {
   permissionOptionsFromSuggestions,
   permissionResultFromOutcome,
@@ -167,7 +168,6 @@ export type SessionState = {
   ultracode?: import("../types.js").UltracodeSnapshot;
   sessionId: string;
   cwd: string;
-  model: string;
   requestedModelId?: string;
   resolvedRuntimeModelId?: string;
   currentModel?: CurrentModel;
@@ -210,7 +210,7 @@ export type SessionState = {
   mcpAuthMonitors: Map<string, McpAuthMonitorHandle>;
   hiddenToolUseIds: Set<string>;
   authHintSent: boolean;
-  lastAvailableAgentsSignature?: string;
+  availableAgents?: import("../types.js").AvailableAgent[];
   availableCommands?: AvailableCommandsSnapshot;
   lastAssistantError?: ApiRetryError;
   sessionsToCloseAfterConnect?: SessionState[];
@@ -223,7 +223,6 @@ export const sessions = new Map<string, SessionState>();
 const pendingSessionCloseTasks = new Set<Promise<void>>();
 
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
-const DEFAULT_PERMISSION_MODE: PermissionMode = "default";
 
 function isSdkElicitationContentValue(
   value: Json,
@@ -501,8 +500,7 @@ export async function createSession(params: {
   const provisionalSessionId =
     params.sessionId ??
     (params.resume && !params.forkSession ? params.resume : randomUUID());
-  const initialModel = params.launchSettings.model ?? "Connecting...";
-  const initialMode = params.launchSettings.permission_mode ?? DEFAULT_PERMISSION_MODE;
+  const initialMode = params.launchSettings.permission_mode ?? null;
   const supportsBypassPermissionsMode =
     startupPermissionModeOptions(params.launchSettings)
       .allowDangerouslySkipPermissions === true;
@@ -686,7 +684,6 @@ export async function createSession(params: {
   session = {
     sessionId: provisionalSessionId,
     cwd: params.cwd,
-    model: initialModel,
     ...(params.launchSettings.model ? { requestedModelId: params.launchSettings.model } : {}),
     availableModels: [],
     mode: initialMode,
@@ -779,11 +776,16 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
   // In stream-input mode the SDK may defer init until input arrives.
   // Trigger initialization explicitly so the Rust UI can receive `connected`
   // before the first user prompt.
+  const modeRead = beginSessionModeRead(session);
   session.initializationTask = session.query
     .initializationResult()
     .then(async (result) => {
-      if (session.startupFailure) {
+      if (session.closing || session.startupFailure) {
         return;
+      }
+      // The pinned runtime reports this field, although the SDK declarations omit it.
+      if (modeRead()) {
+        observeSessionMode(session, asRecordOrNull(result)?.current_permission_mode);
       }
       bridgeLogger.info({
         target: LOG_TARGETS.APP_SESSION,
@@ -802,25 +804,30 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
           history_update_count: session.resumeUpdates?.length ?? 0,
         },
       });
-      const { refreshUltracode } = await import("./ultracode.js");
-      await refreshUltracode(session, session.connected);
-      if (session.startupFailure) {
-        return;
-      }
-      session.availableModels = mapAvailableModels(result.models);
-      const currentModelChanged = refreshCurrentModel(session);
-      const { buildModeState, refreshSupportedModesForSession } = await import(
-        "./commands.js"
-      );
-      if (session.startupFailure) {
-        return;
-      }
-      refreshSupportedModesForSession(session);
       const fastModeChanged = setFastModeSnapshotIfChanged(
         session,
         result.fast_mode_state,
         result.fast_mode_disabled_reason,
       );
+      const { refreshUltracode } = await import("./ultracode.js");
+      await refreshUltracode(session, session.connected);
+      if (session.closing || session.startupFailure) {
+        return;
+      }
+      session.availableModels = mapAvailableModels(result.models);
+      const { refreshSessionModel } = await import("./session_model.js");
+      try { await refreshSessionModel(session, session.connected); }
+      catch (error) {
+        bridgeLogger.warn({ target: LOG_TARGETS.APP_SESSION, eventName: "model_verification_failed", message: "Current model could not be verified", outcome: "failure", sessionId: session.sessionId, fields: { error_message: String(error) } });
+      }
+      const { buildModeState, refreshSupportedModesForSession } = await import(
+        "./commands.js"
+      );
+      if (session.closing || session.startupFailure) {
+        return;
+      }
+      refreshSupportedModesForSession(session);
+      emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
       if (
         !session.connected &&
         session.deferConnect &&
@@ -830,15 +837,10 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
       } else if (!session.connected) {
         emitConnectEvent(session);
       } else {
-        if (currentModelChanged) {
-          emitCurrentModelUpdate(session);
-        }
-        if (session.mode) {
-          emitSessionUpdate(session.sessionId, {
-            type: "mode_state_update",
-            mode: buildModeState(session, session.mode),
-          });
-        }
+        emitSessionUpdate(session.sessionId, {
+          type: "mode_state_update",
+          mode: buildModeState(session, session.mode),
+        });
         if (fastModeChanged) {
           emitFastModeUpdate(session);
         }
@@ -855,14 +857,13 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
         "session_result_commands",
         mapSdkSlashCommands(result.commands),
       );
-      emitAvailableAgentsIfChanged(session, mapAvailableAgents(result.agents));
       refreshAvailableAgents(session);
     })
     .catch(async (error) => {
       // On process exit the SDK queues the result before rejecting initialization.
       // Let the consumer drain queued frames before reporting a generic failure.
       await new Promise<void>((resolve) => setImmediate(resolve));
-      if (session.startupFailure) {
+      if (session.closing || session.startupFailure) {
         return;
       }
       if (session.connected) {
@@ -1741,15 +1742,6 @@ export function handleElicitationResponse(
         }
       : {}),
   });
-}
-export function shouldInvalidateResolvedRuntimeModel(
-  previousRequestedId: string | undefined,
-  previousSessionModel: string,
-  nextRequestedId: string,
-): boolean {
-  const previousRequested =
-    previousRequestedId?.trim() || previousSessionModel.trim();
-  return previousRequested !== nextRequestedId.trim();
 }
 export function emitCurrentModelUpdate(session: SessionState): boolean {
   if (!session.connected || !session.currentModel) {

@@ -98,7 +98,11 @@ pub enum BridgeCommand {
     },
     SetEffort {
         session_id: String,
-        effort: String,
+        effort: Option<String>,
+    },
+    SetThinking {
+        session_id: String,
+        enabled: Option<bool>,
     },
     SetAgent {
         session_id: String,
@@ -221,6 +225,7 @@ impl BridgeCommand {
             Self::SetModel { .. } => "set_model",
             Self::SetMode { .. } => "set_mode",
             Self::SetEffort { .. } => "set_effort",
+            Self::SetThinking { .. } => "set_thinking",
             Self::SetAgent { .. } => "set_agent",
             Self::SetUltracode { .. } => "set_ultracode",
             Self::RefreshUltracode { .. } => "refresh_ultracode",
@@ -262,6 +267,7 @@ impl BridgeCommand {
             | Self::SetModel { session_id, .. }
             | Self::SetMode { session_id, .. }
             | Self::SetEffort { session_id, .. }
+            | Self::SetThinking { session_id, .. }
             | Self::SetAgent { session_id, .. }
             | Self::SetUltracode { session_id, .. }
             | Self::RefreshUltracode { session_id }
@@ -307,6 +313,7 @@ impl BridgeCommand {
             | Self::SetModel { .. }
             | Self::SetMode { .. }
             | Self::SetEffort { .. }
+            | Self::SetThinking { .. }
             | Self::SetAgent { .. }
             | Self::SetUltracode { .. }
             | Self::RefreshUltracode { .. }
@@ -1005,7 +1012,7 @@ mod tests {
             request_id: None,
             command: BridgeCommand::SetEffort {
                 session_id: "s1".to_owned(),
-                effort: "max".to_owned(),
+                effort: Some("max".to_owned()),
             },
         };
 

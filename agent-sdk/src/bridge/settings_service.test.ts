@@ -6,7 +6,7 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { promisify } from "node:util";
 import { inspectSettings, mutateSetting } from "./settings_service.js";
-import type { Json, SettingsMutation, SettingsScope, SettingsSnapshot } from "../types.js";
+import type { AvailableModel, Json, SettingsMutation, SettingsScope, SettingsSnapshot } from "../types.js";
 
 let root: string;
 let cwd: string;
@@ -159,7 +159,7 @@ test("alphabetical settings expose SDK model choices for validated save and rese
   await write("local", {});
   const models = ["opus", "sonnet"].map(id => ({ id, display_name: id, supports_effort: true, supported_effort_levels: [] }));
   let shown = await inspectSettings(cwd, models);
-  assert.deepEqual(shown.catalog.slice(0, 4).map(setting => setting.label), ["Auto compact", "Auto mode during planning", "Continue at usage limit", "Default model"]);
+  assert.deepEqual(shown.catalog.slice(0, 4).map(setting => setting.label), ["Auto compact", "Auto mode during planning", "Continue at usage limit", "Default agent"]);
   assert.deepEqual(shown.catalog.find(setting => setting.id === "model")?.options, ["opus", "sonnet"]);
   for (const id of ["opus", "sonnet"]) {
     const saved = await mutateSetting(cwd, mutation(shown, "model", "user", id), models);
@@ -269,4 +269,83 @@ test("files containing only ignored entries can acquire and reset supported sett
   const source = reset.snapshot?.sources.find(source => source.scope === "user");
   assert.ok(source);
   assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { hooks: "invalid" });
+});
+
+const effortModels: AvailableModel[] = [
+  { id: "default", display_name: "Default", resolved_model: "claude-opus-5-5", supports_effort: true, supported_effort_levels: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "opus", display_name: "Opus", resolved_model: "claude-opus-5-5", supports_effort: true, supported_effort_levels: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "sonnet", display_name: "Sonnet", resolved_model: "claude-sonnet-4-6-20260217[1m]", supports_effort: true, supported_effort_levels: ["low", "medium", "high"] },
+  { id: "claude-opus-4-6", display_name: "Opus 4.6", supports_effort: true, supported_effort_levels: ["low", "medium", "high", "max"] },
+  { id: "haiku", display_name: "Haiku", resolved_model: "claude-haiku-4-5-20251001", supports_effort: false, supported_effort_levels: [] },
+];
+
+test("default effort follows the saved model through scoped save, switch, reopen and reset", async () => {
+  await write("user", { model: "opus", modelSettings: { "claude-opus-5-5": { effortLevel: "medium", autoCompactWindow: 100000 }, "claude-sonnet-4-6": { effortLevel: "low" } }, future: { keep: true } });
+  await write("project", {});
+  await write("local", {});
+  let shown = await inspectSettings(cwd, effortModels);
+  const effort = (snapshot: SettingsSnapshot) => snapshot.catalog.find(setting => setting.id === "defaultEffort");
+  assert.deepEqual(effort(shown)?.options, ["low", "medium", "high", "xhigh"]);
+  assert.deepEqual(effort(shown)?.key_path, ["modelSettings", "claude-opus-5-5", "effortLevel"]);
+  assert.equal(shown.values.find(value => value.id === "defaultEffort")?.value, "medium");
+  const saved = await mutateSetting(cwd, mutation(shown, "defaultEffort", "project", "high"), effortModels);
+  assert.equal(saved.persistence, "saved", saved.error ?? "save");
+  assert.equal(saved.snapshot?.values.find(value => value.id === "defaultEffort")?.value, "high");
+  assert.ok(saved.snapshot);
+  const opusDraft = mutation(saved.snapshot, "defaultEffort", "project", "low");
+  const switched = await mutateSetting(cwd, mutation(saved.snapshot, "model", "user", "sonnet"), effortModels);
+  assert.equal(switched.persistence, "saved", switched.error ?? "save");
+  assert.ok(switched.snapshot);
+  shown = await inspectSettings(cwd, effortModels);
+  assert.deepEqual(effort(shown)?.key_path, ["modelSettings", "claude-sonnet-4-6", "effortLevel"]);
+  assert.deepEqual(effort(shown)?.options, ["low", "medium", "high"]);
+  assert.equal(shown.values.find(value => value.id === "defaultEffort")?.value, "low");
+  const stale = await mutateSetting(cwd, opusDraft, effortModels);
+  assert.equal(stale.persistence, "failure", "a model change must not retarget an open effort draft");
+  const rejected = await mutateSetting(cwd, mutation(shown, "defaultEffort", "user", "max"), effortModels);
+  assert.equal(rejected.persistence, "failure", "max stays session-only");
+  const changed = await mutateSetting(cwd, mutation(shown, "defaultEffort", "user", "high"), effortModels);
+  assert.equal(changed.persistence, "saved", changed.error ?? "save");
+  const userPath = shown.sources.find(source => source.scope === "user")?.path;
+  assert.ok(userPath);
+  assert.deepEqual(JSON.parse(await fs.readFile(userPath, "utf8")), { model: "sonnet", modelSettings: { "claude-opus-5-5": { effortLevel: "medium", autoCompactWindow: 100000 }, "claude-sonnet-4-6": { effortLevel: "high" } }, future: { keep: true } });
+  const reset = await mutateSetting(cwd, mutation(await inspectSettings(cwd, effortModels), "defaultEffort", "user"), effortModels);
+  assert.equal(reset.persistence, "saved", reset.error ?? "save");
+  assert.deepEqual(JSON.parse(await fs.readFile(userPath, "utf8")), { model: "sonnet", modelSettings: { "claude-opus-5-5": { effortLevel: "medium", autoCompactWindow: 100000 } }, future: { keep: true } });
+  const back = await mutateSetting(cwd, mutation(await inspectSettings(cwd, effortModels), "model", "user", "opus"), effortModels);
+  assert.equal(back.snapshot?.values.find(value => value.id === "defaultEffort")?.value, "high", "the other model's scoped preference survives");
+  assert.ok(back.snapshot);
+  const inherited = await mutateSetting(cwd, mutation(back.snapshot, "defaultEffort", "project"), effortModels);
+  assert.equal(inherited.snapshot?.values.find(value => value.id === "defaultEffort")?.value, "medium");
+});
+
+test("default-model effort uses SDK resolution and capabilities, including unsupported models", async () => {
+  await write("user", {}); await write("project", {}); await write("local", {});
+  const inferred = await inspectSettings(cwd, effortModels);
+  assert.deepEqual(inferred.catalog.find(setting => setting.id === "defaultEffort")?.key_path, ["modelSettings", "claude-opus-5-5", "effortLevel"]);
+  await write("user", { model: "claude-opus-4-6" });
+  const explicit = await inspectSettings(cwd, effortModels);
+  assert.deepEqual(explicit.catalog.find(setting => setting.id === "defaultEffort")?.key_path, ["modelSettings", "claude-opus-4-6", "effortLevel"]);
+  await write("user", {});
+  const saved = await mutateSetting(cwd, mutation(inferred, "defaultEffort", "user", "xhigh"), effortModels);
+  assert.equal(saved.persistence, "saved", saved.error ?? "save");
+  const unsupported = await mutateSetting(cwd, mutation(await inspectSettings(cwd, effortModels), "model", "user", "haiku"), effortModels);
+  assert.ok(unsupported.snapshot);
+  assert.deepEqual(unsupported.snapshot.catalog.find(setting => setting.id === "defaultEffort")?.writable_scopes, []);
+  assert.match(unsupported.snapshot.catalog.find(setting => setting.id === "defaultEffort")?.unavailable ?? "", /does not offer/);
+});
+
+test("default agent is chosen from SDK inventory and scoped reset restores the saved agent", async () => {
+  const agents = [{ name: "reviewer", description: "Review code" }, { name: "builder", description: "Build code" }];
+  await write("user", { agent: "reviewer", future: { keep: true } }); await write("project", {}); await write("local", {});
+  const shown = await inspectSettings(cwd, effortModels, agents);
+  assert.deepEqual(shown.catalog.find(setting => setting.id === "agent")?.options, ["reviewer", "builder"]);
+  const invalid = await mutateSetting(cwd, mutation(shown, "agent", "project", "missing-agent"), effortModels, agents);
+  assert.equal(invalid.persistence, "failure");
+  const saved = await mutateSetting(cwd, mutation(shown, "agent", "project", "builder"), effortModels, agents);
+  assert.equal(saved.persistence, "saved", saved.error ?? "save");
+  assert.equal(saved.snapshot?.values.find(value => value.id === "agent")?.value, "builder");
+  const reset = await mutateSetting(cwd, mutation(await inspectSettings(cwd, effortModels, agents), "agent", "project"), effortModels, agents);
+  assert.equal(reset.persistence, "saved", reset.error ?? "save");
+  assert.equal(reset.snapshot?.values.find(value => value.id === "agent")?.value, "reviewer");
 });

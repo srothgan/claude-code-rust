@@ -395,6 +395,10 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
+      let effective = {};
+      let fastMode = false;
+      let fastReadFails = process.env.FAST_READ_FAILURE_FIXTURE === "1";
+      const sessionFixture = process.env.SESSION_SETTINGS_FIXTURE === "1";
       let done = false;
       let waiter;
       const queue = [];
@@ -421,6 +425,9 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
           if (JSON.stringify(message.message?.content).includes("fixture conversation reset")) {
             push({ type: "conversation_reset", new_conversation_id: "fixture-conversation-2" });
           }
+          if (text === "fixture observe permissions") {
+            push({ type: "system", subtype: "init", session_id: options.resume || options.sessionId, model, permissionMode: effective.permissions?.defaultMode ?? "default" });
+          }
           if (text === "fixture per-turn effort") {
             push({ type: "system", subtype: "init", session_id: options.resume || options.sessionId, model, effort: "xhigh" });
           }
@@ -435,23 +442,36 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
         },
         close() { done = true; waiter?.({ done: true }); },
         async initializationResult() {
+          if (sessionFixture) {
+            effective = (await sdkResolveSettings({ cwd: options.cwd, settingSources: options.settingSources })).effective;
+            model = options.model ?? effective.model ?? "opus";
+            const canonical = model === "opus" ? "claude-opus-5-5" : "claude-sonnet-5-5";
+            state.effort = options.effort ?? effective.modelSettings?.[canonical]?.effortLevel ?? "high";
+            fastMode = effective.fastMode ?? false;
+          }
           if (process.env.SETTINGS_JOURNAL === "1") {
             const resolved = await sdkResolveSettings({ cwd: options.cwd, settingSources: options.settingSources, settings: options.settings });
             record({ type: "settings", effective: resolved.effective, checkpointing: options.enableFileCheckpointing });
           }
-          return { models: [], commands: commandFixture ? bootstrapCommands : [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+          return { current_permission_mode: process.env.PERMISSION_MODE_FIXTURE ?? effective.permissions?.defaultMode ?? "default", models: ["default", "opus", "sonnet", "haiku", "fixture-unavailable", "fixture-read-failure"].map(value => ({ value, resolvedModel: value === "default" || value === "opus" ? "claude-opus-5-5" : value === "sonnet" ? "claude-sonnet-5-5" : value, displayName: value, supportsEffort: value !== "haiku", supportsFastMode: value !== "haiku", supportsAutoMode: value !== "haiku", supportedEffortLevels: value === "haiku" ? [] : ["low", "medium", "high", "xhigh", "max"] })), commands: commandFixture ? bootstrapCommands : [], agents: sessionFixture ? [{ name: "reviewer", description: "Review code", model: "sonnet" }] : [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
         async supportedCommands() { return bootstrapCommands; },
-        async setModel(value) { model = value; },
+        async setModel(value) { model = process.env.MODEL_STEP_DOWN_FIXTURE === "1" && value === "opus" ? "sonnet" : value; },
+        async setPermissionMode(value) { if (sessionFixture && value === "auto") throw new Error("Cannot set permission mode to auto: account restriction"); record({ type: "mode", value }); },
+        async reinitialize() { if (fastMode && fastReadFails) { fastReadFails = false; throw new Error("fixture state read failed"); } return { fast_mode_state: fastMode ? "on" : "off" }; },
         async getSettings() {
           if (model === "fixture-read-failure") throw new Error("fixture read failed");
           const available = model !== "haiku" && model !== "fixture-unavailable" && process.env.ULTRACODE_FIXTURE_WORKFLOWS !== "off";
-          return { applied: { ultracodeAvailable: available, ultracodeRequested: state.requested, ultracode: state.requested && available, effort: model === "haiku" ? null : state.effort } };
+          return { effective, applied: { model: sessionFixture ? model === "opus" ? "claude-opus-5-5" : model === "sonnet" ? "claude-sonnet-5-5" : model : model, ultracodeAvailable: available, ultracodeRequested: state.requested, ultracode: state.requested && available, effort: model === "haiku" ? null : state.effort } };
         },
         async applyFlagSettings(settings) {
+          record({ type: "flags", settings });
+          if (settings.alwaysThinkingEnabled !== undefined) { if (settings.alwaysThinkingEnabled === null) effective = (await sdkResolveSettings({ cwd: options.cwd, settingSources: options.settingSources })).effective; else effective = { ...effective, alwaysThinkingEnabled: settings.alwaysThinkingEnabled }; }
+          if (settings.fastMode !== undefined) fastMode = settings.fastMode;
+          if (settings.agent !== undefined) { if (settings.agent === "reviewer") model = "sonnet"; }
           if (settings.ultracode === true && process.env.ULTRACODE_FIXTURE_WORKFLOWS === "off") throw new Error("apply_flag_settings: ultracode is not available for this session (dynamic workflows are off)");
           if (settings.ultracode === true && model === "haiku") throw new Error("apply_flag_settings: ultracode is not available for this session (haiku does not support it)");
           if (settings.effortLevel !== undefined) {
-            state.effort = settings.effortLevel === "max" && process.env.EFFORT_FIXTURE_CAP === "high" ? "high" : settings.effortLevel;
+            state.effort = settings.effortLevel === null ? "high" : settings.effortLevel === "max" && process.env.EFFORT_FIXTURE_CAP === "high" ? "high" : settings.effortLevel;
             state.requested = settings.ultracode === true;
           } else if (settings.ultracode !== undefined) state.requested = settings.ultracode;
         },
@@ -851,4 +871,103 @@ test("spawned bridge displays SDK managed policy and blocks scoped edits to its 
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+
+test("spawned bridge keeps saved model defaults separate from acknowledged session controls and new sessions", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-session-settings-"));
+  const profile = join(directory, "profile");
+  const cwd = join(directory, "project");
+  mkdirSync(profile); mkdirSync(cwd);
+  const settingsFile = join(profile, "settings.json");
+  const persisted = { model: "opus", modelSettings: { "claude-opus-5-5": { effortLevel: "low" } }, alwaysThinkingEnabled: true, agent: "reviewer", fastMode: false, permissions: { defaultMode: "plan" } };
+  writeFileSync(settingsFile, JSON.stringify(persisted));
+  const { bridge, cleanup } = ultracodeFixtureBridge({ CLAUDE_CONFIG_DIR: profile, SESSION_SETTINGS_FIXTURE: "1", MODEL_STEP_DOWN_FIXTURE: "1", FAST_READ_FAILURE_FIXTURE: "1" });
+  const nextUpdate = async (type: string, option?: string) => (await nextMatching(bridge, event => {
+    const update = event.update as BridgeEnvelope | undefined;
+    return update?.type === type && (!option || update.option_id === option);
+  })).update as BridgeEnvelope;
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    const sessionId = connected.session_id;
+    assert.equal((connected.mode as BridgeEnvelope).current_mode_name, "Plan", "report the SDK's starting mode before any prompt or /mode command");
+    assert.ok(((connected.mode as BridgeEnvelope).available_modes as BridgeEnvelope[]).some(mode => mode.id === "plan"));
+    assert.ok(((connected.mode as BridgeEnvelope).available_modes as BridgeEnvelope[]).some(mode => mode.id === "auto"));
+    assert.deepEqual((await nextUpdate("available_agents_update")).agents, [{ name: "reviewer", description: "Review code", model: "sonnet" }], "publish the SDK inventory after connection so the host can keep it");
+    assert.equal((await nextUpdate("config_option_update", "effortLevel")).value, "low");
+    bridge.writeCommand({ command: "set_mode", session_id: sessionId, mode: "auto", request_id: "restricted-auto" });
+    const restrictedMode = (await nextUpdate("mode_state_update")).mode as BridgeEnvelope;
+    assert.equal(restrictedMode.current_mode_name, "Plan");
+    assert.ok(!(restrictedMode.available_modes as BridgeEnvelope[]).some(mode => mode.id === "auto"));
+    const restrictedError = await nextMatching(bridge, event => event.event === "slash_error");
+    assert.equal(restrictedError.request_id, "restricted-auto");
+    assert.match(String(restrictedError.message), /account restriction/);
+    bridge.writeCommand({ command: "prompt", session_id: sessionId, message_uuid: "observe-mode", chunks: [{ kind: "text", value: "fixture observe permissions" }] });
+    assert.equal(((await nextUpdate("mode_state_update")).mode as BridgeEnvelope).current_mode_id, "plan");
+    for (const [enabled, value] of [[false, false], [null, true]]) {
+      bridge.writeCommand({ command: "set_thinking", session_id: sessionId, enabled });
+      assert.equal((await nextUpdate("config_option_update", "alwaysThinkingEnabled")).value, value);
+    }
+    bridge.writeCommand({ command: "set_effort", session_id: sessionId, effort: "max" });
+    assert.equal((await nextUpdate("config_option_update", "effortLevel")).value, "max");
+    bridge.writeCommand({ command: "set_effort", session_id: sessionId, effort: null });
+    assert.equal((await nextUpdate("config_option_update", "effortLevel")).value, "high", "native reset differs from the saved default");
+    bridge.writeCommand({ command: "set_model", session_id: sessionId, model: "opus" });
+    const appliedModel = (await nextUpdate("current_model_update")).current_model as BridgeEnvelope;
+    assert.equal(appliedModel.resolved_id, "claude-sonnet-5-5", "report SDK step-down rather than the requested alias");
+    await nextUpdate("mode_state_update");
+    bridge.writeCommand({ command: "set_fast_mode", session_id: sessionId, enabled: true });
+    assert.equal((await nextUpdate("fast_mode_update")).fast_mode_state, "unknown");
+    await nextMatching(bridge, event => event.event === "slash_error");
+    bridge.writeCommand({ command: "set_fast_mode", session_id: sessionId, enabled: false });
+    assert.equal((await nextUpdate("fast_mode_update")).fast_mode_state, "off");
+    bridge.writeCommand({ command: "set_agent", session_id: sessionId, agent: "missing" });
+    await nextMatching(bridge, event => event.event === "slash_error");
+    bridge.writeCommand({ command: "set_agent", session_id: sessionId, agent: "reviewer" });
+    assert.equal((await nextUpdate("config_option_update", "agent")).value, "reviewer");
+    await nextUpdate("mode_state_update");
+    bridge.writeCommand({ command: "set_mode", session_id: sessionId, mode: "plan" });
+    assert.equal(((await nextUpdate("mode_state_update")).mode as BridgeEnvelope).current_mode_id, "plan");
+    assert.deepEqual(JSON.parse(readFileSync(settingsFile, "utf8")), persisted);
+    bridge.writeCommand({ command: "new_session", cwd, launch_settings: {} });
+    const replacement = await nextMatching(bridge, event => event.event === "session_replaced");
+    assert.notEqual(replacement.session_id, sessionId);
+    assert.equal(((await nextUpdate("available_agents_update")).agents as BridgeEnvelope[])[0].name, "reviewer");
+    assert.equal((await nextUpdate("config_option_update", "effortLevel")).value, "low");
+    bridge.writeCommand({ command: "set_model", session_id: replacement.session_id, model: "haiku" });
+    const unsupported = (await nextUpdate("current_model_update")).current_model as BridgeEnvelope;
+    assert.equal(unsupported.supports_effort, false);
+    await nextUpdate("mode_state_update");
+    bridge.writeCommand({ command: "set_effort", session_id: replacement.session_id, effort: "low" });
+    const effortError = await nextMatching(bridge, event => event.event === "slash_error");
+    assert.match(String(effortError.message), /supported by the current model/);
+    bridge.writeCommand({ command: "set_fast_mode", session_id: replacement.session_id, enabled: true });
+    const fastError = await nextMatching(bridge, event => event.event === "slash_error");
+    assert.match(String(fastError.message), /does not support fast mode/);
+    assert.deepEqual(JSON.parse(readFileSync(settingsFile, "utf8")), persisted);
+  } finally { await cleanup(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test("spawned bridge publishes the native starting mode independently of saved mode defaults", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-mode-observation-"));
+  const profile = join(directory, "profile"); const cwd = join(directory, "project");
+  mkdirSync(profile); mkdirSync(cwd);
+  writeFileSync(join(profile, "settings.json"), JSON.stringify({ permissions: { defaultMode: "plan" } }));
+  const { bridge, cleanup } = ultracodeFixtureBridge({ CLAUDE_CONFIG_DIR: profile, SESSION_SETTINGS_FIXTURE: "1", PERMISSION_MODE_FIXTURE: "auto" });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    assert.equal((connected.mode as BridgeEnvelope).current_mode_id, "auto");
+    assert.equal((connected.mode as BridgeEnvelope).current_mode_name, "Auto");
+    bridge.writeCommand({ command: "inspect_settings", session_id: connected.session_id });
+    const result = await nextMatching(bridge, event => event.event === "settings_result");
+    const shown = (result.result as SettingsResult).snapshot;
+    assert.equal(shown?.values.find(value => value.id === "permissions.defaultMode")?.value, "plan");
+    assert.ok(shown?.catalog.find(setting => setting.id === "prefersReducedMotion")?.writable_scopes.includes("user"));
+    bridge.writeCommand({ command: "new_session", cwd, launch_settings: {} });
+    const replacement = await nextMatching(bridge, event => event.event === "session_replaced");
+    assert.equal((replacement.mode as BridgeEnvelope).current_mode_id, "auto");
+  } finally { await cleanup(); rmSync(directory, { recursive: true, force: true }); }
 });

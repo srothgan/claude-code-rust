@@ -599,26 +599,25 @@ fn esc_cancels_deferred_submit_snapshot_before_finalize() {
 }
 
 #[test]
-fn spinner_advances_less_frequently_when_reduced_motion_enabled() {
+fn reduced_motion_stops_animation_and_reset_resumes_it() {
     let mut app = App::test_default();
     let base = Instant::now();
-
     advance_spinner_frame(&mut app, base);
-    assert_eq!(app.spinner_frame, 1);
+    let animated = crate::ui::SpinnerState::for_app(&app).icon();
     advance_spinner_frame(&mut app, base + Duration::from_millis(40));
-    assert_eq!(app.spinner_frame, 2);
-
+    assert_ne!(crate::ui::SpinnerState::for_app(&app).icon(), animated);
     app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
         "prefersReducedMotion",
         serde_json::json!(true),
     ));
-    app.spinner_last_advance_at = None;
-    app.spinner_frame = 0;
-
-    advance_spinner_frame(&mut app, base);
-    assert_eq!(app.spinner_frame, 1);
-    advance_spinner_frame(&mut app, base + Duration::from_millis(95));
-    assert_eq!(app.spinner_frame, 1);
-    advance_spinner_frame(&mut app, base + Duration::from_millis(121));
-    assert_eq!(app.spinner_frame, 2);
+    let frame = app.spinner_frame;
+    for elapsed in [95, 121, 5000] {
+        advance_spinner_frame(&mut app, base + Duration::from_millis(elapsed));
+        assert_eq!(app.spinner_frame, frame);
+        assert_eq!(crate::ui::SpinnerState::for_app(&app).icon(), "\u{25C6}");
+    }
+    app.config.snapshot = None;
+    advance_spinner_frame(&mut app, base + Duration::from_millis(5001));
+    assert_ne!(app.spinner_frame, frame);
+    assert_ne!(crate::ui::SpinnerState::for_app(&app).icon(), "\u{25C6}");
 }

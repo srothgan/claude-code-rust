@@ -742,14 +742,16 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
 
     for (rows, cols) in [(55, 120), (25, 61), (38, 87)] {
         test.submit("/config", "/config");
-        test.wait_screen("Saved in user: Off");
+        test.wait_screen("Saved in user: German");
         assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
         test.send(b" ");
-        test.wait_screen("Value: Off");
+        test.wait_screen("Enter save");
+        test.send(b" draft");
+        test.wait_screen("German draft");
         test.resize(rows, cols);
-        test.wait_screen("Value: Off");
+        test.wait_screen("German draft");
         test.send(b"\x1b");
-        test.wait_screen("Saved in user: Off");
+        test.wait_screen("Saved in user: German");
         test.send(b"\x1b");
         test.wait_screen("streamed line 8");
         assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());

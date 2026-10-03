@@ -449,11 +449,6 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::ModeStateUpdate { mode } => {
             Some(model::SessionUpdate::ModeStateUpdate(convert_mode_state(mode)))
         }
-        types::SessionUpdate::CurrentModeUpdate { current_mode_id } => {
-            Some(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
-                model::SessionModeId::new(current_mode_id),
-            )))
-        }
         types::SessionUpdate::CurrentModelUpdate { current_model } => {
             Some(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
                 convert_current_model(current_model),
@@ -1131,6 +1126,7 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 
 pub(super) fn convert_fast_mode_state(state: types::FastModeState) -> model::FastModeState {
     match state {
+        types::FastModeState::Unknown => model::FastModeState::Unknown,
         types::FastModeState::Off => model::FastModeState::Off,
         types::FastModeState::Cooldown => model::FastModeState::Cooldown,
         types::FastModeState::On => model::FastModeState::On,

@@ -117,7 +117,6 @@ use std::time::{Duration, Instant};
 use terminal_runtime::TerminalInput;
 
 const SPINNER_FRAME_INTERVAL_NORMAL: Duration = Duration::from_millis(30);
-const SPINNER_FRAME_INTERVAL_REDUCED: Duration = Duration::from_millis(120);
 const EVENT_LOOP_TICK_INTERVAL: Duration = Duration::from_millis(16);
 /// Maximum number of ready-event rounds handled between frames.
 ///
@@ -285,6 +284,7 @@ async fn run_tui_loop(
 
         // Phase 3: render once (only when something changed)
         let is_animating = !app.shutdown_requested()
+            && !app.config.prefers_reduced_motion_effective()
             && (matches!(
                 app.status,
                 AppStatus::Connecting
@@ -537,14 +537,12 @@ async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut Termina
 }
 
 fn advance_spinner_frame(app: &mut App, now: Instant) {
-    let interval = if app.config.prefers_reduced_motion_effective() {
-        SPINNER_FRAME_INTERVAL_REDUCED
-    } else {
-        SPINNER_FRAME_INTERVAL_NORMAL
-    };
-
+    if app.config.prefers_reduced_motion_effective() {
+        app.spinner_last_advance_at = None;
+        return;
+    }
     match app.spinner_last_advance_at {
-        Some(last_advance) if now.duration_since(last_advance) < interval => {}
+        Some(last_advance) if now.duration_since(last_advance) < SPINNER_FRAME_INTERVAL_NORMAL => {}
         Some(_) | None => {
             app.spinner_frame = app.spinner_frame.wrapping_add(1);
             app.spinner_last_advance_at = Some(now);

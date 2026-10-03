@@ -4,6 +4,12 @@ import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { readAppliedSettings } from "./query_settings.js";
+import { SessionObservations } from "./session_observations.js";
+
+const observations = new SessionObservations();
+export function beginUltracodeRead(session: SessionState): () => boolean {
+  return observations.begin(session);
+}
 
 export class UltracodeVerificationError extends Error {
   constructor(cause: unknown) {
@@ -78,7 +84,7 @@ export function logUltracodeFailure(session: SessionState, error: unknown): void
 }
 
 export async function refreshUltracode(session: SessionState, emit = true): Promise<boolean> {
-  const sessionId = session.sessionId;
+  const current = beginUltracodeRead(session);
   let state: UltracodeSnapshot | undefined;
   try {
     state = await readUltracodeState(session.query);
@@ -86,7 +92,7 @@ export async function refreshUltracode(session: SessionState, emit = true): Prom
     logUltracodeFailure(session, error);
   }
   // A read from a closing or replaced query cannot establish current state.
-  if (session.closing || session.sessionId !== sessionId) {
+  if (!current()) {
     return false;
   }
   session.ultracode = state;

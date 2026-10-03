@@ -1,8 +1,8 @@
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-import type { AvailableModel, CurrentModel, EffortLevel } from "../types.js";
+import type { AvailableModel, CurrentModel } from "../types.js";
+import { isEffortLevel } from "./effort.js";
 
 type ModelMetadataSession = {
-  model: string;
   requestedModelId?: string;
   resolvedRuntimeModelId?: string;
   availableModels: AvailableModel[];
@@ -21,14 +21,14 @@ const PENDING_MODEL_ID = "Connecting...";
 const MAX_MODEL_VERSION_PARTS = 2;
 const RELEASE_BUILD_TOKEN = /^20\d{6}$/;
 
-function isEffortLevel(value: unknown): value is EffortLevel {
-  return (
-    value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "xhigh" ||
-    value === "max"
-  );
+/** Canonical persisted key from an SDK-resolved ID, never an unresolved alias. */
+export function canonicalModelName(resolved: string | undefined): string | undefined {
+  if (!resolved) return undefined;
+  // Native effort persistence strips context and dated/provider spellings.
+  // Accept only recognisable resolved Claude IDs; do not guess custom-model identities.
+  const name = resolved.toLowerCase().replace(/\[(?:1|2)m\]$/, "").split("/").at(-1) ?? "";
+  const match = /^(?:(?:[a-z-]+\.)?anthropic\.)?(claude-(?:[a-z]+-\d+(?:-\d{1,2})?|\d+(?:-\d{1,2})?-[a-z]+))(?:-latest|-fast)?(?:-v\d+@\d{8}|[-@]\d{8})?(?:-v\d+(?::\d+)?)?$/.exec(name);
+  return match?.[1];
 }
 
 function normalizeModelKey(id: string): NormalizedModelKey {
@@ -201,11 +201,10 @@ function shortDisplayNameForModelId(id: string): string {
 
 function currentModelIsAuthoritative(
   resolvedId: string,
-  requestedId: string | undefined,
 ): boolean {
   const resolved = resolvedId.trim();
   if (!resolved || resolved === "Connecting...") {
-    return Boolean(requestedId?.trim());
+    return false;
   }
   return true;
 }
@@ -299,8 +298,6 @@ export function resolveCurrentModel(
   const requestedId = session.requestedModelId?.trim() || undefined;
   const resolvedId =
     session.resolvedRuntimeModelId?.trim() ||
-    session.model.trim() ||
-    requestedId ||
     PENDING_MODEL_ID;
   const catalogModel = resolveCatalogModel(
     session.availableModels,
@@ -317,7 +314,7 @@ export function resolveCurrentModel(
     display_name_long: displayNameLong,
     supports_effort: catalogModel?.supports_effort === true,
     supported_effort_levels: catalogModel?.supported_effort_levels ?? [],
-    is_authoritative: currentModelIsAuthoritative(resolvedId, requestedId),
+    is_authoritative: currentModelIsAuthoritative(resolvedId),
     ...(requestedId ? { requested_id: requestedId } : {}),
     ...(catalogModel ? { catalog_id: catalogModel.id } : {}),
     ...(catalogModel?.supports_fast_mode !== undefined

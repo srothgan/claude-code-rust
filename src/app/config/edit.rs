@@ -4,11 +4,15 @@ use super::{
     PendingSessionTitleChangeKind, PendingSessionTitleChangeState, SessionRenameOverlayState,
     SettingOverlayState,
 };
-use crate::agent::settings::{SettingDescriptor, SettingKind, SettingsMutation, SettingsOperation};
+use crate::agent::settings::{SettingDescriptor, SettingsMutation, SettingsOperation};
 use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
+    if !setting.allows_custom {
+        step_setting(app, 1);
+        return;
+    }
     if app.config.pending_settings_request.is_some() {
         return;
     }
@@ -57,7 +61,7 @@ pub(super) fn step_setting(app: &mut App, delta: isize) {
         return;
     };
     let scope = app.config.selected_scope;
-    if !setting.writable_at(scope) {
+    if !setting.writable_at(scope) || setting.allows_custom {
         return;
     }
     let Some(scoped) = snapshot.scoped(&setting.id, scope) else {
@@ -70,7 +74,7 @@ pub(super) fn step_setting(app: &mut App, delta: isize) {
         .map_or_else(String::new, |value| {
             value.as_str().map_or_else(|| value.to_string(), str::to_owned)
         });
-    let Some(next) = next_choice(setting, &current, delta, true) else {
+    let Some(next) = next_choice(setting, &current, delta) else {
         return;
     };
     let mutation = SettingsMutation {
@@ -88,7 +92,6 @@ fn next_choice(
     setting: &SettingDescriptor,
     current: &str,
     delta: isize,
-    wrap: bool,
 ) -> Option<serde_json::Value> {
     if setting.options.is_empty() {
         return None;
@@ -100,14 +103,10 @@ fn next_choice(
             value.as_str().map_or_else(|| value.to_string(), str::to_owned) == current
         })
         .map_or(0, |index| {
-            if wrap {
-                if delta.is_negative() {
-                    if index == 0 { setting.options.len() - 1 } else { index - 1 }
-                } else {
-                    (index + 1) % setting.options.len()
-                }
+            if delta.is_negative() {
+                if index == 0 { setting.options.len() - 1 } else { index - 1 }
             } else {
-                step_index_clamped(index, delta, setting.options.len())
+                (index + 1) % setting.options.len()
             }
         });
     setting.options.get(next).cloned()
@@ -162,19 +161,6 @@ fn handle_setting_key(app: &mut App, key: KeyEvent) {
     if app.config.pending_settings_request.is_some() {
         return;
     }
-    if !setting_accepts_text(app)
-        && matches!(
-            key.code,
-            KeyCode::Char(_)
-                | KeyCode::Backspace
-                | KeyCode::Delete
-                | KeyCode::Left
-                | KeyCode::Right
-        )
-        && key.modifiers != KeyModifiers::CONTROL
-    {
-        return;
-    }
     match (key.code, key.modifiers) {
         (KeyCode::Enter, KeyModifiers::NONE) => confirm_setting(app, false),
         (KeyCode::Char('r'), KeyModifiers::CONTROL) => confirm_setting(app, true),
@@ -199,28 +185,6 @@ fn handle_setting_key(app: &mut App, key: KeyEvent) {
         (KeyCode::Delete, KeyModifiers::NONE) => {
             delete_text_at_cursor(app.config.setting_overlay_mut());
         }
-        (KeyCode::Up | KeyCode::Down, KeyModifiers::NONE) => {
-            let Some(overlay) = app.config.setting_overlay().cloned() else {
-                return;
-            };
-            let Some(setting) = app.config.snapshot.as_ref().and_then(|snapshot| {
-                snapshot.catalog.iter().find(|setting| setting.id == overlay.id)
-            }) else {
-                return;
-            };
-            let Some(next) = next_choice(
-                setting,
-                &overlay.draft,
-                if key.code == KeyCode::Up { -1 } else { 1 },
-                false,
-            ) else {
-                return;
-            };
-            if let Some(overlay) = app.config.setting_overlay_mut() {
-                overlay.draft = next.as_str().map_or_else(|| next.to_string(), str::to_owned);
-                overlay.cursor = overlay.draft.chars().count();
-            }
-        }
         (KeyCode::Char(ch), modifiers) if accepts_text_input(modifiers) => {
             insert_text_char(app.config.setting_overlay_mut(), ch);
         }
@@ -238,24 +202,7 @@ fn confirm_setting(app: &mut App, remove: bool) {
     let Some(overlay) = app.config.setting_overlay().cloned() else {
         return;
     };
-    let Some(setting) = app
-        .config
-        .snapshot
-        .as_ref()
-        .and_then(|snapshot| snapshot.catalog.iter().find(|setting| setting.id == overlay.id))
-    else {
-        return;
-    };
-    let value = if remove {
-        None
-    } else if setting.kind == SettingKind::String {
-        Some(serde_json::Value::String(overlay.draft))
-    } else if let Ok(value) = serde_json::from_str(&overlay.draft) {
-        Some(value)
-    } else {
-        app.config.set_overlay_error("Enter true or false, or select with Up/Down.");
-        return;
-    };
+    let value = (!remove).then_some(serde_json::Value::String(overlay.draft));
     super::service::send_mutation(
         app,
         SettingsMutation {

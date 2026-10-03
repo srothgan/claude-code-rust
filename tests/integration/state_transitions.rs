@@ -232,52 +232,38 @@ async fn stress_many_tool_calls_in_one_turn() {
     assert!(matches!(app.status, AppStatus::Thinking));
 }
 
-// --- CurrentModeUpdate ---
+// --- ModeStateUpdate ---
 
 #[tokio::test]
-async fn mode_updates_switch_known_modes_fall_back_for_unknown_ids_and_noop_without_state() {
+async fn mode_updates_replace_confirmed_state_names_and_choices() {
     let mut app = test_app();
-
-    app.session_runtime.mode = Some(claude_code_rust::app::ModeState {
-        current_mode_id: "code".into(),
-        current_mode_name: "Code".into(),
-        available_modes: vec![
-            claude_code_rust::app::ModeInfo { id: "code".into(), name: "Code".into() },
-            claude_code_rust::app::ModeInfo { id: "plan".into(), name: "Plan".into() },
-        ],
-    });
-
+    let plan = claude_code_rust::app::ModeState {
+        current_mode_id: "plan".into(),
+        current_mode_name: "Plan".into(),
+        available_modes: vec![claude_code_rust::app::ModeInfo {
+            id: "plan".into(),
+            name: "Plan".into(),
+        }],
+    };
     send_client_event(
         &mut app,
-        session_update(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
-            "plan",
-        ))),
+        session_update(model::SessionUpdate::ModeStateUpdate(plan.clone())),
     );
-    let mode = app.session_runtime.mode.as_ref().expect("mode should still exist");
-    assert_eq!(mode.current_mode_id, "plan");
-    assert_eq!(mode.current_mode_name, "Plan");
+    assert_eq!(app.session_runtime.mode, Some(plan));
 
+    let accepted = claude_code_rust::app::ModeState {
+        current_mode_id: "acceptEdits".into(),
+        current_mode_name: "Accept Edits".into(),
+        available_modes: vec![claude_code_rust::app::ModeInfo {
+            id: "acceptEdits".into(),
+            name: "Accept Edits".into(),
+        }],
+    };
     send_client_event(
         &mut app,
-        session_update(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
-            "unknown-mode",
-        ))),
+        session_update(model::SessionUpdate::ModeStateUpdate(accepted.clone())),
     );
-    let mode = app.session_runtime.mode.as_ref().expect("mode should still exist");
-    assert_eq!(mode.current_mode_id, "unknown-mode");
-    assert_eq!(mode.current_mode_name, "unknown-mode");
-
-    let mut no_mode_app = test_app();
-    send_client_event(
-        &mut no_mode_app,
-        session_update(model::SessionUpdate::CurrentModeUpdate(model::CurrentModeUpdate::new(
-            "plan-mode",
-        ))),
-    );
-    assert!(
-        no_mode_app.session_runtime.mode.is_none(),
-        "update without existing mode state is a no-op"
-    );
+    assert_eq!(app.session_runtime.mode, Some(accepted));
 }
 
 // --- Edge cases: interleaved events ---

@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::catalog::{AvailableAgent, AvailableCommandsUpdate, CurrentModel};
 use super::content::ContentChunk;
-use super::ids::SessionModeId;
 use super::tasks::TaskStateUpdate;
 use super::tools::{ToolCall, ToolCallUpdate};
 
@@ -69,18 +68,6 @@ impl AvailableAgentsUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CurrentModeUpdate {
-    pub current_mode_id: SessionModeId,
-}
-
-impl CurrentModeUpdate {
-    #[must_use]
-    pub fn new(current_mode_id: impl Into<SessionModeId>) -> Self {
-        Self { current_mode_id: current_mode_id.into() }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentModelUpdate {
     pub current_model: CurrentModel,
 }
@@ -101,6 +88,7 @@ pub struct ConfigOptionUpdate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
+    Unknown,
     Off,
     Cooldown,
     On,
@@ -282,7 +270,6 @@ pub enum SessionUpdate {
     AvailableCommandsUpdate(AvailableCommandsUpdate),
     AvailableAgentsUpdate(AvailableAgentsUpdate),
     ModeStateUpdate(crate::app::ModeState),
-    CurrentModeUpdate(CurrentModeUpdate),
     CurrentModelUpdate(CurrentModelUpdate),
     ConfigOptionUpdate(ConfigOptionUpdate),
     UltracodeUpdate {

@@ -241,6 +241,7 @@ pub struct CurrentModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FastModeState {
+    Unknown,
     Off,
     Cooldown,
     On,
@@ -669,9 +670,6 @@ pub enum SessionUpdate {
     },
     ModeStateUpdate {
         mode: ModeState,
-    },
-    CurrentModeUpdate {
-        current_mode_id: String,
     },
     CurrentModelUpdate {
         current_model: CurrentModel,

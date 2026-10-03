@@ -82,7 +82,7 @@ fn request_correlation_and_session_epoch_protect_editor_state() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn inline_arrows_cycle_choices_and_render_acknowledged_values() {
+async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -97,9 +97,11 @@ async fn inline_arrows_cycle_choices_and_render_acknowledged_values() {
             resolved.catalog[0].allows_custom = false;
             app.config.snapshot = Some(resolved);
             let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
-            for (key, expected) in
-                [(KeyCode::Left, "large"), (KeyCode::Right, "small"), (KeyCode::Right, "medium")]
-            {
+            for (key, expected) in [
+                (KeyCode::Left, "large"),
+                (KeyCode::Right, "small"),
+                (KeyCode::Char(' '), "medium"),
+            ] {
                 crate::app::config::handle_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
                 let save = commands.recv_envelope().await.expect("choice save");
                 let BridgeCommand::MutateSetting { mutation, .. } = save.command else {
@@ -338,4 +340,90 @@ async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshe
             assert_eq!(mutation.value, Some(json!("German")));
         })
         .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn default_effort_cycles_and_resets_without_changing_session_effort() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut app = App::test_default();
+        let (connection, mut commands) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        app.session_runtime.session_id = Some("session-1".into());
+        app.session_runtime.config_options.insert("effortLevel".to_owned(), json!("max"));
+        let mut shown = snapshot(&app.cwd_raw, "medium");
+        let setting = &mut shown.catalog[0];
+        setting.id = "defaultEffort".to_owned();
+        setting.label = "Default effort".to_owned();
+        setting.key_path = vec!["modelSettings".to_owned(), "claude-sonnet-4-6".to_owned(), "effortLevel".to_owned()];
+        setting.options = vec![json!("low"), json!("medium"), json!("high")];
+        setting.allows_custom = false;
+        shown.sources[0].values[0].id = setting.id.clone();
+        shown.values[0].id = setting.id.clone();
+        app.config.snapshot = Some(shown);
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        let save = commands.recv_envelope().await.expect("save effort");
+        assert!(matches!(save.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.id == "defaultEffort" && mutation.value == Some(json!("high"))));
+        assert_eq!(app.config.saved_value("defaultEffort"), Some(&json!("medium")), "await acknowledgement");
+        let mut saved = app.config.snapshot.clone().expect("snapshot");
+        saved.sources[0].values[0].value = Some(json!("high"));
+        saved.values[0].value = Some(json!("high"));
+        apply_settings_result(&mut app, save.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(saved), error: None });
+        assert_eq!(app.config.saved_value("defaultEffort"), Some(&json!("high")));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        let reset = commands.recv_envelope().await.expect("reset effort");
+        assert!(matches!(reset.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.id == "defaultEffort" && mutation.operation == SettingsOperation::Remove));
+        let mut inherited = app.config.snapshot.clone().expect("snapshot");
+        inherited.sources[0].values[0].value = None;
+        inherited.values[0].value = None;
+        apply_settings_result(&mut app, reset.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(inherited), error: None });
+        assert_eq!(app.config.saved_value("defaultEffort"), None);
+        assert_eq!(app.session_runtime.config_options.get("effortLevel"), Some(&json!("max")));
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_saves() {
+    use ratatui::{Terminal, backend::TestBackend};
+    tokio::task::LocalSet::new().run_until(async {
+        for (id, label, choices) in [
+            ("model", "Default model", (1..=12).map(|n| format!("model-{n}")).collect::<Vec<_>>()),
+            ("defaultEffort", "Default effort", vec!["low".to_owned(), "medium".to_owned(), "high".to_owned()]),
+        ] {
+            let mut app = App::test_default();
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some("session-1".into());
+            let mut shown = snapshot(&app.cwd_raw, &choices[0]);
+            shown.catalog[0].id = id.to_owned(); shown.catalog[0].label = label.to_owned();
+            shown.catalog[0].allows_custom = false;
+            shown.catalog[0].options = choices.iter().map(|value| json!(value)).collect();
+            shown.sources[0].values[0].id = id.to_owned(); shown.values[0].id = id.to_owned();
+            app.config.snapshot = Some(shown);
+            app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+            for step in 1..=choices.len() {
+                let previous = app.config.saved_value(id).cloned();
+                let key = if step % 2 == 0 { KeyCode::Right } else { KeyCode::Char(' ') };
+                crate::app::config::handle_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
+                let save = commands.recv_envelope().await.expect("save selected option");
+                let expected = json!(choices[step % choices.len()]);
+                assert!(matches!(save.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.id == id && mutation.value == Some(expected.clone())));
+                assert_eq!(app.config.saved_value(id), previous.as_ref());
+                crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+                assert!(commands.try_recv().is_err(), "one save in flight");
+                let mut acknowledged = app.config.snapshot.clone().expect("snapshot");
+                acknowledged.sources[0].values[0].value = Some(expected.clone());
+                acknowledged.values[0].value = Some(expected.clone());
+                apply_settings_result(&mut app, save.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(acknowledged), error: None });
+                terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("saved choice");
+                let text: String = terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
+                assert!(text.contains(label));
+                assert!(text.contains(expected.as_str().expect("string choice")));
+                assert!(text.contains("1/1"));
+                assert!(text.contains("Left/Right or Space change"));
+                assert_eq!(app.config.selected_setting_index, 0);
+            }
+        }
+    }).await;
 }

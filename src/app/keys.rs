@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 use super::paste_burst::CharAction;
-use super::{App, AppStatus, FocusOwner, InvalidationLevel, ModeInfo, ModeState};
+use super::{App, AppStatus, FocusOwner};
 #[cfg(not(test))]
 use crate::app::SystemSeverity;
 use crate::app::inline_interactions::{
@@ -16,7 +16,6 @@ use crate::app::state::AutocompleteKind;
 use crate::app::{input_atoms, input_atoms::InputAtomKind};
 use crate::app::{mention, permissions, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use std::rc::Rc;
 use std::time::Instant;
 use tui_textarea::AtomicDeleteDirection;
 
@@ -569,50 +568,22 @@ fn handle_prompt_suggestion(app: &mut App) -> bool {
 }
 
 fn handle_mode_cycle(app: &mut App) -> bool {
-    let Some(ref mode) = app.session_runtime.mode else {
+    if app.status != AppStatus::Ready {
+        return true;
+    }
+    let Some(mode) = &app.session_runtime.mode else {
         return true;
     };
     if mode.available_modes.len() <= 1 {
         return true;
     }
-
-    let current_idx =
-        mode.available_modes.iter().position(|m| m.id == mode.current_mode_id).unwrap_or(0);
-    let next_idx = (current_idx + 1) % mode.available_modes.len();
-    let next = &mode.available_modes[next_idx];
-
-    if let Some(ref conn) = app.session_runtime.conn
-        && let Some(sid) = app.session_runtime.session_id.clone()
-    {
-        let mode_id = next.id.clone();
-        let conn = Rc::clone(conn);
-        tokio::task::spawn_local(async move {
-            if let Err(e) = conn.set_mode(sid.to_string(), mode_id) {
-                tracing::error!(
-                    target: crate::logging::targets::APP_INPUT,
-                    event_name = "mode_change_request_failed",
-                    message = "failed to request mode change",
-                    outcome = "failure",
-                    error_message = %e,
-                );
-            }
-        });
-    }
-
-    let next_id = next.id.clone();
-    let next_name = next.name.clone();
-    let modes = mode
+    let next_index = mode
         .available_modes
         .iter()
-        .map(|m| ModeInfo { id: m.id.clone(), name: m.name.clone() })
-        .collect();
-    app.session_runtime.mode = Some(ModeState {
-        current_mode_id: next_id,
-        current_mode_name: next_name,
-        available_modes: modes,
-    });
-    app.invalidate_layout(InvalidationLevel::Global);
-    true
+        .position(|mode_info| mode_info.id == mode.current_mode_id)
+        .map_or(0, |index| (index + 1) % mode.available_modes.len());
+    let next = mode.available_modes[next_index].id.clone();
+    slash::request_mode_change(app, &next)
 }
 
 fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
@@ -950,6 +921,35 @@ mod tests {
     use crate::app::{ChatMessage, FocusTarget, MessageBlock, MessageRole, TextBlock};
     use crossterm::event::{KeyCode, KeyModifiers};
     use std::time::{Duration, Instant};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mode_shortcut_preserves_the_confirmed_mode_until_sdk_acknowledgement() {
+        tokio::task::LocalSet::new().run_until(async {
+            let mut app = App::test_default();
+            let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+            app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+            app.session_runtime.session_id = Some("session-1".into());
+            let available_modes = vec![crate::app::ModeInfo { id: "default".into(), name: "Default".into() }, crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }];
+            app.session_runtime.mode = Some(crate::app::ModeState { current_mode_id: "default".into(), current_mode_name: "Default".into(), available_modes: available_modes.clone() });
+            app.input.set_text("keep my draft");
+            let cycle = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+            handle_normal_key(&mut app, cycle);
+            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "default");
+            assert_eq!(app.status, AppStatus::CommandPending);
+            tokio::task::yield_now().await;
+            assert!(matches!(commands.try_recv().expect("mode change").command, crate::agent::wire::BridgeCommand::SetMode { mode, .. } if mode == "plan"));
+            crate::app::handle_client_event(&mut app, crate::agent::events::ClientEvent::SessionUpdate { session_id: "session-1".into(), update: crate::agent::model::SessionUpdate::ModeStateUpdate(crate::app::ModeState { current_mode_id: "plan".into(), current_mode_name: "Plan".into(), available_modes }) });
+            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "plan");
+            assert_eq!(app.status, AppStatus::Ready);
+            handle_normal_key(&mut app, cycle);
+            tokio::task::yield_now().await;
+            assert!(matches!(commands.try_recv().expect("second change").command, crate::agent::wire::BridgeCommand::SetMode { mode, .. } if mode == "default"));
+            crate::app::handle_client_event(&mut app, crate::agent::events::ClientEvent::SlashCommandError { session_id: Some("session-1".into()), message: "SDK rejected mode".into() });
+            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "plan");
+            assert_eq!(app.status, AppStatus::Ready);
+            assert_eq!(app.input.text(), "keep my draft");
+        }).await;
+    }
 
     #[test]
     fn ctrl_shortcut_accepts_standard_ctrl_v_encoding() {

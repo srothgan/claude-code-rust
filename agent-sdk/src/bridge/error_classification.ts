@@ -3,6 +3,7 @@ import { looksLikeAuthRequired } from "./auth.js";
 import { writeEvent } from "./events.js";
 import { emitSessionUpdate } from "./events.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { SessionObservations } from "./session_observations.js";
 import {
   parseFastModeDisabledReason,
   parseFastModeState,
@@ -92,6 +93,7 @@ export function setFastModeSnapshotIfChanged(
   stateValue: unknown,
   disabledReasonValue: unknown,
 ): boolean {
+  if (parseFastModeState(stateValue)) fastModeObservations.begin(session);
   const nextState = parseFastModeState(stateValue) ?? session.fastModeState;
   const nextDisabledReason = parseFastModeDisabledReason(disabledReasonValue);
   if (
@@ -103,6 +105,11 @@ export function setFastModeSnapshotIfChanged(
   session.fastModeState = nextState;
   session.fastModeDisabledReason = nextDisabledReason;
   return true;
+}
+
+const fastModeObservations = new SessionObservations();
+export function beginFastModeRead(session: SessionState): () => boolean {
+  return fastModeObservations.begin(session);
 }
 
 export function emitFastModeUpdate(session: SessionState): void {

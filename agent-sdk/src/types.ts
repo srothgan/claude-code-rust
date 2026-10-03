@@ -85,7 +85,7 @@ export interface CurrentModel {
   is_authoritative: boolean;
 }
 
-export type FastModeState = "off" | "cooldown" | "on";
+export type FastModeState = "unknown" | "off" | "cooldown" | "on";
 export interface FastModeSnapshot {
   state: FastModeState;
   disabled_reason?: string;
@@ -399,7 +399,6 @@ export type SessionUpdate =
     }
   | { type: "available_agents_update"; agents: AvailableAgent[] }
   | { type: "mode_state_update"; mode: ModeState }
-  | { type: "current_mode_update"; current_mode_id: string }
   | { type: "current_model_update"; current_model: CurrentModel }
   | { type: "config_option_update"; option_id: string; value: Json }
   | {
@@ -891,7 +890,12 @@ export type BridgeCommand =
   | {
       command: "set_effort";
       session_id: string;
-      effort: EffortLevel;
+      effort: EffortLevel | null;
+    }
+  | {
+      command: "set_thinking";
+      session_id: string;
+      enabled: boolean | null;
     }
   | {
       command: "set_agent";

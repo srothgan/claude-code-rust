@@ -51,22 +51,19 @@ use standard::{cap_write_diff_lines, content_summary};
 pub(super) const TOOL_MAX_RENDER_LINES: usize = 10;
 pub(super) const TOOL_BODY_MAX_LINES: usize = TOOL_MAX_RENDER_LINES - 1;
 
-/// Spinner frames as `&'static str` for use in `status_icon` return type.
-const SPINNER_STRS: &[&str] = &[
-    "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}", "\u{2827}",
-    "\u{2807}", "\u{280F}",
-];
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ToolCallRenderContext<'a> {
     pub current_mode_id: Option<&'a str>,
 }
 
-pub fn status_icon(status: model::ToolCallStatus, spinner_frame: usize) -> (&'static str, Color) {
+pub fn status_icon(
+    status: model::ToolCallStatus,
+    spinner: crate::ui::SpinnerState,
+) -> (&'static str, Color) {
     match status {
         model::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
         model::ToolCallStatus::InProgress | model::ToolCallStatus::Detached => {
-            let s = SPINNER_STRS[spinner_frame % SPINNER_STRS.len()];
+            let s = spinner.icon();
             (s, theme::RUST_ORANGE)
         }
         model::ToolCallStatus::Completed => (theme::ICON_COMPLETED, theme::RUST_ORANGE),
@@ -88,10 +85,10 @@ pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
-    spinner_frame: usize,
+    spinner: crate::ui::SpinnerState,
     out: &mut Vec<Line<'static>>,
 ) {
-    let title = standard::render_tool_call_title(tc, render_context, width, spinner_frame);
+    let title = standard::render_tool_call_title(tc, render_context, width, spinner);
     out.push(title);
 
     if !standard::tool_call_has_body(tc) {

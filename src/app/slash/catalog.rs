@@ -12,6 +12,7 @@ pub(crate) enum AppSlashCommand {
     Docs,
     Agent,
     Effort,
+    Thinking,
     Ultracode,
     Fast,
     Help,
@@ -127,10 +128,22 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Effort,
         name: "/effort",
-        usage: "Usage: /effort <low|medium|high|xhigh|max>",
+        usage: "Usage: /effort <low|medium|high|xhigh|max|reset>",
         short_description: "Set session effort",
-        long_description: "Change thinking effort for the active session. Max is session-only.",
+        long_description: "Change effort for the current session; reset uses the model's default. Use /config for saved defaults. Max is session-only.",
         args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Thinking,
+        name: "/thinking",
+        usage: "Usage: /thinking <on|off|reset>",
+        short_description: "Set session thinking preference",
+        long_description: "Change the thinking preference for this session. Model restrictions still apply; reset uses saved defaults.",
+        args: &[
+            SlashArgSpec { value: "on", description: "Prefer thinking for this session" },
+            SlashArgSpec { value: "off", description: "Disable thinking where supported" },
+            SlashArgSpec { value: "reset", description: "Use the saved thinking preference" },
+        ],
     },
     AppSlashCommandSpec {
         command: AppSlashCommand::Ultracode,
@@ -147,10 +160,13 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Fast,
         name: "/fast",
-        usage: "Usage: /fast",
+        usage: "Usage: /fast [on|off]",
         short_description: "Toggle session fast mode",
         long_description: "Enable or disable fast mode for the active session.",
-        args: NO_ARGS,
+        args: &[
+            SlashArgSpec { value: "on", description: "Enable fast mode for this session" },
+            SlashArgSpec { value: "off", description: "Disable fast mode for this session" },
+        ],
     },
     AppSlashCommandSpec {
         command: AppSlashCommand::Help,
@@ -264,6 +280,7 @@ impl AppSlashCommand {
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
+            Self::Thinking => "/thinking",
             Self::Ultracode => "/ultracode",
             Self::Fast => "/fast",
             Self::Help => "/help",
@@ -315,8 +332,22 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Compact | Self::Fast | Self::Login | Self::Logout | Self::NewSession => {
+            Self::Compact | Self::Login | Self::Logout | Self::NewSession => {
                 if args.is_empty() {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Fast => {
+                if args.is_empty() || matches!(args, ["on" | "off"]) {
+                    SubmissionClass::TurnExclusive
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Thinking => {
+                if matches!(args, ["on" | "off" | "reset"]) {
                     SubmissionClass::TurnExclusive
                 } else {
                     SubmissionClass::Invalid
@@ -335,7 +366,7 @@ impl AppSlashCommand {
                 _ => SubmissionClass::Invalid,
             },
             Self::Effort => {
-                if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max"]) {
+                if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max" | "reset"]) {
                     SubmissionClass::TurnExclusive
                 } else {
                     SubmissionClass::Invalid

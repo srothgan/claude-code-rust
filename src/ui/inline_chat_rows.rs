@@ -218,7 +218,7 @@ fn render_assistant_live_rows(
     let label_ids = vec![HistoryOutputId::AssistantLabel(message_id)];
     let show_label = !ids_are_excluded(&label_ids, excluded_ids);
     let skipped_static_body = selection.skipped_body_before_rendered_content;
-    let spinner = spinner_state_for_live(app.spinner_frame);
+    let spinner = SpinnerState::for_app(app);
     let rendered = render_assistant_rows(AssistantRowsRequest {
         app: Some(app),
         message_id,
@@ -1215,9 +1215,9 @@ fn append_assistant_indicator_rows(
     meta: AssistantIndicatorMeta,
 ) {
     let indicator_lines = match meta.indicator {
-        Some(AssistantRuntimeIndicator::Compacting) => compacting_lines(meta.spinner.frame),
+        Some(AssistantRuntimeIndicator::Compacting) => compacting_lines(meta.spinner),
         Some(AssistantRuntimeIndicator::Thinking { verb }) => {
-            vec![thinking_line(meta.spinner.frame, verb)]
+            vec![thinking_line(meta.spinner, verb)]
         }
         None => return,
     };
@@ -1234,10 +1234,6 @@ fn append_assistant_indicator_rows(
         commit_ready: false,
     });
     rows.extend(wrap_lines_to_physical_rows(&indicator_lines, meta.width));
-}
-
-fn spinner_state_for_live(frame: usize) -> SpinnerState {
-    SpinnerState { frame }
 }
 
 fn message_render_context(current_mode_id: Option<&str>, width: u16) -> MessageRenderContext<'_> {
@@ -1323,7 +1319,7 @@ fn render_canonical_tool_rows(
         tc.as_mut(),
         render_context.tool_render_context,
         render_context.width,
-        spinner.frame,
+        spinner,
         &mut rows,
     );
     wrap_lines_to_physical_rows(&rows, render_context.width)
@@ -1336,24 +1332,16 @@ fn assistant_role_label_line() -> Line<'static> {
     )])
 }
 
-fn thinking_line(frame: usize, verb: &str) -> Line<'static> {
-    const SPINNER_FRAMES: &[char] = &[
-        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
-        '\u{2827}', '\u{2807}', '\u{280F}',
-    ];
-    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+fn thinking_line(spinner: SpinnerState, verb: &str) -> Line<'static> {
+    let ch = spinner.icon();
     Line::from(ratatui::text::Span::styled(
         format!("{ch} {verb}..."),
         Style::default().fg(theme::DIM),
     ))
 }
 
-fn compacting_lines(frame: usize) -> Vec<Line<'static>> {
-    const SPINNER_FRAMES: &[char] = &[
-        '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}',
-        '\u{2827}', '\u{2807}', '\u{280F}',
-    ];
-    let ch = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
+fn compacting_lines(spinner: SpinnerState) -> Vec<Line<'static>> {
+    let ch = spinner.icon();
     vec![
         Line::from(ratatui::text::Span::styled(
             format!("{ch} Compacting context..."),
@@ -1463,7 +1451,7 @@ mod tests {
 
     #[test]
     fn thinking_line_uses_selected_verb() {
-        let text = line_text(&thinking_line(0, "Pondering"));
+        let text = line_text(&thinking_line(crate::ui::SpinnerState::Animated(0), "Pondering"));
 
         assert!(text.contains("Pondering..."));
         assert!(!text.contains("Thinking..."));
@@ -2251,6 +2239,46 @@ mod tests {
             );
             assert!(app.transcript.messages[0].blocks.is_empty());
         }
+    }
+
+    #[test]
+    fn reduced_motion_renders_static_thinking_tool_and_compaction_indicators() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_message());
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Thinking;
+        app.chat_render.thinking_verb = Some("Pondering");
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(true),
+        ));
+        let render = |app: &mut App| line_texts(&serialize_live_rows(app, 120));
+        let thinking = render(&mut app);
+        assert!(thinking.iter().any(|line| line.contains("\u{25C6} Pondering...")));
+        app.spinner_frame = 5;
+        assert_eq!(render(&mut app), thinking);
+        app.transcript.messages[0].blocks.push(tool_call_block_with_status_interaction(
+            "static-tool",
+            model::ToolCallStatus::InProgress,
+            false,
+            false,
+            false,
+        ));
+        app.status = AppStatus::Running;
+        let tool = render(&mut app);
+        assert!(
+            tool.iter().any(|line| line.contains("\u{25C6}") && line.contains("Bash Child Tool")),
+            "{tool:?}"
+        );
+        app.spinner_frame = 8;
+        assert_eq!(render(&mut app), tool);
+        app.turn.compaction.begin();
+        let compacting = render(&mut app);
+        assert!(compacting.iter().any(|line| line.contains("\u{25C6} Compacting context...")));
+        app.spinner_frame = 1;
+        assert_eq!(render(&mut app), compacting);
+        app.config.snapshot = None;
+        assert_ne!(render(&mut app), compacting, "reset restores animated indicators");
     }
 
     #[test]

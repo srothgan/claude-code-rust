@@ -394,6 +394,7 @@ fn mode_color(mode_id: &str) -> Color {
 
 fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
     match state {
+        model::FastModeState::Unknown => ("FAST:?", theme::DIM),
         model::FastModeState::Off => ("FAST:OFF", theme::DIM),
         model::FastModeState::Cooldown => ("FAST:CD", Color::Yellow),
         model::FastModeState::On => ("FAST:ON", theme::RUST_ORANGE),

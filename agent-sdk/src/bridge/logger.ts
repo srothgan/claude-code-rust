@@ -104,6 +104,13 @@ function commandSessionId(command: BridgeCommand): string | undefined {
     case "cancel_turn":
     case "set_model":
     case "set_mode":
+    case "set_effort":
+    case "set_thinking":
+    case "set_agent":
+    case "set_ultracode":
+    case "refresh_ultracode":
+    case "inspect_settings":
+    case "mutate_setting":
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":
@@ -147,6 +154,13 @@ function commandToolCallId(command: BridgeCommand): string | undefined {
     case "cancel_turn":
     case "set_model":
     case "set_mode":
+    case "set_effort":
+    case "set_thinking":
+    case "set_agent":
+    case "set_ultracode":
+    case "refresh_ultracode":
+    case "inspect_settings":
+    case "mutate_setting":
     case "set_fast_mode":
     case "generate_session_title":
     case "rename_session":

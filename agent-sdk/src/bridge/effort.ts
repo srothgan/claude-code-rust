@@ -4,6 +4,7 @@ import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import { readAppliedSettings } from "./query_settings.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { SessionObservations } from "./session_observations.js";
 
 export function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === "string" && EFFORT_LEVELS.some(level => level === value);
@@ -23,29 +24,28 @@ export function emitEffortConfigOptionUpdate(sessionId: string, effort: EffortLe
 }
 
 // Observations may arrive while a control read is in flight. A later init message wins.
-const observations = new WeakMap<SessionState, number>();
-function beginObservation(session: SessionState): number {
-  const generation = (observations.get(session) ?? 0) + 1;
-  observations.set(session, generation);
-  return generation;
-}
+const observations = new SessionObservations();
 
 export function observeSessionEffort(session: SessionState, value: unknown): void {
   if (value !== null && !isEffortLevel(value)) return;
-  beginObservation(session);
+  observations.begin(session);
   emitEffortConfigOptionUpdate(session.sessionId, value);
 }
 
-export async function refreshSessionEffort(session: SessionState): Promise<void> {
+export async function refreshSessionEffort(session: SessionState): Promise<boolean> {
   const sessionId = session.sessionId;
-  const generation = beginObservation(session);
+  const current = observations.begin(session);
+  let verified = false;
   let effort: EffortLevel | null = null;
   try {
     effort = await readSessionEffort(session.query);
+    verified = true;
   } catch (error) {
     bridgeLogger.warn({ target: LOG_TARGETS.APP_SESSION, eventName: "effort_verification_failed", message: "Applied effort could not be verified", outcome: "failure", sessionId, fields: { error_message: error instanceof Error ? error.message : String(error) } });
   }
-  if (!session.closing && session.sessionId === sessionId && observations.get(session) === generation) {
+  if (current()) {
     emitEffortConfigOptionUpdate(sessionId, effort);
+    return verified;
   }
+  return true;
 }

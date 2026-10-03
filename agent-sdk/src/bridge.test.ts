@@ -1,3 +1,5 @@
+import { refreshSessionModel } from "./bridge/session_model.js";
+import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
 import test from "node:test";
 import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
@@ -14,10 +16,6 @@ import {
   buildSessionMutationOptions,
   buildSessionListOptions,
   createToolCall,
-  applySessionAgent,
-  applySessionEffort,
-  applySessionFastMode,
-  emitAgentConfigOptionUpdate,
   handleTaskSystemMessage,
   handleSdkMessage,
   isShellToolName,
@@ -76,7 +74,6 @@ import {
   refreshCurrentModel,
   resolveCurrentModel,
   sessions,
-  shouldInvalidateResolvedRuntimeModel,
   shouldEmitStartupAuthRequiredForAccount,
   trackSessionCloseTask,
   startSessionTasks,
@@ -248,7 +245,7 @@ function makeSessionState(): SessionState {
   return {
     sessionId: "session-1",
     cwd: "C:/work",
-    model: "haiku",
+    resolvedRuntimeModelId: "haiku",
     availableModels: [],
     mode: null,
     supportedModeIds: [],
@@ -466,7 +463,7 @@ test("availableModesForSession omits conditional modes when unsupported", () => 
 test("buildModeState includes auto and bypassPermissions when supported", () => {
   const session = makeSessionState();
   session.mode = "default";
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.supportsBypassPermissionsMode = true;
   session.availableModels = [
     {
@@ -489,7 +486,7 @@ test("buildModeState includes auto and bypassPermissions when supported", () => 
 
 test("refreshSupportedModesForSession uses resolved current model for auto-mode eligibility", () => {
   const session = makeSessionState();
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.availableModels = [
     {
       id: "sonnet",
@@ -534,7 +531,7 @@ test("refreshSupportedModesForSession retains current mode before capability dat
 
 test("markModeUnavailableForSession prunes rejected runtime mode from session list", () => {
   const session = makeSessionState();
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.availableModels = [
     {
       id: "sonnet",
@@ -2731,7 +2728,6 @@ test("buildQueryOptions leaves Todo tool availability under SDK environment auth
     assert.equal(stdout, explicit ?? "missing");
   }
 });
-
 
 
 test("handleTaskSystemMessage prefers task_progress summary over fallback text", () => {
@@ -5392,9 +5388,6 @@ test("the next per-turn init reports the live mode after a mode switch", async (
                 mode?: { current_mode_id?: string };
               }
             | undefined;
-          if (update?.type === "current_mode_update") {
-            return update.current_mode_id ? [update.current_mode_id] : [];
-          }
           if (update?.type === "mode_state_update") {
             return update.mode?.current_mode_id
               ? [update.mode.current_mode_id]
@@ -7832,14 +7825,13 @@ test("parseCommandEnvelope rejects invalid set_fast_mode values", () => {
 test("applySessionEffort uses live flag settings for xhigh and max", async () => {
   const calls: unknown[] = [];
   const query = {
-    async getSettings(): Promise<unknown> { return { applied: { effort: "high" } }; },
     async applyFlagSettings(settings: unknown): Promise<void> {
       calls.push(settings);
     },
   } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
 
-  assert.equal(await applySessionEffort(query, "xhigh"), "high");
-  assert.equal(await applySessionEffort(query, "max"), "high");
+  await applySessionEffort(query, "xhigh");
+  await applySessionEffort(query, "max");
 
   assert.deepEqual(calls, [{ effortLevel: "xhigh" }, { effortLevel: "max" }]);
 });
@@ -9711,7 +9703,6 @@ test("mapAvailableModels preserves Fable models and unknown ids", () => {
 
 test("resolveCurrentModel matches full Fable runtime ids to the fable alias", () => {
   const session = makeSessionState();
-  session.model = "fable";
   session.requestedModelId = "fable";
   session.resolvedRuntimeModelId = "claude-fable-5-20260612";
   session.availableModels = [
@@ -9794,7 +9785,6 @@ test("resolveCurrentModel avoids suffix-insensitive fallback when sibling varian
 
 test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () => {
   const session = makeSessionState();
-  session.model = "opus";
   session.requestedModelId = "opus";
   session.resolvedRuntimeModelId = "claude-opus-4-7[1m]";
   refreshCurrentModel(session);
@@ -9825,7 +9815,7 @@ test("emitCurrentModelUpdate can acknowledge a successful no-op set_model", () =
 
 test("emitCurrentModelUpdate can publish catalog-enriched current model metadata after connect", () => {
   const session = makeSessionState();
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   refreshCurrentModel(session);
   session.availableModels = [
     {
@@ -9861,24 +9851,8 @@ test("emitCurrentModelUpdate can publish catalog-enriched current model metadata
   });
 });
 
-test("shouldInvalidateResolvedRuntimeModel invalidates stale runtime identity only when the request changes", () => {
-  assert.equal(
-    shouldInvalidateResolvedRuntimeModel("opus", "opus", "sonnet"),
-    true,
-  );
-  assert.equal(
-    shouldInvalidateResolvedRuntimeModel("sonnet", "sonnet", "haiku"),
-    true,
-  );
-  assert.equal(
-    shouldInvalidateResolvedRuntimeModel("opus", "opus", "opus"),
-    false,
-  );
-});
-
 test("resolveCurrentModel strips release date suffix from dated model ids", () => {
   const session = makeSessionState();
-  session.model = "claude-opus-4-5-20251101";
   session.requestedModelId = "claude-opus-4-5-20251101";
   session.resolvedRuntimeModelId = "claude-opus-4-5-20251101";
 
@@ -9888,10 +9862,10 @@ test("resolveCurrentModel strips release date suffix from dated model ids", () =
   assert.equal(currentModel.display_name_long, "Opus 4.5");
 });
 
-test("resolveCurrentModel falls back to the requested model immediately after stale runtime identity is cleared", () => {
+test("resolveCurrentModel uses acknowledged runtime model capabilities", () => {
   const session = makeSessionState();
   session.requestedModelId = "sonnet";
-  session.model = "sonnet";
+  session.resolvedRuntimeModelId = "sonnet";
   session.availableModels = [
     {
       id: "sonnet",
@@ -9912,7 +9886,6 @@ test("resolveCurrentModel falls back to the requested model immediately after st
 
 test("resolveCurrentModel keeps runtime version in short display while using catalog capabilities", () => {
   const session = makeSessionState();
-  session.model = "opus";
   session.requestedModelId = "opus";
   session.resolvedRuntimeModelId = "claude-opus-4-7-20260101";
   session.availableModels = [
@@ -10145,7 +10118,6 @@ test("handleUserDialogResponse ignores a duplicate response for a resolved reque
   }
 });
 
-
 test("Ultracode commands validate explicit boolean payloads", () => {
   for (const enabled of [true, false]) {
     const command = { command: "set_ultracode", session_id: "session-1", enabled };
@@ -10160,12 +10132,15 @@ test("Ultracode commands validate explicit boolean payloads", () => {
 
 test("Ultracode NDJSON control flow preserves effort and refreshes model support", async () => {
   const session = makeSessionState();
+  session.availableModels = ["opus", "haiku"].map(id => ({ id, display_name: id, supports_effort: id === "opus", supported_effort_levels: id === "opus" ? ["low", "high"] : [] }));
+  session.resolvedRuntimeModelId = "opus";
+  refreshCurrentModel(session);
   let enabled = false;
   let available = true;
   let effort = "high";
   const calls: unknown[] = [];
   session.query = {
-    getSettings: async () => ({ applied: { ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled, effort: available ? effort : null } }),
+    getSettings: async () => ({ applied: { model: available ? "opus" : "haiku", ultracodeAvailable: available, ultracodeRequested: enabled, ultracode: available && enabled, effort: available ? effort : null } }),
     applyFlagSettings: async (settings: Record<string, unknown>) => {
       calls.push(settings);
       if (typeof settings.effortLevel === "string") effort = settings.effortLevel;
@@ -10190,16 +10165,15 @@ test("Ultracode NDJSON control flow preserves effort and refreshes model support
         await handleSessionControlCommand(parsed.command as Parameters<typeof handleSessionControlCommand>[0], "request-1", promptControlDeps());
       }
     });
-    assert.deepEqual(calls, [{ ultracode: true }, { effortLevel: "high", ultracode: true }, { effortLevel: "low" }, { ultracode: false }]);
+    assert.deepEqual(calls, [{ ultracode: true }, { effortLevel: "high", ultracode: true }, { ultracode: false }]);
     assert.deepEqual(events.filter(e => (e.update as Record<string, unknown>)?.type === "ultracode_update").map(e => (e.update as Record<string, unknown>).ultracode), [
       { available: true, requested: false, effective: false },
       { available: true, requested: true, effective: true },
       { available: true, requested: true, effective: true },
       { available: false, requested: true, effective: false },
       { available: false, requested: false, effective: false },
-      { available: false, requested: false, effective: false },
     ]);
-    assert.equal(events.some(e => e.event === "slash_error"), false);
+    assert.ok(events.some(e => e.event === "slash_error" && String(e.message).includes("supported by the current model")));
   } finally { sessions.delete(session.sessionId); }
 });
 
@@ -10272,7 +10246,6 @@ test("buildQueryOptions adapts resolved checkpoint preferences and keeps host re
 
 test("inherited model identity follows SDK initialization metadata", async () => {
   const session = makeSessionState();
-  session.model = "Connecting...";
   session.requestedModelId = undefined;
   session.resolvedRuntimeModelId = undefined;
   session.query = {
@@ -10294,4 +10267,49 @@ test("inherited model identity follows SDK initialization metadata", async () =>
   assert.equal(initialized.display_name_short, "Haiku 4.5");
   assert.equal(initialized.is_authoritative, true);
   assert.equal(session.mode, "plan");
+});
+
+test("model change publishes the newer native observation when its applied read returns late", async () => {
+  const session = makeSessionState();
+  session.availableModels = ["opus", "sonnet"].map(id => ({ id, display_name: id, supports_effort: true, supported_effort_levels: [] }));
+  let finishRead: ((value: unknown) => void) | undefined;
+  const pending = new Promise(resolve => { finishRead = resolve; });
+  session.query = { getSettings: async () => pending, supportedCommands: async () => [], supportedAgents: async () => [] } as unknown as SessionState["query"];
+  const events = await captureBridgeEventsAsync(async () => {
+    const read = refreshSessionModel(session);
+    handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "sonnet" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    finishRead?.({ applied: { model: "opus", ultracodeAvailable: true, ultracodeRequested: false, ultracode: false } });
+    await read;
+  });
+  assert.equal(session.currentModel?.resolved_id, "sonnet");
+  const updates = events.filter(event => (event.update as Record<string, unknown>)?.type === "current_model_update");
+  const latest = updates.at(-1);
+  assert.ok(latest);
+  assert.equal((latest.update as { current_model: { resolved_id: string } }).current_model.resolved_id, "sonnet");
+});
+
+test("fast-mode command acknowledges unchanged newer native state instead of replacing it with a late read", async () => {
+  const session = makeSessionState();
+  let finishRead: ((value: unknown) => void) | undefined;
+  let started: (() => void) | undefined;
+  const readStarted = new Promise<void>(resolve => { started = resolve; });
+  const pending = new Promise(resolve => { finishRead = resolve; });
+  session.query = {
+    applyFlagSettings: async () => {}, reinitialize: async () => { started?.(); return pending; },
+    getSettings: async () => ({ applied: { model: "haiku", effort: null, ultracodeAvailable: false, ultracodeRequested: false, ultracode: false } }),
+    supportedCommands: async () => [], supportedAgents: async () => [],
+  } as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      const change = handleSessionControlCommand({ command: "set_fast_mode", session_id: session.sessionId, enabled: true }, "fast-race", promptControlDeps());
+      await readStarted;
+      handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, model: "haiku", fast_mode_state: "off" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      finishRead?.({ fast_mode_state: "on" });
+      await change;
+    });
+    assert.equal(session.fastModeState, "off");
+    assert.ok(events.some(event => (event.update as Record<string, unknown>)?.type === "fast_mode_update" && (event.update as Record<string, unknown>).fast_mode_state === "off"));
+    assert.ok(events.some(event => event.event === "slash_error" && event.request_id === "fast-race"));
+  } finally { sessions.delete(session.sessionId); }
 });

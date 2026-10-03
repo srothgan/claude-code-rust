@@ -301,7 +301,7 @@ mod tests {
             tc,
             super::super::ToolCallRenderContext::default(),
             80,
-            0,
+            crate::ui::SpinnerState::Animated(0),
         )
     }
 
@@ -443,7 +443,7 @@ mod tests {
             &tc,
             super::super::ToolCallRenderContext::default(),
             80,
-            0,
+            crate::ui::SpinnerState::Animated(0),
         );
         assert!(
             title.spans.first().is_some_and(|span| span.content.contains(theme::ICON_COMPLETED))

@@ -8,10 +8,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const SPINNER_FRAMES: &[char] = &[
-    '\u{280B}', '\u{2819}', '\u{2839}', '\u{2838}', '\u{283C}', '\u{2834}', '\u{2826}', '\u{2827}',
-    '\u{2807}', '\u{280F}',
-];
 const MAX_PENDING_MESSAGE_PREVIEW_ROWS: usize = 3;
 
 pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
@@ -29,7 +25,7 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     }
 
     if app.turn.cancel_requested {
-        let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+        let spinner_ch = crate::ui::SpinnerState::for_app(app).icon();
         rows.push(Line::from(vec![
             Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
             Span::styled("Cancelling current turn...", Style::default().fg(theme::DIM)),
@@ -88,7 +84,7 @@ pub(crate) fn build_btw_status_rows(app: &App, width: u16) -> Vec<Line<'static>>
     for item in ordered.into_iter().take(detail_count) {
         let (icon, icon_style, body, body_style) = match &item.state {
             BtwRequestState::Active => (
-                SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()].to_string(),
+                crate::ui::SpinnerState::for_app(app).icon().to_owned(),
                 Style::default().fg(theme::BTW_ACCENT),
                 item.question.replace(['\r', '\n'], " "),
                 Style::default().fg(theme::DIM),
@@ -178,7 +174,7 @@ pub(crate) fn blocked_input_lines(
 ) -> Vec<Line<'static>> {
     match reason {
         ComposerBlockReason::CommandPending => {
-            let spinner_ch = SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()];
+            let spinner_ch = crate::ui::SpinnerState::for_app(app).icon();
             let label =
                 app.turn.pending_command_label.as_deref().unwrap_or("Processing command...");
             vec![Line::from(vec![
@@ -222,6 +218,28 @@ mod tests {
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn reduced_motion_keeps_cancellation_and_command_activity_icons_static() {
+        let mut app = App::test_default();
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(true),
+        ));
+        app.turn.cancel_requested = true;
+        app.turn.pending_command_label = Some("Switching mode...".to_owned());
+        for frame in [0, 4, 9] {
+            app.spinner_frame = frame;
+            assert_eq!(
+                line_text(&build_composer_hint_rows(&app)[0]),
+                "\u{25C6} Cancelling current turn..."
+            );
+            assert_eq!(
+                line_text(&blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)[0]),
+                "\u{25C6} Switching mode..."
+            );
+        }
     }
 
     #[test]

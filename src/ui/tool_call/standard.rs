@@ -47,9 +47,9 @@ pub(super) fn render_tool_call_title(
     tc: &ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,
     width: u16,
-    spinner_frame: usize,
+    spinner: crate::ui::SpinnerState,
 ) -> Line<'static> {
-    let (icon, icon_color) = status_icon(tc.status, spinner_frame);
+    let (icon, icon_color) = status_icon(tc.status, spinner);
     let kind_label = tool_display::tool_name_label(&tc.sdk_tool_name);
     let kind_icon_span = if let Some((task_marker, task_marker_style)) = tasks::title_marker(tc) {
         Span::styled(format!("{task_marker} "), task_marker_style)

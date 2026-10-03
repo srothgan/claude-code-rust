@@ -103,7 +103,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     );
 
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(help, Style::default().fg(theme::RUST_ORANGE))))
+        Paragraph::new(help)
+            .style(Style::default().fg(theme::RUST_ORANGE))
             .wrap(Wrap { trim: false }),
         chunks[3],
     );
@@ -123,8 +124,13 @@ fn config_help_text(app: &App, width: u16) -> String {
                 if width < 60 { return "Read-only | Esc close\n↑↓ scroll | Tab tabs\ns scope | r refresh".to_owned(); }
                 return "Up/Down scroll | Read-only | s scope | r refresh | Tab tabs | Esc close".to_owned();
             }
-            if width < 60 { return "Space edit | Esc close\n↑↓ scroll | Tab tabs\ns scope | Del reset".to_owned(); }
-            format!("Up/Down scroll | Space edit{} | s scope | Del reset | r refresh | Tab tabs | Esc close", if setting.options.is_empty() { "" } else { " | Left/Right change" })
+            let controls = if setting.allows_custom { "Space edit" } else { "Left/Right or Space change" };
+            if width < 35 {
+                let controls = if setting.allows_custom { "Space edit" } else { "\u{2190}/\u{2192}/Space change" };
+                return format!("{controls}\n\u{2191}\u{2193} scroll | Esc close\ns scope | Del reset | Tab");
+            }
+            if width < 60 { return format!("{} | Esc close\n\u{2191}\u{2193} scroll | Tab tabs\ns scope | Del reset", if setting.allows_custom { "Space edit" } else { "\u{2190}/\u{2192}/Space change" }); }
+            format!("Up/Down scroll | {controls} | s scope | Del reset | r refresh | Tab tabs | Esc close")
         }
         ConfigTab::Plugins => {
             if crate::app::plugins::search_enabled(app.plugins.active_tab) {
@@ -431,17 +437,15 @@ mod tests {
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
             app.config.snapshot = Some(serde_json::from_value(serde_json::json!({
                 "cwd": app.cwd_raw, "context": "received", "diagnostics": [], "resolution_sources": [], "provenance": {},
-                "catalog": [{ "id": "model", "label": "Default model", "description": "Saved model for future sessions", "key_path": ["model"], "kind": "string", "options": ["opus", "sonnet"], "allows_custom": false, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
-                "sources": [{ "scope": "user", "path": "profile/settings.json", "status": "valid", "values": [{ "id": "model", "revision": "r1", "value": "opus" }] }],
-                "values": [{ "id": "model", "value": "opus", "contributors": ["user"], "policy_restricted": false }]
+                "catalog": [{ "id": "language", "label": "Language", "description": "Preferred response language", "key_path": ["language"], "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
+                "sources": [{ "scope": "user", "path": "profile/settings.json", "status": "valid", "values": [{ "id": "language", "revision": "r1", "value": "German" }] }],
+                "values": [{ "id": "language", "value": "German", "contributors": ["user"], "policy_restricted": false }]
             })).expect("SDK snapshot"));
             let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
             terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
             let text = buffer_text(terminal.backend().buffer());
-            assert!(
-                text.lines().any(|line| line.contains("Default model") && line.contains("opus"))
-            );
-            assert!(text.contains("Saved in user: opus"));
+            assert!(text.lines().any(|line| line.contains("Language") && line.contains("German")));
+            assert!(text.contains("Saved in user: German"));
             assert!(text.contains("Save in: User (all projects)"));
             crate::app::config::handle_key(
                 &mut app,
@@ -449,7 +453,7 @@ mod tests {
             );
             terminal.draw(|frame| super::render(frame, &mut app)).expect("editor");
             let text = buffer_text(terminal.backend().buffer());
-            assert!(text.contains("Saved in user: opus"));
+            assert!(text.contains("Saved in user: German"));
             assert!(text.contains("Enter save"));
             assert!(text.contains("Ctrl+R reset"));
             crate::app::config::handle_key(
@@ -511,18 +515,10 @@ mod tests {
         assert_eq!(buffer[(value_column, language_row)].symbol(), "D");
         assert_eq!(buffer[(value_column, language_row)].fg, super::theme::DIM);
         assert_eq!(buffer[(value_column, thinking_row)].bg, super::theme::USER_MSG_BG);
-        assert!(lines.iter().any(|line| line.contains("1–2 of 2")));
-        crate::app::config::handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-        );
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("choice editor");
-        assert!(buffer_text(terminal.backend().buffer()).contains("Value: On"));
+        assert!(lines.iter().any(|line| line.contains("1/2")));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("changed choice");
-        assert!(buffer_text(terminal.backend().buffer()).contains("Value: Off"));
-        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("selected language");
+        assert!(buffer_text(terminal.backend().buffer()).contains("2/2"));
         crate::app::config::handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
@@ -547,13 +543,14 @@ mod tests {
                 "{text}"
             );
             assert!(text.contains("Esc close"), "{text}");
-            assert!(text.contains("Space edit"), "{text}");
-            assert!(text.contains("of 2"), "{text}");
+            assert!(text.contains("Space change"), "{text}");
+            assert!(text.contains("1/2"), "{text}");
         }
         let text = render_config_text(28, 10, settings_preview_app());
         assert!(text.contains("Window too small"));
         assert!(text.contains("Esc close"));
         let mut app = settings_preview_app();
+        app.config.selected_setting_index = 1;
         crate::app::config::handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
@@ -592,38 +589,6 @@ mod tests {
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Controlled by your organization"));
         assert!(text.contains("Read-only | s scope | r refresh"));
-    }
-
-    #[test]
-    fn model_picker_keeps_the_selected_option_and_save_controls_visible() {
-        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let mut app = settings_preview_app();
-        app.config.selected_setting_index = 1;
-        let snapshot = app.config.snapshot.as_mut().expect("snapshot");
-        snapshot.sources[0].values[1].id = "model".to_owned();
-        let setting = &mut snapshot.catalog[1];
-        setting.id = "model".to_owned();
-        setting.key_path = vec!["model".to_owned()];
-        setting.label = "Default model".to_owned();
-        setting.allows_custom = false;
-        setting.options =
-            (1..=12).map(|index| serde_json::json!(format!("model-{index}"))).collect();
-        crate::app::config::handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
-        );
-        for _ in 0..12 {
-            crate::app::config::handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-            );
-        }
-        let text = render_config_text(80, 24, app);
-        assert!(text.contains("Models  ↑"), "{text}");
-        assert!(text.contains("› model-12"));
-        assert!(text.contains("Enter save"));
-        assert!(text.contains("Ctrl+R reset"));
-        assert!(text.contains("Esc cancel"));
     }
 
     #[test]
@@ -673,7 +638,7 @@ mod tests {
         terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.lines().any(|line| line.contains("Setting 21") && line.contains("Default")));
-        assert!(text.contains("of 22"));
+        assert!(text.contains("22/22"));
         assert!(text.contains("Up/Down scroll"));
         assert!(app.config.settings_scroll_offset > 0);
     }

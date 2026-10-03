@@ -431,21 +431,6 @@ async fn app_fast_shadows_advertised_command_and_toggles_authoritative_state() {
         .await;
 }
 
-#[test]
-fn fast_capability_check_blocks_enable() {
-    let unsupported_model = model::CurrentModel::new("model", "Model", "Model")
-        .supports_fast_mode(Some(false))
-        .authoritative(true);
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
-    app.session_runtime.current_model = Some(unsupported_model);
-
-    assert!(try_handle_submit(&mut app, "/fast"));
-    assert!(rx.try_recv().is_err());
-    assert!(!matches!(app.status, AppStatus::CommandPending));
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn fast_capability_check_still_allows_disable() {
     tokio::task::LocalSet::new()
@@ -473,12 +458,12 @@ async fn fast_capability_check_still_allows_disable() {
 }
 
 #[test]
-fn fast_rejects_arguments_without_dispatching() {
+fn fast_rejects_invalid_arguments_without_dispatching() {
     let mut app = App::test_default();
     let mut rx = attach_test_connection(&mut app);
     app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
 
-    let consumed = try_handle_submit(&mut app, "/fast on");
+    let consumed = try_handle_submit(&mut app, "/fast invalid");
 
     assert!(consumed);
     assert!(rx.try_recv().is_err());
@@ -487,7 +472,7 @@ fn fast_rejects_arguments_without_dispatching() {
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
-    assert_eq!(block.text, "Usage: /fast");
+    assert_eq!(block.text, "Usage: /fast [on|off]");
 }
 
 #[test]
@@ -907,6 +892,7 @@ fn effort_argument_candidates_include_session_only_max() {
                 crate::agent::model::EffortLevel::Medium,
                 crate::agent::model::EffortLevel::High,
                 crate::agent::model::EffortLevel::XHigh,
+                crate::agent::model::EffortLevel::Max,
             ]),
     );
 
@@ -914,7 +900,7 @@ fn effort_argument_candidates_include_session_only_max() {
 
     assert_eq!(
         candidates.iter().map(|candidate| candidate.insert_value.as_str()).collect::<Vec<_>>(),
-        vec!["low", "medium", "high", "xhigh", "max"]
+        vec!["low", "medium", "high", "xhigh", "max", "reset"]
     );
     assert!(candidates.iter().any(|candidate| {
         candidate.insert_value == "max"
@@ -1376,11 +1362,11 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
             let _rx = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
             app.session_runtime.mode = Some(super::super::ModeState {
-                current_mode_id: "code".to_owned(),
-                current_mode_name: "Code".to_owned(),
+                current_mode_id: "default".to_owned(),
+                current_mode_name: "Default".to_owned(),
                 available_modes: vec![
                     super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                    super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
+                    super::super::ModeInfo { id: "default".to_owned(), name: "Default".to_owned() },
                 ],
             });
 
@@ -1396,13 +1382,20 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
                 &mut app,
-                session_update(crate::agent::model::SessionUpdate::CurrentModeUpdate(
-                    crate::agent::model::CurrentModeUpdate::new("plan"),
+                session_update(crate::agent::model::SessionUpdate::ModeStateUpdate(
+                    super::super::ModeState {
+                        current_mode_id: "plan".to_owned(),
+                        current_mode_name: "Plan".to_owned(),
+                        available_modes: vec![super::super::ModeInfo {
+                            id: "plan".to_owned(),
+                            name: "Plan".to_owned(),
+                        }],
+                    },
                 )),
             );
             assert!(
                 matches!(app.status, AppStatus::Ready),
-                "expected Ready after CurrentModeUpdate ack, got {:?}",
+                "expected Ready after ModeStateUpdate ack, got {:?}",
                 app.status
             );
             assert!(app.turn.pending_command_label.is_none());
@@ -1487,7 +1480,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
                 envelope.command,
                 crate::agent::wire::BridgeCommand::SetEffort {
                     session_id: "sess-1".to_owned(),
-                    effort: "xhigh".to_owned(),
+                    effort: Some("xhigh".to_owned()),
                 }
             );
 
@@ -1536,7 +1529,7 @@ async fn effort_accepts_session_only_max() {
                 envelope.command,
                 crate::agent::wire::BridgeCommand::SetEffort {
                     session_id: "sess-1".to_owned(),
-                    effort: "max".to_owned(),
+                    effort: Some("max".to_owned()),
                 }
             );
         })
@@ -1616,7 +1609,7 @@ async fn agent_reset_sends_null_agent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
+async fn agent_command_routes_selection_to_the_bridge_for_validation() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
@@ -1637,28 +1630,6 @@ async fn agent_allows_unadvertised_name_when_agent_catalog_is_empty() {
             );
         })
         .await;
-}
-
-#[test]
-fn agent_rejects_unknown_when_available_agents_are_populated() {
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some("sess-1".into());
-    app.sdk_inventory.available_agents =
-        vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
-
-    let consumed = try_handle_submit(&mut app, "/agent planner");
-
-    assert!(consumed);
-    assert!(rx.try_recv().is_err());
-    assert!(!matches!(app.status, AppStatus::CommandPending));
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Unknown agent: planner");
 }
 
 #[test]
@@ -1694,31 +1665,9 @@ fn effort_invalid_arguments_return_usage() {
         let Some(MessageBlock::Text(block)) = last.blocks.first() else {
             panic!("expected text block");
         };
-        assert_eq!(block.text, "Usage: /effort <low|medium|high|xhigh|max>");
+        assert_eq!(block.text, "Usage: /effort <low|medium|high|xhigh|max|reset>");
         assert!(!matches!(app.status, AppStatus::CommandPending));
     }
-}
-
-#[test]
-fn effort_rejects_models_without_effort_support() {
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some("sess-1".into());
-    app.session_runtime.current_model = Some(
-        crate::agent::model::CurrentModel::new("haiku", "Haiku", "Haiku").supports_effort(false),
-    );
-
-    let consumed = try_handle_submit(&mut app, "/effort high");
-
-    assert!(consumed);
-    assert!(rx.try_recv().is_err());
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Cannot switch effort: current model does not support effort.");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2059,7 +2008,7 @@ async fn ultracode_composer_wire_events_status_and_footer_workflow() {
         app.input.set_text("/effort low");
         crate::app::input_submit::submit_input(&mut app);
         tokio::task::yield_now().await;
-        assert!(matches!(commands.try_recv().expect("effort").command, wire::BridgeCommand::SetEffort { effort, .. } if effort == "low"));
+        assert!(matches!(commands.try_recv().expect("effort").command, wire::BridgeCommand::SetEffort { effort, .. } if effort.as_deref() == Some("low")));
         crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::UltracodeUpdate { ultracode: on }));
         assert_eq!(app.status, AppStatus::CommandPending, "Ultracode telemetry must not acknowledge effort");
         crate::app::handle_client_event(&mut app, session_update(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate { option_id: "effortLevel".to_owned(), value: json!("low") })));
@@ -2124,4 +2073,91 @@ async fn ultracode_composer_wire_events_status_and_footer_workflow() {
         assert_eq!(status.text, "Ultracode is requested but unavailable for this session.");
         assert!(commands.try_recv().is_err(), "status must not retry activation");
     })).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn effort_reset_and_thinking_wait_for_session_acknowledgement() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use crate::agent::wire::BridgeCommand;
+            let mut app = App::test_default();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.config_options.insert("effortLevel".to_owned(), json!("max"));
+            app.session_runtime
+                .config_options
+                .insert("alwaysThinkingEnabled".to_owned(), json!(true));
+            for (input, expected, option, acknowledged) in [
+                (
+                    "/effort reset",
+                    BridgeCommand::SetEffort { session_id: "sess-1".to_owned(), effort: None },
+                    "effortLevel",
+                    json!("high"),
+                ),
+                (
+                    "/thinking off",
+                    BridgeCommand::SetThinking {
+                        session_id: "sess-1".to_owned(),
+                        enabled: Some(false),
+                    },
+                    "alwaysThinkingEnabled",
+                    json!(false),
+                ),
+                (
+                    "/thinking reset",
+                    BridgeCommand::SetThinking { session_id: "sess-1".to_owned(), enabled: None },
+                    "alwaysThinkingEnabled",
+                    json!(true),
+                ),
+            ] {
+                let previous = app.session_runtime.config_options.get(option).cloned();
+                app.input.set_text(input);
+                crate::app::input_submit::submit_input(&mut app);
+                assert_eq!(app.status, AppStatus::CommandPending);
+                assert_eq!(app.session_runtime.config_options.get(option), previous.as_ref());
+                tokio::task::yield_now().await;
+                assert_eq!(commands.try_recv().expect("session choice").command, expected);
+                crate::app::handle_client_event(
+                    &mut app,
+                    session_update(model::SessionUpdate::ConfigOptionUpdate(
+                        model::ConfigOptionUpdate {
+                            option_id: option.to_owned(),
+                            value: acknowledged.clone(),
+                        },
+                    )),
+                );
+                assert_eq!(app.status, AppStatus::Ready);
+                assert_eq!(app.session_runtime.config_options.get(option), Some(&acknowledged));
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_fast_retry_recovers_unknown_state_after_acknowledgement() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            app.session_runtime.fast_mode_state = model::FastModeState::Unknown;
+            assert!(try_handle_submit(&mut app, "/fast off"));
+            assert_eq!(app.status, AppStatus::CommandPending);
+            assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Unknown);
+            tokio::task::yield_now().await;
+            assert!(matches!(
+                commands.try_recv().expect("retry").command,
+                crate::agent::wire::BridgeCommand::SetFastMode { enabled: false, .. }
+            ));
+            crate::app::handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::FastModeUpdate {
+                    state: model::FastModeState::Off,
+                    disabled_reason: None,
+                }),
+            );
+            assert_eq!(app.status, AppStatus::Ready);
+            assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
+        })
+        .await;
 }

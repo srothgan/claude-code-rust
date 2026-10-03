@@ -29,6 +29,7 @@ const REQUIRED_ARGUMENT_COMMANDS: &[(&str, &str)] = &[
     ("/docs", "commands"),
     ("/agent", "reset"),
     ("/effort", "high"),
+    ("/thinking", "off"),
     ("/ultracode", "status"),
     ("/mode", "plan"),
     ("/model", "opus"),
@@ -38,8 +39,11 @@ const REQUIRED_ARGUMENT_COMMANDS: &[(&str, &str)] = &[
 fn app() -> App {
     let mut app = App::test_default();
     app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
-    app.session_runtime.current_model =
-        Some(model::CurrentModel::new("opus", "Opus", "Opus").supports_effort(true));
+    app.session_runtime.current_model = Some(
+        model::CurrentModel::new("opus", "Opus", "Opus")
+            .supports_effort(true)
+            .supported_effort_levels(model::EffortLevel::ALL.to_vec()),
+    );
     app.session_runtime.mode = Some(ModeState {
         current_mode_id: "plan".into(),
         current_mode_name: "Plan".into(),
@@ -609,4 +613,42 @@ fn leading_blank_lines_still_allow_command_completion_and_submission() {
     assert!(app.pending_submit.is_none());
     key(&mut app, KeyCode::Enter);
     assert_eq!(submitted_text(&app), "\n \n\u{2003}/clear ");
+}
+
+#[test]
+fn effort_completion_follows_reported_model_choices_and_keeps_reset_available() {
+    let mut app = app();
+    for (supports, levels, expected) in [
+        (
+            true,
+            vec![model::EffortLevel::Low, model::EffortLevel::High],
+            vec!["low", "high", "reset"],
+        ),
+        (false, vec![], vec!["reset"]),
+    ] {
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate {
+                session_id: "test-session".into(),
+                update: model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
+                    model::CurrentModel::new("next-model", "Next", "Next")
+                        .supports_effort(supports)
+                        .supported_effort_levels(levels),
+                )),
+            },
+        );
+        draft(&mut app, "");
+        draft(&mut app, "/effort");
+        key(&mut app, KeyCode::Enter);
+        let choices: Vec<_> = app
+            .slash
+            .visible()
+            .expect("effort menu")
+            .candidates
+            .iter()
+            .map(|choice| choice.insert_value.as_str())
+            .collect();
+        assert_eq!(choices, expected);
+        key(&mut app, KeyCode::Esc);
+    }
 }

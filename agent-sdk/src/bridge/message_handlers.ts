@@ -1,5 +1,6 @@
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
+import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
   BridgeCommand,
@@ -12,7 +13,7 @@ import type {
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import {
-  toPermissionMode,
+  observeSessionMode,
   buildModeState,
   refreshSupportedModesForSession,
 } from "./commands.js";
@@ -1934,18 +1935,10 @@ export function handleSdkMessage(
       if (session.connected) {
         void refreshUltracode(session);
       }
-      const modelName =
-        typeof msg.model === "string" ? msg.model : session.model;
-      session.model = modelName;
+      if (typeof msg.model === "string" && msg.model.trim().length > 0) observeSessionModel(session, msg.model);
       const currentModelChanged = refreshCurrentModel(session, false);
 
-      const incomingMode =
-        typeof msg.permissionMode === "string"
-          ? toPermissionMode(msg.permissionMode)
-          : null;
-      if (incomingMode) {
-        session.mode = incomingMode;
-      }
+      const incomingMode = observeSessionMode(session, msg.permissionMode);
       refreshSupportedModesForSession(session);
       const fastModeChanged = setFastModeSnapshotIfChanged(
         session,
@@ -1964,7 +1957,7 @@ export function handleSdkMessage(
         if (incomingMode) {
           emitSessionUpdate(session.sessionId, {
             type: "mode_state_update",
-            mode: buildModeState(session, incomingMode),
+            mode: buildModeState(session, session.mode),
           });
         }
         if (fastModeChanged) {
@@ -1995,7 +1988,7 @@ export function handleSdkMessage(
       }
 
       if (
-        session.lastAvailableAgentsSignature === undefined &&
+        session.availableAgents === undefined &&
         Array.isArray(msg.agents)
       ) {
         emitAvailableAgentsIfChanged(
@@ -2027,16 +2020,11 @@ export function handleSdkMessage(
     }
 
     if (subtype === "status") {
-      const mode =
-        typeof msg.permissionMode === "string"
-          ? toPermissionMode(msg.permissionMode)
-          : null;
-      if (mode) {
-        session.mode = mode;
+      if (observeSessionMode(session, msg.permissionMode)) {
         refreshSupportedModesForSession(session);
         emitSessionUpdate(session.sessionId, {
-          type: "current_mode_update",
-          current_mode_id: mode,
+          type: "mode_state_update",
+          mode: buildModeState(session, session.mode),
         });
       }
       if (msg.status === "compacting") {

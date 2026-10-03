@@ -274,7 +274,7 @@ export function buildConnectBridgeEvent(
         cwd: session.cwd,
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
-        mode: session.mode ? buildModeState(session, session.mode) : null,
+        mode: buildModeState(session, session.mode),
         ultracode: session.ultracode ?? null,
         fast_mode_state: session.fastModeState,
         ...(session.fastModeDisabledReason
@@ -293,7 +293,7 @@ export function buildConnectBridgeEvent(
         cwd: session.cwd,
         current_model: session.currentModel ?? resolveCurrentModel(session),
         available_models: session.availableModels,
-        mode: session.mode ? buildModeState(session, session.mode) : null,
+        mode: buildModeState(session, session.mode),
         ultracode: session.ultracode ?? null,
         fast_mode_state: session.fastModeState,
         ...(session.fastModeDisabledReason
@@ -368,6 +368,7 @@ export function emitConnectEvent(session: SessionState): void {
       );
     }
   }
+  emitAvailableAgentsSnapshot(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
@@ -398,6 +399,7 @@ export function emitSessionReplacedEvent(
   logConnectEventEmission(session, "session_replaced", requestId);
   writeEvent(bridgeEvent, requestId);
   emitAvailableCommandsSnapshot(session);
+  emitAvailableAgentsSnapshot(session);
   if (session.pendingRewindResult) {
     writeEvent(
       { ...session.pendingRewindResult, session_id: session.sessionId },
@@ -447,6 +449,14 @@ export async function emitSessionsList(requestId?: string): Promise<void> {
     });
     writeEvent({ event: "sessions_listed", sessions: [] }, requestId);
   }
+}
+
+export function emitAvailableAgentsSnapshot(session: SessionState): void {
+  if (session.availableAgents === undefined) return;
+  emitSessionUpdate(session.sessionId, {
+    type: "available_agents_update",
+    agents: session.availableAgents,
+  });
 }
 
 /** Replay the current authority after the host resets its session inventory. */

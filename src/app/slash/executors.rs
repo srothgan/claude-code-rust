@@ -47,8 +47,9 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Docs => handle_docs_submit(app, &args),
         AppSlashCommand::Agent => handle_agent_submit(app, &args),
         AppSlashCommand::Effort => handle_effort_submit(app, &args),
+        AppSlashCommand::Thinking => handle_thinking_submit(app, &args),
         AppSlashCommand::Ultracode => handle_ultracode_submit(app, &args),
-        AppSlashCommand::Fast => handle_fast_submit(app),
+        AppSlashCommand::Fast => handle_fast_submit(app, &args),
         AppSlashCommand::Help => handle_help_submit(app),
         AppSlashCommand::Mcp => handle_mcp_submit(app),
         AppSlashCommand::Plugins => handle_plugins_submit(app),
@@ -442,8 +443,10 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     let [requested_mode_arg] = args else {
         unreachable!("validated /mode arguments must contain one value");
     };
-    let requested_mode = *requested_mode_arg;
+    request_mode_change(app, requested_mode_arg)
+}
 
+pub(crate) fn request_mode_change(app: &mut App, requested_mode: &str) -> bool {
     let Some((conn, sid)) = require_active_session(
         app,
         "Cannot switch mode: not connected yet.",
@@ -451,13 +454,6 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     ) else {
         return true;
     };
-
-    if let Some(ref mode) = app.session_runtime.mode
-        && !mode.available_modes.iter().any(|m| m.id == requested_mode)
-    {
-        push_system_message(app, format!("Unknown mode: {requested_mode}"));
-        return true;
-    }
 
     set_command_pending(app, "Switching mode...", Some(crate::app::PendingCommandAck::CurrentMode));
 
@@ -494,13 +490,6 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if !app.sdk_inventory.available_models.is_empty()
-        && !app.sdk_inventory.available_models.iter().any(|candidate| candidate.id == model_name)
-    {
-        push_system_message(app, format!("Unknown model: {model_name}"));
-        return true;
-    }
-
     set_command_pending(
         app,
         "Switching model...",
@@ -530,9 +519,7 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     let [effort_arg] = args else {
         unreachable!("validated /effort arguments must contain one value");
     };
-    let Some(effort) = crate::agent::model::EffortLevel::from_stored(effort_arg) else {
-        unreachable!("validated /effort argument must be supported");
-    };
+    let effort = (*effort_arg != "reset").then(|| (*effort_arg).to_owned());
 
     let Some((conn, sid)) = require_active_session(
         app,
@@ -542,11 +529,6 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    if app.session_runtime.current_model.as_ref().is_some_and(|model| !model.supports_effort) {
-        push_system_message(app, "Cannot switch effort: current model does not support effort.");
-        return true;
-    }
-
     set_command_pending(
         app,
         "Switching effort...",
@@ -554,7 +536,6 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     );
 
     let tx = app.event_tx.clone();
-    let effort = effort.as_stored().to_owned();
     let session_id = sid.to_string();
     tokio::task::spawn_local(async move {
         match conn.set_effort(session_id.clone(), effort) {
@@ -569,6 +550,35 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
             }
         }
     });
+    true
+}
+
+fn handle_thinking_submit(app: &mut App, args: &[&str]) -> bool {
+    let Some((conn, sid)) = require_active_session(
+        app,
+        "Cannot change thinking: not connected yet.",
+        "Cannot change thinking: no active session.",
+    ) else {
+        return true;
+    };
+    let enabled = match args {
+        ["on"] => Some(true),
+        ["off"] => Some(false),
+        _ => None,
+    };
+    set_command_pending(
+        app,
+        "Changing thinking...",
+        Some(crate::app::PendingCommandAck::ConfigOption {
+            option_id: "alwaysThinkingEnabled".to_owned(),
+        }),
+    );
+    if let Err(error) = conn.set_thinking(sid.to_string(), enabled) {
+        crate::app::events::handle_local_slash_command_error(
+            app,
+            &format!("Failed to run /thinking: {error}"),
+        );
+    }
     true
 }
 
@@ -630,7 +640,7 @@ fn ultracode_status_text(app: &App) -> String {
     }
 }
 
-fn handle_fast_submit(app: &mut App) -> bool {
+fn handle_fast_submit(app: &mut App, args: &[&str]) -> bool {
     let Some((conn, sid)) = require_active_session(
         app,
         "Cannot toggle fast mode: not connected yet.",
@@ -639,18 +649,22 @@ fn handle_fast_submit(app: &mut App) -> bool {
         return true;
     };
 
-    let enabled =
-        matches!(app.session_runtime.fast_mode_state, crate::agent::model::FastModeState::Off);
-    if enabled
-        && app
-            .session_runtime
-            .current_model
-            .as_ref()
-            .is_some_and(|model| model.supports_fast_mode == Some(false))
-    {
-        push_system_message(app, "Cannot enable fast mode: current model does not support it.");
-        return true;
-    }
+    let enabled = match args {
+        ["on"] => true,
+        ["off"] => false,
+        _ => match app.session_runtime.fast_mode_state {
+            crate::agent::model::FastModeState::Off => true,
+            crate::agent::model::FastModeState::On
+            | crate::agent::model::FastModeState::Cooldown => false,
+            crate::agent::model::FastModeState::Unknown => {
+                push_system_message(
+                    app,
+                    "Fast mode is unknown. Use /fast on or /fast off to retry.",
+                );
+                return true;
+            }
+        },
+    };
     let label = if enabled { "Enabling fast mode..." } else { "Disabling fast mode..." };
     set_command_pending(app, label, Some(crate::app::PendingCommandAck::FastMode));
 
@@ -683,21 +697,7 @@ fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    let agent = if requested_agent == "reset" {
-        None
-    } else {
-        if !app.sdk_inventory.available_agents.is_empty()
-            && !app
-                .sdk_inventory
-                .available_agents
-                .iter()
-                .any(|candidate| candidate.name == requested_agent)
-        {
-            push_system_message(app, format!("Unknown agent: {requested_agent}"));
-            return true;
-        }
-        Some(requested_agent.to_owned())
-    };
+    let agent = if requested_agent == "reset" { None } else { Some(requested_agent.to_owned()) };
 
     set_command_pending(
         app,

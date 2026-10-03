@@ -12,10 +12,33 @@ use ratatui::text::Line;
 #[cfg(test)]
 use super::message_rows::build_user_system_message_rows;
 
-/// Frame counter for animated status and tool indicators.
+/// Presentation of active status and tool indicators, derived from saved preferences.
 #[derive(Clone, Copy)]
-pub struct SpinnerState {
-    pub frame: usize,
+pub enum SpinnerState {
+    Animated(usize),
+    Static,
+}
+
+impl SpinnerState {
+    pub(crate) const FRAMES: &[&str] = &[
+        "\u{280B}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283C}", "\u{2834}", "\u{2826}",
+        "\u{2827}", "\u{2807}", "\u{280F}",
+    ];
+
+    pub(crate) fn for_app(app: &crate::app::App) -> Self {
+        if app.config.prefers_reduced_motion_effective() {
+            Self::Static
+        } else {
+            Self::Animated(app.spinner_frame)
+        }
+    }
+
+    pub(crate) fn icon(self) -> &'static str {
+        match self {
+            Self::Animated(frame) => Self::FRAMES[frame % Self::FRAMES.len()],
+            Self::Static => "\u{25C6}",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

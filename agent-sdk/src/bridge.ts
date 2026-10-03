@@ -16,12 +16,7 @@ import type {
   RewindRestoreMode,
   RewindTarget,
 } from "./types.js";
-import type { EffortLevel } from "./types.js";
 import { parseCommandEnvelope } from "./bridge/commands.js";
-import {
-  parseFastModeDisabledReason,
-  parseFastModeState,
-} from "./bridge/state_parsing.js";
 import {
   writeEvent,
   failConnection,
@@ -29,7 +24,6 @@ import {
   emitRuntimeReloadCompleted,
   emitRuntimeReloadHeld,
   emitRuntimeReloadFailed,
-  emitSessionUpdate,
   setSessionListingDir,
 } from "./bridge/events.js";
 import { contentFromPrompt } from "./bridge/message_handlers.js";
@@ -70,7 +64,7 @@ import { handleMcpCommand } from "./bridge/command_mcp.js";
 import { handleSessionControlCommand } from "./bridge/command_session_control.js";
 import { handleSessionDataCommand } from "./bridge/command_session_data.js";
 import { dispatchSideQuestion } from "./bridge/side_questions.js";
-import { readSessionEffort } from "./bridge/effort.js";
+import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
 
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
@@ -265,61 +259,6 @@ export async function generatePersistedSessionTitle(
   return title;
 }
 
-export async function applySessionEffort(
-  query: import("@anthropic-ai/claude-agent-sdk").Query,
-  effort: EffortLevel,
-  ultracodeEffective = false,
-): Promise<EffortLevel | null> {
-  await query.applyFlagSettings({
-    effortLevel: effort,
-    ...(ultracodeEffective ? { ultracode: true } : {}),
-  });
-  try {
-    return await readSessionEffort(query);
-  } catch (error) {
-    throw new Error("The effort change was accepted, but its applied level could not be verified.", { cause: error });
-  }
-}
-
-export async function applySessionFastMode(
-  query: import("@anthropic-ai/claude-agent-sdk").Query,
-  enabled: boolean,
-): Promise<import("./types.js").FastModeSnapshot> {
-  try {
-    await query.applyFlagSettings({ fastMode: enabled });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`SDK rejected the fast-mode change: ${message}`);
-  }
-
-  let result: import("@anthropic-ai/claude-agent-sdk").SDKControlInitializeResponse;
-  try {
-    result = await query.reinitialize();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `SDK accepted the fast-mode change but state verification failed: ${message}`,
-    );
-  }
-
-  const state = parseFastModeState(result.fast_mode_state);
-  if (state) {
-    const disabledReason = parseFastModeDisabledReason(
-      result.fast_mode_disabled_reason,
-    );
-    return {
-      state,
-      ...(disabledReason ? { disabled_reason: disabledReason } : {}),
-    };
-  }
-  if (!enabled && result.fast_mode_state === undefined) {
-    return { state: "off" };
-  }
-  throw new Error(
-    "SDK accepted the fast-mode change but did not report its resulting state",
-  );
-}
-
 export function buildPromptUserMessage(
   command: Extract<BridgeCommand, { command: "prompt" }>,
   sessionId: string,
@@ -342,25 +281,6 @@ export function buildPromptUserMessage(
       content,
     },
   };
-}
-
-export async function applySessionAgent(
-  query: import("@anthropic-ai/claude-agent-sdk").Query,
-  agent: string | null,
-): Promise<void> {
-  const settings = { agent } as Parameters<typeof query.applyFlagSettings>[0];
-  await query.applyFlagSettings(settings);
-}
-
-export function emitAgentConfigOptionUpdate(
-  sessionId: string,
-  agent: string | null,
-): void {
-  emitSessionUpdate(sessionId, {
-    type: "config_option_update",
-    option_id: "agent",
-    value: agent,
-  });
 }
 
 const EXPECTED_AGENT_SDK_VERSION = "0.3.288";
@@ -1061,8 +981,8 @@ async function handleCommand(
       try {
         if (!session || session.closing) throw new Error("No active session for settings.");
         result = command.command === "inspect_settings"
-          ? { persistence: "not_requested", application: "blocked", snapshot: await inspectSettings(session.cwd, session.availableModels) }
-          : await mutateSetting(session.cwd, command.mutation, session.availableModels);
+          ? { persistence: "not_requested", application: "blocked", snapshot: await inspectSettings(session.cwd, session.availableModels, session.availableAgents) }
+          : await mutateSetting(session.cwd, command.mutation, session.availableModels, session.availableAgents);
       } catch { result = { persistence: "not_requested", application: "blocked", error: "Cannot inspect settings for this session." }; }
       writeEvent({ event: "settings_result", session_id: command.session_id, result }, requestId);
       return;
@@ -1090,6 +1010,7 @@ async function handleCommand(
     case "set_model":
     case "set_mode":
     case "set_effort":
+    case "set_thinking":
     case "set_agent":
     case "set_ultracode":
     case "refresh_ultracode":

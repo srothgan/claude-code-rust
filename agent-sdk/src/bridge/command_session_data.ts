@@ -1,3 +1,4 @@
+import { observeSessionModel } from "./session_model.js";
 import {
   getSessionMessages,
   listSessions,
@@ -210,7 +211,7 @@ async function getContextUsage(
   try {
     const usage = await session.query.getContextUsage({ detail: "summary" });
     if (typeof usage.model === "string" && usage.model.trim().length > 0) {
-      session.resolvedRuntimeModelId = usage.model.trim();
+      observeSessionModel(session, usage.model.trim());
       refreshCurrentModel(session, true);
     }
     const rawPercentage =

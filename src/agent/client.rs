@@ -674,10 +674,17 @@ impl AgentConnection {
         })
     }
 
-    pub fn set_effort(&self, session_id: String, effort: String) -> anyhow::Result<()> {
+    pub fn set_effort(&self, session_id: String, effort: Option<String>) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: None,
             command: BridgeCommand::SetEffort { session_id, effort },
+        })
+    }
+
+    pub fn set_thinking(&self, session_id: String, enabled: Option<bool>) -> anyhow::Result<()> {
+        self.send(CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::SetThinking { session_id, enabled },
         })
     }
 
@@ -1220,14 +1227,14 @@ mod tests {
     fn set_effort_sends_bridge_command() {
         let (conn, mut rx) = AgentConnection::test_channel();
 
-        conn.set_effort("session-1".to_owned(), "max".to_owned()).expect("set effort");
+        conn.set_effort("session-1".to_owned(), Some("max".to_owned())).expect("set effort");
 
         let envelope = rx.try_recv().expect("command");
         assert_eq!(
             envelope.command,
             BridgeCommand::SetEffort {
                 session_id: "session-1".to_owned(),
-                effort: "max".to_owned(),
+                effort: Some("max".to_owned()),
             }
         );
     }

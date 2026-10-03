@@ -4,28 +4,36 @@ import {
   buildModeState,
   markModeUnavailableForSession,
   permissionModeFailureLooksUnsupported,
+  availableModesForSession,
   refreshSupportedModesForSession,
   toPermissionMode,
+  beginSessionModeRead,
+  observeSessionMode,
 } from "./commands.js";
 import { dispatchCancelTurnCommand } from "./command_dispatch.js";
-import { emitFastModeUpdate } from "./error_classification.js";
+import { beginFastModeRead, emitFastModeUpdate } from "./error_classification.js";
 import { emitSessionUpdate, slashError, writeEvent } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
-import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
+import { refreshSessionEffort } from "./effort.js";
+import { refreshSessionModel } from "./session_model.js";
+import { readQuerySettings } from "./query_settings.js";
+import { asRecordOrNull } from "./shared.js";
+import { FastModeVerificationError } from "./session_preferences.js";
+import { SessionObservations } from "./session_observations.js";
+
+const thinkingObservations = new SessionObservations();
 import {
   applyUltracode,
   emitUltracodeUpdate,
   logUltracodeFailure,
   readUltracodeState,
   refreshUltracode,
+  beginUltracodeRead,
   ultracodeError,
   UltracodeVerificationError,
 } from "./ultracode.js";
 import {
-  emitCurrentModelUpdate,
-  refreshCurrentModel,
   sessionById,
-  shouldInvalidateResolvedRuntimeModel,
   type SessionState,
 } from "./session_lifecycle.js";
 
@@ -38,6 +46,7 @@ type SessionControlCommand = Extract<
       | "set_model"
       | "set_mode"
       | "set_effort"
+      | "set_thinking"
       | "set_agent"
       | "set_ultracode"
       | "refresh_ultracode"
@@ -53,9 +62,9 @@ export type SessionControlCommandDeps = {
   ) => SDKUserMessage | undefined;
   applySessionEffort: (
     query: Query,
-    effort: EffortLevel,
+    effort: EffortLevel | null,
     ultracodeEffective?: boolean,
-  ) => Promise<EffortLevel | null>;
+  ) => Promise<void>;
   applySessionAgent: (query: Query, agent: string | null) => Promise<void>;
   applySessionFastMode: (
     query: Query,
@@ -96,6 +105,9 @@ export async function handleSessionControlCommand(
       return;
     case "set_effort":
       await setEffort(command, requestId, deps);
+      return;
+    case "set_thinking":
+      await setThinking(command, requestId);
       return;
     case "set_agent":
       await setAgent(command, requestId, deps);
@@ -183,31 +195,16 @@ async function setModel(
     fields: {
       requested_model: command.model,
       previous_requested_model: session.requestedModelId,
-      previous_session_model: session.model,
       previous_resolved_runtime_model: session.resolvedRuntimeModelId,
       previous_current_model: session.currentModel?.resolved_id,
     },
   });
   try {
-    const previousRequestedModel = session.requestedModelId;
-    const previousSessionModel = session.model;
+    if (!session.availableModels.some(model => model.id === command.model)) throw new Error("Choose an available model.");
     await session.query.setModel(command.model);
+    if (session.closing) return;
     session.requestedModelId = command.model;
-    session.model = command.model;
-    const invalidatedResolvedRuntimeModel =
-      shouldInvalidateResolvedRuntimeModel(
-        previousRequestedModel,
-        previousSessionModel,
-        command.model,
-      );
-    if (invalidatedResolvedRuntimeModel) {
-      session.resolvedRuntimeModelId = undefined;
-    }
-    await refreshUltracode(session);
-    await refreshSessionEffort(session);
-    const changed = refreshCurrentModel(session, true);
-    const forcedCurrentModelUpdate =
-      !changed && emitCurrentModelUpdate(session);
+    await refreshModelControls(session);
     bridgeLogger.info({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "set_model_succeeded",
@@ -217,23 +214,12 @@ async function setModel(
       requestId,
       fields: {
         requested_model: command.model,
-        session_model_after: session.model,
         resolved_runtime_model_after: session.resolvedRuntimeModelId,
         current_model_after: session.currentModel?.resolved_id,
         current_model_display_short: session.currentModel?.display_name_short,
         current_model_display_long: session.currentModel?.display_name_long,
-        current_model_update_emitted: changed || forcedCurrentModelUpdate,
-        current_model_update_forced: forcedCurrentModelUpdate,
-        resolved_runtime_model_invalidated: invalidatedResolvedRuntimeModel,
       },
     });
-    refreshSupportedModesForSession(session);
-    if (session.mode) {
-      emitSessionUpdate(session.sessionId, {
-        type: "mode_state_update",
-        mode: buildModeState(session, session.mode),
-      });
-    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.warn({
@@ -247,7 +233,6 @@ async function setModel(
         requested_model: command.model,
         error_message: message,
         previous_requested_model: session.requestedModelId,
-        previous_session_model: session.model,
         previous_resolved_runtime_model: session.resolvedRuntimeModelId,
         previous_current_model: session.currentModel?.resolved_id,
       },
@@ -278,18 +263,22 @@ async function setMode(
     return;
   }
   try {
+    refreshSupportedModesForSession(session);
+    if (!availableModesForSession(session).some(entry => entry.id === mode)) throw new Error("Choose an available permission mode.");
+    const current = beginSessionModeRead(session);
     await session.query.setPermissionMode(mode);
-    session.mode = mode;
+    if (session.closing || session.sessionId !== command.session_id) return;
+    if (current()) observeSessionMode(session, mode);
     refreshSupportedModesForSession(session);
     emitSessionUpdate(session.sessionId, {
-      type: "current_mode_update",
-      current_mode_id: mode,
+      type: "mode_state_update",
+      mode: buildModeState(session, session.mode),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (permissionModeFailureLooksUnsupported(mode, message)) {
       const changed = markModeUnavailableForSession(session, mode);
-      if (changed && session.mode) {
+      if (changed) {
         emitSessionUpdate(session.sessionId, {
           type: "mode_state_update",
           mode: buildModeState(session, session.mode),
@@ -314,13 +303,15 @@ async function setEffort(
     return;
   }
   try {
-    const effort = await deps.applySessionEffort(
+    const model = session.currentModel;
+    if (command.effort !== null && (!model?.is_authoritative || !model.supports_effort || !model.supported_effort_levels.includes(command.effort))) throw new Error("Choose an effort level supported by the current model.");
+    await deps.applySessionEffort(
       session.query,
       command.effort,
       session.ultracode?.effective === true,
     );
     await refreshUltracode(session);
-    observeSessionEffort(session, effort);
+    if (!await refreshSessionEffort(session)) slashError(session.sessionId, "The effort change was accepted, but its applied level could not be verified.", requestId);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     slashError(
@@ -329,6 +320,30 @@ async function setEffort(
       requestId,
     );
     await refreshSessionEffort(session);
+  }
+}
+
+async function setThinking(
+  command: Extract<SessionControlCommand, { command: "set_thinking" }>,
+  requestId: string | undefined,
+): Promise<void> {
+  const session = requireSession(command.session_id, requestId);
+  if (!session) return;
+  const current = thinkingObservations.begin(session);
+  let accepted = false;
+  try {
+    await session.query.applyFlagSettings({ alwaysThinkingEnabled: command.enabled });
+    accepted = true;
+    const settings = await readQuerySettings(session.query);
+    const effective = asRecordOrNull(settings.effective);
+    if (!effective) throw new Error("The thinking preference could not be verified.");
+    const value = effective.alwaysThinkingEnabled;
+    if (value !== undefined && typeof value !== "boolean") throw new Error("The thinking preference could not be verified.");
+    if (current()) emitSessionUpdate(session.sessionId, { type: "config_option_update", option_id: "alwaysThinkingEnabled", value: value ?? null });
+  } catch (error) {
+    if (!current()) return;
+    if (accepted) emitSessionUpdate(session.sessionId, { type: "config_option_update", option_id: "alwaysThinkingEnabled", value: null });
+    slashError(session.sessionId, `Failed to change thinking: ${String(error)}`, requestId);
   }
 }
 
@@ -342,8 +357,11 @@ async function setAgent(
     return;
   }
   try {
+    if (command.agent !== null && !session.availableAgents?.some(agent => agent.name === command.agent)) throw new Error("Choose an available agent.");
     await deps.applySessionAgent(session.query, command.agent);
+    if (session.closing) return;
     deps.emitAgentConfigOptionUpdate(session.sessionId, command.agent);
+    await refreshModelControls(session);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     slashError(
@@ -363,11 +381,15 @@ async function handleUltracode(
     slashError(command.session_id, "Cannot change Ultracode: no active session.", requestId);
     return;
   }
+  const current = beginUltracodeRead(session);
   if (command.command === "refresh_ultracode") {
     try {
-      session.ultracode = await readUltracodeState(session.query);
+      const state = await readUltracodeState(session.query);
+      if (!current()) return;
+      session.ultracode = state;
       emitUltracodeUpdate(session);
     } catch (error) {
+      if (!current()) return;
       session.ultracode = undefined;
       logUltracodeFailure(session, error);
       emitUltracodeUpdate(session);
@@ -376,7 +398,9 @@ async function handleUltracode(
     return;
   }
   try {
-    session.ultracode = await applyUltracode(session.query, command.enabled);
+    const state = await applyUltracode(session.query, command.enabled);
+    if (!current()) return;
+    session.ultracode = state;
     emitUltracodeUpdate(session);
     await refreshSessionEffort(session);
     if (command.enabled && !session.ultracode.effective) {
@@ -387,6 +411,7 @@ async function handleUltracode(
       );
     }
   } catch (error) {
+    if (!current()) return;
     logUltracodeFailure(session, error);
     // An accepted change with a failed read invalidates the previous snapshot.
     if (error instanceof UltracodeVerificationError) {
@@ -420,14 +445,20 @@ async function setFastMode(
       previous_state: session.fastModeState,
     },
   });
+  const sessionId = session.sessionId;
+  const current = beginFastModeRead(session);
   try {
+    if (command.enabled && session.currentModel?.supports_fast_mode === false) throw new Error("The current model does not support fast mode.");
     const snapshot = await deps.applySessionFastMode(
       session.query,
       command.enabled,
     );
-    const state = snapshot.state;
-    session.fastModeState = state;
-    session.fastModeDisabledReason = snapshot.disabled_reason;
+    if (session.closing || session.sessionId !== sessionId) return;
+    if (current()) {
+      session.fastModeState = snapshot.state;
+      session.fastModeDisabledReason = snapshot.disabled_reason;
+    }
+    const state = session.fastModeState;
     emitFastModeUpdate(session);
     await refreshSessionEffort(session);
     const reportedEnabled = state !== "off";
@@ -467,6 +498,14 @@ async function setFastMode(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (session.closing || session.sessionId !== sessionId) return;
+    if (!current()) emitFastModeUpdate(session);
+    // An accepted change with failed verification cannot leave the previous badge active.
+    if (error instanceof FastModeVerificationError && current()) {
+      session.fastModeState = "unknown";
+      session.fastModeDisabledReason = undefined;
+      emitFastModeUpdate(session);
+    }
     bridgeLogger.warn({
       target: LOG_TARGETS.APP_SESSION,
       eventName: "set_fast_mode_failed",
@@ -508,4 +547,14 @@ function requireSession(
     slashError(sessionId, `unknown session: ${sessionId}`, requestId);
   }
   return session;
+}
+
+async function refreshModelControls(session: SessionState): Promise<void> {
+  let failure: unknown;
+  try { await refreshSessionModel(session); } catch (error) { failure = error; }
+  await refreshUltracode(session);
+  await refreshSessionEffort(session);
+  refreshSupportedModesForSession(session);
+  emitSessionUpdate(session.sessionId, { type: "mode_state_update", mode: buildModeState(session, session.mode) });
+  if (failure) throw failure;
 }

@@ -218,7 +218,9 @@ async fn effort_completion_dispatches_once_and_acknowledgement_allows_reuse() {
         .run_until(async {
             let (mut app, mut rx) = app_with_bridge_connection();
             app.session_runtime.current_model =
-                Some(test_current_model("opus").supports_effort(true));
+                Some(test_current_model("opus").supports_effort(true).supported_effort_levels(
+                    vec![model::EffortLevel::High, model::EffortLevel::Max],
+                ));
             draft(&mut app, "/effort");
             enter(&mut app);
             assert!(commands(&mut rx).is_empty());
@@ -233,7 +235,7 @@ async fn effort_completion_dispatches_once_and_acknowledgement_allows_reuse() {
                 assert!(
                     matches!(dispatched.as_slice(),
                         [BridgeCommand::SetEffort { session_id, effort }]
-                            if session_id == "test-session" && effort == expected
+                            if session_id == "test-session" && effort.as_deref() == Some(expected)
                     ),
                     "{dispatched:?}"
                 );
@@ -468,7 +470,9 @@ fn queued_paste_blocks_autocomplete_edits_and_submission_until_the_drain_finishe
         ] {
             let (mut app, mut rx) = app_with_bridge_connection();
             app.session_runtime.current_model =
-                Some(test_current_model("opus").supports_effort(true));
+                Some(test_current_model("opus").supports_effort(true).supported_effort_levels(
+                    vec![model::EffortLevel::High, model::EffortLevel::Max],
+                ));
             advertise(
                 &mut app,
                 vec![model::AvailableCommand::new("clear", "Clear").input_hint("[name]")],
@@ -541,7 +545,11 @@ fn autocomplete_paste_guard_keeps_the_clear_input_control_available() {
 #[test]
 fn pasted_argument_refreshes_suggestions_before_the_next_explicit_submit() {
     let (mut app, mut rx) = app_with_bridge_connection();
-    app.session_runtime.current_model = Some(test_current_model("opus").supports_effort(true));
+    app.session_runtime.current_model = Some(
+        test_current_model("opus")
+            .supports_effort(true)
+            .supported_effort_levels(vec![model::EffortLevel::High, model::EffortLevel::Max]),
+    );
     draft(&mut app, "/effort hi");
     assert!(!app.slash.visible().expect("menu").candidates.is_empty());
     handle_terminal_event(&mut app, Event::Paste("bogus".into()));
@@ -682,7 +690,7 @@ fn optional_resume_completion_opens_picker_and_explicit_tab_can_resume_a_suggest
 async fn space_keeps_required_effort_assistance_and_dispatches_only_after_enter() {
     tokio::task::LocalSet::new().run_until(async {
         let (mut app, mut rx) = app_with_bridge_connection();
-        app.session_runtime.current_model = Some(test_current_model("opus").supports_effort(true));
+        app.session_runtime.current_model = Some(test_current_model("opus").supports_effort(true).supported_effort_levels(vec![model::EffortLevel::High, model::EffortLevel::Max]));
         type_text(&mut app, "/effort");
         key(&mut app, KeyCode::Char(' '));
         assert!(app.slash.is_visible());
@@ -693,7 +701,7 @@ async fn space_keeps_required_effort_assistance_and_dispatches_only_after_enter(
         assert!(commands(&mut rx).is_empty());
         enter(&mut app);
         tokio::task::yield_now().await;
-        assert!(matches!(commands(&mut rx).as_slice(), [BridgeCommand::SetEffort { effort, .. }] if effort == "high"));
+        assert!(matches!(commands(&mut rx).as_slice(), [BridgeCommand::SetEffort { effort, .. }] if effort.as_deref() == Some("high")));
     }).await;
 }
 

@@ -27,9 +27,9 @@ use std::rc::Rc;
 
 // Re-export public API
 pub(crate) use catalog::{APP_SLASH_COMMANDS, AppSlashCommand, SubmissionClass, command_spec};
-pub(crate) use executors::try_handle_submission;
 #[cfg(test)]
 pub use executors::try_handle_submit;
+pub(crate) use executors::{request_mode_change, try_handle_submission};
 pub use navigation::{confirm_selection, move_down, move_up, prepare_submit, sync_with_cursor};
 pub(crate) use navigation::{dismiss, request_completion};
 
