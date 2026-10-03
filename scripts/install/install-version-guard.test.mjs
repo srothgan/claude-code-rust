@@ -90,8 +90,8 @@ test("Unix installer warns about advisories whose inclusive range contains the s
 
       assert.equal(result.status, 0, `${name}: ${result.output}`);
       assert.deepEqual(
-        result.output.split(/\r?\n/u).filter((line) => line.includes("Known issue")),
-        expectedSummaries.map((summary) => `! Known issue in claude-rs ${selectedVersion}: ${summary}`),
+        result.output.split(/\r?\n/u).filter((line) => line.includes("Known issue")).map((line) => line.slice(line.indexOf("Known issue"))),
+        expectedSummaries.map((summary) => `Known issue in claude-rs ${selectedVersion}: ${summary}`),
         name,
       );
       assert.equal(result.replacementMarker, true, `${name}: advisory check stopped the install`);

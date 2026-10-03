@@ -254,7 +254,8 @@ echo UNEXPECTED_COMPLETION
   const encoded = Buffer.from(harness).toString("base64");
   const env = { ...process.env, TERM: "xterm", LC_ALL: "C", NO_COLOR: "1" };
   delete env.CI;
-  const child = spawn("script", ["-q", "-e", "-c", `printf '%s' '${encoded}' | base64 -d | timeout 5 sh`, "/dev/null"], { env });
+  // GNU timeout must preserve the foreground process group for Ctrl-C delivery.
+  const child = spawn("script", ["-q", "-e", "-c", `printf '%s' '${encoded}' | base64 -d | timeout --foreground 5 sh`, "/dev/null"], { env });
   let output = "";
   let cancelled = false;
   const status = await new Promise((resolve, reject) => {
