@@ -10,6 +10,31 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const MAX_PENDING_MESSAGE_PREVIEW_ROWS: usize = 3;
 
+pub(crate) fn reading_hint_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    use crate::app::keymap::{AppAction, KeyAction, KeyContext};
+    let bindings = app.keymap.help_bindings_for_context(KeyContext::ChatInput);
+    let mut parts = vec!["Reading output".to_owned()];
+    for (action, label) in [
+        (AppAction::ScrollChatUp, "earlier"),
+        (AppAction::ScrollChatDown, "later"),
+        (AppAction::FollowChat, "live"),
+    ] {
+        let keys = bindings
+            .iter()
+            .filter(|binding| binding.action == KeyAction::App(action))
+            .map(|binding| crate::ui::help::format_help_key_spec(&binding.spec))
+            .collect::<Vec<_>>()
+            .join("/");
+        if !keys.is_empty() {
+            parts.push(format!("{keys} {label}"));
+        }
+    }
+    crate::ui::wrap::wrap_lines_to_physical_rows(
+        &[Line::from(Span::styled(parts.join(" · "), Style::default().fg(theme::DIM)))],
+        width,
+    )
+}
+
 pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let mut rows = Vec::new();
 

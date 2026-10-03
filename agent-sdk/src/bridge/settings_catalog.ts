@@ -5,6 +5,12 @@ import { canonicalModelName } from "./model_metadata.js";
 const ALL_SCOPES: SettingsScope[] = ["user", "project", "local"];
 type Definition = [string, string, string, SettingDescriptor["kind"], string[]?, SettingsScope[]?, string?];
 const DEFINITIONS: Definition[] = [
+  ["autoScrollEnabled", "Auto-scroll", "Follow new output. Page Up pauses following; Ctrl+End returns to live output.", "boolean"],
+  ["showTurnDuration", "Show turn duration", "Show total elapsed time for completed responses.", "boolean"],
+  ["showMessageTimestamps", "Show message timestamps", "Show message times. Locally observed times are marked when Claude supplies no timestamp.", "boolean"],
+  ["timeFormat", "Time format", "Clock format for message times. Custom strftime patterns in settings files are preserved.", "string", ["auto", "12-hour", "24-hour", "24-hour-utc"]],
+  ["presentation.showStatusInTerminalTab", "Show activity in tab title", "Show a busy/idle icon beside the folder name in the terminal tab title. Off keeps just the folder name.", "boolean", undefined, ["user"]],
+  ["presentation.copyFullResponse", "Skip the /copy picker", "Copy the entire last response directly instead of choosing the response or a code block.", "boolean", undefined, ["user"]],
   ["autoCompactEnabled", "Auto compact", "Compact context automatically.", "boolean"],
   ["autoContinueAtUsageLimit", "Continue at usage limit", "Wait for a subscription usage limit to reset and continue automatically when available for your account.", "boolean", undefined, ["user"], "Automatic continuation at usage limits is not available yet."],
   ["switchModelsOnFlag", "Switch models on flagged messages", "Allow automatic alternate-model handling.", "boolean"],
@@ -80,7 +86,7 @@ export function settingsCatalog(models: AvailableModel[] = [], agents: Available
     writable_scopes: unavailable ? [] : scopes ?? ALL_SCOPES,
     allows_custom: kind !== "boolean" && choices === undefined,
     reset: "Reset clears this scope's value and uses the other scopes or Default.",
-    application: ["respectGitignore", "prefersReducedMotion"].includes(id) ? "host" : "next_session",
+    application: ["respectGitignore", "prefersReducedMotion", "autoScrollEnabled", "showTurnDuration", "showMessageTimestamps", "timeFormat"].includes(id) || isAppSetting({ id }) ? "host" : "next_session",
     ...(unavailable ? { unavailable } : {}),
   }));
   for (const setting of catalog) {
@@ -102,4 +108,9 @@ export function settingsCatalog(models: AvailableModel[] = [], agents: Available
     ...(unavailable ? { unavailable } : {}),
   });
   return catalog.sort((left, right) => left.label.localeCompare(right.label, "en", { sensitivity: "base" }));
+}
+
+/** Personal host preferences occupy this namespace in the app document. */
+export function isAppSetting(setting: Pick<SettingDescriptor, "id">): boolean {
+  return setting.id.startsWith("presentation.");
 }

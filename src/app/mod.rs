@@ -5,9 +5,11 @@ pub(crate) mod auth;
 mod btw;
 mod cache_policy;
 pub(crate) mod claude_cli;
+pub(crate) mod clipboard;
 pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;
+pub(crate) mod copy;
 mod dialog;
 mod events;
 pub(crate) mod file_index;
@@ -25,6 +27,7 @@ mod notify;
 pub(crate) mod paste_burst;
 mod permissions;
 pub(crate) mod plugins;
+pub(crate) mod presentation;
 mod questions;
 mod service_status_check;
 pub(crate) mod session_picker;
@@ -296,14 +299,14 @@ async fn run_tui_loop(
                 || app.btw.has_active());
         if is_animating {
             advance_spinner_frame(app, Instant::now());
-            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+            tab_title::update_tab_title(app);
             app.request_active_surface_repaint();
         } else {
             app.spinner_last_advance_at = None;
         }
         // Update tab title on non-animating state transitions (Ready, Error).
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
-            tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+            tab_title::update_tab_title(app);
         }
         let (width, height) =
             crossterm::terminal::size().context("failed to read terminal size before draw")?;
@@ -363,7 +366,7 @@ fn suspend_tui_process(
     let resumed_runtime = terminal_runtime::TerminalRuntime::bootstrap_with_input_reader(app)
         .context("failed to restore terminal after process resume")?;
     *terminal_runtime = resumed_runtime;
-    tab_title::update_tab_title(&app.status, app.spinner_frame, &app.cwd);
+    tab_title::update_tab_title(app);
     app.request_active_surface_repaint();
 
     suspend_result

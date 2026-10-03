@@ -11,6 +11,7 @@ pub enum FullscreenView {
     Trusted,
     SessionPicker,
     Update,
+    Copy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +63,9 @@ pub(crate) fn dismiss_fullscreen_on_interrupt(app: &mut App) {
     };
 
     match view {
+        FullscreenView::Copy => {
+            app.copy_picker = None;
+        }
         FullscreenView::Config | FullscreenView::Trusted => {}
         FullscreenView::SessionPicker => {
             app.startup.resolve_session_picker();

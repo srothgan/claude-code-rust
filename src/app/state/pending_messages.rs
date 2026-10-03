@@ -13,6 +13,7 @@ pub enum PendingUserMessageState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingUserMessage {
     pub uuid: String,
+    pub(crate) timestamp: Option<crate::app::presentation::MessageTimestamp>,
     pub text: String,
     pub images: Vec<ImageAttachment>,
     pub state: PendingUserMessageState,
@@ -21,7 +22,13 @@ pub struct PendingUserMessage {
 impl PendingUserMessage {
     #[must_use]
     pub fn sending(uuid: String, text: String, images: Vec<ImageAttachment>) -> Self {
-        Self { uuid, text, images, state: PendingUserMessageState::Sending }
+        Self {
+            timestamp: Some(crate::app::presentation::MessageTimestamp::observed()),
+            uuid,
+            text,
+            images,
+            state: PendingUserMessageState::Sending,
+        }
     }
 
     #[must_use]
@@ -42,6 +49,14 @@ pub struct PendingUserMessages {
 }
 
 impl PendingUserMessages {
+    pub(crate) fn set_sdk_timestamp(&mut self, uuid: &str, timestamp: &str) {
+        if let Some(message) = self.items.iter_mut().find(|message| message.uuid == uuid) {
+            crate::app::presentation::MessageTimestamp::apply_sdk(
+                &mut message.timestamp,
+                timestamp,
+            );
+        }
+    }
     pub const CAPACITY: usize = 10;
 
     #[must_use]

@@ -6,7 +6,7 @@ use super::edit::{
 };
 use super::mcp::{
     McpCallbackUrlOverlayState, McpServerActionKind, authenticate_mcp_server,
-    available_mcp_actions, clear_mcp_server_auth, copy_text_to_clipboard, is_mcp_action_available,
+    available_mcp_actions, clear_mcp_server_auth, is_mcp_action_available,
     mcp_config_removal_scope, open_mcp_server_details, reconnect_mcp_server, refresh_mcp_snapshot,
     remove_mcp_server_from_config, send_mcp_elicitation_response, set_mcp_server_enabled,
     submit_mcp_oauth_callback_url,
@@ -327,7 +327,7 @@ fn execute_mcp_auth_redirect_overlay_action(app: &mut App) {
             app.config.clear_overlay();
         }
         McpAuthRedirectAction::CopyUrl => {
-            match copy_text_to_clipboard(&overlay.redirect.auth_url) {
+            match crate::app::clipboard::copy_text(&overlay.redirect.auth_url) {
                 Ok(()) => {
                     app.config.set_overlay_info("Copied auth URL to clipboard.");
                 }

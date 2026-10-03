@@ -5569,7 +5569,7 @@ test("handleSdkMessage correlates heartbeat progress to its existing parent tool
     }
   });
 
-  assert.equal(events.length, 1);
+  assert.equal(events.length, 3);
   assert.deepEqual(events[0], {
     event: "session_update",
     session_id: "session-1",
@@ -5577,10 +5577,11 @@ test("handleSdkMessage correlates heartbeat progress to its existing parent tool
       type: "tool_call_update",
       tool_call_update: {
         tool_call_id: "tool-shell-parent",
-        fields: { status: "in_progress" },
+        fields: { status: "in_progress", output_metadata: { timing: { duration_ms: 1000, source: "progress" } } },
       },
     },
   });
+  assert.equal(session.toolCalls.get(parentToolCall.tool_call_id)?.output_metadata?.timing?.duration_ms, 3000);
   assert.equal(session.toolCalls.size, 1);
   assert.equal(
     session.toolCalls.get(parentToolCall.tool_call_id)?.status,
@@ -5653,6 +5654,7 @@ test("handleSdkMessage updates and clears subagent retry progress in place", () 
       tool_call_update: {
         tool_call_id: "tool-agent-retry",
         fields: {
+          output_metadata: { timing: { duration_ms: 5000, source: "progress" } },
           task_metadata: {
             subagent_retry: {
               state: "waiting",
@@ -5701,6 +5703,7 @@ test("handleSdkMessage updates and clears subagent retry progress in place", () 
       tool_call_update: {
         tool_call_id: "tool-agent-retry",
         fields: {
+          output_metadata: { timing: { duration_ms: 7000, source: "progress" } },
           task_metadata: { subagent_retry: { state: "clear" } },
         },
       },
@@ -5740,7 +5743,7 @@ test("handleSdkMessage ignores malformed subagent retry progress", () => {
     } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
   });
 
-  assert.deepEqual(events, []);
+  assert.deepEqual(events, [{ event: "session_update", session_id: "session-1", update: { type: "tool_call_update", tool_call_update: { tool_call_id: toolCall.tool_call_id, fields: { output_metadata: { timing: { duration_ms: 5000, source: "progress" } } } } } }]);
   assert.equal(
     session.toolCalls.get(toolCall.tool_call_id)?.task_metadata,
     undefined,
@@ -10366,4 +10369,46 @@ test("fast-mode command acknowledges unchanged newer native state instead of rep
     assert.ok(events.some(event => (event.update as Record<string, unknown>)?.type === "fast_mode_update" && (event.update as Record<string, unknown>).fast_mode_state === "off"));
     assert.ok(events.some(event => event.event === "slash_error" && event.request_id === "fast-race"));
   } finally { sessions.delete(session.sessionId); }
+});
+
+test("SDK live timestamps and per-turn elapsed/API times survive the production event handler", async () => {
+  const session = makeSessionState();
+  const send = (message: Record<string, unknown>) => handleSdkMessage(session, message as unknown as Parameters<typeof handleSdkMessage>[1]);
+  const events = await captureBridgeEventsAsync(async () => {
+    await send({ type: "user", uuid: "prompt-clock", timestamp: "2026-10-03T15:02:00Z", parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: "go" }] } });
+    await send({ type: "stream_event", uuid: "response-clock", event: { type: "content_block_delta", delta: { type: "text_delta", text: "answer" } }, parent_tool_use_id: null });
+    await send({ type: "assistant", uuid: "response-clock", timestamp: "2026-10-03T15:02:01Z", parent_tool_use_id: null, message: { role: "assistant", content: [] } });
+    await send({ type: "result", subtype: "success", duration_ms: 2000, duration_api_ms: 1250 });
+  }) as unknown as import("./types.js").BridgeEvent[];
+  const updates = events.filter(event => event.event === "session_update").map(event => event.update);
+  assert.ok(updates.some(update => update.type === "message_metadata" && update.role === "user" && update.timestamp === "2026-10-03T15:02:00Z"));
+  assert.ok(updates.some(update => update.type === "message_metadata" && update.role === "assistant" && update.source_message_uuid === "response-clock"));
+  assert.deepEqual(updates.find(update => update.type === "turn_timing"), { type: "turn_timing", duration_ms: 2000, api_duration_ms: 1250 });
+  assert.equal(events.at(-1)?.event, "turn_complete");
+  const failure = captureBridgeEvents(() => handleResultMessage(session, { type: "result", subtype: "error_during_execution", duration_ms: 2500, duration_api_ms: 500, errors: ["cancelled"] })) as unknown as import("./types.js").BridgeEvent[];
+  assert.ok(failure.some(event => event.event === "session_update" && event.update.type === "turn_timing" && event.update.duration_ms === 2500));
+});
+
+test("resume keeps original SDK timestamps after the corresponding content", () => {
+  const messages = [
+    { type: "user", uuid: "old-prompt", session_id: "session-1", parent_tool_use_id: null, timestamp: "2025-01-01T10:00:00Z", message: { role: "user", content: [{ type: "text", text: "old question" }] } },
+    { type: "assistant", uuid: "old-answer", session_id: "session-1", parent_tool_use_id: null, message: { timestamp: "2025-01-01T10:00:02Z", role: "assistant", content: [{ type: "text", text: "old answer" }] } },
+  ] as unknown as SessionMessage[];
+  const updates = mapSessionMessagesToUpdates(messages);
+  assert.deepEqual(updates.map(update => update.type), ["user_message_chunk", "message_metadata", "agent_message_chunk", "message_metadata"]);
+  assert.equal((updates[3] as Extract<import("./types.js").SessionUpdate, { type: "message_metadata" }>).timestamp, "2025-01-01T10:00:02Z");
+});
+
+test("tool progress elapsed time survives a final result without becoming turn elapsed time", async () => {
+  const session = makeSessionState();
+  const send = (message: Record<string, unknown>) => handleSdkMessage(session, message as unknown as Parameters<typeof handleSdkMessage>[1]);
+  const events = await captureBridgeEventsAsync(async () => {
+    emitToolCall(session, "timed-tool", "Agent", { description: "Review", prompt: "Review the changes" }, null);
+    await send({ type: "tool_progress", tool_use_id: "timed-tool", tool_name: "Agent", parent_tool_use_id: null, elapsed_time_seconds: 1.25 });
+    emitToolResultUpdate(session, "timed-tool", false, "Done", { resolvedModel: "claude-sonnet-4-7", content: [{ type: "text", text: "Done" }] });
+  }) as unknown as import("./types.js").BridgeEvent[];
+  assert.deepEqual(session.toolCalls.get("timed-tool")?.output_metadata?.timing, { duration_ms: 1250, source: "progress" });
+  const finalUpdate = events.filter(event => event.event === "session_update" && event.update.type === "tool_call_update").at(-1);
+  assert.ok(finalUpdate?.event === "session_update" && finalUpdate.update.type === "tool_call_update");
+  assert.deepEqual(finalUpdate.update.tool_call_update.fields.output_metadata, { timing: { duration_ms: 1250, source: "progress" }, agent: { resolved_model: "claude-sonnet-4-7" } });
 });

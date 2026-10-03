@@ -263,6 +263,7 @@ function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields): void {
     base.locations = fields.locations;
   }
   if (fields.output_metadata !== undefined) {
+    fields.output_metadata = { ...(base.output_metadata?.timing ? { timing: base.output_metadata.timing } : {}), ...fields.output_metadata };
     base.output_metadata = fields.output_metadata;
   }
   if (fields.task_metadata !== undefined) {
@@ -428,6 +429,14 @@ export function emitToolCallUpdate(
     base,
     updateKind,
   );
+  if (base) {
+    if (sourceMessageUuid) {
+      base.source_message_uuid = sourceMessageUuid;
+    }
+    // Compose the complete metadata before publication; the receiver replaces
+    // the projection and must not merge a second copy of these semantics.
+    applyFieldsToBase(base, fields);
+  }
   emitSessionUpdate(session.sessionId, {
     type: "tool_call_update",
     tool_call_update: {
@@ -436,12 +445,6 @@ export function emitToolCallUpdate(
       fields,
     },
   });
-  if (base) {
-    if (sourceMessageUuid) {
-      base.source_message_uuid = sourceMessageUuid;
-    }
-    applyFieldsToBase(base, fields);
-  }
 }
 
 export function emitToolCall(
@@ -611,6 +614,7 @@ export function emitToolProgressUpdate(
   progress: {
     subagentRetry?: import("../types.js").SubagentRetryUpdate;
     subagentType?: string;
+    elapsedSeconds?: number;
   } = {},
 ): void {
   const existing = session.toolCalls.get(toolUseId);
@@ -642,6 +646,9 @@ export function emitToolProgressUpdate(
   }
 
   const fields: ToolCallUpdateFields = {};
+  if (progress.elapsedSeconds !== undefined && Number.isSafeInteger(Math.round(progress.elapsedSeconds * 1000))) {
+    fields.output_metadata = { ...existing.output_metadata, timing: { duration_ms: Math.round(progress.elapsedSeconds * 1000), source: "progress" } };
+  }
   if (existing.status !== "in_progress" && existing.status !== "detached") {
     fields.status = "in_progress";
   }

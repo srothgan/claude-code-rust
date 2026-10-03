@@ -40,9 +40,13 @@ pub struct CommandEnvelope {
 pub enum BridgeCommand {
     InspectSettings {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_settings_path: Option<String>,
     },
     MutateSetting {
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_settings_path: Option<String>,
         mutation: super::settings::SettingsMutation,
     },
     Initialize {
@@ -278,7 +282,7 @@ impl BridgeCommand {
             | Self::QuestionResponse { session_id, .. }
             | Self::UserDialogResponse { session_id, .. }
             | Self::ElicitationResponse { session_id, .. }
-            | Self::InspectSettings { session_id }
+            | Self::InspectSettings { session_id, .. }
             | Self::MutateSetting { session_id, .. }
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
@@ -387,6 +391,7 @@ pub enum BridgeEvent {
         #[serde(default)]
         startup_failure: Option<types::StartupFailure>,
     },
+    // Presentation metadata (SDK timestamps and per-turn timings) travels in the typed update.
     SessionUpdate {
         session_id: String,
         update: types::SessionUpdate,

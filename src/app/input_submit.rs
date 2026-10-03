@@ -174,7 +174,9 @@ fn send_prompt_turn(
     };
     let _ = app.finalize_in_progress_tool_calls(model::ToolCallStatus::Failed);
 
-    let user_blocks = vec![MessageBlock::Text(TextBlock::from_complete(text))];
+    let user_blocks = vec![MessageBlock::Text(
+        TextBlock::from_complete(text).with_source_message_uuid(Some(&message_uuid)),
+    )];
 
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
     // Create empty assistant message immediately -- message.rs shows thinking indicator

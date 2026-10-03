@@ -1,9 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Atomic JSON replacement only; callers own their documents and mutation rules.
+//! Atomic JSON replacement and cooperative locking; callers own documents and mutation rules.
 
 use std::io::Write;
 use std::path::Path;
+
+/// Cooperative document lock shared with the bridge's targeted JSON writer.
+pub(crate) struct DocumentLock {
+    path: std::path::PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl Drop for DocumentLock {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+pub(crate) fn lock(path: &Path) -> std::io::Result<DocumentLock> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".claude-rs.lock");
+    let path = std::path::PathBuf::from(name);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&path)?;
+    Ok(DocumentLock { path, file: Some(file) })
+}
 
 pub(crate) fn replace(path: &Path, document: &serde_json::Value) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| std::io::Error::other("JSON path has no parent"))?;

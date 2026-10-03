@@ -981,8 +981,8 @@ async function handleCommand(
       try {
         if (!session || session.closing) throw new Error("No active session for settings.");
         result = command.command === "inspect_settings"
-          ? { persistence: "not_requested", application: "blocked", snapshot: await inspectSettings(session.cwd, session.availableModels, session.availableAgents) }
-          : await mutateSetting(session.cwd, command.mutation, session.availableModels, session.availableAgents);
+          ? { persistence: "not_requested", application: "blocked", snapshot: await inspectSettings(session.cwd, session.availableModels, session.availableAgents, command.app_settings_path) }
+          : await mutateSetting(session.cwd, command.mutation, session.availableModels, session.availableAgents, command.app_settings_path);
       } catch { result = { persistence: "not_requested", application: "blocked", error: "Cannot inspect settings for this session." }; }
       writeEvent({ event: "settings_result", session_id: command.session_id, result }, requestId);
       return;

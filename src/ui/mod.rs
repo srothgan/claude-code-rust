@@ -3,6 +3,7 @@
 
 mod autocomplete;
 mod config;
+mod copy;
 mod diff;
 mod document_table;
 pub(crate) mod footer_rows;
@@ -40,6 +41,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
             session_picker::render(frame, app);
         }
         SurfaceMode::Fullscreen(FullscreenView::Update) => update::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Copy) => copy::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

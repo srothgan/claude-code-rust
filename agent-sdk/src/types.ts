@@ -227,6 +227,7 @@ export interface ToolNonExecutionMetadata {
 }
 
 export interface ToolOutputMetadata {
+  timing?: { duration_ms: number; source: "progress" | "task" };
   staged?: boolean;
   structured_content_omitted?: boolean;
   bash?: BashOutputMetadata;
@@ -359,6 +360,8 @@ export interface TaskStateUpdate {
 }
 
 export type SessionUpdate =
+  | { type: "message_metadata"; role: "user" | "assistant"; timestamp: string; source_message_uuid?: string }
+  | { type: "turn_timing"; duration_ms: number; api_duration_ms?: number }
   | {
       type: "conversation_reset";
       new_conversation_id: string;
@@ -822,6 +825,7 @@ export interface SettingsSnapshot {
   resolution_sources: Array<{ source: string; path?: string; policy_origin?: string }>;
   provenance: Record<string, { source: string; path?: string; policy_origin?: string }>;
   diagnostics: string[];
+  time_zone?: string;
 }
 export interface SettingsMutation {
   context: string; id: string; scope: SettingsScope; expected_revision: string;
@@ -834,8 +838,8 @@ export interface SettingsResult {
 }
 
 export type BridgeCommand =
-  | { command: "inspect_settings"; session_id: string }
-  | { command: "mutate_setting"; session_id: string; mutation: SettingsMutation }
+  | { command: "inspect_settings"; session_id: string; app_settings_path?: string }
+  | { command: "mutate_setting"; session_id: string; app_settings_path?: string; mutation: SettingsMutation }
   | {
       command: "initialize";
       cwd: string;

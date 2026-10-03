@@ -727,10 +727,15 @@ impl AgentConnection {
         })
     }
 
-    pub fn inspect_settings(&self, session_id: String, request_id: String) -> anyhow::Result<()> {
+    pub fn inspect_settings(
+        &self,
+        session_id: String,
+        request_id: String,
+        app_settings_path: Option<String>,
+    ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: Some(request_id),
-            command: BridgeCommand::InspectSettings { session_id },
+            command: BridgeCommand::InspectSettings { session_id, app_settings_path },
         })
     }
     pub fn mutate_setting(
@@ -738,10 +743,11 @@ impl AgentConnection {
         session_id: String,
         request_id: String,
         mutation: super::settings::SettingsMutation,
+        app_settings_path: Option<String>,
     ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
             request_id: Some(request_id),
-            command: BridgeCommand::MutateSetting { session_id, mutation },
+            command: BridgeCommand::MutateSetting { session_id, mutation, app_settings_path },
         })
     }
 

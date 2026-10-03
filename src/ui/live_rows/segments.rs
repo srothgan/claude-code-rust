@@ -135,6 +135,7 @@ pub(crate) enum LiveRowBoundaryKind {
     AssistantBtw,
     AssistantTool,
     AssistantIndicator,
+    AssistantDuration,
 }
 
 pub(crate) fn ids_are_excluded(

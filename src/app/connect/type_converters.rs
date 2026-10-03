@@ -392,6 +392,12 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             timestamp,
             user_message_uuid,
         }),
+        types::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {
+            Some(model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid })
+        }
+        types::SessionUpdate::TurnTiming { duration_ms, api_duration_ms } => {
+            Some(model::SessionUpdate::TurnTiming { duration_ms, api_duration_ms })
+        }
         types::SessionUpdate::UserMessageChunk { content, source_message_uuid } => {
             let content = convert_content_block(content)?;
             Some(model::SessionUpdate::UserMessageChunk(
@@ -915,6 +921,7 @@ fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
     model::ToolOutputMetadata::new()
+        .timing(output_metadata.timing)
         .staged(output_metadata.staged)
         .structured_content_omitted(output_metadata.structured_content_omitted)
         .bash(output_metadata.bash.map(|bash| {
@@ -1643,6 +1650,7 @@ mod tests {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
+                timing: None,
                 staged: false,
                 structured_content_omitted: true,
                 bash: Some(types::BashOutputMetadata {

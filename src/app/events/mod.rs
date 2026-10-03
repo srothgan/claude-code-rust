@@ -244,6 +244,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             app.paste.clear_active_session();
             TerminalEventOutcome::from_key_outcome(super::keys::dispatch_key_by_focus(app, key))
         }
+        SurfaceMode::Fullscreen(FullscreenView::Copy) => {
+            super::copy::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
             super::config::handle_key(app, key);
             TerminalEventOutcome::handled(true)
@@ -267,7 +271,12 @@ fn dispatch_mouse_by_view(app: &mut App, mouse: crossterm::event::MouseEvent) {
     match app.surface_mode {
         SurfaceMode::Chat => {
             app.paste.clear_active_session();
-            let _ = mouse;
+            match mouse.kind {
+                crossterm::event::MouseEventKind::ScrollUp => app.chat_render.viewport.scroll(-3),
+                crossterm::event::MouseEventKind::ScrollDown => app.chat_render.viewport.scroll(3),
+                _ => return,
+            }
+            app.request_chat_repaint();
         }
         SurfaceMode::Fullscreen(_) => {
             let _ = mouse;
@@ -292,7 +301,10 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => super::config::handle_paste(app, text),
         SurfaceMode::Fullscreen(
-            FullscreenView::Trusted | FullscreenView::SessionPicker | FullscreenView::Update,
+            FullscreenView::Trusted
+            | FullscreenView::SessionPicker
+            | FullscreenView::Update
+            | FullscreenView::Copy,
         ) => false,
     }
 }
@@ -351,6 +363,22 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             apply_task_state_update(app, update);
         }
         model::SessionUpdate::UserMessageChunk(_) => {}
+        model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {
+            crate::app::presentation::apply_message_metadata(
+                app,
+                &role,
+                source_message_uuid.as_deref(),
+                &timestamp,
+            );
+        }
+        model::SessionUpdate::TurnTiming { duration_ms, api_duration_ms } => {
+            if let Some(index) = app.active_turn_assistant_idx() {
+                app.transcript.messages[index]
+                    .timing
+                    .set_sdk_duration(duration_ms, api_duration_ms);
+                app.invalidate_layout(InvalidationLevel::MessageChanged(index));
+            }
+        }
         model::SessionUpdate::ExternalMessageUpdate(update) => {
             handle_external_message_update(app, &update);
         }

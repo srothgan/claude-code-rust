@@ -35,13 +35,20 @@ const settingDefinitions = [
   ['permissions.deny', 'Permissions: deny rules', 'One denied tool rule per line', 'string_list', ['permissions', 'deny']],
   ['alwaysThinkingEnabled', 'Thinking', 'Saved thinking preference', 'boolean', ['alwaysThinkingEnabled']],
 ];
+const presentationScenario = SCENARIO.includes('presentation');
+if (presentationScenario) {
+  Object.assign(preferences, { autoScrollEnabled: true, showMessageTimestamps: true, showTurnDuration: true, timeFormat: '24-hour-utc' });
+  fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify(preferences));
+  settingDefinitions.unshift(['autoScrollEnabled', 'Auto-scroll', 'Follow new output', 'boolean', ['autoScrollEnabled']]);
+  settingDefinitions.push(['showMessageTimestamps', 'Show message timestamps', 'Show message times', 'boolean', ['showMessageTimestamps']], ['showTurnDuration', 'Show turn duration', 'Show completed turn clocks', 'boolean', ['showTurnDuration']], ['timeFormat', 'Time format', 'Clock format', 'string', ['timeFormat']]);
+}
 function settingsSnapshot() {
   return {
     cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
     catalog: settingDefinitions.map(([id, label, description, kind, key_path]) => ({
       id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : [],
       allows_custom: kind !== 'boolean', writable_scopes: ['user'],
-      reset: 'Reset removes the saved value here', application: 'next_session',
+      reset: 'Reset removes the saved value here', application: presentationScenario ? 'host' : 'next_session',
     })),
     sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
       values: Object.entries(preferences).map(([id, value]) => ({ id, value, revision: String(settingsRevision) })) }],
@@ -50,6 +57,7 @@ function settingsSnapshot() {
 }
 
 function finish(event) {
+  if (presentationScenario) send({ event: 'session_update', session_id: SESSION, update: { type: 'turn_timing', duration_ms: 2000, api_duration_ms: 1250 } });
   clearInterval(active.timer);
   active = null;
   send(event.event === 'turn_complete'
@@ -83,11 +91,16 @@ function streamReply(messageUuid) {
       source_message_uuid: null,
     },
   });
+  if (presentationScenario) {
+    for (const [role, uuid] of [['user', messageUuid], ['assistant', undefined]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'message_metadata', role, timestamp: '2026-10-03T15:02:01Z', source_message_uuid: uuid } });
+    if (SCENARIO === 'presentation') send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '\n```rust\nlet answer = 42;\n```\n' }, source_message_uuid: null } });
+  }
   // Follow-up replies stay short so their start marker remains on screen.
   const lines = replyNumber === 1 ? LINES : FOLLOW_UP_LINES;
-  const gated = replyNumber === 1 && SCENARIO.startsWith('hold-');
+  const gated = replyNumber === 1 && SCENARIO.startsWith('hold-') && SCENARIO !== 'hold-presentation';
   let line = 0;
   const timer = setInterval(() => {
+    if (replyNumber === 1 && SCENARIO === 'hold-presentation' && line === 20 && !fs.existsSync(RELEASE_FILE)) return;
     if (gated && line >= lines) {
       if (!fs.existsSync(RELEASE_FILE)) return;
       if (SCENARIO === 'hold-eof') {
@@ -115,6 +128,7 @@ function streamReply(messageUuid) {
         source_message_uuid: null,
       },
     });
+    if (SCENARIO === 'hold-presentation' && line === 20) record({ type: 'barrier', name: 'reading-barrier' });
     if (line >= lines) {
       if (gated) record({ type: 'barrier', name: 'reply-held' });
       else finish({ event: 'turn_complete', session_id: SESSION });
@@ -234,7 +248,7 @@ readline
         fs.writeFileSync(file, JSON.stringify(document));
         settingsRevision++;
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
-          persistence: 'saved', application: 'next_session', snapshot: settingsSnapshot(),
+          persistence: 'saved', application: presentationScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
         } });
         break;
       }

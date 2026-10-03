@@ -25,6 +25,21 @@ fn global_default_bindings() -> Vec<KeyBinding> {
     let bindings = vec![
         KeyBinding::default(
             KeyContext::Global,
+            KeySpec::new(KeyCodeSpec::PageUp, KeyModifiers::NONE),
+            KeyAction::App(AppAction::ScrollChatUp),
+        ),
+        KeyBinding::default(
+            KeyContext::Global,
+            KeySpec::new(KeyCodeSpec::PageDown, KeyModifiers::NONE),
+            KeyAction::App(AppAction::ScrollChatDown),
+        ),
+        KeyBinding::default(
+            KeyContext::Global,
+            KeySpec::new(KeyCodeSpec::End, KeyModifiers::CONTROL),
+            KeyAction::App(AppAction::FollowChat),
+        ),
+        KeyBinding::default(
+            KeyContext::Global,
             KeySpec::char('q', KeyModifiers::CONTROL),
             KeyAction::App(AppAction::Quit),
         ),

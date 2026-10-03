@@ -366,6 +366,7 @@ impl BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub timing: Option<ToolTiming>,
     pub staged: bool,
     #[serde(default)]
     pub structured_content_omitted: bool,
@@ -374,6 +375,18 @@ pub struct ToolOutputMetadata {
     pub web_fetch: Option<WebFetchOutputMetadata>,
     pub skill: Option<SkillOutputMetadata>,
     pub non_execution: Option<ToolNonExecutionMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolTiming {
+    pub duration_ms: u64,
+    pub source: ToolTimingSource,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolTimingSource {
+    Progress,
+    Task,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -406,6 +419,11 @@ pub struct ToolNonExecutionMetadata {
 }
 
 impl ToolOutputMetadata {
+    #[must_use]
+    pub fn timing(mut self, timing: Option<ToolTiming>) -> Self {
+        self.timing = timing;
+        self
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()

@@ -16,8 +16,7 @@ pub(crate) use actions::{
     is_mcp_action_available, reconnect_mcp_server, set_mcp_server_enabled,
 };
 pub(crate) use auth::{
-    copy_text_to_clipboard, open_url_in_browser, present_mcp_auth_redirect,
-    submit_mcp_oauth_callback_url,
+    open_url_in_browser, present_mcp_auth_redirect, submit_mcp_oauth_callback_url,
 };
 pub(crate) use elicitation::{
     handle_mcp_elicitation_completed, handle_mcp_elicitation_response_queued,

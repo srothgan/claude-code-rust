@@ -20,6 +20,9 @@ pub enum AppAction {
     SubmitInput,
     FocusPromptOrAcceptSuggestion,
     CycleMode,
+    ScrollChatUp,
+    ScrollChatDown,
+    FollowChat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

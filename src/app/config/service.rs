@@ -18,7 +18,11 @@ pub(crate) fn request_settings(app: &mut App) {
         return;
     }
     let request_id = uuid::Uuid::new_v4().to_string();
-    match conn.inspect_settings(session_id.to_string(), request_id.clone()) {
+    match conn.inspect_settings(
+        session_id.to_string(),
+        request_id.clone(),
+        app.global_settings_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
+    ) {
         Ok(()) => {
             app.config.pending_settings_request = Some(request_id);
             app.config.last_error = None;
@@ -42,7 +46,12 @@ pub(crate) fn send_mutation(app: &mut App, mutation: SettingsMutation) {
         return;
     };
     let request_id = uuid::Uuid::new_v4().to_string();
-    match conn.mutate_setting(session_id.to_string(), request_id.clone(), mutation) {
+    match conn.mutate_setting(
+        session_id.to_string(),
+        request_id.clone(),
+        mutation,
+        app.global_settings_path.as_ref().map(|path| path.to_string_lossy().into_owned()),
+    ) {
         Ok(()) => {
             app.config.pending_settings_request = Some(request_id);
             app.config.last_error = None;
@@ -87,6 +96,8 @@ pub(crate) fn apply_settings_result(
     app.config.pending_settings_request = None;
     let previous_fast_mode = app.config.fast_mode_effective();
     let previous_gitignore = app.config.respect_gitignore_effective();
+    let previous_scroll = app.config.auto_scroll_effective();
+    let previous_clock = clock_preferences(app);
     if let Some(snapshot) = result.snapshot {
         if snapshot.cwd != app.cwd_raw {
             return;
@@ -101,6 +112,19 @@ pub(crate) fn apply_settings_result(
             editor.revision.clone_from(&value.revision);
         }
         app.config.snapshot = Some(snapshot);
+    }
+    if previous_scroll != app.config.auto_scroll_effective() {
+        if app.config.auto_scroll_effective() {
+            app.chat_render.viewport.resume();
+        } else {
+            app.chat_render.viewport.pause();
+        }
+    }
+    let clock = clock_preferences(app);
+    if previous_clock != clock {
+        app.request_chat_purge_replay_rebuild(
+            crate::app::ChatPurgeReplayOptions::terminal_history_out_of_sync(),
+        );
     }
     if previous_gitignore != app.config.respect_gitignore_effective() {
         crate::app::file_index::restart(app);
@@ -131,6 +155,15 @@ pub(crate) fn apply_settings_result(
     {
         app.config.set_overlay_error(error);
     }
+}
+
+fn clock_preferences(app: &App) -> (bool, bool, String, Option<String>) {
+    (
+        app.config.show_message_timestamps_effective(),
+        app.config.show_turn_duration_effective(),
+        app.config.time_format().to_owned(),
+        app.config.time_zone().map(str::to_owned),
+    )
 }
 
 #[cfg(test)]

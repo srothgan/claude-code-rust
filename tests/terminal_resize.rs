@@ -877,3 +877,86 @@ fn a_stream_error_preserves_the_next_unsent_draft_through_resize() {
     test.assert_prompts(&["go"]);
     test.shutdown();
 }
+
+#[test]
+fn presentation_clocks_and_copy_picker_follow_the_terminal_workflow() {
+    let mut test = TerminalTest::start("presentation", 3);
+    test.submit("Clock test", "Clock test");
+    test.wait_screen("Elapsed 2.0s");
+    test.wait_screen("Done ");
+    test.wait_screen("15:02Z");
+    test.submit("/copy", "/copy");
+    test.wait_screen("Copy last response");
+    test.wait_screen("Code block 1 (rust)");
+    test.send(b"\x1b[B");
+    test.resize(24, 42);
+    test.wait_screen("Code block 1 (rust)");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("Follow up", "Follow up");
+    test.wait_screen("reply 2 started");
+    test.assert_prompts(&["Clock test", "Follow up"]);
+    test.shutdown();
+}
+
+#[test]
+fn reading_output_stays_anchored_through_streaming_resize_and_explicit_return_live() {
+    let mut test = TerminalTest::start("hold-presentation", 80);
+    test.submit("Reading test", "Reading test");
+    test.wait_journal("reading-barrier");
+    test.send(b"\x1b[5~"); // Page Up enters reading mode.
+    test.wait_screen("Reading output");
+    let pinned = test
+        .screen()
+        .lines()
+        .find(|line| line.contains("streamed line"))
+        .expect("visible output anchor")
+        .trim()
+        .to_owned();
+    test.release();
+    test.wait_journal("turn_complete");
+    test.wait_screen(&pinned);
+    assert!(
+        !test.screen().contains("streamed line 80"),
+        "paused output jumped to the tail: {}",
+        test.diagnostics()
+    );
+    test.resize(TALL_ROWS, 64);
+    test.wait_screen(&pinned);
+    test.send(b"\x1b[1;5F"); // Ctrl+End explicitly returns to live output.
+    test.wait_screen("streamed line 80");
+    test.wait_until("following restored", |test| !test.screen().contains("Reading output"));
+    test.shutdown();
+}
+
+#[test]
+fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
+    let mut test = TerminalTest::start("hold-presentation", 80);
+    test.submit("Saved scroll test", "Saved scroll test");
+    test.wait_journal("reading-barrier");
+    test.submit("/config", "/config");
+    test.wait_screen("Auto-scroll");
+    test.send(b"\x1b[C"); // On -> Off at the selected user scope.
+    test.wait_screen("Saved and applied.");
+    test.send(b"\x1b");
+    test.wait_screen("Reading output");
+    let pinned = test
+        .screen()
+        .lines()
+        .find(|line| line.contains("streamed line"))
+        .expect("visible anchor")
+        .trim()
+        .to_owned();
+    test.release();
+    test.wait_journal("turn_complete");
+    test.wait_screen(&pinned);
+    test.send(b"\x1b[1;5F");
+    test.wait_screen("streamed line 80");
+    test.wait_screen("Reading output"); // The saved Off preference still holds after the jump.
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved preferences"),
+    )
+    .expect("settings JSON");
+    assert_eq!(saved["autoScrollEnabled"], false);
+    test.shutdown();
+}

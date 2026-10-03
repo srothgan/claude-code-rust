@@ -50,7 +50,7 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     if app.turn.compaction.is_active() {
         items.push(("Status".to_owned(), "Compacting context".to_owned()));
     }
-    items.push(("Mouse wheel".to_owned(), "Scroll chat".to_owned()));
+    items.push(("Mouse wheel".to_owned(), "Scroll terminal history".to_owned()));
     if context == KeyContext::ChatInput {
         items.push(("Paste".to_owned(), "Insert text".to_owned()));
     }
@@ -144,12 +144,12 @@ fn focused_question_prompt(app: &App) -> bool {
 
 fn blocked_input_help_items(app: &App, input_line: &str) -> Vec<(String, String)> {
     let mut rows = keymap_help_rows(app, KeyContext::ChatBlocked);
-    rows.push(("Mouse wheel".to_owned(), "Scroll chat".to_owned()));
+    rows.push(("Mouse wheel".to_owned(), "Scroll terminal history".to_owned()));
     rows.push(("Input keys".to_owned(), input_line.to_owned()));
     rows
 }
 
-fn format_help_key_spec(spec: &KeySpec) -> String {
+pub(crate) fn format_help_key_spec(spec: &KeySpec) -> String {
     let mut parts = Vec::new();
     let modifiers = spec.modifiers();
     if modifiers.contains(KeyModifiers::CONTROL) {

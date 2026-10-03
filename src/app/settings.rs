@@ -59,6 +59,8 @@ pub fn load_global_settings() -> Result<LoadedAppSettings, String> {
 }
 
 pub fn save_global_settings(path: &Path, settings: &AppSettings) -> Result<(), String> {
+    let _lock = crate::json_file::lock(path)
+        .map_err(|error| format!("Cannot lock app settings for saving: {error}"))?;
     let mut document = match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
             .map_err(|error| format!("Invalid app settings: {error}"))?,
@@ -218,14 +220,33 @@ mod tests {
         let path = fixture.path().join("settings.json");
         std::fs::write(
             &path,
-            r#"{"personal":{"future":true},"updates":{"future":42,"skipped_version":"old"}}"#,
+            r#"{"presentation":{"copyFullResponse":true,"showStatusInTerminalTab":false},"updates":{"future":42,"skipped_version":"old"}}"#,
         )
         .expect("fixture");
         save_global_settings(&path, &AppSettings::default()).expect("save");
         let saved: serde_json::Value =
             serde_json::from_slice(&std::fs::read(path).expect("read")).expect("JSON");
-        assert_eq!(saved["personal"]["future"], true);
+        assert_eq!(saved["presentation"]["copyFullResponse"], true);
+        assert_eq!(saved["presentation"]["showStatusInTerminalTab"], false);
         assert_eq!(saved["updates"]["future"], 42);
         assert!(saved["updates"].get("skipped_version").is_none());
+    }
+
+    #[test]
+    fn updater_save_serializes_with_presentation_edits() {
+        let fixture = tempfile::tempdir().expect("tempdir");
+        let path = fixture.path().join("settings.json");
+        let editor_lock = crate::json_file::lock(&path).expect("editor owns document");
+        assert!(save_global_settings(&path, &AppSettings::default()).is_err());
+        std::fs::write(&path, r#"{"presentation":{"copyFullResponse":true}}"#)
+            .expect("editor saves");
+        drop(editor_lock);
+        let mut settings = AppSettings::default();
+        record_skip_version(&mut settings, "0.15.0");
+        save_global_settings(&path, &settings).expect("updater saves after editor");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+        assert_eq!(saved["presentation"]["copyFullResponse"], true);
+        assert_eq!(saved["updates"]["skipped_version"], "0.15.0");
     }
 }

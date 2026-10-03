@@ -24,6 +24,27 @@ pub fn action_catalog() -> &'static [KeyActionDescriptor] {
 
 const ACTION_CATALOG: &[KeyActionDescriptor] = &[
     KeyActionDescriptor {
+        action: KeyAction::App(AppAction::ScrollChatUp),
+        id: "app.scroll_chat_up",
+        label: "Scroll output up",
+        description: "Read earlier output and pause following.",
+        default_contexts: &[KeyContext::Global],
+    },
+    KeyActionDescriptor {
+        action: KeyAction::App(AppAction::ScrollChatDown),
+        id: "app.scroll_chat_down",
+        label: "Scroll output down",
+        description: "Read later output without following.",
+        default_contexts: &[KeyContext::Global],
+    },
+    KeyActionDescriptor {
+        action: KeyAction::App(AppAction::FollowChat),
+        id: "app.follow_chat",
+        label: "Return to live output",
+        description: "Jump to the latest output and resume following when auto-scroll is enabled.",
+        default_contexts: &[KeyContext::Global],
+    },
+    KeyActionDescriptor {
         action: KeyAction::App(AppAction::Quit),
         id: "app.quit",
         label: "Quit",

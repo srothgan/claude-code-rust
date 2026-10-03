@@ -1,3 +1,4 @@
+import { messageMetadata } from "./presentation_metadata.js";
 import type {
   SDKSessionInfo,
   SessionMessage,
@@ -477,6 +478,8 @@ export function mapSessionMessagesToUpdates(
         }
       }
     }
+    const metadata = messageMetadata({ ...entry, ...asRecordOrNull(entry.message) }, fallbackRole);
+    if (metadata) updates.push(metadata);
   }
 
   return updates;

@@ -288,6 +288,22 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
             || handle_focus_toggle(app)
             || handle_prompt_suggestion(app))
         .into(),
+        AppAction::ScrollChatUp | AppAction::ScrollChatDown => {
+            let rows =
+                isize::try_from(app.chat_render.live_region.last_rendered_rows.max(3)).unwrap_or(3);
+            app.chat_render.viewport.scroll(if action == AppAction::ScrollChatUp {
+                -rows
+            } else {
+                rows
+            });
+            app.request_chat_repaint();
+            true.into()
+        }
+        AppAction::FollowChat => {
+            app.chat_render.viewport.resume();
+            app.request_chat_repaint();
+            true.into()
+        }
         AppAction::CycleMode => handle_mode_cycle(app).into(),
     }
 }

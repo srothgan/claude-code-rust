@@ -52,7 +52,7 @@ The bridge uses the installed Agent SDK's public `resolveSettings()` to inspect 
 | Local | `./.claude/settings.local.json` | Private project defaults. |
 | Managed | SDK-reported policy source | Policy contributions are shown and affected controls are read-only. |
 | Workspace trust | `~/.claude.json` | A separate trust owner reads and accepts workspace trust; this is not a settings fallback. |
-| App preferences | OS config directory, `claude-code-rust/settings.json` | The app settings owner persists updater state separately from Claude settings. |
+| App preferences | OS config directory, `claude-code-rust/settings.json` | Personal presentation preferences and updater state, separate from Claude settings. |
 
 Set `CLAUDE_CONFIG_DIR` before startup to isolate the Claude profile. User settings use `<directory>/settings.json`, trust uses `<directory>/.claude.json`, and file credentials use `<directory>/.credentials.json`. Sessions, plugins, and authentication inherit that directory. App preferences and diagnostics retain their normal OS locations. Existing settings sources use paths reported by the SDK; missing writable sources use the corresponding profile or working-directory path.
 
@@ -70,7 +70,7 @@ Validation applies to the setting being edited, not to unrelated fields or the w
 
 A revision for the displayed target detects conflicting edits. Unrelated edits are incorporated into the fresh document; a conflict refreshes the snapshot while preserving the editor draft. Writes use a cooperative lock, byte rechecks, and atomic replacement. An external editor that does not honor the lock can still race between the final recheck and replacement; this is not filesystem compare-and-swap.
 
-The window states once that saved changes apply to new sessions and marks immediate exceptions. The app does not turn a settings save into a session flag override. Use `/model`, `/mode`, `/effort`, `/thinking`, `/agent`, `/fast`, or `/ultracode` for their existing session actions. Host-consumed `respectGitignore` and `prefersReducedMotion` refresh immediately after acknowledgement. New sessions and resumed sessions retain native settings inheritance. The footer's effort badge reflects the SDK's applied level at initialization and after session changes, including model restrictions and organization caps. Per-turn init observations supersede earlier reads. If the SDK reports no discrete level, the footer shows the model without an effort suffix.
+The window states once that saved changes apply to new sessions and marks immediate exceptions. The app does not turn a settings save into a session flag override. Use `/model`, `/mode`, `/effort`, `/thinking`, `/agent`, `/fast`, or `/ultracode` for their existing session actions. Host presentation preferences, `respectGitignore`, and `prefersReducedMotion` apply immediately after acknowledgement. New sessions and resumed sessions retain native settings inheritance. The footer's effort badge reflects the SDK's applied level at initialization and after session changes, including model restrictions and organization caps. Per-turn init observations supersede earlier reads. If the SDK reports no discrete level, the footer shows the model without an effort suffix.
 
 ## Current catalog
 
@@ -80,9 +80,34 @@ Default effort is one inline choice control for the currently saved Default mode
 
 `Default` means no configured value was returned for this preference. It does not promise On or Off. The installed SDK's file resolver does not fill in built-in defaults; its applied-settings response exposes selected session values rather than effective defaults for the whole catalog. Keep this label until the fallback for an individual setting can be determined reliably, without treating a current-session override as its default.
 
-Continuation at usage limits, notification transport, and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification delivery, additional presentation controls, and updater preferences are subsequent implementation groups in `config.md`.
+Continuation at usage limits, notification transport, and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification delivery and updater preferences remain subsequent implementation groups in `config.md`.
 
 When Reduce motion is On, active thinking, tool execution, compaction, cancellation, and pending commands use a static diamond (`◆`) instead of an animated spinner. Animation-only redraws stop; incoming state changes still update normally. This setting is ready and applies immediately after saving, with reset following the remaining scopes or Default.
+
+## Presentation and scrolling
+
+These settings apply after saving, including to the retained conversation:
+
+| Setting | Choices | Behavior |
+| --- | --- | --- |
+| Auto-scroll | On / Off | Follow new output when On; hold the reading position when Off. |
+| Show message timestamps | On / Off | Show the first available message time beside its role label. |
+| Show turn duration | On / Off | Show one total elapsed duration per completed response, and tool/task elapsed observations when available. |
+| Time format | Auto / 12-hour / 24-hour / 24-hour UTC | Format clocks without changing elapsed durations. |
+| Show activity in tab title | On / Off | Show a busy/idle icon beside the folder name in the terminal tab title. Reduced motion keeps activity static. |
+| Skip the /copy picker | On / Off | Copy the complete response directly, or choose the response or a code block. |
+
+Turn durations and message timestamps default to Off when no saved value is present. Saved On/Off choices take precedence. A completed response shows one total elapsed duration when enabled; completion time (`Done`) is included only when message timestamps are enabled. API timing is retained internally.
+
+SDK timestamps retain their original times during session resume. When no native timestamp is supplied, live messages use a locally observed time labeled `(observed)`; resumed messages without timestamps remain unstamped. Turn elapsed time and API time are separate SDK result measurements. Without a result measurement, a completed live response shows an `Observed` duration from a monotonic clock. Tool progress elapsed time is a lower bound (`≥`), and task usage time is labeled separately; neither is added to turn elapsed time. Public session history may omit result timing, so resumed responses do not invent old durations.
+
+Auto follows the system locale. Explicit 12-hour clocks show AM/PM; 24-hour UTC shows a `Z` suffix. Valid custom strftime patterns already present in settings files are consumed and preserved, while the picker offers the four presets. An externally saved IANA `timeZone`, such as `Europe/Berlin`, controls local presets and custom patterns; an unknown name falls back to the system zone. The UTC preset always uses UTC.
+
+Page Up pauses following and reads earlier output; Page Down reads later output. Ctrl+End jumps to the latest output and resumes following when Auto-scroll is On. With Auto-scroll Off, it jumps once and continues holding that position. Reading remains anchored through new output and resize/reflow within retained history. These actions use the existing keybinding catalog and appear in shortcut help. Ordinary mouse-wheel behavior belongs to terminal scrollback unless the terminal delivers mouse events to the application; use the page keys for application-controlled reading.
+
+`/copy` uses the last completed assistant response's original Markdown, including responses loaded from history; it excludes thinking and tool output. With code blocks and the picker enabled, Up/Down selects the full response or an individual fenced/indented code block, Enter copies, and Escape cancels. Without code blocks, it copies the response directly. Clipboard failures keep the picker open for retry, and an empty conversation displays a short explanation.
+
+The four Claude-compatible presentation preferences use the resolved user/project/local cascade. Terminal-tab status and copy-picker preference are personal User-only app preferences under `presentation.showStatusInTerminalTab` and `presentation.copyFullResponse`. They appear in the same editor and use the same targeted save/reset acknowledgements. Native global preferences are not a fallback. The updater writes only its own fields and honors the shared document lock so its saves preserve presentation edits.
 
 ## Behavioral and structured settings
 

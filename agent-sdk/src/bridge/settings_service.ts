@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type { Json, SettingDescriptor, SettingsMutation, SettingsScope, SettingsSnapshot, SettingsResult, AvailableModel, AvailableAgent } from "../types.js";
-import { settingsCatalog } from "./settings_catalog.js";
+import { isAppSetting, settingsCatalog } from "./settings_catalog.js";
 import { settingLeaf as leaf, validateSettingValue } from "./settings_values.js";
 
 const SCOPES: SettingsScope[] = ["user", "project", "local"];
@@ -39,11 +39,18 @@ async function readDocument(file: string): Promise<Document> {
   }
 }
 
-export async function inspectSettings(cwd: string, models: AvailableModel[] = [], agents: AvailableAgent[] = []): Promise<SettingsSnapshot> {
+export async function inspectSettings(cwd: string, models: AvailableModel[] = [], agents: AvailableAgent[] = [], appSettingsPath?: string): Promise<SettingsSnapshot> {
   const resolved = await resolveSettings({ cwd, settingSources: SCOPES });
   const paths = sourcePaths(cwd);
   for (const source of resolved.sources) if (SCOPES.includes(source.source as SettingsScope) && source.path) paths[source.source as SettingsScope] = source.path;
   const catalog = settingsCatalog(models, agents, resolved.effective.model);
+  const appDocument = appSettingsPath ? await readDocument(appSettingsPath) : { status: "unreadable" as const, error: "App settings are unavailable." };
+  for (const setting of catalog.filter(setting => isAppSetting(setting))) {
+    if (!appSettingsPath || !appDocument.document) {
+      setting.writable_scopes = [];
+      setting.unavailable = appDocument.error ?? "App settings are unavailable.";
+    }
+  }
   const sources = await Promise.all(SCOPES.map(async scope => {
     const file = paths[scope];
     const read = await readDocument(file);
@@ -52,13 +59,13 @@ export async function inspectSettings(cwd: string, models: AvailableModel[] = []
     const notLoaded = read.status === "valid" && read.document !== undefined && Object.keys(read.document).length > 0 && !resolved.sources.some(source => source.source === scope);
     const error = notLoaded ? "Claude did not load settings from this file." : read.error;
     return { scope, path: file, status: notLoaded ? NOT_LOADED : read.status, ...(error ? { error } : {}), values: catalog.map(setting => {
-      const value = leaf(read.document, setting.key_path);
+      const value = leaf(isAppSetting(setting) ? scope === "user" ? appDocument.document : undefined : read.document, setting.key_path);
       return { id: setting.id, revision: revision(value), ...(value !== undefined ? { value } : {}) };
     }) };
   }));
   // Only explicitly editable catalog values cross stdio, never opaque profile/auth data.
   const values = catalog.map(setting => {
-    const value = leaf(resolved.effective, setting.key_path);
+    const value = leaf(isAppSetting(setting) ? appDocument.document : resolved.effective, setting.key_path);
     const contributors = resolved.sources.filter(source => leaf(source.settings, setting.key_path) !== undefined);
     const managed = resolved.sources.find(source => source.source === "managed")?.settings;
     const pluginOnly = managed?.strictPluginOnlyCustomization;
@@ -68,7 +75,7 @@ export async function inspectSettings(cwd: string, models: AvailableModel[] = []
       || (["sandbox.network.allowedDomains", "sandbox.network.httpProxyPort", "sandbox.network.socksProxyPort"].includes(setting.id) && managed?.sandbox?.network?.allowManagedDomainsOnly === true)
       || (setting.id === "sandbox.filesystem.allowRead" && managed?.sandbox?.filesystem?.allowManagedReadPathsOnly === true)
       || (setting.id === "sandbox.filesystem.disabled" && (managed?.sandbox?.filesystem !== undefined || managed?.sandbox?.credentials?.files?.some(entry => entry.mode === "deny") === true));
-    return { id: setting.id, ...(value !== undefined ? { value } : {}), contributors: contributors.map(source => source.source), policy_restricted: policy };
+    return { id: setting.id, ...(value !== undefined ? { value } : {}), contributors: isAppSetting(setting) ? value === undefined ? [] : ["user"] : contributors.map(source => source.source), policy_restricted: policy };
   });
   for (const value of values) {
     if (value.policy_restricted) {
@@ -79,10 +86,14 @@ export async function inspectSettings(cwd: string, models: AvailableModel[] = []
   const resolution_sources = resolved.sources.map(source => ({ source: source.source, ...(source.path ? { path: source.path } : {}), ...(source.policyOrigin ? { policy_origin: source.policyOrigin } : {}) }));
   const provenance: SettingsSnapshot["provenance"] = {};
   for (const setting of catalog) {
+    if (isAppSetting(setting) && appSettingsPath) {
+      provenance[setting.id] = { source: "user", path: appSettingsPath };
+      continue;
+    }
     const source = resolved.provenance[setting.key_path[0] as keyof typeof resolved.provenance];
     if (source) provenance[setting.id] = { source: source.source, ...(source.path ? { path: source.path } : {}), ...(source.policyOrigin ? { policy_origin: source.policyOrigin } : {}) };
   }
-  return { cwd, context: revision({ cwd, paths, effortPath: catalog.find(setting => setting.id === "defaultEffort")?.key_path }), catalog, sources, values, resolution_sources, provenance, diagnostics: ["SDK raw cascade: active session choices and trust filtering are separate. policyHelper is not executed by resolveSettings."] };
+  return { cwd, context: revision({ cwd, paths, appSettingsPath, effortPath: catalog.find(setting => setting.id === "defaultEffort")?.key_path }), catalog, sources, values, resolution_sources, provenance, ...(resolved.effective.timeZone ? { time_zone: resolved.effective.timeZone } : {}), diagnostics: ["SDK raw cascade: active session choices and trust filtering are separate. policyHelper is not executed by resolveSettings."] };
 }
 
 function patch(document: Record<string, Json>, keys: string[], value: Json | undefined): void {
@@ -171,11 +182,11 @@ async function excludeLocalSettings(file: string, temp: string): Promise<void> {
   await git(["check-ignore", "--quiet", "--", relativeTemp]);
 }
 
-export async function mutateSetting(cwd: string, mutation: SettingsMutation, models: AvailableModel[] = [], agents: AvailableAgent[] = []): Promise<SettingsResult> {
+export async function mutateSetting(cwd: string, mutation: SettingsMutation, models: AvailableModel[] = [], agents: AvailableAgent[] = [], appSettingsPath?: string): Promise<SettingsResult> {
   let persistence: SettingsResult["persistence"] = "failure";
   let snapshot: SettingsSnapshot | undefined;
   try {
-    snapshot = await inspectSettings(cwd, models, agents);
+    snapshot = await inspectSettings(cwd, models, agents, appSettingsPath);
     if (snapshot.context !== mutation.context) throw new Error("Settings context changed; refresh before editing.");
     const setting = snapshot.catalog.find(entry => entry.id === mutation.id);
     if (!setting?.writable_scopes.includes(mutation.scope)) throw new Error("This setting cannot be edited at this scope.");
@@ -185,9 +196,9 @@ export async function mutateSetting(cwd: string, mutation: SettingsMutation, mod
     }
     const source = snapshot.sources.find(entry => entry.scope === mutation.scope);
     if (!source) throw new Error("Settings source is unavailable.");
-    persistence = await writeTarget(source.path, setting, mutation);
-    const refreshed = await inspectSettings(cwd, models, agents);
-    const notLoaded = mutation.operation === "set" && refreshed.sources.find(source => source.scope === mutation.scope)?.status === NOT_LOADED;
+    persistence = await writeTarget(isAppSetting(setting) && appSettingsPath ? appSettingsPath : source.path, setting, mutation);
+    const refreshed = await inspectSettings(cwd, models, agents, appSettingsPath);
+    const notLoaded = !isAppSetting(setting) && mutation.operation === "set" && refreshed.sources.find(source => source.scope === mutation.scope)?.status === NOT_LOADED;
     const error = persistence === "conflict" ? "This value changed since it was displayed. Review the refreshed saved value before retrying."
       : notLoaded ? "Your change was saved, but Claude did not load this settings file. Check its values before the change can take effect." : undefined;
     return { persistence, application: persistence === "conflict" || notLoaded ? "blocked" : setting.application, snapshot: refreshed, ...(error ? { error } : {}) };

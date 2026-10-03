@@ -467,6 +467,7 @@ pub struct BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub timing: Option<super::model::ToolTiming>,
     #[serde(default)]
     pub staged: bool,
     #[serde(default)]
@@ -623,6 +624,15 @@ pub struct TaskStateUpdate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SessionUpdate {
+    MessageMetadata {
+        role: String,
+        timestamp: String,
+        source_message_uuid: Option<String>,
+    },
+    TurnTiming {
+        duration_ms: f64,
+        api_duration_ms: Option<f64>,
+    },
     ConversationReset {
         new_conversation_id: String,
         trigger: Option<String>,

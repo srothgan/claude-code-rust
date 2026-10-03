@@ -60,6 +60,30 @@ impl ConfigState {
     pub fn saved_value(&self, id: &str) -> Option<&Value> {
         self.snapshot.as_ref()?.value(id)
     }
+    fn saved_bool(&self, id: &str, default: bool) -> bool {
+        self.saved_value(id).and_then(Value::as_bool).unwrap_or(default)
+    }
+    pub fn auto_scroll_effective(&self) -> bool {
+        self.saved_bool("autoScrollEnabled", true)
+    }
+    pub fn show_turn_duration_effective(&self) -> bool {
+        self.saved_bool("showTurnDuration", false)
+    }
+    pub fn show_message_timestamps_effective(&self) -> bool {
+        self.saved_bool("showMessageTimestamps", false)
+    }
+    pub fn copy_full_response_effective(&self) -> bool {
+        self.saved_bool("presentation.copyFullResponse", false)
+    }
+    pub fn status_in_terminal_tab_effective(&self) -> bool {
+        self.saved_bool("presentation.showStatusInTerminalTab", true)
+    }
+    pub fn time_format(&self) -> &str {
+        self.saved_value("timeFormat").and_then(Value::as_str).unwrap_or("auto")
+    }
+    pub fn time_zone(&self) -> Option<&str> {
+        self.snapshot.as_ref()?.time_zone.as_deref()
+    }
     pub fn fast_mode_effective(&self) -> bool {
         self.saved_value("fastMode").and_then(Value::as_bool).unwrap_or(false)
     }

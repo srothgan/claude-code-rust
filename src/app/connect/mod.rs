@@ -152,6 +152,7 @@ pub fn create_app(cli: &Cli) -> App {
         recent_sessions: Vec::new(),
         session_picker: SessionPickerState::default(),
         chat_render: super::ChatRenderState::default(),
+        copy_picker: None,
         mention: None,
         committed_mentions: Vec::new(),
         file_index: super::file_index::FileIndexState::default(),

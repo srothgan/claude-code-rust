@@ -569,6 +569,11 @@ fn begin_turn_exit(app: &mut App, emit_manual_compaction_success: bool) -> TurnE
         turn_was_active: matches!(app.status, AppStatus::Thinking | AppStatus::Running),
         cancel_requested: app.turn.cancel_requested,
     };
+    if (state.turn_was_active || state.cancel_requested)
+        && let Some(index) = app.active_turn_assistant_idx()
+    {
+        app.transcript.messages[index].timing.finish();
+    }
     compaction::finish_inferred(app, emit_manual_compaction_success);
     app.turn.cancel_requested = false;
     state
@@ -721,11 +726,16 @@ pub(super) fn handle_user_message_started_event(
 
     let coalesced_message_count = started.len();
     for message in started {
-        app.push_message_tracked(ChatMessage::new(
+        let mut user = ChatMessage::new(
             MessageRole::User,
-            vec![MessageBlock::Text(TextBlock::from_complete(&message.text))],
+            vec![MessageBlock::Text(
+                TextBlock::from_complete(&message.text)
+                    .with_source_message_uuid(Some(&message.uuid)),
+            )],
             None,
-        ));
+        );
+        user.timing.timestamp = message.timestamp;
+        app.push_message_tracked(user);
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant_to_tail();
         app.status = AppStatus::Thinking;

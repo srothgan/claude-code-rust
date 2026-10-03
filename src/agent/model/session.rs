@@ -253,6 +253,15 @@ pub struct ExternalMessageUpdate {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionUpdate {
+    MessageMetadata {
+        role: String,
+        timestamp: String,
+        source_message_uuid: Option<String>,
+    },
+    TurnTiming {
+        duration_ms: f64,
+        api_duration_ms: Option<f64>,
+    },
     ConversationReset {
         new_conversation_id: String,
         trigger: Option<String>,

@@ -3,6 +3,7 @@
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ChatRenderState {
+    pub(crate) viewport: crate::app::terminal_runtime::viewport::ChatViewport,
     pub terminal_width: u16,
     pub terminal_height: u16,
     pub line_wrap_disabled: bool,
@@ -151,6 +152,7 @@ mod tests {
     #[test]
     fn clear_measurements_preserves_terminal_size_and_invalidates_live_rows() {
         let mut state = ChatRenderState {
+            viewport: crate::app::terminal_runtime::viewport::ChatViewport::default(),
             terminal_width: 120,
             terminal_height: 40,
             line_wrap_disabled: true,

@@ -164,11 +164,25 @@ fn render_user_system_live_rows(
     // A message hosting an unanswered user dialog must stay in the live
     // (mutable) region so its chooser re-renders on focus/selection changes;
     // committing it would freeze it in immutable scrollback.
-    let commit_ready = !message_has_pending_user_dialog(&app.transcript.messages[msg_idx]);
-    let rendered = build_user_system_message_rows(
+    let commit_ready = !message_has_pending_user_dialog(&app.transcript.messages[msg_idx])
+        && (!app.config.show_message_timestamps_effective()
+            || app.transcript.messages[msg_idx]
+                .timing
+                .timestamp
+                .is_none_or(|timestamp| !timestamp.observed)
+            || !matches!(app.status, AppStatus::Thinking | AppStatus::Running));
+    let timestamp =
+        crate::app::presentation::timestamp_label(app, &app.transcript.messages[msg_idx]);
+    let mut rendered = build_user_system_message_rows(
         &mut app.transcript.messages[msg_idx],
         message_render_context(current_mode_id, width),
     );
+    if let Some(timestamp) = timestamp
+        && let Some(MessageRowSegment::Lines { lines }) = rendered.segments.first_mut()
+        && let Some(label) = lines.first_mut()
+    {
+        label.spans.push(Span::styled(format!(" · {timestamp}"), Style::default().fg(theme::DIM)));
+    }
     RenderedMessageRows::message(
         segments_to_physical_rows(&rendered.segments, width, false),
         LiveRowBoundary {
@@ -206,7 +220,11 @@ fn render_assistant_live_rows(
     );
     let selection = select_unexcluded_assistant_items(items, excluded_ids);
     let indicator = assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
-    if selection.items.is_empty() && indicator.is_none() {
+    let duration_pending =
+        crate::app::presentation::duration_label(app, &app.transcript.messages[msg_idx]).is_some()
+            && !excluded_ids
+                .contains(&HistoryOutputId::AssistantDuration(app.transcript.messages[msg_idx].id));
+    if selection.items.is_empty() && indicator.is_none() && !duration_pending {
         return if selection.had_body_content {
             RenderedMessageRows::skipped_transcript_content()
         } else {
@@ -219,7 +237,7 @@ fn render_assistant_live_rows(
     let show_label = !ids_are_excluded(&label_ids, excluded_ids);
     let skipped_static_body = selection.skipped_body_before_rendered_content;
     let spinner = SpinnerState::for_app(app);
-    let rendered = render_assistant_rows(AssistantRowsRequest {
+    let mut rendered = render_assistant_rows(AssistantRowsRequest {
         app: Some(app),
         message_id,
         msg_idx,
@@ -232,6 +250,26 @@ fn render_assistant_live_rows(
         leading_blank_lines: 0,
         has_prior_assistant_content: skipped_static_body,
     });
+    if let Some(label) =
+        crate::app::presentation::duration_label(app, &app.transcript.messages[msg_idx])
+    {
+        let ids = vec![HistoryOutputId::AssistantDuration(message_id)];
+        if !ids_are_excluded(&ids, excluded_ids) {
+            rendered.had_transcript_content = true;
+            rendered.boundaries.push(LiveRowBoundary {
+                ids,
+                msg_idx,
+                block_idx: None,
+                kind: LiveRowBoundaryKind::AssistantDuration,
+                start_row: rendered.rows.len(),
+                commit_ready: !active_mutable,
+            });
+            rendered.rows.extend(wrap_lines_to_physical_rows(
+                &[Line::from(Span::styled(label, Style::default().fg(theme::DIM)))],
+                width,
+            ));
+        }
+    }
     tracing::debug!(
         target: crate::logging::targets::APP_RENDER,
         event_name = "inline_chat_assistant_block_built",
@@ -540,7 +578,7 @@ impl PendingAssistantTextRun {
         commit_ready: bool,
     ) {
         self.ids.push(id);
-        append_text_run(&mut self.text, self.trailing_spacing, text);
+        self.trailing_spacing.append_source(&mut self.text, text);
         self.trailing_spacing = trailing_spacing;
         self.commit_ready = commit_ready;
     }
@@ -558,29 +596,6 @@ impl PendingAssistantTextRun {
             ),
         }
     }
-}
-
-fn append_text_run(existing: &mut String, existing_spacing: TextBlockSpacing, text: &str) {
-    if existing.is_empty() || text.is_empty() {
-        existing.push_str(text);
-        return;
-    }
-
-    if !text.starts_with('\n') {
-        match existing_spacing {
-            TextBlockSpacing::None if !existing.ends_with('\n') => existing.push('\n'),
-            TextBlockSpacing::ParagraphBreak if !existing.ends_with("\n\n") => {
-                if existing.ends_with('\n') {
-                    existing.push('\n');
-                } else {
-                    existing.push_str("\n\n");
-                }
-            }
-            TextBlockSpacing::None | TextBlockSpacing::ParagraphBreak => {}
-        }
-    }
-
-    existing.push_str(text);
 }
 
 #[derive(Default)]
@@ -776,7 +791,7 @@ fn assistant_text_run_source(
         if block.text.is_empty() {
             continue;
         }
-        append_text_run(&mut text, trailing_spacing, &block.text);
+        trailing_spacing.append_source(&mut text, &block.text);
         trailing_spacing = block.trailing_spacing;
     }
 
@@ -1143,7 +1158,15 @@ fn append_assistant_label_rows(
         return;
     }
 
-    let first_commit_ready = request.items.first().is_some_and(|item| item.commit_ready);
+    let first_commit_ready = request.items.first().is_some_and(|item| item.commit_ready)
+        && request.app.as_deref().is_none_or(|app| {
+            !app.config.show_message_timestamps_effective()
+                || app.transcript.messages[request.msg_idx]
+                    .timing
+                    .timestamp
+                    .is_some_and(|timestamp| !timestamp.observed)
+                || !active_assistant_message_is_mutable(app, request.msg_idx)
+        });
     let label_start = rows.len().saturating_sub(request.leading_blank_lines);
     boundaries.push(LiveRowBoundary {
         ids: vec![HistoryOutputId::AssistantLabel(request.message_id)],
@@ -1153,7 +1176,16 @@ fn append_assistant_label_rows(
         start_row: label_start,
         commit_ready: first_commit_ready,
     });
-    rows.extend(wrap_lines_to_physical_rows(&[assistant_role_label_line()], request.width));
+    let mut label = assistant_role_label_line();
+    if let Some(app) = request.app.as_deref()
+        && let Some(timestamp) = crate::app::presentation::timestamp_label(
+            app,
+            &app.transcript.messages[request.msg_idx],
+        )
+    {
+        label.spans.push(Span::styled(format!(" · {timestamp}"), Style::default().fg(theme::DIM)));
+    }
+    rows.extend(wrap_lines_to_physical_rows(&[label], request.width));
 }
 
 fn append_rendered_assistant_item(
@@ -1302,6 +1334,7 @@ fn render_canonical_tool_rows(
     render_context: MessageRenderContext<'_>,
     spinner: SpinnerState,
 ) -> Vec<Line<'static>> {
+    let show_duration = app.config.show_turn_duration_effective();
     let Some(MessageBlock::ToolCall(tc)) = app
         .transcript
         .messages
@@ -1322,6 +1355,25 @@ fn render_canonical_tool_rows(
         spinner,
         &mut rows,
     );
+    if show_duration
+        && let Some(timing) =
+            tc.output_metadata.as_ref().and_then(|metadata| metadata.timing.as_ref())
+    {
+        rows.push(Line::from(Span::styled(
+            format!(
+                "  {}{}",
+                if timing.source == crate::agent::model::ToolTimingSource::Progress {
+                    "Tool elapsed ≥ "
+                } else {
+                    "Task elapsed "
+                },
+                crate::app::presentation::elapsed(std::time::Duration::from_millis(
+                    timing.duration_ms
+                ))
+            ),
+            Style::default().fg(theme::DIM),
+        )));
+    }
     wrap_lines_to_physical_rows(&rows, render_context.width)
 }
 

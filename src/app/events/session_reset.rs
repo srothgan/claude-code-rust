@@ -239,6 +239,9 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
             _ => super::handle_session_update(app, update.clone()),
         }
     }
+    for message in &mut app.transcript.messages {
+        message.timing.discard_replay_observations();
+    }
     app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     super::compaction::reset(app);

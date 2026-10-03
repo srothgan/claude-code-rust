@@ -26,6 +26,12 @@ Important Rust areas:
 
 The current runtime uses inline terminal-owned rendering rather than an older fullscreen-only model. Fullscreen views are still used for config, help, status, usage, MCP, and plugin surfaces. The reasons for that change are described in [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
+Presentation preferences remain projections of the acknowledged config snapshot. The bridge's single catalog and targeted writer handle Claude documents and the personal app presentation namespace; Rust owns neither a parallel cascade nor a second presentation store. Updater writes patch their own fields and cooperate through the same document-lock filename.
+
+The bridge normalizes available SDK wall timestamps, result elapsed/API timing, and tool/task elapsed metadata. The canonical transcript owns each message's clock and timing provenance; history replay removes new local observations and preserves native timestamps without reordering messages. One formatter applies locale, clock presets, custom patterns, and timezone. Completed duration rows participate in the existing scrollback boundary/commit protocol.
+
+`/copy` derives its material from the canonical response text and the shared text-joining rule used by rendering, then uses one clipboard boundary shared with MCP authorization. Its picker owns only the current selection and retry state. Chat reading owns a stable transcript-segment anchor and rendered-text position, while saved Auto-scroll controls following policy. Reading suspends scrollback insertion, survives retained-content reflow, and returns to ordinary incremental history commits through an explicit keymap action.
+
 ## Agent SDK Bridge
 
 In packaged npm installs, the Rust process resolves a private Bun runtime named `claude-rs-bridge-bun` or `claude-rs-bridge-bun.exe` from the installed package layout. That runtime runs:

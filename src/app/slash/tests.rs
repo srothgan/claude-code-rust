@@ -2078,7 +2078,7 @@ async fn ultracode_composer_wire_events_status_and_footer_workflow() {
 #[tokio::test(flavor = "current_thread")]
 async fn effort_reset_and_thinking_wait_for_session_acknowledgement() {
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             use crate::agent::wire::BridgeCommand;
             let mut app = App::test_default();
             let mut commands = attach_test_connection(&mut app);
@@ -2129,7 +2129,7 @@ async fn effort_reset_and_thinking_wait_for_session_acknowledgement() {
                 assert_eq!(app.status, AppStatus::Ready);
                 assert_eq!(app.session_runtime.config_options.get(option), Some(&acknowledged));
             }
-        })
+        }))
         .await;
 }
 

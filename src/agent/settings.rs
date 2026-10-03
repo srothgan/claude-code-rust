@@ -136,6 +136,8 @@ pub struct SettingsSnapshot {
     pub resolution_sources: Vec<ResolutionSource>,
     pub provenance: std::collections::BTreeMap<String, SettingProvenance>,
     pub diagnostics: Vec<String>,
+    #[serde(default)]
+    pub time_zone: Option<String>,
 }
 impl SettingsSnapshot {
     pub fn value(&self, id: &str) -> Option<&Value> {

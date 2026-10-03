@@ -193,7 +193,14 @@ impl ChatTerminalSession {
         let width = screen_size.0.max(1);
         let terminal_height = screen_size.1.max(1);
 
-        let base_excluded_ids = self.base_history_excluded_ids();
+        if !app.config.auto_scroll_effective() {
+            app.chat_render.viewport.pause();
+        }
+        let base_excluded_ids = if app.chat_render.viewport.is_reading() {
+            BTreeSet::new()
+        } else {
+            self.base_history_excluded_ids()
+        };
         let serialized_rows =
             serialize_live_rows_with_boundaries_excluding(app, width, &base_excluded_ids);
         self.draw_incremental(
@@ -217,7 +224,8 @@ impl ChatTerminalSession {
     ) -> anyhow::Result<()> {
         app.surface_dirty.chat.take_repaint();
         let composer = Self::build_composer_surface(app, width);
-        let mut history_plan = self.prepare_history_flush(
+        let mut history_plan = self.prepare_viewport_history(
+            app,
             serialized_rows,
             &composer,
             width,
@@ -225,9 +233,8 @@ impl ChatTerminalSession {
             base_excluded_ids,
         );
         let live_rows = history_plan.live_rows.as_slice();
-        let requested_layout_plan = MutableLayoutPlan::new(live_rows, &composer, terminal_height);
-        let layout_plan =
-            MutableLayoutPlan::new(live_rows, &composer, requested_layout_plan.viewport_height);
+        let (requested_layout_plan, layout_plan) =
+            viewport_layout(app, serialized_rows, live_rows, &composer, terminal_height);
         let visible_hint_rows = layout_plan.hint_visible_rows(&composer.hint_rows).to_vec();
         let visible_btw_rows = layout_plan.btw_visible_rows(&composer.btw_rows).to_vec();
         let visible_editor_rows = composer.editor_visible_rows(layout_plan.editor_height).to_vec();
@@ -282,6 +289,12 @@ impl ChatTerminalSession {
         let Some(outcome) = self.resolve_chat_draw_outcome(app, outcome_result)? else {
             return Ok(());
         };
+        record_viewport_anchor(
+            app,
+            serialized_rows,
+            layout_plan.live_window.start,
+            visible_live_row_count,
+        );
         self.complete_history_flush(app, width, &outcome);
         let viewport_area = outcome.viewport_area;
         let (live_area, hint_area, btw_area, editor_area, footer_area) =
@@ -310,6 +323,22 @@ impl ChatTerminalSession {
             },
         );
         Ok(())
+    }
+
+    fn prepare_viewport_history(
+        &mut self,
+        app: &App,
+        rows: &SerializedLiveRows,
+        composer: &ComposerSurface,
+        width: u16,
+        height: u16,
+        excluded: BTreeSet<HistoryOutputId>,
+    ) -> HistoryFlushPlan {
+        if app.chat_render.viewport.is_reading() {
+            history_flush_without_action(rows, BTreeSet::new(), false)
+        } else {
+            self.prepare_history_flush(rows, composer, width, height, excluded)
+        }
     }
 
     fn resolve_chat_draw_outcome(
@@ -504,7 +533,10 @@ impl ChatTerminalSession {
     }
 
     fn build_composer_surface(app: &mut App, width: u16) -> ComposerSurface {
-        let hint_rows = build_composer_hint_rows(app);
+        let mut hint_rows = build_composer_hint_rows(app);
+        if app.chat_render.viewport.is_reading() {
+            hint_rows.extend(crate::ui::input_rows::reading_hint_rows(app, width));
+        }
         let hint_row_count = u16::try_from(hint_rows.len()).unwrap_or(u16::MAX);
         let btw_rows = build_btw_status_rows(app, width);
         let btw_row_count = u16::try_from(btw_rows.len()).unwrap_or(u16::MAX);
@@ -540,6 +572,36 @@ impl ChatTerminalSession {
 fn read_cursor_position_before_input_reader() -> anyhow::Result<(u16, u16)> {
     crossterm::cursor::position()
         .context("cursor position may only be read before the terminal reader owns terminal input")
+}
+
+fn viewport_layout(
+    app: &mut App,
+    rows: &SerializedLiveRows,
+    live: &[Line<'static>],
+    composer: &ComposerSurface,
+    height: u16,
+) -> (MutableLayoutPlan, MutableLayoutPlan) {
+    let requested = MutableLayoutPlan::new(live, composer, height);
+    let mut layout = MutableLayoutPlan::new(live, composer, requested.viewport_height);
+    if app.chat_render.viewport.is_reading() {
+        layout.live_window.start =
+            app.chat_render.viewport.start(rows, layout.live_window.visible_len);
+    }
+    (requested, layout)
+}
+
+fn record_viewport_anchor(
+    app: &mut App,
+    rows: &SerializedLiveRows,
+    reading_start: usize,
+    visible: usize,
+) {
+    let start = if app.chat_render.viewport.is_reading() {
+        reading_start
+    } else {
+        rows.rows().len().saturating_sub(visible)
+    };
+    app.chat_render.viewport.record(rows, start);
 }
 
 fn mark_chat_terminal_history_out_of_sync(app: &mut App) {

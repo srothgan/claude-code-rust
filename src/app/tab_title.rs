@@ -32,11 +32,22 @@ fn write_osc2_title(title: &str) {
 ///
 /// Called every frame tick during animating states, and on state transitions
 /// for static states (Ready, Error).
-pub fn update_tab_title(status: &AppStatus, spinner_frame: usize, cwd: &str) {
-    let name = folder_name(cwd);
-    let active = pulse_char(spinner_frame);
+pub fn update_tab_title(app: &super::App) {
+    write_osc2_title(&title(app));
+}
 
-    let title = match status {
+fn title(app: &super::App) -> String {
+    let name = folder_name(&app.cwd_raw);
+    if !app.config.status_in_terminal_tab_effective() {
+        return name.to_owned();
+    }
+    let active = if app.config.prefers_reduced_motion_effective() {
+        '\u{25C6}'
+    } else {
+        pulse_char(app.spinner_frame)
+    };
+
+    match &app.status {
         AppStatus::Connecting
         | AppStatus::CommandPending
         | AppStatus::Thinking
@@ -44,9 +55,7 @@ pub fn update_tab_title(status: &AppStatus, spinner_frame: usize, cwd: &str) {
             format!("{active} {name}")
         }
         AppStatus::Ready | AppStatus::Error => format!("{IDLE_CHAR} {name}"),
-    };
-
-    write_osc2_title(&title);
+    }
 }
 
 fn pulse_char(spinner_frame: usize) -> char {
@@ -64,6 +73,35 @@ pub fn restore_tab_title(cwd: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acknowledged_preferences_control_activity_and_reduced_motion_in_the_title() {
+        let mut app = super::super::App::test_default();
+        app.status = AppStatus::Running;
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "presentation.showStatusInTerminalTab",
+            serde_json::json!(false),
+        ));
+        assert_eq!(title(&app), "test");
+        let mut snapshot = crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(true),
+        );
+        snapshot.values.extend(
+            crate::agent::settings::SettingsSnapshot::test_value(
+                "presentation.showStatusInTerminalTab",
+                serde_json::json!(true),
+            )
+            .values,
+        );
+        app.config.snapshot = Some(snapshot);
+        for frame in [0, 10, 100] {
+            app.spinner_frame = frame;
+            assert_eq!(title(&app), "◆ test");
+        }
+        app.status = AppStatus::Ready;
+        assert_eq!(title(&app), "○ test");
+    }
 
     #[test]
     fn folder_name_extracts_last_component() {

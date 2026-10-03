@@ -19,6 +19,9 @@ name = "claude-rs"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "unstable-locales"] }
+chrono-tz = "0.10.4"
+sys-locale = "0.3.2"
 anyhow = "1.0.101"
 ansi-to-tui = "8.0.1"
 arboard = { version = "3.6.1", features = ["image-data"] }

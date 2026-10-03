@@ -36,6 +36,39 @@ function mutation(snapshot: SettingsSnapshot, id: string, scope: SettingsScope, 
   return { context: snapshot.context, id, scope, expected_revision: previous.revision, operation: value === undefined ? "remove" : "set", ...(value === undefined ? {} : { value }) };
 }
 
+test("presentation preferences share targeted saves while retaining their distinct storage and scopes", async () => {
+  const appFile = path.join(root, "app-settings.json");
+  await write("user", { presentation: { copyFullResponse: true }, showMessageTimestamps: false, future: 17 });
+  await write("project", { showMessageTimestamps: true, autoScrollEnabled: false, timeFormat: "%Y-%m-%d %H:%M", timeZone: "Europe/Berlin" });
+  await fs.writeFile(appFile, JSON.stringify({ updates: { skipped_version: "keep" }, presentation: { future: "preserve", copyFullResponse: false } }));
+  const inspect = () => inspectSettings(cwd, [], [], appFile);
+  const shown = await inspect();
+  assert.equal(shown.values.find(value => value.id === "presentation.copyFullResponse")?.value, false);
+  assert.equal(shown.values.find(value => value.id === "showMessageTimestamps")?.value, true);
+  assert.equal(shown.values.find(value => value.id === "autoScrollEnabled")?.value, false);
+  assert.equal(shown.values.find(value => value.id === "timeFormat")?.value, "%Y-%m-%d %H:%M");
+  assert.equal(shown.time_zone, "Europe/Berlin");
+  assert.equal(shown.provenance["presentation.copyFullResponse"]?.path, appFile);
+  const change = mutation(shown, "presentation.copyFullResponse", "user", true);
+  const result = await mutateSetting(cwd, change, [], [], appFile);
+  assert.equal(result.persistence, "saved");
+  assert.equal(result.application, "host");
+  const saved = JSON.parse(await fs.readFile(appFile, "utf8"));
+  assert.deepEqual(saved, { updates: { skipped_version: "keep" }, presentation: { future: "preserve", copyFullResponse: true } });
+  const userSource = shown.sources.find(source => source.scope === "user");
+  assert.ok(userSource);
+  assert.equal(JSON.parse(await fs.readFile(userSource.path, "utf8")).future, 17);
+  assert.equal((await mutateSetting(cwd, mutation(await inspect(), "presentation.copyFullResponse", "project", false), [], [], appFile)).persistence, "failure");
+  const stale = mutation(await inspect(), "presentation.copyFullResponse", "user", false);
+  saved.presentation.copyFullResponse = false;
+  await fs.writeFile(appFile, JSON.stringify(saved));
+  assert.equal((await mutateSetting(cwd, stale, [], [], appFile)).persistence, "conflict");
+  const reset = await mutateSetting(cwd, mutation(await inspect(), "presentation.copyFullResponse", "user"), [], [], appFile);
+  assert.equal(reset.persistence, "saved");
+  assert.equal(reset.snapshot?.values.find(value => value.id === "presentation.copyFullResponse")?.value, undefined);
+  assert.equal(JSON.parse(await fs.readFile(appFile, "utf8")).presentation.future, "preserve");
+});
+
 test("SDK resolution exposes explicit false, scoped values, and the native cascade", async () => {
   await write("user", { model: "opus", fileCheckpointingEnabled: true, language: "German", env: { PRIVATE_TOKEN: "private-secret" } });
   await write("project", { model: "sonnet", fileCheckpointingEnabled: false });
@@ -159,7 +192,7 @@ test("alphabetical settings expose SDK model choices for validated save and rese
   await write("local", {});
   const models = ["opus", "sonnet"].map(id => ({ id, display_name: id, supports_effort: true, supported_effort_levels: [] }));
   let shown = await inspectSettings(cwd, models);
-  assert.deepEqual(shown.catalog.slice(0, 4).map(setting => setting.label), ["Auto compact", "Auto mode during planning", "Continue at usage limit", "Default agent"]);
+  assert.deepEqual(shown.catalog.slice(0, 4).map(setting => setting.label), ["Auto compact", "Auto mode during planning", "Auto-scroll", "Continue at usage limit"]);
   assert.deepEqual(shown.catalog.find(setting => setting.id === "model")?.options, ["opus", "sonnet"]);
   for (const id of ["opus", "sonnet"]) {
     const saved = await mutateSetting(cwd, mutation(shown, "model", "user", id), models);

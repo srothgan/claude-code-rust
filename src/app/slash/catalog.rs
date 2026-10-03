@@ -9,6 +9,7 @@ pub(crate) enum AppSlashCommand {
     Cancel,
     Compact,
     Config,
+    Copy,
     Docs,
     Agent,
     Effort,
@@ -107,6 +108,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /config",
         short_description: "Open settings",
         long_description: "Open the fullscreen settings tab.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Copy,
+        name: "/copy",
+        usage: "Usage: /copy",
+        short_description: "Copy last response",
+        long_description: "Copy the last finished assistant response or choose a code block. Configure Skip the /copy picker to copy the full response directly.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -277,6 +286,7 @@ impl AppSlashCommand {
             Self::Cancel => "/cancel",
             Self::Compact => "/compact",
             Self::Config => "/config",
+            Self::Copy => "/copy",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
@@ -321,6 +331,13 @@ impl AppSlashCommand {
             Self::Config | Self::Help | Self::Mcp | Self::Plugins | Self::Status | Self::Usage => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
+                } else {
+                    SubmissionClass::Invalid
+                }
+            }
+            Self::Copy => {
+                if args.is_empty() {
+                    SubmissionClass::Informational
                 } else {
                     SubmissionClass::Invalid
                 }

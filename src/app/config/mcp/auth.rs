@@ -99,11 +99,3 @@ pub(crate) fn open_url_in_browser(url: &str) -> Result<(), String> {
         .map(|_| ())
         .map_err(|error| format!("Failed to open browser automatically: {error}"))
 }
-
-pub(crate) fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|error| format!("Failed to access clipboard: {error}"))?;
-    clipboard
-        .set_text(text.to_owned())
-        .map_err(|error| format!("Failed to copy to clipboard: {error}"))
-}

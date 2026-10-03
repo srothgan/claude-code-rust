@@ -1,3 +1,4 @@
+import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
 import { observeSessionModel } from "./session_model.js";
@@ -794,6 +795,10 @@ export function handleTaskSystemMessage(
     return true;
   }
   applyTaskLifecycleState(session, subtype, msg);
+  const taskDuration = elapsedNumber(asRecordOrNull(msg.usage)?.duration_ms);
+  if (taskDuration !== undefined && Number.isSafeInteger(Math.round(taskDuration))) {
+    emitToolCallUpdate(session, toolUseId, { output_metadata: { ...toolCall.output_metadata, timing: { duration_ms: Math.round(taskDuration), source: "task" } } }, "progress");
+  }
   if (toolCall.status === "pending") {
     emitToolCallUpdate(
       session,
@@ -1268,6 +1273,8 @@ export function handleAssistantMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  const metadataUpdate = messageMetadata(message, "assistant");
+  if (metadataUpdate) emitSessionUpdate(session.sessionId, metadataUpdate);
   const assistantMessageUuid = sourceMessageUuid(message);
   emitTranscriptRetraction(
     session,
@@ -1597,6 +1604,8 @@ export function handleResultMessage(
       fields: replyDiagnostics,
     });
   }
+  const timing = turnTiming(message);
+  if (timing) emitSessionUpdate(session.sessionId, timing);
   const terminalReason = terminalReasonFromValue(message.terminal_reason);
   const queuedTurnCount = nonNegativeIntegerField(message, "queued_turn_count");
 
@@ -2275,6 +2284,7 @@ export function handleSdkMessage(
           ? msg.subagent_type.trim()
           : undefined;
       emitToolProgressUpdate(session, resolvedToolUseId, {
+        elapsedSeconds: elapsedNumber(msg.elapsed_time_seconds),
         ...(subagentRetry
           ? { subagentRetry }
           : hasSubagentRetry
@@ -2390,6 +2400,8 @@ export function handleSdkMessage(
   }
 
   if (type === "user") {
+    const userMetadata = messageMetadata(msg, "user");
+    if (userMetadata) emitSessionUpdate(session.sessionId, userMetadata);
     const notification = parseDetachedToolNotification(msg);
     if (notification && session.toolCalls.has(notification.toolUseId)) {
       const toolCall = session.toolCalls.get(notification.toolUseId);

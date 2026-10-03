@@ -11,6 +11,7 @@ mod panic_hook;
 mod release_guard;
 #[cfg(any(unix, test))]
 mod tracked_cursor_backend;
+pub(crate) mod viewport;
 
 use self::chat_session::{ChatTerminalSeed, ChatTerminalSeedProvenance, ChatTerminalSession};
 use self::fullscreen_session::FullscreenTerminalSession;

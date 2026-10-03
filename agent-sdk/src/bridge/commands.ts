@@ -360,9 +360,12 @@ export function parseCommandEnvelope(line: string): {
 
   const command: BridgeCommand = (() => {
     switch (commandName) {
-      case "inspect_settings":
-        return { command: "inspect_settings", session_id: expectString(raw, "session_id", commandName) };
+      case "inspect_settings": {
+        const appSettingsPath = optionalString(raw, "app_settings_path", commandName);
+        return { command: "inspect_settings", session_id: expectString(raw, "session_id", commandName), ...(appSettingsPath ? { app_settings_path: appSettingsPath } : {}) };
+      }
       case "mutate_setting": {
+        const appSettingsPath = optionalString(raw, "app_settings_path", commandName);
         const input = asRecord(raw.mutation, "mutate_setting.mutation");
         const scope = expectString(input, "scope", commandName);
         const operation = expectString(input, "operation", commandName);
@@ -373,7 +376,7 @@ export function parseCommandEnvelope(line: string): {
           expected_revision: expectString(input, "expected_revision", commandName),
           ...(operation === "set" ? { value: input.value as Json } : {}),
         };
-        return { command: "mutate_setting", session_id: expectString(raw, "session_id", commandName), mutation };
+        return { command: "mutate_setting", session_id: expectString(raw, "session_id", commandName), mutation, ...(appSettingsPath ? { app_settings_path: appSettingsPath } : {}) };
       }
       case "initialize":
         return {
