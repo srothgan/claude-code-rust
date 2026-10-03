@@ -3,8 +3,9 @@ import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
 import {
   query,
+  resolveSettings,
+  type Settings,
   type CanUseTool,
-  type Options,
   type PermissionMode,
   type PermissionResult,
   type PermissionUpdate,
@@ -100,7 +101,6 @@ const BRIDGE_RUNTIME_PROCESS_NAME =
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
-const STARTUP_FALLBACK_MODEL_ALIAS = "fable";
 
 function permissionDisplayFromCanUseOptions(
   options: Parameters<CanUseTool>[2],
@@ -321,44 +321,6 @@ type CloseSessionOptions = {
   requestId?: string;
 };
 
-function settingsObjectFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): Record<string, unknown> | undefined {
-  return launchSettings.settings;
-}
-
-function normalizedSettingsFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): Record<string, unknown> {
-  const settings = settingsObjectFromLaunchSettings(launchSettings) ?? {};
-  // SendFeedback queues a local draft that can only be reviewed, edited, and
-  // discarded through the native /feedback surface. Agent SDK command
-  // snapshots do not expose that command to this host, so enabling drafts
-  // would create content that claude-rs cannot safely let the user approve.
-  const hostSettings = {
-    ...settings,
-    feedbackDrafts: "off" as const,
-  };
-
-  const sandbox =
-    settings.sandbox &&
-    typeof settings.sandbox === "object" &&
-    !Array.isArray(settings.sandbox)
-      ? (settings.sandbox as Record<string, unknown>)
-      : undefined;
-  if (sandbox?.enabled === true && sandbox.failIfUnavailable === undefined) {
-    return {
-      ...hostSettings,
-      sandbox: {
-        ...sandbox,
-        failIfUnavailable: false,
-      },
-    };
-  }
-
-  return hostSettings;
-}
-
 export function sessionById(sessionId: string): SessionState | null {
   return sessions.get(sessionId) ?? null;
 }
@@ -539,8 +501,8 @@ export async function createSession(params: {
   const provisionalSessionId =
     params.sessionId ??
     (params.resume && !params.forkSession ? params.resume : randomUUID());
-  const initialModel = initialSessionModel(params.launchSettings);
-  const initialMode = initialSessionMode(params.launchSettings);
+  const initialModel = params.launchSettings.model ?? "Connecting...";
+  const initialMode = params.launchSettings.permission_mode ?? DEFAULT_PERMISSION_MODE;
   const supportsBypassPermissionsMode =
     startupPermissionModeOptions(params.launchSettings)
       .allowDangerouslySkipPermissions === true;
@@ -674,6 +636,10 @@ export async function createSession(params: {
     },
   });
   try {
+    const { effective: resolvedSettings } = await resolveSettings({
+      cwd: params.cwd,
+      settingSources: DEFAULT_SETTING_SOURCES,
+    });
     queryHandle = query({
       prompt: input,
       options: buildQueryOptions({
@@ -683,6 +649,7 @@ export async function createSession(params: {
         resumeDropsTurn: params.resumeDropsTurn,
         forkSession: params.forkSession,
         launchSettings: params.launchSettings,
+        resolvedSettings,
         provisionalSessionId,
         input,
         canUseTool,
@@ -720,7 +687,7 @@ export async function createSession(params: {
     sessionId: provisionalSessionId,
     cwd: params.cwd,
     model: initialModel,
-    ...(initialModel ? { requestedModelId: initialModel } : {}),
+    ...(params.launchSettings.model ? { requestedModelId: params.launchSettings.model } : {}),
     availableModels: [],
     mode: initialMode,
     supportedModeIds: [],
@@ -1036,6 +1003,7 @@ export function commitDeferredSession(session: SessionState): void {
 
 type QueryOptionsBuilderParams = {
   cwd: string;
+  resolvedSettings: Settings;
   resume?: string;
   resumeSessionAt?: string;
   resumeDropsTurn?: string;
@@ -1115,139 +1083,55 @@ function logSdkProcessExit(
   });
 }
 
-function permissionModeFromSettingsValue(
-  rawMode: unknown,
-): PermissionMode | undefined {
-  if (typeof rawMode !== "string") {
-    return undefined;
-  }
-  switch (rawMode) {
-    case "manual":
-      return "default";
-    case "default":
-    case "auto":
-    case "acceptEdits":
-    case "bypassPermissions":
-    case "plan":
-    case "dontAsk":
-      return rawMode;
-    default:
-      throw new Error(
-        `unsupported launch_settings.settings.permissions.defaultMode: ${rawMode}`,
-      );
-  }
-}
-
-function initialSessionModel(launchSettings: SessionLaunchSettings): string {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const model =
-    typeof settings?.model === "string" ? settings.model.trim() : "";
-  return model || STARTUP_FALLBACK_MODEL_ALIAS;
-}
-
-function startupModelOption(launchSettings: SessionLaunchSettings): {
-  model?: string;
-} {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const model =
-    typeof settings?.model === "string" ? settings.model.trim() : "";
-  return model ? { model } : {};
-}
-
-function initialSessionMode(
-  launchSettings: SessionLaunchSettings,
-): PermissionMode {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const permissions =
-    settings?.permissions &&
-    typeof settings.permissions === "object" &&
-    !Array.isArray(settings.permissions)
-      ? (settings.permissions as Record<string, unknown>)
-      : undefined;
-  return (
-    permissionModeFromSettingsValue(permissions?.defaultMode) ??
-    DEFAULT_PERMISSION_MODE
-  );
-}
-
 function startupPermissionModeOptions(launchSettings: SessionLaunchSettings): {
   permissionMode?: PermissionMode;
   allowDangerouslySkipPermissions?: boolean;
 } {
-  const settings = settingsObjectFromLaunchSettings(launchSettings);
-  const permissions =
-    settings?.permissions &&
-    typeof settings.permissions === "object" &&
-    !Array.isArray(settings.permissions)
-      ? (settings.permissions as Record<string, unknown>)
-      : undefined;
-  const permissionMode = permissionModeFromSettingsValue(
-    permissions?.defaultMode,
-  );
-  if (!permissionMode) {
-    return {};
-  }
+  const permissionMode = launchSettings.permission_mode;
+  if (!permissionMode) return {};
   return permissionMode === "bypassPermissions"
-    ? {
-        permissionMode,
-        allowDangerouslySkipPermissions: true,
-      }
+    ? { permissionMode, allowDangerouslySkipPermissions: true }
     : { permissionMode };
 }
 
-function systemPromptFromLaunchSettings(
-  launchSettings: SessionLaunchSettings,
-): NonNullable<Options["systemPrompt"]> {
-  const language = launchSettings.language?.trim();
-  const appendLines = [BRIDGE_RUNTIME_GUARD_PROMPT];
-
-  if (language) {
-    appendLines.push(
-      `Always respond to the user in ${language} unless the user explicitly asks for a different language. ` +
-        `Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.`,
-    );
-  }
-
-  return {
-    type: "preset",
-    preset: "claude_code",
-    append: appendLines.join(" "),
-    // Keep the prompt prefix stable across resume. Updated host language or guard text
-    // intentionally takes effect after SDK compaction or in a new session.
+export function buildQueryOptions(params: QueryOptionsBuilderParams) {
+  const systemPrompt = {
+    type: "preset" as const,
+    preset: "claude_code" as const,
+    append: BRIDGE_RUNTIME_GUARD_PROMPT,
     snapshot: true,
   };
-}
-
-export function buildQueryOptions(params: QueryOptionsBuilderParams) {
-  const systemPrompt = systemPromptFromLaunchSettings(params.launchSettings);
-  const modelOption = startupModelOption(params.launchSettings);
   const permissionModeOptions = startupPermissionModeOptions(
     params.launchSettings,
   );
-  const settings = normalizedSettingsFromLaunchSettings(params.launchSettings);
+  // These are host capability restrictions, not copied user preferences.
+  // Draft review and held peer-message review require native UI surfaces.
+  const settings = {
+    feedbackDrafts: "off" as const,
+    ...(!["accept", "refuse"].includes(params.resolvedSettings.crossSessionInbound ?? "")
+      ? { crossSessionInbound: "refuse" as const }
+      : {}),
+  };
   return {
     cwd: params.cwd,
     includePartialMessages: true,
     promptSuggestions: true,
-    enableFileCheckpointing: true,
+    // SDK sessions need an explicit recording opt-in; their recording gate
+    // otherwise ignores the JSON preference. Claude still applies environment restrictions.
+    enableFileCheckpointing: params.resolvedSettings.fileCheckpointingEnabled ?? true,
+    agentProgressSummaries: true,
     // Proposal tools require native review and lifecycle surfaces that the
     // public headless SDK does not currently expose to this host.
     disallowedTools: ["ProposeSkills", "ProposeGoal"],
     executable: "bun" as const,
     ...(params.resume ? {} : { sessionId: params.provisionalSessionId }),
     settings,
-    ...modelOption,
+    ...(params.launchSettings.model !== undefined ? { model: params.launchSettings.model } : {}),
     ...permissionModeOptions,
     ...(params.launchSettings.effort !== undefined ? { effort: params.launchSettings.effort } : {}),
     ...(params.launchSettings.agent !== undefined ? { agent: params.launchSettings.agent } : {}),
     toolConfig: { askUserQuestion: { previewFormat: "markdown" as const } },
     systemPrompt,
-    ...(params.launchSettings.agent_progress_summaries !== undefined
-      ? {
-          agentProgressSummaries:
-            params.launchSettings.agent_progress_summaries,
-        }
-      : {}),
     ...(params.claudeCodeExecutable
       ? { pathToClaudeCodeExecutable: params.claudeCodeExecutable }
       : {}),

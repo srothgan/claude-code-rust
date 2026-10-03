@@ -714,9 +714,8 @@ export type McpSnapshotSource =
   | "init";
 
 export interface SessionLaunchSettings {
-  language?: string;
-  settings?: { [key: string]: Json };
-  agent_progress_summaries?: boolean;
+  model?: string;
+  permission_mode?: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   effort?: EffortLevel;
   agent?: string;
 }

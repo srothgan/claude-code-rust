@@ -246,10 +246,7 @@ fn build_session_command(params: &StartConnectionParams) -> CommandEnvelope {
 }
 
 fn log_session_connect_command_sent(params: &StartConnectionParams, command: &BridgeCommand) {
-    let has_language = params.session_launch_settings.language.is_some();
-    let has_settings = params.session_launch_settings.settings.is_some();
-    let agent_progress_summaries_enabled =
-        params.session_launch_settings.agent_progress_summaries.unwrap_or(false);
+    let has_launch_overrides = !params.session_launch_settings.is_empty();
     match command {
         BridgeCommand::ResumeSession { session_id, .. } => tracing::info!(
             target: crate::logging::targets::APP_SESSION,
@@ -259,9 +256,7 @@ fn log_session_connect_command_sent(params: &StartConnectionParams, command: &Br
             request_kind = "resume",
             resume_requested = true,
             session_id = %session_id,
-            has_language,
-            has_settings,
-            agent_progress_summaries_enabled,
+            has_launch_overrides,
         ),
         BridgeCommand::CreateSession { .. } => tracing::info!(
             target: crate::logging::targets::APP_SESSION,
@@ -271,9 +266,7 @@ fn log_session_connect_command_sent(params: &StartConnectionParams, command: &Br
             request_kind = "create",
             resume_requested = false,
             cwd = %params.cwd_raw,
-            has_language,
-            has_settings,
-            agent_progress_summaries_enabled,
+            has_launch_overrides,
         ),
         _ => {}
     }

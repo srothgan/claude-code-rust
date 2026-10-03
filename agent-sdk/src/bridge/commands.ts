@@ -237,23 +237,18 @@ function optionalLaunchSettings(
     return {};
   }
   const parsed = asRecord(value, `${context}.${key}`);
-  const language = optionalString(parsed, "language", `${context}.${key}`);
-  const settings = optionalJsonObject(parsed, "settings", `${context}.${key}`);
+  const model = optionalString(parsed, "model", `${context}.${key}`);
+  const permissionMode = optionalString(parsed, "permission_mode", `${context}.${key}`);
+  if (permissionMode !== undefined && !Object.hasOwn(MODE_NAMES, permissionMode)) {
+    throw new Error(`${context}.${key}.permission_mode is unsupported: ${permissionMode}`);
+  }
   const agent = optionalString(parsed, "agent", `${context}.${key}`);
   const effort = parsed.effort == null ? undefined : expectEffortLevel(parsed, "effort", `${context}.${key}`);
-  const agentProgressSummaries = optionalBoolean(
-    parsed,
-    "agent_progress_summaries",
-    `${context}.${key}`,
-  );
   return {
-    ...(language ? { language } : {}),
-    ...(settings ? { settings } : {}),
+    ...(model ? { model } : {}),
+    ...(permissionMode ? { permission_mode: permissionMode as SessionLaunchSettings["permission_mode"] } : {}),
     ...(agent ? { agent } : {}),
     ...(effort !== undefined ? { effort } : {}),
-    ...(agentProgressSummaries !== undefined
-      ? { agent_progress_summaries: agentProgressSummaries }
-      : {}),
   };
 }
 

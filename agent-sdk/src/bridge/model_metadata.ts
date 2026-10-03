@@ -17,7 +17,7 @@ type NormalizedModelKey = {
   contextSuffix?: string;
 };
 
-const DEFAULT_MODEL_ALIAS = "fable";
+const PENDING_MODEL_ID = "Connecting...";
 const MAX_MODEL_VERSION_PARTS = 2;
 const RELEASE_BUILD_TOKEN = /^20\d{6}$/;
 
@@ -301,13 +301,13 @@ export function resolveCurrentModel(
     session.resolvedRuntimeModelId?.trim() ||
     session.model.trim() ||
     requestedId ||
-    DEFAULT_MODEL_ALIAS;
+    PENDING_MODEL_ID;
   const catalogModel = resolveCatalogModel(
     session.availableModels,
     resolvedId,
     requestedId,
   );
-  const runtimeDisplayId = resolvedId || requestedId || DEFAULT_MODEL_ALIAS;
+  const runtimeDisplayId = resolvedId || requestedId || PENDING_MODEL_ID;
   const displayNameShort = shortDisplayNameForModelId(runtimeDisplayId);
   const displayNameLong =
     catalogModel?.display_name ?? humanizeModelId(runtimeDisplayId);

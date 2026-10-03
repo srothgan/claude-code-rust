@@ -389,8 +389,8 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
                 entry["command"] == "create_session" || entry["command"] == "resume_session"
             })
             .expect("session launch command");
-        assert_eq!(launch["launch_settings"]["settings"]["model"], "opus");
-        assert_eq!(launch["launch_settings"]["settings"]["permissions"]["defaultMode"], "plan");
+        assert_eq!(launch["launch_settings"]["model"], "opus");
+        assert_eq!(launch["launch_settings"]["permission_mode"], "plan");
         assert_eq!(launch["launch_settings"]["effort"], "max");
         assert_eq!(launch["launch_settings"]["agent"], "reviewer");
         let saved: Value = serde_json::from_str(

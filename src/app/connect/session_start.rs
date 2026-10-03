@@ -5,8 +5,6 @@ use crate::agent::client::AgentConnection;
 use crate::agent::types::RewindRestoreMode;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::app::App;
-use crate::app::config::{language_input_validation_message, store};
-use serde_json::{Map, Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SessionStartReason {
@@ -50,90 +48,17 @@ pub(crate) fn session_launch_settings_for_reason(
         | SessionStartReason::Resume
         | SessionStartReason::Rewind
         | SessionStartReason::Login => {
-            let language = store::language(&app.config.committed_settings_document)
-                .ok()
-                .flatten()
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-                .filter(|value| language_input_validation_message(value).is_none());
+            let options = app.startup.session_options();
             SessionLaunchSettings {
-                language,
-                settings: Some(build_session_settings_object(app)),
-                agent_progress_summaries: Some(true),
-                effort: app.startup.session_options().and_then(|options| options.effort),
-                agent: app.startup.session_options().and_then(|options| options.agent.clone()),
+                model: options.and_then(|options| options.model.clone()),
+                permission_mode: options
+                    .and_then(|options| options.permission_mode)
+                    .map(|mode| mode.as_stored().to_owned()),
+                effort: options.and_then(|options| options.effort),
+                agent: options.and_then(|options| options.agent.clone()),
             }
         }
     }
-}
-
-fn build_session_settings_object(app: &App) -> Value {
-    let mut settings = Map::new();
-
-    settings.insert(
-        "alwaysThinkingEnabled".to_owned(),
-        Value::Bool(app.config.always_thinking_effective()),
-    );
-
-    if let Some(model) = app
-        .startup
-        .session_options()
-        .and_then(|options| options.model.clone())
-        .or_else(|| app.config.model_effective())
-    {
-        settings.insert("model".to_owned(), Value::String(model));
-    }
-
-    settings.insert(
-        "permissions".to_owned(),
-        json!({
-            "defaultMode": app.startup.session_options().and_then(|options| options.permission_mode).unwrap_or_else(|| app.config.default_permission_mode_effective()).as_stored()
-        }),
-    );
-    settings.insert("fastMode".to_owned(), Value::Bool(app.config.fast_mode_effective()));
-    settings.insert(
-        "effortLevel".to_owned(),
-        Value::String(app.config.thinking_effort_effective().as_stored().to_owned()),
-    );
-    settings.insert(
-        "outputStyle".to_owned(),
-        Value::String(app.config.output_style_effective().as_stored().to_owned()),
-    );
-    let cross_session_inbound = app
-        .config
-        .committed_local_settings_document
-        .get("crossSessionInbound")
-        .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "accept" | "refuse"))
-        .unwrap_or("refuse");
-    settings
-        .insert("crossSessionInbound".to_owned(), Value::String(cross_session_inbound.to_owned()));
-    settings.insert(
-        "spinnerTipsEnabled".to_owned(),
-        Value::Bool(
-            store::spinner_tips_enabled(&app.config.committed_local_settings_document)
-                .unwrap_or(true),
-        ),
-    );
-    settings.insert(
-        "terminalProgressBarEnabled".to_owned(),
-        Value::Bool(
-            store::terminal_progress_bar_enabled(&app.config.committed_preferences_document)
-                .unwrap_or(true),
-        ),
-    );
-    if let Some(mut sandbox) =
-        app.config.committed_settings_document.get("sandbox").and_then(Value::as_object).cloned()
-    {
-        if sandbox.get("enabled").and_then(Value::as_bool) == Some(true)
-            && !sandbox.contains_key("failIfUnavailable")
-        {
-            sandbox.insert("failIfUnavailable".to_owned(), Value::Bool(false));
-        }
-        settings.insert("sandbox".to_owned(), Value::Object(sandbox));
-    }
-
-    Value::Object(settings)
 }
 
 fn log_session_request(
@@ -142,10 +67,7 @@ fn log_session_request(
     launch_settings: &SessionLaunchSettings,
     session_id: Option<&str>,
 ) {
-    let has_language = launch_settings.language.is_some();
-    let has_settings = launch_settings.settings.is_some();
-    let agent_progress_summaries_enabled =
-        launch_settings.agent_progress_summaries.unwrap_or(false);
+    let has_launch_overrides = !launch_settings.is_empty();
     if let Some(session_id) = session_id {
         tracing::info!(
             target: crate::logging::targets::APP_SESSION,
@@ -155,9 +77,7 @@ fn log_session_request(
             reason = reason.as_str(),
             session_id = %session_id,
             cwd = %app.cwd_raw,
-            has_language,
-            has_settings,
-            agent_progress_summaries_enabled,
+            has_launch_overrides,
         );
     } else {
         tracing::info!(
@@ -167,9 +87,7 @@ fn log_session_request(
             outcome = "start",
             reason = reason.as_str(),
             cwd = %app.cwd_raw,
-            has_language,
-            has_settings,
-            agent_progress_summaries_enabled,
+            has_launch_overrides,
         );
     }
 }
@@ -239,13 +157,10 @@ pub(crate) fn begin_rewind(
 mod tests {
     use super::{SessionStartReason, session_launch_settings_for_reason};
     use crate::agent::model::EffortLevel;
-    use crate::agent::wire::SessionLaunchSettings;
     use crate::app::App;
-    use crate::app::config::{DefaultPermissionMode, store};
-    use serde_json::{Map, Value};
 
     #[test]
-    fn launch_overrides_survive_picker_selection_and_leave_saved_settings_unchanged() {
+    fn explicit_cli_choices_apply_until_startup_completes() {
         use clap::Parser;
         let cli = crate::Cli::try_parse_from([
             "claude-rs",
@@ -262,307 +177,21 @@ mod tests {
         .expect("CLI");
         let mut app = App::test_default();
         app.startup = crate::app::state::StartupState::from_cli(&cli);
+        app.config.committed_settings_document = serde_json::json!({
+            "model": "haiku", "permissions": {"defaultMode": "default"},
+            "modelSettings": {"claude-opus-5-5": {"effortLevel": "low"}}
+        });
         let saved = app.config.committed_settings_document.clone();
         for reason in [SessionStartReason::Startup, SessionStartReason::Resume] {
             let launch = session_launch_settings_for_reason(&app, reason);
-            assert_setting_value(&launch, "model", &Value::String("opus".into()));
-            assert_permission_mode(&launch, "plan");
+            assert_eq!(launch.model.as_deref(), Some("opus"));
+            assert_eq!(launch.permission_mode.as_deref(), Some("plan"));
             assert_eq!(launch.effort, Some(EffortLevel::Max));
             assert_eq!(launch.agent.as_deref(), Some("reviewer"));
         }
         assert_eq!(app.config.committed_settings_document, saved);
         app.startup.complete_launch();
         let next = session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
-        assert_setting_value(&next, "model", &Value::String("fable".into()));
-        assert_permission_mode(&next, "default");
-        assert_eq!(next.effort, None);
-        assert_eq!(next.agent, None);
-    }
-
-    #[test]
-    fn persisted_launch_settings_include_model_and_permission_mode() {
-        let mut app = App::test_default();
-        store::set_model(&mut app.config.committed_settings_document, Some("haiku"));
-        store::set_default_permission_mode(
-            &mut app.config.committed_settings_document,
-            DefaultPermissionMode::Plan,
-        );
-        store::set_language(&mut app.config.committed_settings_document, Some("German"));
-        store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
-        store::set_thinking_effort_level(
-            &mut app.config.committed_settings_document,
-            EffortLevel::High,
-        )
-        .expect("high is persistable");
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_eq!(launch_settings.language.as_deref(), Some("German"));
-        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
-        assert_setting_value(&launch_settings, "model", &Value::String("haiku".to_owned()));
-        assert_permission_mode(&launch_settings, "plan");
-        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
-        assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
-        assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
-        assert_setting_value(
-            &launch_settings,
-            "crossSessionInbound",
-            &Value::String("refuse".to_owned()),
-        );
-        assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
-        assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(true));
-        assert_eq!(launch_settings.agent_progress_summaries, Some(true));
-    }
-
-    #[test]
-    fn persisted_launch_settings_include_auto_permission_mode() {
-        let mut app = App::test_default();
-        store::set_default_permission_mode(
-            &mut app.config.committed_settings_document,
-            DefaultPermissionMode::Auto,
-        );
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_permission_mode(&launch_settings, "auto");
-    }
-
-    #[test]
-    fn persisted_launch_settings_preserve_sandbox_settings_and_make_fallback_explicit() {
-        let mut app = App::test_default();
-        app.config.committed_settings_document = serde_json::json!({
-            "sandbox": {
-                "enabled": true,
-                "allowUnsandboxedCommands": false
-            }
-        });
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_setting_value(
-            &launch_settings,
-            "sandbox",
-            &serde_json::json!({
-                "enabled": true,
-                "allowUnsandboxedCommands": false,
-                "failIfUnavailable": false
-            }),
-        );
-    }
-
-    #[test]
-    fn persisted_launch_settings_preserve_explicit_sandbox_fail_if_unavailable() {
-        let mut app = App::test_default();
-        app.config.committed_settings_document = serde_json::json!({
-            "sandbox": {
-                "enabled": true,
-                "failIfUnavailable": true
-            }
-        });
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_setting_value(
-            &launch_settings,
-            "sandbox",
-            &serde_json::json!({
-                "enabled": true,
-                "failIfUnavailable": true
-            }),
-        );
-    }
-
-    #[test]
-    fn persisted_launch_settings_preserve_nested_sandbox_credentials() {
-        let mut app = App::test_default();
-        app.config.committed_settings_document = serde_json::json!({
-            "sandbox": {
-                "enabled": true,
-                "credentials": {
-                    "files": [{
-                        "path": ".secrets/token",
-                        "mode": "mask",
-                        "extract": "token=(.+)",
-                        "onExtractNoMatch": "deny",
-                        "decode": "jwt",
-                        "maskClaims": ["sub"],
-                        "maskDuplicates": true,
-                        "injectHosts": ["api.example.test"]
-                    }],
-                    "envVars": [{
-                        "name": "API_TOKEN",
-                        "mode": "mask",
-                        "decode": "jwt",
-                        "maskClaims": ["sub"],
-                        "injectHosts": ["api.example.test"]
-                    }],
-                    "allowPlaintextInject": false,
-                    "awsPairs": [{
-                        "accessKeyIdVar": "AWS_ACCESS_KEY_ID",
-                        "secretAccessKeyVar": "AWS_SECRET_ACCESS_KEY",
-                        "sessionTokenVar": "AWS_SESSION_TOKEN"
-                    }],
-                    "sigv4": {
-                        "streaming": "deny",
-                        "presigned": "passthrough",
-                        "sigv4a": "deny"
-                    }
-                }
-            }
-        });
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-        let sandbox = settings_object(&launch_settings)
-            .get("sandbox")
-            .and_then(Value::as_object)
-            .expect("sandbox settings");
-
-        assert_eq!(sandbox.get("failIfUnavailable"), Some(&Value::Bool(false)));
-        assert_eq!(
-            sandbox.get("credentials"),
-            app.config.committed_settings_document["sandbox"].get("credentials")
-        );
-    }
-
-    #[test]
-    fn persisted_launch_settings_trim_language_value() {
-        let mut app = App::test_default();
-        app.config.committed_settings_document = serde_json::json!({ "language": "  German  " });
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_eq!(launch_settings.language.as_deref(), Some("German"));
-    }
-
-    #[test]
-    fn persisted_launch_settings_default_permission_mode_when_missing() {
-        let app = App::test_default();
-
-        let launch_settings =
-            session_launch_settings_for_reason(&app, SessionStartReason::NewSession);
-
-        assert_eq!(launch_settings.language, None);
-        assert_setting_value(&launch_settings, "model", &Value::String("fable".to_owned()));
-        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(false));
-        assert_permission_mode(&launch_settings, "default");
-        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(false));
-        assert_setting_value(&launch_settings, "effortLevel", &Value::String("medium".to_owned()));
-        assert_setting_value(&launch_settings, "outputStyle", &Value::String("Default".to_owned()));
-        assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(true));
-        assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(true));
-        assert_eq!(launch_settings.agent_progress_summaries, Some(true));
-    }
-
-    #[test]
-    fn persisted_launch_settings_include_supported_settings_json_with_explicit_fable_when_unset() {
-        let mut app = App::test_default();
-        store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
-        store::set_thinking_effort_level(
-            &mut app.config.committed_settings_document,
-            EffortLevel::High,
-        )
-        .expect("high is persistable");
-        store::set_fast_mode(&mut app.config.committed_settings_document, true);
-        store::set_output_style(
-            &mut app.config.committed_local_settings_document,
-            crate::app::config::OutputStyle::Learning,
-        );
-        store::set_spinner_tips_enabled(&mut app.config.committed_local_settings_document, false);
-        store::set_terminal_progress_bar_enabled(
-            &mut app.config.committed_preferences_document,
-            false,
-        );
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_eq!(launch_settings.language, None);
-        assert_setting_value(&launch_settings, "model", &Value::String("fable".to_owned()));
-        assert_setting_value(&launch_settings, "alwaysThinkingEnabled", &Value::Bool(true));
-        assert_permission_mode(&launch_settings, "default");
-        assert_setting_value(&launch_settings, "fastMode", &Value::Bool(true));
-        assert_setting_value(&launch_settings, "effortLevel", &Value::String("high".to_owned()));
-        assert_setting_value(
-            &launch_settings,
-            "outputStyle",
-            &Value::String("Learning".to_owned()),
-        );
-        assert_setting_value(&launch_settings, "spinnerTipsEnabled", &Value::Bool(false));
-        assert_setting_value(&launch_settings, "terminalProgressBarEnabled", &Value::Bool(false));
-        assert_eq!(launch_settings.agent_progress_summaries, Some(true));
-    }
-
-    #[test]
-    fn persisted_launch_settings_allow_only_explicit_local_cross_session_accept() {
-        let mut app = App::test_default();
-        app.config.committed_local_settings_document =
-            serde_json::json!({ "crossSessionInbound": "accept" });
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_setting_value(
-            &launch_settings,
-            "crossSessionInbound",
-            &Value::String("accept".to_owned()),
-        );
-
-        app.config.committed_local_settings_document =
-            serde_json::json!({ "crossSessionInbound": "hold" });
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-        assert_setting_value(
-            &launch_settings,
-            "crossSessionInbound",
-            &Value::String("refuse".to_owned()),
-        );
-    }
-
-    #[test]
-    fn persisted_launch_settings_omit_invalid_language_value() {
-        let mut app = App::test_default();
-        app.config.committed_settings_document = serde_json::json!({ "language": "E" });
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_eq!(launch_settings.language, None);
-    }
-
-    #[test]
-    fn persisted_launch_settings_omit_whitespace_only_language_value() {
-        let mut app = App::test_default();
-        app.config.committed_settings_document = serde_json::json!({ "language": "   " });
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Startup);
-
-        assert_eq!(launch_settings.language, None);
-    }
-
-    #[test]
-    fn logout_launch_settings_omit_all_overrides() {
-        let mut app = App::test_default();
-        store::set_model(&mut app.config.committed_settings_document, Some("haiku"));
-        store::set_default_permission_mode(
-            &mut app.config.committed_settings_document,
-            DefaultPermissionMode::Plan,
-        );
-        store::set_always_thinking_enabled(&mut app.config.committed_settings_document, true);
-
-        let launch_settings = session_launch_settings_for_reason(&app, SessionStartReason::Logout);
-
-        assert!(launch_settings.is_empty());
-    }
-
-    fn settings_object(launch_settings: &SessionLaunchSettings) -> &Map<String, Value> {
-        launch_settings.settings.as_ref().and_then(Value::as_object).expect("settings object")
-    }
-
-    fn assert_setting_value(launch_settings: &SessionLaunchSettings, key: &str, expected: &Value) {
-        assert_eq!(settings_object(launch_settings).get(key), Some(expected));
-    }
-
-    fn assert_permission_mode(launch_settings: &SessionLaunchSettings, expected: &str) {
-        let permissions = settings_object(launch_settings)
-            .get("permissions")
-            .and_then(Value::as_object)
-            .expect("permissions object");
-        assert_eq!(permissions.get("defaultMode"), Some(&Value::String(expected.to_owned())));
+        assert_eq!(next, crate::agent::wire::SessionLaunchSettings::default());
     }
 }

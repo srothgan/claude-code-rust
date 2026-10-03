@@ -8,11 +8,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLaunchSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settings: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_progress_summaries: Option<bool>,
+    pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<super::model::EffortLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -22,9 +20,8 @@ pub struct SessionLaunchSettings {
 impl SessionLaunchSettings {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.language.is_none()
-            && self.settings.is_none()
-            && self.agent_progress_summaries.is_none()
+        self.model.is_none()
+            && self.permission_mode.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
     }
@@ -1146,7 +1143,7 @@ mod tests {
                 target_user_message_id: "user-1".to_owned(),
                 restore_mode: types::RewindRestoreMode::Both,
                 launch_settings: SessionLaunchSettings {
-                    language: Some("German".to_owned()),
+                    model: Some("haiku".to_owned()),
                     ..SessionLaunchSettings::default()
                 },
             },
@@ -1162,7 +1159,7 @@ mod tests {
                 "target_user_message_id": "user-1",
                 "restore_mode": "both",
                 "launch_settings": {
-                    "language": "German"
+                    "model": "haiku"
                 }
             })
         );
@@ -1600,20 +1597,23 @@ mod tests {
     }
 
     #[test]
-    fn session_launch_settings_serializes_agent_progress_summaries() {
+    fn session_launch_choices_roundtrip() {
         let settings = SessionLaunchSettings {
-            settings: Some(serde_json::json!({ "model": "haiku" })),
-            agent_progress_summaries: Some(true),
-            ..SessionLaunchSettings::default()
+            model: Some("haiku".to_owned()),
+            permission_mode: Some("plan".to_owned()),
+            effort: Some(super::super::model::EffortLevel::Max),
+            agent: Some("reviewer".to_owned()),
         };
-
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
-                "settings": { "model": "haiku" },
-                "agent_progress_summaries": true
+                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer"
             })
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionLaunchSettings>(json).expect("deserialize"),
+            settings
         );
     }
 }

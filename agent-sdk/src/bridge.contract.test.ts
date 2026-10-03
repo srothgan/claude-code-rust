@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import readline from "node:readline";
@@ -376,17 +376,18 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
   writeFileSync(fixturePath, `
     export * from ${JSON.stringify(sdkPath)};
     import { appendFileSync } from "node:fs";
+    import { resolveSettings as sdkResolveSettings } from ${JSON.stringify(sdkPath)};
     function record(value) { if (process.env.STARTUP_JOURNAL) appendFileSync(process.env.STARTUP_JOURNAL, JSON.stringify(value) + "\\n"); }
     export async function listSessions(options) {
       record({ type: "list", options });
       const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
-      return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: process.cwd(), lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
+      return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: saved.get(sessionId).cwd, lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
     }
     export async function getSessionMessages() { return []; }
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
-      const state = saved.get(options.resume) ?? { requested: false, effort: "high" };
+      const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       saved.set(options.sessionId ?? options.resume, state);
       let model = options.model ?? "opus";
       let done = false;
@@ -425,7 +426,12 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
           return new Promise(resolve => { waiter = resolve; });
         },
         close() { done = true; waiter?.({ done: true }); },
-        async initializationResult() { return { models: [], commands: commandFixture ? bootstrapCommands : [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+        async initializationResult() {
+          if (process.env.SETTINGS_JOURNAL === "1") {
+            const resolved = await sdkResolveSettings({ cwd: options.cwd, settingSources: options.settingSources, settings: options.settings });
+            record({ type: "settings", effective: resolved.effective, checkpointing: options.enableFileCheckpointing });
+          }
+          return { models: [], commands: commandFixture ? bootstrapCommands : [], agents: [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
         async supportedCommands() { return bootstrapCommands; },
         async setModel(value) { model = value; },
         async getSettings() {
@@ -530,7 +536,7 @@ test("startup overrides and continue use the production session lifecycle", asyn
     ]),
   });
   try {
-    bridge.writeCommand({ command: "create_session", cwd, continue_session: true, launch_settings: { settings: { model: "opus", permissions: { defaultMode: "plan" } }, effort: "max", agent: "reviewer" } });
+    bridge.writeCommand({ command: "create_session", cwd, continue_session: true, launch_settings: { model: "opus", permission_mode: "plan", effort: "max", agent: "reviewer" } });
     const connected = await nextMatching(bridge, event => event.event === "connected");
     assert.equal(connected.session_id, "newest-here");
     const entries = readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line) as BridgeEnvelope);
@@ -556,7 +562,7 @@ test("continue with no previous session starts a new session", async () => {
 test("spawned bridge Ultracode workflow covers enable, effort, model, reset, resume and replacement", async () => {
   const { bridge, cleanup } = ultracodeFixtureBridge();
   try {
-    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: { model: "opus" } } });
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { model: "opus" } });
     const connected = await nextMatching(bridge, event => event.event === "connected");
     const sessionId = connected.session_id;
     assert.deepEqual(connected.ultracode, { available: true, requested: false, effective: false });
@@ -579,13 +585,13 @@ test("spawned bridge Ultracode workflow covers enable, effort, model, reset, res
     assert.equal(unsupported.message, "Cannot enable Ultracode: haiku does not support it.");
     bridge.writeCommand({ command: "set_model", session_id: sessionId, model: "opus" });
     assert.deepEqual(await nextUltracode(bridge), active);
-    bridge.writeCommand({ command: "resume_session", session_id: sessionId, launch_settings: { settings: { model: "opus" } } });
+    bridge.writeCommand({ command: "resume_session", session_id: sessionId, launch_settings: { model: "opus" } });
     const resumed = await nextMatching(bridge, event => event.event === "session_replaced");
     assert.equal(resumed.session_id, sessionId);
     assert.deepEqual(resumed.ultracode, active);
     bridge.writeCommand({ command: "set_ultracode", session_id: sessionId, enabled: false });
     assert.deepEqual(await nextUltracode(bridge), { available: true, requested: false, effective: false });
-    bridge.writeCommand({ command: "new_session", cwd: process.cwd(), launch_settings: { settings: { model: "opus" } } });
+    bridge.writeCommand({ command: "new_session", cwd: process.cwd(), launch_settings: { model: "opus" } });
     const replaced = await nextMatching(bridge, event => event.event === "session_replaced");
     assert.notEqual(replaced.session_id, sessionId);
     assert.deepEqual(replaced.ultracode, { available: true, requested: false, effective: false });
@@ -601,7 +607,7 @@ test("spawned bridge Ultracode workflow covers enable, effort, model, reset, res
 test("spawned bridge reports accepted inactive Ultracode requests and preserves verified state", async () => {
   const { bridge, cleanup } = ultracodeFixtureBridge();
   try {
-    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: { model: "fixture-unavailable" } } });
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { model: "fixture-unavailable" } });
     const connected = await nextMatching(bridge, event => event.event === "connected");
     const sessionId = connected.session_id;
     assert.deepEqual(connected.ultracode, { available: false, requested: false, effective: false });
@@ -628,7 +634,7 @@ test("spawned bridge Ultracode failures report disabled workflows and clear unve
   for (const workflows of ["off", "on"]) {
     const { bridge, cleanup } = ultracodeFixtureBridge({ ULTRACODE_FIXTURE_WORKFLOWS: workflows });
     try {
-      bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { settings: { model: "opus" } } });
+      bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: { model: "opus" } });
       const connected = await nextMatching(bridge, event => event.event === "connected");
       const sessionId = connected.session_id;
       if (workflows === "off") {
@@ -648,5 +654,69 @@ test("spawned bridge Ultracode failures report disabled workflows and clear unve
         assert.ok(bridge.stderrLines.some(line => line.includes("fixture read failed")));
       }
     } finally { await cleanup(); }
+  }
+});
+
+
+test("SDK settings inheritance applies user, project and local preferences across create, resume and replacement", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-settings-"));
+  const profile = join(directory, "profile");
+  const cwd = join(directory, "project");
+  mkdirSync(profile);
+  mkdirSync(join(cwd, ".claude"), { recursive: true });
+  const journal = join(directory, "query-options.jsonl");
+  const user = {
+    model: "haiku", alwaysThinkingEnabled: true, fastMode: true,
+    outputStyle: "User custom style", language: "German", fileCheckpointingEnabled: true,
+    sandbox: { enabled: true, failIfUnavailable: true },
+    modelSettings: { "claude-opus-5-5": { effortLevel: "low" } },
+  };
+  const project = { model: "sonnet", language: "Japanese", permissions: { defaultMode: "plan" } };
+  const local = {
+    model: "opus", alwaysThinkingEnabled: false, fastMode: false,
+    outputStyle: "Project custom style", fileCheckpointingEnabled: false,
+    modelSettings: { "claude-opus-5-5": { effortLevel: "xhigh" } },
+    crossSessionInbound: "refuse",
+  };
+  const userPath = join(profile, "settings.json");
+  const projectPath = join(cwd, ".claude", "settings.json");
+  const localPath = join(cwd, ".claude", "settings.local.json");
+  for (const [path, value] of [[userPath, user], [projectPath, project], [localPath, local]] as const) {
+    writeFileSync(path, JSON.stringify(value));
+  }
+  const savedFiles = [userPath, projectPath, localPath].map(path => readFileSync(path, "utf8"));
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    CLAUDE_CONFIG_DIR: profile, STARTUP_JOURNAL: journal, SETTINGS_JOURNAL: "1",
+  });
+  const snapshots = () => readFileSync(journal, "utf8").trim().split("\n")
+    .map(line => JSON.parse(line) as BridgeEnvelope).filter(entry => entry.type === "settings");
+  try {
+    bridge.writeCommand({ command: "create_session", cwd });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    bridge.writeCommand({ command: "resume_session", session_id: connected.session_id });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    bridge.writeCommand({ command: "new_session", cwd });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    assert.equal(snapshots().length, 3);
+    for (const snapshot of snapshots()) {
+      const effective = snapshot.effective as BridgeEnvelope;
+      assert.equal(effective.model, "opus");
+      assert.equal(effective.alwaysThinkingEnabled, false);
+      assert.equal(effective.fastMode, false);
+      assert.equal(effective.outputStyle, "Project custom style");
+      assert.equal(effective.language, "Japanese");
+      assert.deepEqual(effective.permissions, { defaultMode: "plan" });
+      assert.deepEqual(effective.sandbox, { enabled: true, failIfUnavailable: true });
+      assert.deepEqual(effective.modelSettings, { "claude-opus-5-5": { effortLevel: "xhigh" } });
+      assert.equal(snapshot.checkpointing, false);
+    }
+    assert.deepEqual([userPath, projectPath, localPath].map(path => readFileSync(path, "utf8")), savedFiles);
+    writeFileSync(localPath, JSON.stringify({ ...local, fileCheckpointingEnabled: true }));
+    bridge.writeCommand({ command: "new_session", cwd });
+    await nextMatching(bridge, event => event.event === "session_replaced");
+    assert.equal(snapshots().at(-1)?.checkpointing, true);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
   }
 });

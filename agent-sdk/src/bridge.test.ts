@@ -240,9 +240,6 @@ const BRIDGE_RUNTIME_PROCESS_NAME =
 const BRIDGE_RUNTIME_GUARD_PROMPT =
   `Do not terminate the Claude Rust bridge runtime process \`${BRIDGE_RUNTIME_PROCESS_NAME}\`; ` +
   "when cleaning up development servers, only stop processes by explicit PIDs you started in this session.";
-const GERMAN_LANGUAGE_PROMPT =
-  "Always respond to the user in German unless the user explicitly asks for a different language. " +
-  "Keep code, shell commands, file paths, API names, tool names, and raw error text unchanged unless the user explicitly asks for translation.";
 
 function makeSessionState(): SessionState {
   const input = new AsyncQueue<
@@ -808,46 +805,16 @@ test("prompt control emits an explicit rejection when SDK input is closed", asyn
   sessions.clear();
 });
 
-test("parseCommandEnvelope validates resume_session command without cwd", () => {
-  const parsed = parseCommandEnvelope(
-    JSON.stringify({
-      request_id: "req-2",
-      command: "resume_session",
-      session_id: "session-123",
-      launch_settings: {
-        language: "German",
-        settings: {
-          alwaysThinkingEnabled: true,
-          model: "haiku",
-          permissions: { defaultMode: "plan" },
-          fastMode: false,
-          effortLevel: "high",
-          outputStyle: "Default",
-          spinnerTipsEnabled: true,
-          terminalProgressBarEnabled: true,
-        },
-        agent_progress_summaries: true,
-      },
-    }),
-  );
+test("parseCommandEnvelope carries explicit launch choices on resume", () => {
+  const parsed = parseCommandEnvelope(JSON.stringify({
+    request_id: "req-2", command: "resume_session", session_id: "session-123",
+    launch_settings: { model: "haiku", permission_mode: "plan", effort: "max", agent: "reviewer" },
+  }));
   assert.equal(parsed.requestId, "req-2");
-  assert.equal(parsed.command.command, "resume_session");
-  if (parsed.command.command !== "resume_session") {
-    throw new Error("unexpected command variant");
-  }
-  assert.equal(parsed.command.session_id, "session-123");
-  assert.equal(parsed.command.launch_settings.language, "German");
-  assert.deepEqual(parsed.command.launch_settings.settings, {
-    alwaysThinkingEnabled: true,
-    model: "haiku",
-    permissions: { defaultMode: "plan" },
-    fastMode: false,
-    effortLevel: "high",
-    outputStyle: "Default",
-    spinnerTipsEnabled: true,
-    terminalProgressBarEnabled: true,
+  assert.deepEqual(parsed.command, {
+    command: "resume_session", session_id: "session-123", metadata: {},
+    launch_settings: { model: "haiku", permission_mode: "plan", effort: "max", agent: "reviewer" },
   });
-  assert.equal(parsed.command.launch_settings.agent_progress_summaries, true);
 });
 
 test("parseCommandEnvelope validates resume_session_at independently from plain resume", () => {
@@ -2039,7 +2006,7 @@ test("parseCommandEnvelope validates rewind command modes", () => {
         target_user_message_id: "user-1",
         restore_mode: restoreMode,
         launch_settings: {
-          language: "German",
+          model: "haiku",
         },
       }),
     );
@@ -2050,7 +2017,7 @@ test("parseCommandEnvelope validates rewind command modes", () => {
       session_id: "session-123",
       target_user_message_id: "user-1",
       restore_mode: restoreMode,
-      launch_settings: { language: "German" },
+      launch_settings: { model: "haiku" },
     });
   }
 });
@@ -2437,76 +2404,12 @@ test("generatePersistedSessionTitle calls sdk query with persist true", async ()
   assert.deepEqual(calls, [{ description: "Current summary", persist: true }]);
 });
 
-test("buildQueryOptions maps launch settings into sdk query options", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      language: "German",
-      settings: {
-        alwaysThinkingEnabled: true,
-        model: "haiku",
-        permissions: { defaultMode: "plan" },
-        fastMode: false,
-        effortLevel: "medium",
-        outputStyle: "Default",
-        spinnerTipsEnabled: true,
-        terminalProgressBarEnabled: true,
-      },
-      agent_progress_summaries: true,
-    },
-    provisionalSessionId: "session-1",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-1",
-  });
-
-  assert.deepEqual(options.settings, {
-    alwaysThinkingEnabled: true,
-    model: "haiku",
-    permissions: { defaultMode: "plan" },
-    fastMode: false,
-    effortLevel: "medium",
-    outputStyle: "Default",
-    spinnerTipsEnabled: true,
-    terminalProgressBarEnabled: true,
-    feedbackDrafts: "off",
-  });
-  assert.deepEqual(options.systemPrompt, {
-    type: "preset",
-    preset: "claude_code",
-    append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
-    snapshot: true,
-  });
-  const _systemPrompt: NonNullable<Options["systemPrompt"]> =
-    options.systemPrompt;
-  assert.ok(_systemPrompt);
-  assert.equal(options.model, "haiku");
-  assert.equal(options.permissionMode, "plan");
-  assert.equal("allowDangerouslySkipPermissions" in options, false);
-  assert.equal("thinking" in options, false);
-  assert.equal("effort" in options, false);
-  assert.equal(options.agentProgressSummaries, true);
-  assert.equal(options.promptSuggestions, true);
-  assert.equal(options.enableFileCheckpointing, true);
-  assert.deepEqual(options.disallowedTools, ["ProposeSkills", "ProposeGoal"]);
-  assert.equal(options.executable, "bun");
-  assert.equal(options.sessionId, "session-1");
-  assert.deepEqual(options.settingSources, ["user", "project", "local"]);
-  assert.deepEqual(options.toolConfig, {
-    askUserQuestion: { previewFormat: "markdown" },
-  });
-});
-
 test("buildQueryOptions includes resumeSessionAt when provided", () => {
   const input = new AsyncQueue<
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     resume: "session-1",
     resumeSessionAt: "assistant-1",
@@ -2534,81 +2437,16 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   });
 });
 
-test("buildQueryOptions forwards settings and maps startup model and permission mode", () => {
+test("buildQueryOptions applies explicit startup model and plan mode", () => {
   const input = new AsyncQueue<
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {
-      settings: {
-        alwaysThinkingEnabled: false,
-        permissions: { defaultMode: "default" },
-        fastMode: true,
-        effortLevel: "high",
-        outputStyle: "Learning",
-        spinnerTipsEnabled: false,
-        terminalProgressBarEnabled: false,
-      },
-    },
-    provisionalSessionId: "session-3",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-3",
-  });
-
-  assert.deepEqual(options.settings, {
-    alwaysThinkingEnabled: false,
-    permissions: { defaultMode: "default" },
-    fastMode: true,
-    effortLevel: "high",
-    outputStyle: "Learning",
-    spinnerTipsEnabled: false,
-    terminalProgressBarEnabled: false,
-    feedbackDrafts: "off",
-  });
-  assert.equal("model" in options, false);
-  assert.equal(options.permissionMode, "default");
-  assert.equal("allowDangerouslySkipPermissions" in options, false);
-  assert.equal("thinking" in options, false);
-  assert.equal("effort" in options, false);
-});
-
-test("buildQueryOptions normalizes manual startup permission mode to default", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        permissions: { defaultMode: "manual" },
-      },
-    },
-    provisionalSessionId: "session-manual",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-manual",
-  });
-
-  assert.equal(options.permissionMode, "default");
-});
-
-test("buildQueryOptions trims startup model before passing sdk option", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        model: "  claude-opus-4-7  ",
-        permissions: { defaultMode: "plan" },
-      },
+      model: "claude-opus-4-7",
+      permission_mode: "plan",
     },
     provisionalSessionId: "session-model",
     input,
@@ -2627,11 +2465,10 @@ test("buildQueryOptions maps auto startup permission mode", () => {
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {
-      settings: {
-        permissions: { defaultMode: "auto" },
-      },
+      permission_mode: "auto",
     },
     provisionalSessionId: "session-auto",
     input,
@@ -2650,11 +2487,10 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {
-      settings: {
-        permissions: { defaultMode: "bypassPermissions" },
-      },
+      permission_mode: "bypassPermissions",
     },
     provisionalSessionId: "session-4",
     input,
@@ -2667,63 +2503,6 @@ test("buildQueryOptions enables dangerous skip flag for bypass permissions start
   assert.equal(options.permissionMode, "bypassPermissions");
   assert.equal(options.allowDangerouslySkipPermissions, true);
   assert.equal("canUseTool" in options, true);
-});
-
-test("buildQueryOptions omits optional startup overrides but keeps bridge guard prompt", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {},
-    provisionalSessionId: "session-2",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-2",
-  });
-
-  assert.equal("model" in options, false);
-  assert.equal("permissionMode" in options, false);
-  assert.equal("allowDangerouslySkipPermissions" in options, false);
-  assert.deepEqual(options.systemPrompt, {
-    type: "preset",
-    preset: "claude_code",
-    append: BRIDGE_RUNTIME_GUARD_PROMPT,
-    snapshot: true,
-  });
-  assert.equal("agentProgressSummaries" in options, false);
-  assert.deepEqual(options.settings, { feedbackDrafts: "off" });
-});
-
-test("buildQueryOptions disables feedback drafts without mutating launch settings", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const settings = {
-    feedbackDrafts: "notify",
-    spinnerTipsEnabled: true,
-  };
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: { settings },
-    provisionalSessionId: "session-feedback",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-feedback",
-  });
-
-  assert.deepEqual(options.settings, {
-    feedbackDrafts: "off",
-    spinnerTipsEnabled: true,
-  });
-  assert.deepEqual(settings, {
-    feedbackDrafts: "notify",
-    spinnerTipsEnabled: true,
-  });
 });
 
 test("dispatchCancelTurnCommand interrupts the matching session query", async () => {
@@ -2821,6 +2600,7 @@ test("buildQueryOptions spawn hook remaps bare bun command", async () => {
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {},
     provisionalSessionId: "session-spawn-bun",
@@ -2859,6 +2639,7 @@ test("buildQueryOptions forwards SDK-provided spawn env without passing top-leve
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
     launchSettings: {},
     provisionalSessionId: "session-spawn-env",
@@ -2915,6 +2696,7 @@ test("buildQueryOptions leaves Todo tool availability under SDK environment auth
       import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
     >();
     const options = buildQueryOptions({
+      resolvedSettings: {},
       cwd: "C:/work",
       launchSettings: {},
       provisionalSessionId: `session-todo-${explicit ?? "default"}`,
@@ -2951,148 +2733,7 @@ test("buildQueryOptions leaves Todo tool availability under SDK environment auth
   }
 });
 
-test("buildQueryOptions makes sandbox fallback explicit when enabled", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        sandbox: {
-          enabled: true,
-        },
-      },
-    },
-    provisionalSessionId: "session-sandbox",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox",
-  });
 
-  assert.deepEqual(options.settings, {
-    feedbackDrafts: "off",
-    sandbox: {
-      enabled: true,
-      failIfUnavailable: false,
-    },
-  });
-});
-
-test("buildQueryOptions preserves explicit sandbox failIfUnavailable setting", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        sandbox: {
-          enabled: true,
-          failIfUnavailable: true,
-        },
-      },
-    },
-    provisionalSessionId: "session-sandbox-explicit",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox-explicit",
-  });
-
-  assert.deepEqual(options.settings, {
-    feedbackDrafts: "off",
-    sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
-    },
-  });
-});
-
-test("buildQueryOptions preserves target sandbox network and filesystem fields", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      settings: {
-        sandbox: {
-          network: { strictAllowlist: true },
-          filesystem: { disabled: true },
-        },
-      },
-    },
-    provisionalSessionId: "session-sandbox-target-fields",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox-target-fields",
-  });
-
-  assert.deepEqual(options.settings?.sandbox, {
-    network: { strictAllowlist: true },
-    filesystem: { disabled: true },
-  });
-});
-
-test("buildQueryOptions preserves nested sandbox credential controls", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const credentials = {
-    files: [
-      {
-        path: ".secrets/token",
-        mode: "mask",
-        extract: "token=(.+)",
-        onExtractNoMatch: "deny",
-        decode: "jwt",
-        maskClaims: ["sub"],
-        maskDuplicates: true,
-        injectHosts: ["api.example.test"],
-      },
-    ],
-    envVars: [
-      {
-        name: "API_TOKEN",
-        mode: "mask",
-        decode: "jwt",
-        maskClaims: ["sub"],
-        injectHosts: ["api.example.test"],
-      },
-    ],
-    allowPlaintextInject: false,
-    awsPairs: [
-      {
-        accessKeyIdVar: "AWS_ACCESS_KEY_ID",
-        secretAccessKeyVar: "AWS_SECRET_ACCESS_KEY",
-        sessionTokenVar: "AWS_SESSION_TOKEN",
-      },
-    ],
-    sigv4: { streaming: "deny", presigned: "passthrough", sigv4a: "deny" },
-  };
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: { settings: { sandbox: { enabled: true, credentials } } },
-    provisionalSessionId: "session-sandbox-credentials",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-sandbox-credentials",
-  });
-
-  assert.deepEqual(options.settings?.sandbox, {
-    enabled: true,
-    failIfUnavailable: false,
-    credentials,
-  });
-});
 
 test("handleTaskSystemMessage prefers task_progress summary over fallback text", () => {
   const session = makeSessionState();
@@ -6149,31 +5790,6 @@ test("emitToolResultUpdate clears active subagent retry metadata", () => {
     session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry,
     undefined,
   );
-});
-
-test("buildQueryOptions trims language before appending system prompt", () => {
-  const input = new AsyncQueue<
-    import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
-  >();
-  const options = buildQueryOptions({
-    cwd: "C:/work",
-    launchSettings: {
-      language: "  German  ",
-    },
-    provisionalSessionId: "session-4",
-    input,
-    canUseTool: async () => ({ behavior: "deny", message: "not used" }),
-    enableSdkDebug: false,
-    enableSpawnDebug: false,
-    sessionIdForLogs: () => "session-4",
-  });
-
-  assert.deepEqual(options.systemPrompt, {
-    type: "preset",
-    preset: "claude_code",
-    append: `${BRIDGE_RUNTIME_GUARD_PROMPT} ${GERMAN_LANGUAGE_PROMPT}`,
-    snapshot: true,
-  });
 });
 
 test("parseCommandEnvelope rejects missing required fields", () => {
@@ -10301,8 +9917,9 @@ function userDialogHandlerForTest(): NonNullable<Options["onUserDialog"]> {
     import("@anthropic-ai/claude-agent-sdk").SDKUserMessage
   >();
   const options = buildQueryOptions({
+    resolvedSettings: {},
     cwd: "C:/work",
-    launchSettings: { language: "English" },
+    launchSettings: {},
     provisionalSessionId: "session-dialog",
     input,
     canUseTool: async () => ({ behavior: "deny", message: "not used" }),
@@ -10605,4 +10222,54 @@ test("Ultracode connection snapshots, identity changes, conversation reset and c
     beginSessionClose(session);
     assert.equal(session.ultracode, undefined);
   } finally { sessions.delete(session.sessionId); }
+});
+
+test("buildQueryOptions adapts resolved checkpoint preferences and keeps host review restrictions", () => {
+  for (const enabled of [undefined, false, true]) {
+    for (const inbound of [undefined, "hold", "accept", "refuse"] as const) {
+      const options = buildQueryOptions({
+        cwd: "C:/work", launchSettings: {},
+        resolvedSettings: { fileCheckpointingEnabled: enabled, crossSessionInbound: inbound },
+        provisionalSessionId: "session-adapters", input: new AsyncQueue(),
+        canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+        enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => "session-adapters",
+      });
+      assert.equal(options.enableFileCheckpointing, enabled ?? true);
+      assert.equal(options.agentProgressSummaries, true);
+      assert.equal(options.promptSuggestions, true);
+      assert.deepEqual(options.disallowedTools, ["ProposeSkills", "ProposeGoal"]);
+      assert.deepEqual(options.settings, {
+        feedbackDrafts: "off", ...(["accept", "refuse"].includes(inbound ?? "") ? {} : { crossSessionInbound: "refuse" }),
+      });
+      assert.deepEqual(options.systemPrompt, {
+        type: "preset", preset: "claude_code", append: BRIDGE_RUNTIME_GUARD_PROMPT, snapshot: true,
+      });
+    }
+  }
+});
+
+test("inherited model identity follows SDK initialization metadata", async () => {
+  const session = makeSessionState();
+  session.model = "Connecting...";
+  session.requestedModelId = undefined;
+  session.resolvedRuntimeModelId = undefined;
+  session.query = {
+    supportedCommands: async () => [],
+    getSettings: async () => ({ applied: { ultracodeAvailable: false, ultracodeRequested: false, ultracode: false } }),
+  } as unknown as SessionState["query"];
+  const pending = resolveCurrentModel(session);
+  assert.equal(pending.display_name_short, "Connecting...");
+  assert.equal(pending.is_authoritative, false);
+  await captureBridgeEventsAsync(async () => {
+    handleSdkMessage(session, {
+      type: "system", subtype: "init", session_id: session.sessionId,
+      model: "claude-haiku-4-5", permissionMode: "plan",
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
+  const initialized = resolveCurrentModel(session);
+  assert.equal(initialized.resolved_id, "claude-haiku-4-5");
+  assert.equal(initialized.display_name_short, "Haiku 4.5");
+  assert.equal(initialized.is_authoritative, true);
+  assert.equal(session.mode, "plan");
 });
