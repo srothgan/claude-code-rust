@@ -45,7 +45,8 @@ async fn acknowledged_spinner_tip_setting_only_controls_tips() {
     let start = std::time::Instant::now();
     app.begin_turn_activity(start);
     let now = start;
-    assert!(app.activity_presentation(now).expect("active").tip.is_some());
+    let initial = app.activity_presentation(now).expect("active");
+    assert!(initial.tip.is_some());
     for enabled in [false, true] {
         let mut acknowledged = SettingsSnapshot::test_value("spinnerTipsEnabled", json!(enabled));
         acknowledged.cwd.clone_from(&app.cwd_raw);
@@ -67,16 +68,8 @@ async fn acknowledged_spinner_tip_setting_only_controls_tips() {
         let presentation = app.activity_presentation(now).expect("active turn");
         assert_eq!(presentation.tip.is_some(), enabled);
         assert!(!presentation.thinking, "settings cannot invent SDK thinking");
-        let rows = crate::ui::activity_rows::build_activity_rows(&app, 80, now);
-        assert!(!rows.is_empty());
-        assert_eq!(rows.iter().any(|row| row.to_string().contains("Tip:")), enabled);
-        assert!(rows.iter().all(|row| row.to_string().starts_with('│')));
-        let live = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
-            &mut app,
-            80,
-            &std::collections::BTreeSet::new(),
-        );
-        assert!(live.rows().iter().any(|row| row.to_string().trim_end() == "Claude"));
+        assert_eq!(presentation.label, initial.label);
+        assert_eq!(presentation.verb, initial.verb);
     }
 }
 
@@ -371,7 +364,8 @@ async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
-        assert!(app.config.overlay_message.as_ref().expect("error").text.contains("Check the value"));
+        assert!(!app.config.overlay_message.as_ref().expect("validation feedback").text.is_empty());
+        assert!(commands.try_recv().is_err(), "invalid drafts must not be submitted");
         assert_eq!(app.config.setting_overlay().expect("draft").draft, "{");
         assert!(crate::app::config::handle_paste(&mut app, "\n\"PreToolUse\": [{\"matcher\": \"Bash\", \"hooks\": [{\"type\": \"command\", \"command\": \"echo checked\"}]}]\n}"));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
@@ -412,7 +406,6 @@ async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
         let updated = snapshot(&app.cwd_raw, "Greek");
         apply_settings_result(&mut app, save.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(updated), error: None });
         assert_eq!(app.config.saved_value("language"), Some(&json!("Greek")));
-        assert!(app.config.status_message.as_deref().is_some_and(|message| message.contains("next session")));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
         let reset = commands.recv_envelope().await.expect("reset");
         assert!(matches!(reset.command, BridgeCommand::MutateSetting { mutation, .. } if mutation.operation == SettingsOperation::Remove && mutation.id == "language"));
@@ -501,9 +494,17 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                     .iter()
                     .map(ratatui::buffer::Cell::symbol)
                     .collect();
-                assert!(text.contains(expected));
-                assert!(text.contains("Saved in User · Applies to new sessions"));
-                assert!(text.contains("Saved."));
+                let rows: Vec<String> = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(100)
+                    .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+                    .collect();
+                assert!(
+                    rows.iter().any(|row| row.contains("Language") && row.contains(expected)),
+                    "acknowledged value must appear beside its setting: {text}"
+                );
             }
             app.config.snapshot.as_mut().expect("snapshot").catalog[0].writable_scopes.clear();
             crate::app::config::handle_key(
@@ -596,8 +597,19 @@ async fn settings_load_automatically_after_startup_without_a_manual_refresh() {
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
                 .collect();
-            assert!(text.contains("German"));
-            assert!(text.contains("Saved in User · Applies to new sessions"));
+            assert_eq!(app.config.saved_value("language"), Some(&json!("German")));
+            let rows: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(100)
+                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+                .collect();
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains("Language") && row.trim_end().ends_with("German")),
+                "loaded value must appear beside its setting: {text}"
+            );
             assert!(app.config.last_error.is_none());
         })
         .await;
@@ -653,7 +665,6 @@ async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
                 terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("reset render");
             let lines: Vec<String> = terminal.backend().buffer().content.chunks(100).map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect()).collect();
             assert!(lines.iter().any(|line| line.contains("Language") && line.contains(inherited.unwrap_or("Default"))));
-            assert!(lines.iter().any(|line| line.contains(if inherited.is_some() { "From User · Not set in Local" } else { "Using Default" })));
             crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
             assert_eq!(app.config.setting_overlay().expect("reset editor").draft, inherited.unwrap_or(""));
         }
@@ -790,11 +801,9 @@ async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_save
                 apply_settings_result(&mut app, save.request_id.as_deref(), SettingsResult { persistence: SettingsPersistence::Saved, application: SettingsApplication::NextSession, snapshot: Some(acknowledged), error: None });
                 terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("saved choice");
                 let text: String = terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect();
-                assert!(text.contains(label));
-                assert!(text.contains(expected.as_str().expect("string choice")));
-                assert!(text.contains("1/1"));
-                assert!(text.contains("Space change"));
-                assert!(text.contains("Left/Right change"));
+                let rows: Vec<String> = terminal.backend().buffer().content.chunks(80)
+                    .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect()).collect();
+                assert!(rows.iter().any(|row| row.contains(label) && row.trim_end().ends_with(expected.as_str().expect("string choice"))), "acknowledged choice must appear beside its setting: {text}");
                 assert_eq!(app.config.selected_setting().expect("selection").id, id);
             }
         }

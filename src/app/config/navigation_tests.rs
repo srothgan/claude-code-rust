@@ -56,11 +56,26 @@ fn set_saved(app: &mut App, id: &str, value: Value) {
         policy_restricted: false,
     });
 }
-fn render(app: &mut App, width: u16, height: u16) -> String {
+fn render_buffer(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
         .expect("terminal");
     terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, app)).expect("draw");
-    terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect()
+    terminal.backend().buffer().clone()
+}
+fn render(app: &mut App, width: u16, height: u16) -> String {
+    render_buffer(app, width, height)
+        .content
+        .chunks(usize::from(width))
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+fn settings_regions(text: &str, label: &str) -> (String, String) {
+    let lines = text.lines().collect::<Vec<_>>();
+    let description =
+        lines.iter().position(|line| line.contains("Description:")).expect("labeled description");
+    let row = lines[..description].iter().find(|line| line.contains(label)).expect("setting row");
+    ((*row).to_owned(), lines[description..].join("\n"))
 }
 
 #[test]
@@ -68,14 +83,20 @@ fn settings_metadata_follows_the_selected_scope_without_repeating_the_list_value
     let mut app = app();
     set_saved(&mut app, "language", json!("German"));
     let text = render(&mut app, 100, 32);
-    assert!(text.contains("Description:"), "{text}");
-    assert!(text.contains("Saved in User · Applies to new sessions"), "{text}");
-    assert_eq!(text.matches("German").count(), 1, "{text}");
+    let (row, details) = settings_regions(&text, "Language");
+    assert!(row.contains("German"), "value must be associated with Language: {row}");
+    assert!(!details.contains("German"), "matching saved values must not be repeated: {details}");
 
     key(&mut app, KeyCode::Char('s'));
     let text = render(&mut app, 100, 32);
-    assert!(text.contains("From User · Not set in Project"), "{text}");
-    assert!(text.contains("German"), "{text}");
+    let (row, details) = settings_regions(&text, "Language");
+    assert_eq!(app.config.selected_scope, SettingsScope::Project);
+    assert!(row.contains("German"));
+    assert!(
+        details.contains("User") && details.contains("Project"),
+        "source and target scope: {details}"
+    );
+    assert!(!details.contains("German"));
 
     let snapshot = app.config.snapshot.as_mut().expect("snapshot");
     snapshot.sources[1]
@@ -90,19 +111,27 @@ fn settings_metadata_follows_the_selected_scope_without_repeating_the_list_value
     key(&mut app, KeyCode::Char('s'));
     key(&mut app, KeyCode::Char('s'));
     let text = render(&mut app, 100, 32);
-    assert!(text.contains("User value: German · Overridden by Project"), "{text}");
-    assert_eq!(text.matches("English").count(), 1, "{text}");
+    let (row, details) = settings_regions(&text, "Language");
+    assert!(row.contains("English"));
+    assert!(
+        details.contains("German") && details.contains("Project"),
+        "show overridden saved value and its overriding source: {details}"
+    );
+    assert!(!details.contains("English"), "effective value belongs in its row: {details}");
 }
 
 #[test]
 fn settings_metadata_shows_defaults_immediate_timing_and_actual_session_differences() {
     let mut app = app();
     let text = render(&mut app, 100, 32);
-    assert!(text.contains("Using Default · Applies to new sessions"), "{text}");
+    let (row, _) = settings_regions(&text, "Language");
+    assert!(row.contains("Default"));
     set_saved(&mut app, "spinnerTipsEnabled", json!(true));
     app.config.settings.select("spinnerTipsEnabled".into());
     let text = render(&mut app, 100, 32);
-    assert!(text.contains("Saved in User · Applies immediately"), "{text}");
+    let (row, details) = settings_regions(&text, "Show tips");
+    assert!(row.contains("On"));
+    assert!(details.contains("immediately"), "host preferences apply immediately: {details}");
 
     set_saved(&mut app, "model", json!("sonnet"));
     app.config.settings.select("model".into());
@@ -112,9 +141,10 @@ fn settings_metadata_shows_defaults_immediate_timing_and_actual_session_differen
             .authoritative(true),
     );
     let text = render(&mut app, 100, 32);
+    let (_, details) = settings_regions(&text, "Default model");
     assert!(
-        !text.contains("Current session:"),
-        "matching session values need no extra line: {text}"
+        !details.contains("Sonnet"),
+        "matching active model needs no duplicate value: {details}"
     );
     app.session_runtime.current_model = Some(
         crate::agent::model::CurrentModel::new("claude-opus", "Opus", "Claude Opus")
@@ -123,7 +153,9 @@ fn settings_metadata_shows_defaults_immediate_timing_and_actual_session_differen
             .authoritative(true),
     );
     let text = render(&mut app, 100, 32);
-    assert!(text.contains("Current session: Opus"), "{text}");
+    let (row, details) = settings_regions(&text, "Default model");
+    assert!(row.contains("sonnet"), "saved default must remain in its row: {row}");
+    assert!(details.contains("Opus"), "show the differing acknowledged model: {details}");
 }
 
 #[test]
@@ -137,8 +169,12 @@ fn settings_metadata_distinguishes_collection_contributions_and_retains_wrapped_
     value.value = Some(json!(["Read(./src/**)", "Read(./docs/**)"]));
     value.contributors.push("project".into());
     let text = render(&mut app, 100, 32);
-    assert!(text.contains("Saved in User · Also supplied by Project"), "{text}");
-    assert!(text.contains("1 item"), "{text}");
+    let (row, details) = settings_regions(&text, "Allow rules");
+    assert!(row.contains("1 item"), "the row shows this scope's collection: {row}");
+    assert!(
+        details.contains("User") && details.contains("Project"),
+        "show both contributors: {details}"
+    );
 
     let snapshot = app.config.snapshot.as_mut().expect("snapshot");
     snapshot.values[0].policy_restricted = true;
@@ -149,13 +185,30 @@ fn settings_metadata_distinguishes_collection_contributions_and_retains_wrapped_
         .expect("setting")
         .writable_scopes
         .clear();
-    snapshot.sources[0].error =
-        Some("This settings file could not be loaded. Check its JSON syntax.".into());
-    let text = render(&mut app, 40, 24);
-    let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(words.contains("Check its JSON syntax."), "{text}");
-    assert!(words.contains("Controlled by your organization"), "{text}");
-    assert!(text.contains("Esc close"), "{text}");
+    let error =
+        "SOURCE_ERROR_START: this scoped file requires correction before loading. SOURCE_ERROR_END";
+    snapshot.sources[0].error = Some(error.into());
+    let buffer = render_buffer(&mut app, 40, 24);
+    let warnings = buffer
+        .content
+        .chunks(40)
+        .map(|row| {
+            row.iter()
+                .filter(|cell| cell.fg == crate::ui::theme::STATUS_WARNING)
+                .map(ratatui::buffer::Cell::symbol)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words = warnings.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        words.contains(error),
+        "the complete source error must remain visible as a warning: {warnings}"
+    );
+    assert!(
+        words.contains("organization"),
+        "policy restrictions must remain visible alongside source errors: {warnings}"
+    );
 }
 
 fn field(app: &mut App, label: &str) {

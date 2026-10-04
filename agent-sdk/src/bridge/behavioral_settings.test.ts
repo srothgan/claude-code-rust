@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { after, before, test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import type { Json, SettingsScope, SettingsSnapshot } from "../types.js";
 import { inspectSettings, mutateSetting } from "./settings_service.js";
 
@@ -10,7 +10,7 @@ let root: string;
 let cwd: string;
 const oldProfile = process.env.CLAUDE_CONFIG_DIR;
 const oldPreviewMarker = process.env.CLAUDE_RS_SETTINGS_PREVIEW_MARKER;
-before(async () => {
+beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-rs-behavior-"));
   cwd = path.join(root, "project");
   process.env.CLAUDE_CONFIG_DIR = path.join(root, "profile");
@@ -18,7 +18,7 @@ before(async () => {
   await fs.mkdir(process.env.CLAUDE_CONFIG_DIR);
   process.env.CLAUDE_RS_SETTINGS_PREVIEW_MARKER = path.join(root, "hook-executed");
 });
-after(async () => {
+afterEach(async () => {
   if (oldProfile === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = oldProfile;
   if (oldPreviewMarker === undefined) delete process.env.CLAUDE_RS_SETTINGS_PREVIEW_MARKER;
@@ -33,8 +33,11 @@ function change(snapshot: SettingsSnapshot, id: string, scope: SettingsScope, va
 
 test("structured behavioral settings save, resolve and reset without losing siblings or running hooks", async () => {
   const localFile = path.join(cwd, ".claude", "settings.local.json");
+  const userFile = path.join(process.env.CLAUDE_CONFIG_DIR as string, "settings.json");
   const untouched = { future: { value: [1, "keep"] }, sandbox: { futureOption: "keep" } };
+  const personal = { future: { value: [2, "keep"] } };
   await fs.writeFile(localFile, JSON.stringify(untouched));
+  await fs.writeFile(userFile, JSON.stringify(personal));
   const cases: Array<[string, Json, SettingsScope?]> = [
     ["permissions.allow", ["Bash(npm run test *)", "Read(./docs/**)"]],
     ["permissions.ask", ["Bash(git push *)"]],
@@ -73,6 +76,7 @@ test("structured behavioral settings save, resolve and reset without losing sibl
     assert.equal(reset.persistence, "saved", id);
   }
   assert.deepEqual(JSON.parse(await fs.readFile(localFile, "utf8")), untouched);
+  assert.deepEqual(JSON.parse(await fs.readFile(userFile, "utf8")), personal);
   await assert.rejects(fs.access(path.join(root, "hook-executed")), { code: "ENOENT" });
 });
 
@@ -89,7 +93,9 @@ test("empty lists are explicit values and reset restores merged permission rules
 });
 
 test("native schema rejects invalid selected structures before touching the saved file", async () => {
-  const original = await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8");
+  const files = [path.join(cwd, ".claude", "settings.local.json"), path.join(process.env.CLAUDE_CONFIG_DIR as string, "settings.json")];
+  const original = JSON.stringify({ future: "preserve", permissions: { deny: ["Read(./.env)"] } });
+  for (const file of files) await fs.writeFile(file, original);
   for (const [id, value] of [
     ["permissions.allow", [true]],
     ["hooks", { NotAnEvent: [] }],
@@ -104,8 +110,8 @@ test("native schema rejects invalid selected structures before touching the save
     const scope = (await inspectSettings(cwd)).catalog.find(setting => setting.id === id)?.writable_scopes.includes("local") ? "local" : "user";
     const result = await mutateSetting(cwd, change(await inspectSettings(cwd), id, scope, value));
     assert.equal(result.persistence, "failure", `${id}: ${result.error}`);
+    for (const file of files) assert.equal(await fs.readFile(file, "utf8"), original, `${id}/${scope}: ${file}`);
   }
-  assert.equal(await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"), original);
 });
 
 test("structured conflicts preserve externally added rules and unsupported objects", async () => {

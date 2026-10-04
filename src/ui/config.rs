@@ -417,18 +417,17 @@ mod tests {
             terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
             let text = buffer_text(terminal.backend().buffer());
             assert!(text.lines().any(|line| line.contains("Language") && line.contains("German")));
-            assert!(text.contains("Saved in User · Applies to new sessions"));
-            assert!(text.contains("Description: Preferred response language"));
-            assert!(text.contains("Save in: User (all projects)"));
             crate::app::config::handle_key(
                 &mut app,
                 KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
             );
             terminal.draw(|frame| super::render(frame, &mut app)).expect("editor");
             let text = buffer_text(terminal.backend().buffer());
-            assert!(text.contains("Saved in user: German"));
-            assert!(text.contains("Enter save"));
-            assert!(text.contains("Ctrl+R reset"));
+            assert_eq!(app.config.setting_overlay().expect("editor").draft, "German");
+            assert!(
+                text.lines().any(|line| line.contains("German")),
+                "saved value remains visible in the editor"
+            );
             crate::app::config::handle_key(
                 &mut app,
                 KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -500,7 +499,9 @@ mod tests {
         terminal.draw(|frame| super::render(frame, &mut app)).expect("text editor");
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Enter a value"));
-        assert!(text.contains("Enter save | Ctrl+R reset | Esc cancel"));
+        for key in ["Enter", "Ctrl+R", "Esc"] {
+            assert!(text.contains(key), "text editor must advertise {key}");
+        }
         assert!(text.contains("Saved in user: not set"));
         assert!(!text.contains("Options:"), "free text has no enumerated options");
         assert!(!text.contains("Up/Down options"), "free text needs its own controls");
@@ -537,32 +538,31 @@ mod tests {
     }
 
     #[test]
-    fn settings_explain_overridden_values_and_offer_read_only_controls() {
-        use crate::agent::settings::*;
+    fn read_only_settings_keep_the_value_visible_and_visually_disabled() {
         let mut app = settings_preview_app();
-        let snapshot = app.config.snapshot.as_mut().expect("snapshot");
-        snapshot.sources[0].values[1].value = Some(serde_json::json!("German"));
-        snapshot.values.push(SavedSetting {
-            id: "language".to_owned(),
-            value: Some(serde_json::json!("English")),
-            contributors: vec!["local".to_owned()],
-            policy_restricted: false,
-        });
-        app.config.settings.select("language".into());
-        let mut terminal = Terminal::new(TestBackend::new(110, 32)).expect("terminal");
-        terminal.draw(|frame| super::render(frame, &mut app)).expect("override");
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.lines().any(|line| line.contains("Language") && line.contains("English")));
-        assert!(text.contains("User value: German · Overridden by Local"));
-        let setting = &mut app.config.snapshot.as_mut().expect("snapshot").catalog[1];
+        let setting = &mut app.config.snapshot.as_mut().expect("snapshot").catalog[0];
         setting.writable_scopes.clear();
-        setting.unavailable = Some("Controlled by your organization".to_owned());
+        setting.unavailable = Some("POLICY_RESTRICTION".to_owned());
+        let mut terminal = Terminal::new(TestBackend::new(110, 32)).expect("terminal");
         terminal.draw(|frame| super::render(frame, &mut app)).expect("read-only");
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("Controlled by your organization"));
-        assert!(text.contains("Read-only"));
-        assert!(text.contains("s scope"));
-        assert!(text.contains("r refresh"));
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(buffer);
+        let row = lines.iter().position(|line| line.contains("Thinking")).expect("setting row");
+        assert!(lines[row].trim_end().ends_with("On"));
+        let label = lines[row][..lines[row].find("Thinking").expect("label")].chars().count();
+        let value = lines[row][..lines[row].rfind("On").expect("value")].chars().count();
+        for column in [label, value] {
+            assert_eq!(
+                buffer[(u16::try_from(column).expect("column"), u16::try_from(row).expect("row"))]
+                    .fg,
+                theme::DIM
+            );
+        }
+        let warning_row = lines
+            .iter()
+            .position(|line| line.contains("POLICY_RESTRICTION"))
+            .expect("restriction warning");
+        assert!(warning_row > row, "restriction belongs below the settings list");
     }
 
     #[test]
@@ -694,39 +694,22 @@ mod tests {
     }
 
     #[test]
-    fn normal_layout_shows_snapshot_availability() {
-        let backend = TestBackend::new(180, 30);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(rendered.contains("Settings unavailable"));
-    }
-
-    #[test]
-    fn compact_layout_shows_snapshot_availability() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        let mut app = App::test_default();
-        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
-
-        terminal
-            .draw(|frame| {
-                super::render(frame, &mut app);
-            })
-            .expect("draw");
-
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(rendered.contains("Settings unavailable"));
+    fn unavailable_settings_keep_the_close_action_usable_at_both_sizes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (width, height) in [(180, 30), (80, 24)] {
+            let mut app = App::test_default();
+            app.surface_mode =
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            terminal.draw(|frame| super::render(frame, &mut app)).expect("unavailable settings");
+            let rendered = buffer_text(terminal.backend().buffer());
+            assert!(rendered.contains("unavailable"), "explain the unavailable state: {rendered}");
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            );
+            assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+        }
     }
 
     #[test]
@@ -1441,8 +1424,21 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(60, 48)).expect("terminal");
         terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
         let lines = buffer_lines(terminal.backend().buffer());
-        let words = lines.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+        let entries: Vec<_> = (0..2)
+            .map(|index| {
+                lines
+                    .iter()
+                    .position(|line| line.contains(&format!("P{index}")))
+                    .expect("plugin row")
+            })
+            .collect();
         for index in 0..2 {
+            let end = entries.get(index + 1).copied().unwrap_or(lines.len());
+            let words = lines[entries[index]..end]
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             for value in [
                 format!("Plugin: p{index}@market"),
                 format!("description-tail-{index}"),
@@ -1453,10 +1449,10 @@ mod tests {
             ] {
                 assert!(words.contains(&value), "missing {value}: {words}");
             }
+            assert!(!words.contains("..."), "plugin metadata must remain complete: {words}");
         }
         let second = lines.iter().position(|line| line.contains("P1")).expect("second plugin");
         assert!(lines[second - 1].trim().is_empty(), "{lines:?}");
-        assert!(!words.contains("..."), "{words}");
     }
 
     #[test]

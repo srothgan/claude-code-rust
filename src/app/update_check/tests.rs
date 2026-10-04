@@ -23,10 +23,21 @@ fn fixture(auto_install: Option<bool>) -> (tempfile::TempDir, App) {
 
 fn release_server(status: &str) -> (String, std::thread::JoinHandle<String>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("local HTTP listener");
+    listener.set_nonblocking(true).expect("bounded server accept");
     let endpoint = format!("http://{}/releases/latest", listener.local_addr().expect("address"));
     let status = status.to_owned();
     let worker = std::thread::spawn(move || {
-        let (mut socket, _) = listener.accept().expect("release request");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(std::time::Instant::now() < deadline, "release request never arrived");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("release request failed: {error}"),
+            }
+        };
         socket.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
         let mut request = Vec::new();
         let mut buffer = [0; 2048];
@@ -87,13 +98,6 @@ async fn checks_in_both_modes_persist_results_and_choose_manual_or_exit_installa
                         }
                     })
                 );
-                // A fresh saved result avoids another network request in either mode.
-                start_update_check_at(&app, false, "http://127.0.0.1:0/unreachable");
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(50), app.event_rx.recv())
-                        .await
-                        .is_err()
-                );
             }
         })
         .await;
@@ -135,15 +139,58 @@ async fn check_results_preserve_revocation_and_reset_before_exit() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn fresh_cache_prevents_a_release_request_in_both_update_modes() {
+    for enabled in [None, Some(false), Some(true)] {
+        let (_directory, mut app) = fixture(enabled);
+        settings::record_update_check_result(
+            &mut app.global_settings,
+            env!("CARGO_PKG_VERSION"),
+            "99.0.0",
+            "https://example.invalid/v99.0.0",
+            unix_now_secs().expect("clock"),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reachable endpoint");
+        listener.set_nonblocking(true).expect("observe requests without blocking");
+        let endpoint =
+            format!("http://{}/releases/latest", listener.local_addr().expect("address"));
+        let tasks = tokio::task::LocalSet::new();
+        tasks.run_until(async { start_update_check_at(&app, false, &endpoint) }).await;
+        // Drain the actual background check before inspecting its network and event effects.
+        tasks.await;
+        assert_eq!(
+            listener.accept().expect_err("no network request").kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(matches!(
+            app.event_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn failed_release_request_keeps_the_existing_cache() {
     let (endpoint, server) = release_server("503 Service Unavailable");
-    let (_directory, app) = fixture(Some(true));
-    assert!(resolve_latest_release(app.global_settings, &endpoint).await.is_none());
-    server.join().expect("server");
-    let saved = settings::load_from_path(app.global_settings_path.as_deref().expect("path"))
-        .expect("unchanged settings");
-    assert!(saved.updates.auto_install);
-    assert!(saved.updates.last_result.is_none());
+    let (_directory, mut app) = fixture(Some(true));
+    settings::record_update_check_result(
+        &mut app.global_settings,
+        env!("CARGO_PKG_VERSION"),
+        "98.0.0",
+        "https://example.invalid/v98.0.0",
+        unix_now_secs().expect("clock") - UPDATE_CHECK_TTL_SECS - 1,
+    );
+    let path = app.global_settings_path.as_deref().expect("settings path");
+    settings::save_global_settings(path, &app.global_settings).expect("seed expired cache");
+    let original = std::fs::read(path).expect("saved cache");
+    let cached = app.global_settings.updates.last_result.clone();
+    let tasks = tokio::task::LocalSet::new();
+    tasks.run_until(async { start_update_check_at(&app, false, &endpoint) }).await;
+    tasks.await;
+    assert!(server.join().expect("server").starts_with("GET /releases/latest HTTP/1.1"));
+    assert!(matches!(app.event_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    assert_eq!(app.global_settings.updates.last_result, cached);
+    assert_eq!(std::fs::read(path).expect("preserved settings"), original);
+    assert_eq!(app.input.text(), "preserve my draft");
 }
 #[test]
 fn parse_simple_version_accepts_v_prefix() {

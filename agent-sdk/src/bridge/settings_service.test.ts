@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { after, before, test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import { promisify } from "node:util";
 import { inspectSettings, mutateSetting } from "./settings_service.js";
 import type { AvailableModel, Json, SettingsMutation, SettingsScope, SettingsSnapshot } from "../types.js";
@@ -11,14 +11,14 @@ import type { AvailableModel, Json, SettingsMutation, SettingsScope, SettingsSna
 let root: string;
 let cwd: string;
 const oldProfile = process.env.CLAUDE_CONFIG_DIR;
-before(async () => {
+beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-rs-settings-"));
   cwd = path.join(root, "project");
   process.env.CLAUDE_CONFIG_DIR = path.join(root, "profile");
   await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
   await fs.mkdir(process.env.CLAUDE_CONFIG_DIR, { recursive: true });
 });
-after(async () => {
+afterEach(async () => {
   if (oldProfile === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = oldProfile;
   await fs.rm(root, { recursive: true, force: true });
@@ -131,13 +131,16 @@ test("targeted edits preserve another owner's changes and reset exposes inherita
   assert.equal(reset.snapshot?.values.find(value => value.id === "model")?.value, "sonnet");
 });
 
-test("same-value external edits conflict without overwriting the new value", async () => {
+test("concurrent edits to the selected setting are preserved and reported as conflicts", async () => {
   await write("user", { language: "German", untouched: true });
   const shown = await inspectSettings(cwd);
   await write("user", { language: "Japanese", untouched: true });
   const result = await mutateSetting(cwd, mutation(shown, "language", "user", "French"));
   assert.equal(result.persistence, "conflict");
   assert.equal(result.snapshot?.values.find(value => value.id === "language")?.value, "Japanese");
+  const user = shown.sources.find(source => source.scope === "user");
+  assert.ok(user);
+  assert.deepEqual(JSON.parse(await fs.readFile(user.path, "utf8")), { language: "Japanese", untouched: true });
 });
 
 test("invalid files, context changes, catalog scopes, and invalid options protect persisted data", async () => {
@@ -151,12 +154,17 @@ test("invalid files, context changes, catalog scopes, and invalid options protec
   assert.equal(await fs.readFile(source.path, "utf8"), "{broken");
   await write("user", { model: "opus" });
   const valid = await inspectSettings(cwd);
+  const original = await fs.readFile(source.path, "utf8");
   const context = await mutateSetting(cwd, { ...mutation(valid, "model", "user", "haiku"), context: "stale-context" });
   assert.equal(context.persistence, "failure");
   const invalid = await mutateSetting(cwd, mutation(valid, "worktree.baseRef", "user", "invalid"));
   assert.equal(invalid.persistence, "failure");
   const readOnly = await mutateSetting(cwd, mutation(valid, "askUserQuestionTimeout", "project", "60s"));
   assert.equal(readOnly.persistence, "failure");
+  assert.equal(await fs.readFile(source.path, "utf8"), original);
+  const project = valid.sources.find(source => source.scope === "project");
+  assert.ok(project);
+  await assert.rejects(fs.access(project.path), { code: "ENOENT" });
 });
 
 test("catalog boolean and finite choices round-trip at their supported scopes", async () => {
@@ -169,11 +177,14 @@ test("catalog boolean and finite choices round-trip at their supported scopes", 
       for (const value of setting.options) {
         const result = await mutateSetting(cwd, mutation(await inspectSettings(cwd), setting.id, scope, value));
         assert.ok(["saved", "unchanged"].includes(result.persistence), `${setting.id}/${scope}: ${result.error}`);
-        assert.equal(result.snapshot?.sources.find(source => source.scope === scope)?.values.find(value => value.id === setting.id)?.value, value);
-        assert.equal(result.snapshot?.values.find(entry => entry.id === setting.id)?.value, value, `${setting.id}/${scope}: SDK cascade`);
+        const reopened = await inspectSettings(cwd);
+        assert.equal(reopened.sources.find(source => source.scope === scope)?.values.find(value => value.id === setting.id)?.value, value, `${setting.id}/${scope}: persisted value`);
+        assert.equal(reopened.values.find(entry => entry.id === setting.id)?.value, value, `${setting.id}/${scope}: SDK cascade`);
       }
       const reset = await mutateSetting(cwd, mutation(await inspectSettings(cwd), setting.id, scope));
       assert.ok(["saved", "unchanged"].includes(reset.persistence));
+      const reopened = await inspectSettings(cwd);
+      assert.equal(reopened.sources.find(source => source.scope === scope)?.values.find(value => value.id === setting.id)?.value, undefined, `${setting.id}/${scope}: reset removes the saved value`);
     }
   }
 });

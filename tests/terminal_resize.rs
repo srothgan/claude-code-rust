@@ -285,6 +285,15 @@ impl TerminalTest {
         self.wait_until(needle, |test| test.screen().contains(needle));
     }
 
+    fn wait_setting(&mut self, file: &str, pointer: &str, expected: Option<&Value>) {
+        self.wait_until(&format!("persisted {pointer}"), |test| {
+            std::fs::read(test.temp.path().join(file))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .is_some_and(|document| document.pointer(pointer) == expected)
+        });
+    }
+
     fn journal(&self) -> Vec<Value> {
         std::fs::read_to_string(&self.journal)
             .unwrap_or_default()
@@ -526,7 +535,11 @@ fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_sav
             test.send(b"\x1b[B\x1b[B"); // Language -> Reduce motion -> Show tips.
         }
         test.send(b" "); // Reopening settings retains the selected control.
-        test.wait_screen("Saved.");
+        test.wait_setting(
+            "profile/settings.json",
+            "/spinnerTipsEnabled",
+            Some(&Value::Bool(enabled)),
+        );
         test.send(b"\x1b");
         test.wait_until("only tips follow the acknowledged setting", |test| {
             let screen = test.screen();
@@ -1014,7 +1027,7 @@ fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_
     test.wait_until("hook settings mutation", |test| test.commands("mutate_setting").len() == 1);
     let expected = serde_json::json!({"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"npm run lint"}]}],"Stop":[{"hooks":[{"type":"command","command":"keep-original","future":"keep"}]}]});
     assert_eq!(test.commands("mutate_setting")[0]["mutation"]["value"], expected);
-    test.wait_screen("Saved in User");
+    test.wait_setting("profile/settings.json", "/hooks", Some(&expected));
     let saved: Value = serde_json::from_slice(
         &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved file"),
     )
@@ -1096,7 +1109,7 @@ fn a_stream_error_preserves_the_next_unsent_draft_through_resize() {
 }
 
 #[test]
-fn presentation_clocks_and_copy_picker_follow_the_terminal_workflow() {
+fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
     let mut test = TerminalTest::start("presentation", 3);
     test.submit("Clock test", "Clock test");
     test.wait_screen("Elapsed 2.0s");
@@ -1154,7 +1167,7 @@ fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
     test.submit("/config", "/config");
     test.wait_screen("Auto-scroll");
     test.send(b"\x1b[C"); // On -> Off at the selected user scope.
-    test.wait_screen("Saved.");
+    test.wait_setting("profile/settings.json", "/autoScrollEnabled", Some(&Value::Bool(false)));
     test.send(b"\x1b");
     test.wait_screen("Reading output");
     let pinned = test
@@ -1225,7 +1238,11 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     test.wait_screen("Notification method");
     test.send(b"\x1b[B\x1b[B"); // Pass turn completion and select proactive alerts.
     test.send(b" "); // On -> Off, immediate acknowledged save.
-    test.wait_screen("Saved.");
+    test.wait_setting(
+        "profile/app-settings.json",
+        "/notifications/modelDirected",
+        Some(&Value::Bool(false)),
+    );
     test.send(b"\x1b");
     test.wait_screen("Type a message");
     test.send(b"\x1b[O");
