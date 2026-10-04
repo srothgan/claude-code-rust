@@ -393,9 +393,8 @@ export type SessionUpdate =
       origin: MessageOrigin;
     }
   | {
-      type: "agent_thought_chunk";
-      content: ContentBlock;
-      source_message_uuid?: string;
+      type: "agent_activity_update";
+      phase: "working" | "thinking";
     }
   | { type: "tool_call"; tool_call: ToolCall }
   | { type: "tool_call_update"; tool_call_update: ToolCallUpdate }

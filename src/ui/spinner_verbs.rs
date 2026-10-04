@@ -165,7 +165,6 @@ const SPINNER_VERBS: &[&str] = &[
     "Symbioting",
     "Synthesizing",
     "Tempering",
-    "Thinking",
     "Thundering",
     "Tinkering",
     "Tomfoolering",
@@ -205,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn bundled_spinner_verbs_include_thinking() {
-        assert!(SPINNER_VERBS.contains(&"Thinking"));
+    fn bundled_spinner_verbs_reserve_thinking_for_observed_phase() {
+        assert!(!SPINNER_VERBS.contains(&"Thinking"));
     }
 }

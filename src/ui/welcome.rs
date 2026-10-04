@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use crate::app::WelcomeBlock;
+use crate::ui::host_tips::HOST_TIPS;
 use crate::ui::theme;
 use crate::ui::wrap::{
     StyledChunk, display_width, join_column_lines, wrap_styled_chunks,
@@ -16,31 +17,6 @@ const FERRIS_LEFT_PADDING: &str = "  ";
 const FERRIS_TEXT_GAP: usize = 2;
 const MIN_INLINE_FIELD_VALUE_WIDTH: usize = 8;
 const WELCOME_FIELD_LABELS: &[&str] = &["Version", "Subscription", "Cwd", "Session ID", "Tips"];
-
-const WELCOME_TIPS: &[&str] = &[
-    "Use /mode plan before larger changes, then switch back to code once the plan is clear",
-    "Use /mcp to connect live tools and docs instead of pasting stale context into chat",
-    "Keep repo instructions short in CLAUDE.md and update them when mistakes repeat",
-    "Start prompts with the goal, relevant context, and constraints so Claude needs fewer corrections",
-    "Ask Claude for a plan first on multi-step work instead of jumping straight to edits",
-    "Give success criteria Claude can verify: tests, lint, screenshots, or exact outputs",
-    "For visual work, paste screenshots or mockups so Claude can verify UI changes instead of guessing",
-    "Start a fresh thread with /new-session when the task changes and old context is noise",
-    "Use /compact when a session gets long and you want to keep the thread but trim context",
-    "Use /resume <session_id> to jump back into earlier work without rebuilding context",
-    "Use /docs shortcuts to see the live keyboard shortcuts for the current app state",
-    "Use /docs commands to inspect the slash commands this app and the SDK expose",
-    "If Claude drifts, refine or restate the plan early instead of piling on corrective prompts",
-    "For tricky bugs, provide clear repro steps and runtime evidence instead of guessing fixes",
-    "Point Claude at the relevant files, errors, and constraints instead of pasting everything",
-    "If you do not know the exact file, let Claude search first and only pin the files that matter",
-    "Ask codebase questions first in unfamiliar areas instead of coding blind",
-    "Review diffs carefully even when the output looks plausible on first read",
-    "Use hooks for checks that must run every time instead of relying on reminder text alone",
-    "Turn repeated workflows into CLAUDE.md guidance only after they work reliably by hand",
-    "For larger features, let Claude clarify requirements and edge cases through structured questions",
-    "Use separate sessions for unrelated work so planning, debugging, and review stay clean",
-];
 
 pub(crate) fn overview_lines(
     block: &WelcomeBlock,
@@ -153,18 +129,18 @@ fn welcome_value_missing(value: &str) -> bool {
 }
 
 pub(crate) fn selected_tip(block: &WelcomeBlock) -> &'static str {
-    let Some(first_tip) = WELCOME_TIPS.first().copied() else {
+    let Some(first_tip) = HOST_TIPS.first().copied() else {
         return "Enter sends, Shift+Enter inserts a newline, and Ctrl+C clears or quits";
     };
-    let len_u64 = u64::try_from(WELCOME_TIPS.len()).unwrap_or(1);
+    let len_u64 = u64::try_from(HOST_TIPS.len()).unwrap_or(1);
     let idx_u64 = block.tip_seed % len_u64;
     let idx = usize::try_from(idx_u64).unwrap_or(0);
-    WELCOME_TIPS.get(idx).copied().unwrap_or(first_tip)
+    HOST_TIPS.get(idx).copied().unwrap_or(first_tip)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Line, WELCOME_TIPS, overview_lines};
+    use super::{HOST_TIPS, Line, overview_lines};
     use crate::app::{ChatMessage, MessageBlock};
     use crate::ui::wrap::line_display_width;
 
@@ -191,7 +167,7 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("Session ID: Loading")));
         assert!(lines.iter().any(|line| line.contains("Tips: ")));
         assert!(
-            WELCOME_TIPS.iter().any(|tip| lines.iter().any(|line| line.contains(tip))),
+            HOST_TIPS.iter().any(|tip| lines.iter().any(|line| line.contains(tip))),
             "expected one welcome tip to be rendered"
         );
     }

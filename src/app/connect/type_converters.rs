@@ -426,11 +426,8 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
             ))
         }
-        types::SessionUpdate::AgentThoughtChunk { content, source_message_uuid } => {
-            let content = convert_content_block(content)?;
-            Some(model::SessionUpdate::AgentThoughtChunk(
-                model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
-            ))
+        types::SessionUpdate::AgentActivityUpdate { phase } => {
+            Some(model::SessionUpdate::AgentActivityUpdate(phase))
         }
         types::SessionUpdate::ToolCall { tool_call } => {
             Some(model::SessionUpdate::ToolCall(convert_tool_call(tool_call)))

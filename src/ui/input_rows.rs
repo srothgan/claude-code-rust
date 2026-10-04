@@ -49,14 +49,6 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
         )));
     }
 
-    if app.turn.cancel_requested {
-        let spinner_ch = crate::ui::SpinnerState::for_app(app).icon();
-        rows.push(Line::from(vec![
-            Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
-            Span::styled("Cancelling current turn...", Style::default().fg(theme::DIM)),
-        ]));
-    }
-
     if !app.pending_user_messages.is_empty() {
         let count = app.pending_user_messages.len();
         rows.push(Line::from(Span::styled(
@@ -246,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn reduced_motion_keeps_cancellation_and_command_activity_icons_static() {
+    fn reduced_motion_keeps_command_activity_icon_static() {
         let mut app = App::test_default();
         app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
             "prefersReducedMotion",
@@ -256,10 +248,6 @@ mod tests {
         app.turn.pending_command_label = Some("Switching mode...".to_owned());
         for frame in [0, 4, 9] {
             app.spinner_frame = frame;
-            assert_eq!(
-                line_text(&build_composer_hint_rows(&app)[0]),
-                "\u{25C6} Cancelling current turn..."
-            );
             assert_eq!(
                 line_text(&blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)[0]),
                 "\u{25C6} Switching mode..."
@@ -281,15 +269,14 @@ mod tests {
     }
 
     #[test]
-    fn build_composer_hint_rows_preserves_cancel_and_suggestion_rows() {
+    fn build_composer_hint_rows_keeps_suggestions_without_cancellation_indicator() {
         let mut app = App::test_default();
         app.turn.cancel_requested = true;
         app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
 
         let rows = build_composer_hint_rows(&app);
-        assert_eq!(rows.len(), 2);
-        assert!(line_text(&rows[0]).contains("Cancelling current turn"));
-        assert!(line_text(&rows[1]).contains("Suggestion: Write tests"));
+        assert_eq!(rows.len(), 1);
+        assert!(line_text(&rows[0]).contains("Suggestion: Write tests"));
     }
 
     #[test]

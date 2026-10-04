@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+pub(crate) mod activity;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;
@@ -259,6 +260,7 @@ async fn run_tui_loop(
             app.tick_git_context(now);
             session_runtime::tick_context_usage_refresh(app, now);
             questions::tick_idle_timeout(app, now);
+            app.tick_activity(now);
             if app.btw.expire_failed(now) {
                 app.request_active_surface_repaint();
             }
@@ -289,14 +291,12 @@ async fn run_tui_loop(
         // Phase 3: render once (only when something changed)
         let is_animating = !app.shutdown_requested()
             && !app.config.prefers_reduced_motion_effective()
-            && (matches!(
-                app.status,
-                AppStatus::Connecting
-                    | AppStatus::CommandPending
-                    | AppStatus::Thinking
-                    | AppStatus::Running
-            ) || app.turn.compaction.is_active()
-                || app.btw.has_active());
+            && (app.activity_presentation(now).is_some()
+                || matches!(app.status, AppStatus::Connecting | AppStatus::CommandPending)
+                || app.btw.has_active()
+                || app.transcript.messages.iter().flat_map(|message| &message.blocks).any(|block| {
+                    matches!(block, MessageBlock::ToolCall(tool) if !tool.hidden_unless_focused_interaction() && matches!(tool.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending))
+                }));
         if is_animating {
             advance_spinner_frame(app, Instant::now());
             tab_title::update_tab_title(app);

@@ -208,6 +208,7 @@ fn seed_resize_measurements(app: &mut App) {
     app.chat_render.terminal_width = 90;
     app.chat_render.terminal_height = 30;
     app.chat_render.composer = ComposerRenderState {
+        activity_rows: 0,
         width: 90,
         hint_rows: 1,
         btw_rows: 0,
@@ -659,6 +660,12 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
     let table = format!("| Hassle | What users report | Refs |\n| --- | --- | --- |\n{rows}");
     assert!(table.len() > crate::app::DEFAULT_CACHE_SPLIT_SOFT_LIMIT_BYTES);
     let mut app = make_test_app();
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
+            model::RuntimeSessionState::Running,
+        )),
+    );
 
     handle_client_event(
         &mut app,
@@ -699,8 +706,6 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
         "live tail must not render raw Markdown table rows: {remaining_text:?}"
     );
 }
-
-// has_in_progress_tool_calls
 
 fn make_test_app() -> App {
     let mut app = App::test_default();
@@ -931,181 +936,6 @@ fn todowrite_tool_call_does_not_mutate_task_state() {
     assert_eq!(app.sdk_inventory.tasks[0].task_id, "task-1");
     assert_eq!(app.sdk_inventory.tasks[0].subject, "Existing task");
     assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::InProgress);
-}
-
-#[test]
-fn has_in_progress_empty_messages() {
-    let app = make_test_app();
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_no_tool_calls() {
-    let mut app = make_test_app();
-    app.transcript
-        .messages
-        .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("hello"))]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_with_pending_tool() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::Pending,
-    )))]));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_with_in_progress_tool() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_all_completed() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::Completed,
-    )))]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_all_failed() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::Failed,
-    )))]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-// has_in_progress_tool_calls
-
-#[test]
-fn has_in_progress_user_message_last() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(user_msg("hi"));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Without an explicit owner, in-progress tools do not count even if the last assistant has them.
-#[test]
-fn has_in_progress_requires_explicit_owner() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.transcript.messages.push(user_msg("thanks"));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// The owned assistant decides the result even when another assistant trails later.
-#[test]
-fn has_in_progress_uses_owned_assistant_not_latest_assistant() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.transcript.messages.push(user_msg("ok"));
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "tc2",
-        model::ToolCallStatus::Completed,
-    )))]));
-    app.bind_active_turn_assistant(0);
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-#[test]
-fn has_in_progress_mixed_completed_and_pending() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![
-        MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
-        MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::InProgress))),
-    ]));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Text blocks mixed with tool calls - text blocks are correctly skipped.
-#[test]
-fn has_in_progress_text_and_tools_mixed() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![
-        MessageBlock::Text(TextBlock::from_complete("thinking...")),
-        MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
-        MessageBlock::Text(TextBlock::from_complete("done")),
-    ]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Stress: 100 completed tool calls + 1 pending at the end.
-#[test]
-fn has_in_progress_stress_100_tools_one_pending() {
-    let mut app = make_test_app();
-    let mut blocks: Vec<MessageBlock> = (0..100)
-        .map(|i| {
-            MessageBlock::ToolCall(Box::new(tool_call(
-                &format!("tc{i}"),
-                model::ToolCallStatus::Completed,
-            )))
-        })
-        .collect();
-    blocks.push(MessageBlock::ToolCall(Box::new(tool_call(
-        "tc_pending",
-        model::ToolCallStatus::Pending,
-    ))));
-    app.transcript.messages.push(assistant_msg(blocks));
-    app.bind_active_turn_assistant_to_tail();
-    assert!(tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Stress: 100 completed tool calls, none pending.
-#[test]
-fn has_in_progress_stress_100_tools_all_done() {
-    let mut app = make_test_app();
-    let blocks: Vec<MessageBlock> = (0..100)
-        .map(|i| {
-            MessageBlock::ToolCall(Box::new(tool_call(
-                &format!("tc{i}"),
-                model::ToolCallStatus::Completed,
-            )))
-        })
-        .collect();
-    app.transcript.messages.push(assistant_msg(blocks));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Mix of Failed and Completed - neither counts as in-progress.
-#[test]
-fn has_in_progress_failed_and_completed_mix() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![
-        MessageBlock::ToolCall(Box::new(tool_call("tc1", model::ToolCallStatus::Completed))),
-        MessageBlock::ToolCall(Box::new(tool_call("tc2", model::ToolCallStatus::Failed))),
-        MessageBlock::ToolCall(Box::new(tool_call("tc3", model::ToolCallStatus::Completed))),
-    ]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
-}
-
-/// Empty assistant message (no blocks at all).
-#[test]
-fn has_in_progress_empty_assistant_blocks() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![]));
-    assert!(!tool_calls::has_in_progress_tool_calls(&app));
 }
 
 // make_test_app - verify defaults

@@ -38,6 +38,7 @@ const DEFINITIONS: Definition[] = [
   ["crossSessionInbound", "Messages from other sessions", "Choose whether to accept, review, or refuse messages from other sessions.", "string", ["accept", "hold", "refuse"], ["user"], "Message-review settings are not available yet."],
   ["model", "Default model", "Choose a model for new sessions. Use /model to change the current session.", "string", []],
   ["agent", "Default agent", "Main-thread agent for new sessions. Use /agent to change the current session.", "string", []],
+  ["spinnerTipsEnabled", "Show tips", "Show tips during active turns. Off hides tip text; activity and the Claude heading remain visible. Default: On.", "boolean"],
   ["prefersReducedMotion", "Reduce motion", "Show a static activity icon instead of animated spinners.", "boolean"],
   ["permissions.allow", "Permissions: allow rules", "Add one entry per tool rule, e.g. Bash(npm run test *) or Read(./docs/**). Lists merge across scopes; deny rules take precedence.", "string_list"],
   ["permissions.ask", "Permissions: ask rules", "Add one entry per tool rule. Matching operations require confirmation unless denied.", "string_list"],
@@ -92,7 +93,7 @@ export function settingsCatalog(models: AvailableModel[] = [], agents: Available
     writable_scopes: unavailable ? [] : scopes ?? ALL_SCOPES,
     allows_custom: kind !== "boolean" && choices === undefined,
     reset: "Reset clears this scope's value and uses the other scopes or Default.",
-    application: ["respectGitignore", "prefersReducedMotion", "autoScrollEnabled", "showTurnDuration", "showMessageTimestamps", "timeFormat", "preferredNotifChannel"].includes(id) || isAppSetting({ id }) ? "host" : "next_session",
+    application: ["spinnerTipsEnabled", "respectGitignore", "prefersReducedMotion", "autoScrollEnabled", "showTurnDuration", "showMessageTimestamps", "timeFormat", "preferredNotifChannel"].includes(id) || isAppSetting({ id }) ? "host" : "next_session",
     ...(unavailable ? { unavailable } : {}),
   }));
   for (const setting of catalog) {

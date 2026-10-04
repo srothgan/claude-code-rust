@@ -2,8 +2,8 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::super::{
-    App, AppStatus, BlockCache, ChatMessage, InvalidationLevel, MessageBlock, MessageRole,
-    ToolCallInfo, ToolCallScope,
+    App, BlockCache, ChatMessage, InvalidationLevel, MessageBlock, MessageRole, ToolCallInfo,
+    ToolCallScope,
 };
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
@@ -22,7 +22,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     upsert_tool_call_into_assistant_message(app, tool_info);
     crate::app::tasks::refresh_task_tool_displays(app);
 
-    app.status = AppStatus::Running;
     app.files_accessed += 1;
 }
 
@@ -314,22 +313,6 @@ pub(super) fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
         return title_norm.replace(&with_sep, "");
     }
     title_norm
-}
-
-/// Check if any tool call in the current assistant message is still in-progress.
-pub(super) fn has_in_progress_tool_calls(app: &App) -> bool {
-    if let Some(owner_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.transcript.messages.get(owner_idx)
-    {
-        return owner.blocks.iter().any(|block| {
-            matches!(
-                block,
-                MessageBlock::ToolCall(tc)
-                    if matches!(tc.status, model::ToolCallStatus::InProgress | model::ToolCallStatus::Pending)
-            )
-        });
-    }
-    false
 }
 
 pub(super) fn log_command_started(app: &App, tc: &ToolCallInfo) {

@@ -383,19 +383,13 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         model::SessionUpdate::ExternalMessageUpdate(update) => {
             handle_external_message_update(app, &update);
         }
-        model::SessionUpdate::AgentThoughtChunk(chunk) => {
-            let chunk_chars = match &chunk.content {
-                model::ContentBlock::Text(text) => text.text.chars().count(),
-                model::ContentBlock::Image(_) => 0,
-            };
-            tracing::trace!(
-                target: crate::logging::targets::APP_SESSION,
-                event_name = "agent_thought_chunk_applied",
-                message = "agent thought chunk applied",
-                outcome = "success",
-                chunk_chars,
-            );
-            app.status = AppStatus::Thinking;
+        model::SessionUpdate::AgentActivityUpdate(phase) => {
+            if matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+                app.status = match phase {
+                    model::AgentActivityPhase::Working => AppStatus::Running,
+                    model::AgentActivityPhase::Thinking => AppStatus::Thinking,
+                };
+            }
         }
         model::SessionUpdate::AvailableCommandsUpdate(cmds) => {
             tracing::debug!(
@@ -579,10 +573,12 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
     app.session_runtime.runtime_session_state = Some(state);
     match state {
         model::RuntimeSessionState::Running => {
-            if matches!(app.status, AppStatus::Ready | AppStatus::Thinking | AppStatus::Running)
-                && !app.turn.compaction.is_active()
-            {
+            if app.status == AppStatus::Ready {
                 app.status = AppStatus::Running;
+            }
+            if matches!(app.status, AppStatus::Running | AppStatus::Thinking) {
+                app.begin_turn_activity(std::time::Instant::now());
+                app.session_runtime.runtime_session_state = Some(state);
             }
         }
         model::RuntimeSessionState::RequiresAction => {}
@@ -592,6 +588,7 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
                 && !app.turn.cancel_requested
             {
                 app.status = AppStatus::Ready;
+                app.turn.activity = None;
             }
         }
     }

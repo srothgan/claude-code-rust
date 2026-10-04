@@ -52,7 +52,7 @@ impl Default for MessageBlockId {
 pub enum HistoryOutputId {
     Message(ChatMessageId),
     AssistantLabel(ChatMessageId),
-    AssistantIndicator(ChatMessageId),
+    AssistantThinking(ChatMessageId),
     AssistantDuration(ChatMessageId),
     Block(MessageBlockId),
     ToolCall(String),

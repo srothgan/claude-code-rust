@@ -137,6 +137,9 @@ impl ConfigState {
     pub fn respect_gitignore_effective(&self) -> bool {
         self.saved_value("respectGitignore").and_then(Value::as_bool).unwrap_or(true)
     }
+    pub fn spinner_tips_enabled_effective(&self) -> bool {
+        self.saved_bool("spinnerTipsEnabled", true)
+    }
     pub fn prefers_reduced_motion_effective(&self) -> bool {
         self.saved_value("prefersReducedMotion").and_then(Value::as_bool).unwrap_or(false)
     }

@@ -2,8 +2,8 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::super::{
-    App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock, TextBlockSpacing,
-    TextSplitDecision, TextSplitKind, default_cache_split_policy, find_text_split,
+    App, ChatMessage, MessageBlock, MessageRole, TextBlock, TextBlockSpacing, TextSplitDecision,
+    TextSplitKind, default_cache_split_policy, find_text_split,
 };
 use crate::agent::model;
 
@@ -12,7 +12,6 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
         return;
     };
 
-    app.status = AppStatus::Running;
     if text.text.is_empty() {
         return;
     }

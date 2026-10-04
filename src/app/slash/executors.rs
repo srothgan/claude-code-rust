@@ -128,6 +128,7 @@ fn handle_compact_submit(app: &mut App) -> bool {
         return true;
     }
 
+    app.begin_turn_activity(std::time::Instant::now());
     app.turn.compaction.begin_manual();
     false
 }

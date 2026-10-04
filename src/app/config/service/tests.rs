@@ -31,6 +31,55 @@ fn snapshot(cwd: &str, value: &str) -> SettingsSnapshot {
     })).expect("snapshot contract")
 }
 
+#[tokio::test]
+async fn acknowledged_spinner_tip_setting_only_controls_tips() {
+    let mut app = App::test_default();
+    app.session_runtime.session_id = Some("session-1".into());
+    app.transcript.messages.push(crate::app::ChatMessage::new(
+        crate::app::MessageRole::Assistant,
+        Vec::new(),
+        None,
+    ));
+    app.bind_active_turn_assistant(0);
+    app.status = crate::app::AppStatus::Running;
+    let start = std::time::Instant::now();
+    app.begin_turn_activity(start);
+    let now = start;
+    assert!(app.activity_presentation(now).expect("active").tip.is_some());
+    for enabled in [false, true] {
+        let mut acknowledged = SettingsSnapshot::test_value("spinnerTipsEnabled", json!(enabled));
+        acknowledged.cwd.clone_from(&app.cwd_raw);
+        app.config.pending_settings_request =
+            Some(crate::app::config::PendingSettingsRequest::Inspection("tips".into()));
+        crate::app::events::handle_client_event(
+            &mut app,
+            ClientEvent::SettingsResultReceived {
+                session_id: "session-1".into(),
+                request_id: Some("tips".into()),
+                result: SettingsResult {
+                    persistence: SettingsPersistence::NotRequested,
+                    application: SettingsApplication::Host,
+                    snapshot: Some(acknowledged),
+                    error: None,
+                },
+            },
+        );
+        let presentation = app.activity_presentation(now).expect("active turn");
+        assert_eq!(presentation.tip.is_some(), enabled);
+        assert!(!presentation.thinking, "settings cannot invent SDK thinking");
+        let rows = crate::ui::activity_rows::build_activity_rows(&app, 80, now);
+        assert!(!rows.is_empty());
+        assert_eq!(rows.iter().any(|row| row.to_string().contains("Tip:")), enabled);
+        assert!(rows.iter().all(|row| row.to_string().starts_with('│')));
+        let live = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            80,
+            &std::collections::BTreeSet::new(),
+        );
+        assert!(live.rows().iter().any(|row| row.to_string().trim_end() == "Claude"));
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn automatic_update_editor_cycles_acknowledged_choices_and_resets_the_personal_value() {
     use ratatui::{Terminal, backend::TestBackend};

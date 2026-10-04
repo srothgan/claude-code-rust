@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resetMainAgentActivity, type MainAgentResponse } from "./activity.js";
 import { spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
 import {
@@ -167,6 +168,7 @@ export type PendingWorkerShutdown = {
 };
 
 export type SessionState = {
+  mainAgentResponse?: MainAgentResponse;
   ultracode?: import("../types.js").UltracodeSnapshot;
   sessionId: string;
   cwd: string;
@@ -333,6 +335,7 @@ export function updateSessionId(
   if (session.sessionId === newSessionId) {
     return;
   }
+  resetMainAgentActivity(session);
   closeSideQuestions(session.sessionId, session.query);
   sessions.delete(session.sessionId);
   session.ultracode = undefined;
@@ -341,6 +344,7 @@ export function updateSessionId(
 }
 
 export function beginSessionClose(session: SessionState): void {
+  resetMainAgentActivity(session);
   session.closing = true;
   for (const [toolUseId, toolCall] of session.toolCalls) {
     if (toolCall.status === "detached") {
@@ -909,6 +913,7 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
         const { flushPendingWorkerShutdown } = await import(
           "./message_handlers.js"
         );
+        resetMainAgentActivity(session);
         flushPendingWorkerShutdown(session);
       }
       if (!session.connected && !session.startupFailure) {
@@ -930,6 +935,7 @@ export function startSessionTasks(session: SessionState, requestId?: string): vo
         }
       }
     } catch (error) {
+      resetMainAgentActivity(session);
       if (session.startupFailure) {
         return;
       }

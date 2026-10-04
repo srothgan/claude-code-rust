@@ -107,6 +107,7 @@ These settings apply after saving, including to the retained conversation:
 | Setting | Choices | Behavior |
 | --- | --- | --- |
 | Auto-scroll | On / Off | Follow new output when On; hold the reading position when Off. |
+| Show tips | On / Off | Show tips during active turns. Off hides tip text; activity and the Claude heading remain visible. Default: On. |
 | Show message timestamps | On / Off | Show the first available message time beside its role label. |
 | Show turn duration | On / Off | Show one total elapsed duration per completed response, and tool/task elapsed observations when available. |
 | Time format | Auto / 12-hour / 24-hour / 24-hour UTC | Format clocks without changing elapsed durations. |

@@ -652,9 +652,8 @@ pub enum SessionUpdate {
         source_message_uuid: Option<String>,
         origin: MessageOrigin,
     },
-    AgentThoughtChunk {
-        content: ContentBlock,
-        source_message_uuid: Option<String>,
+    AgentActivityUpdate {
+        phase: super::model::AgentActivityPhase,
     },
     ToolCall {
         tool_call: ToolCall,

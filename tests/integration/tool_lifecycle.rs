@@ -83,10 +83,10 @@ async fn tool_call_updates_apply_terminal_statuses_and_title_fields() {
     assert!(matches!(failed.status, model::ToolCallStatus::Failed));
 }
 
-// --- All tools terminal -> Thinking ---
+// --- Terminal tools retain ordinary activity ---
 
 #[tokio::test]
-async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_finish() {
+async fn terminal_tool_statuses_do_not_infer_thinking_once_all_calls_finish() {
     let mut app = test_app();
     app.status = AppStatus::Running;
 
@@ -113,7 +113,7 @@ async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_fi
             "tc-b", fields,
         ))),
     );
-    assert!(matches!(app.status, AppStatus::Thinking), "all-complete should resume thinking");
+    assert!(matches!(app.status, AppStatus::Running), "all-complete retains ordinary activity");
 
     let mut mixed_app = test_app();
     mixed_app.status = AppStatus::Running;
@@ -139,8 +139,8 @@ async fn terminal_tool_statuses_transition_running_to_thinking_once_all_calls_fi
     );
 
     assert!(
-        matches!(mixed_app.status, AppStatus::Thinking),
-        "mixed terminal outcomes should also resume thinking"
+        matches!(mixed_app.status, AppStatus::Running),
+        "mixed terminal outcomes retain ordinary activity"
     );
 }
 

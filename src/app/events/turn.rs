@@ -755,7 +755,10 @@ pub(super) fn handle_user_message_started_event(
         app.push_message_tracked(user);
         app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant_to_tail();
-        app.status = AppStatus::Thinking;
+        if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
+            app.status = AppStatus::Running;
+        }
+        app.begin_turn_activity(Instant::now());
         app.enforce_history_retention_tracked();
     }
     tracing::info!(
@@ -1240,7 +1243,7 @@ mod tests {
         assert_eq!(message_text(&app.transcript.messages[2]), Some("second"));
         assert!(matches!(app.transcript.messages[3].role, MessageRole::Assistant));
         assert_eq!(app.active_turn_assistant_idx(), Some(3));
-        assert_eq!(app.status, AppStatus::Thinking);
+        assert_eq!(app.status, AppStatus::Running);
 
         handle_user_message_started_event(
             &mut app,

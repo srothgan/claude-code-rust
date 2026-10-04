@@ -13,6 +13,7 @@ const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
 // Only the first turn is gated. Tests release it after exercising the composer
 // or a fullscreen surface, rather than racing a fixed reply duration.
 const SCENARIO = process.env.FAKE_BRIDGE_SCENARIO ?? 'stream';
+const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
@@ -36,6 +37,13 @@ const settingDefinitions = [
   ['alwaysThinkingEnabled', 'Thinking', 'Saved thinking preference', 'boolean', ['alwaysThinkingEnabled']],
 ];
 const settingsUiFixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings-ui-catalog.json'), 'utf8'));
+if (activityScenario) {
+  Object.assign(preferences, { prefersReducedMotion: true, spinnerTipsEnabled: SCENARIO !== 'hold-activity-off' });
+  fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify(preferences));
+  settingDefinitions.push(['prefersReducedMotion', 'Reduce motion', 'Activity preference', 'boolean', ['prefersReducedMotion']]);
+  const setting = settingsUiFixture.catalog.find(setting => setting.id === 'spinnerTipsEnabled');
+  settingDefinitions.push([setting.id, setting.label, setting.description, setting.kind, setting.key_path]);
+}
 const hooksScenario = SCENARIO === 'hold-hooks';
 if (hooksScenario) {
   preferences.hooks = { Stop: [{ hooks: [{ type: 'command', command: 'keep-original', future: 'keep' }] }] };
@@ -67,7 +75,7 @@ function settingsSnapshot() {
       category: id === 'hooks' ? 'hooks' : id.startsWith('permissions.') ? 'permissions' : 'general', id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
       ...(settingsUiFixture.catalog.find(setting => setting.id === id)?.editor ? { editor: settingsUiFixture.catalog.find(setting => setting.id === id).editor } : {}),
       allows_custom: kind !== 'boolean' && id !== 'preferredNotifChannel', writable_scopes: ['user'],
-      reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario ? 'host' : 'next_session',
+      reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario || activityScenario ? 'host' : 'next_session',
     })).sort((a, b) => a.label.localeCompare(b.label)),
     sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
       values: Object.entries(preferences).map(([id, value]) => ({ id, value, revision: String(settingsRevision) })) }],
@@ -101,12 +109,13 @@ const model = {
 
 function streamReply(messageUuid) {
   send({ event: 'user_message_started', session_id: SESSION, message_uuid: messageUuid, source: 'command_lifecycle' });
-  send({
+  replyNumber++;
+  if (!activityScenario || replyNumber !== 1) send({
     event: 'session_update',
     session_id: SESSION,
     update: {
       type: 'agent_message_chunk',
-      content: { type: 'text', text: `reply ${++replyNumber} started\n` },
+      content: { type: 'text', text: `reply ${replyNumber} started\n` },
       source_message_uuid: null,
     },
   });
@@ -126,8 +135,20 @@ function streamReply(messageUuid) {
   // Follow-up replies stay short so their start marker remains on screen.
   const lines = replyNumber === 1 ? LINES : FOLLOW_UP_LINES;
   const gated = replyNumber === 1 && SCENARIO.startsWith('hold-') && SCENARIO !== 'hold-presentation';
-  let line = 0;
+  // Hold the first activity turn before any assistant content arrives.
+  let line = activityScenario && replyNumber === 1 ? lines : 0;
+  if (activityScenario && replyNumber === 1) record({ type: 'barrier', name: 'reply-held' });
+  let activityStep = '';
   const timer = setInterval(() => {
+    if (activityScenario && replyNumber === 1 && line >= lines) {
+      const step = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+      if (step === activityStep) return;
+      activityStep = step;
+      if (step === 'done') finish({ event: 'turn_complete', session_id: SESSION });
+      else if (step === 'thinking' || step === 'working') send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_activity_update', phase: step } });
+      else if (step === 'requires_action' || step === 'running') send({ event: 'session_update', session_id: SESSION, update: { type: 'runtime_session_state_update', state: step } });
+      return;
+    }
     if (replyNumber === 1 && SCENARIO === 'hold-presentation' && line === 20 && !fs.existsSync(RELEASE_FILE)) return;
     if (gated && line >= lines) {
       if (!fs.existsSync(RELEASE_FILE)) return;
@@ -280,7 +301,7 @@ readline
         fs.writeFileSync(file, JSON.stringify(document));
         settingsRevision++;
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
-          persistence: 'saved', application: presentationScenario || notificationScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
+          persistence: 'saved', application: presentationScenario || notificationScenario || activityScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
         } });
         break;
       }

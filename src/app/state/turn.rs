@@ -77,6 +77,8 @@ impl ActiveCompaction {
 pub struct TurnState {
     /// Spinner label shown while a slash command is in flight (`CommandPending`).
     pub pending_command_label: Option<String>,
+    /// Stable per-turn activity choices and tip repaint timing.
+    pub(crate) activity: Option<crate::app::activity::TurnActivity>,
     /// Ack marker required to clear `CommandPending` for strict completion semantics.
     pub pending_command_ack: Option<PendingCommandAck>,
     /// The single live lifecycle state for manual and automatic context compaction.
@@ -87,7 +89,7 @@ pub struct TurnState {
     pub pending_interaction_ids: Vec<String>,
     /// Whether an explicit cancellation request is awaiting turn exit.
     pub cancel_requested: bool,
-    /// Message index that owns the current main-assistant turn indicators.
+    /// Message index that owns the current main-assistant turn output.
     pub assistant_message_idx: Option<usize>,
     /// IDs of root Task/Agent tool calls currently `InProgress`.
     /// Use `App::insert_active_task()`, `App::remove_active_task()`.
@@ -106,6 +108,7 @@ impl TurnState {
     /// turn. Message-index fields are reset here; topology reindexing methods
     /// handle index shifts while a turn is still active.
     pub fn reset_for_turn_exit(&mut self) {
+        self.activity = None;
         self.pending_command_label = None;
         self.pending_command_ack = None;
         self.compaction.reset();

@@ -179,11 +179,12 @@ fn send_prompt_turn(
     )];
 
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
-    // Create empty assistant message immediately -- message.rs shows thinking indicator
+    // Reserve the assistant output owner immediately after queue admission.
     app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
     app.bind_active_turn_assistant_to_tail();
     app.enforce_history_retention_tracked();
-    app.status = AppStatus::Thinking;
+    app.status = AppStatus::Running;
+    app.begin_turn_activity(std::time::Instant::now());
 
     app.session_runtime.prompt_suggestion = None;
     crate::app::session_runtime::request_context_usage_refresh(app);
@@ -556,6 +557,12 @@ mod tests {
             ));
         }
         assert!(app.active_turn_assistant_idx().is_some());
+        assert_eq!(
+            app.activity_presentation(std::time::Instant::now())
+                .expect("dispatch immediately shows ordinary activity")
+                .label,
+            crate::app::activity::ActivityLabel::Working
+        );
     }
 
     fn deliver_main_text(app: &mut App, text: &str) {
@@ -1102,6 +1109,7 @@ mod tests {
         let images_before = app.pending_images.clone();
 
         submit_input(&mut app);
+        assert!(app.turn.activity.is_none(), "failed queue admission cannot start activity");
 
         assert_eq!(app.input.snapshot(), before);
         assert_eq!(app.pending_images, images_before);
@@ -1300,7 +1308,7 @@ mod tests {
 
         assert!(app.input.text().is_empty());
         assert!(app.session_runtime.prompt_suggestion.is_none());
-        assert!(matches!(app.status, AppStatus::Thinking));
+        assert!(matches!(app.status, AppStatus::Running));
         assert_eq!(app.transcript.messages.len(), 2);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
         assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));

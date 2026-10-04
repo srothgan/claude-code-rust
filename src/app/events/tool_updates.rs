@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
-use super::super::{App, AppStatus, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
+use super::super::{App, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
-    current_session_id, has_in_progress_tool_calls, json_value_size, log_terminal_spawned,
-    parent_tool_use_id_from_meta, sdk_tool_name_from_meta, tool_scope_name,
+    current_session_id, json_value_size, log_terminal_spawned, parent_tool_use_id_from_meta,
+    sdk_tool_name_from_meta, tool_scope_name,
 };
 use crate::agent::model;
 
@@ -59,9 +59,6 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         &update_outcome,
     );
     log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
-    if matches!(app.status, AppStatus::Running) && !has_in_progress_tool_calls(app) {
-        app.status = AppStatus::Thinking;
-    }
 }
 
 fn apply_tool_scope_status_update(

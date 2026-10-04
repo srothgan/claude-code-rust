@@ -30,6 +30,7 @@ const CATEGORY_SETTINGS: Record<string, string[]> = {
     "showTurnDuration",
     "showMessageTimestamps",
     "timeFormat",
+    "spinnerTipsEnabled",
     "prefersReducedMotion",
     "presentation.showStatusInTerminalTab",
     "presentation.copyFullResponse",

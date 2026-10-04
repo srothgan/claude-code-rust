@@ -7,7 +7,6 @@ pub struct ChatRenderState {
     pub terminal_width: u16,
     pub terminal_height: u16,
     pub line_wrap_disabled: bool,
-    pub thinking_verb: Option<&'static str>,
     pub resize_purge_replay_after_turn: bool,
     pub resize_purge_replay_on_chat_return: bool,
     pub composer: ComposerRenderState,
@@ -126,6 +125,7 @@ impl ChatRenderState {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ComposerRenderState {
     pub width: u16,
+    pub activity_rows: u16,
     pub hint_rows: u16,
     pub btw_rows: u16,
     pub editor_rows: u16,
@@ -156,11 +156,11 @@ mod tests {
             terminal_width: 120,
             terminal_height: 40,
             line_wrap_disabled: true,
-            thinking_verb: Some("Pondering"),
             resize_purge_replay_after_turn: true,
             resize_purge_replay_on_chat_return: true,
             composer: ComposerRenderState {
                 width: 120,
+                activity_rows: 0,
                 hint_rows: 1,
                 btw_rows: 0,
                 editor_rows: 2,
@@ -184,7 +184,6 @@ mod tests {
         assert_eq!(state.terminal_width, 120);
         assert_eq!(state.terminal_height, 40);
         assert!(state.line_wrap_disabled);
-        assert_eq!(state.thinking_verb, Some("Pondering"));
         assert!(state.resize_purge_replay_after_turn);
         assert!(state.resize_purge_replay_on_chat_return);
         assert_eq!(state.composer, ComposerRenderState::default());

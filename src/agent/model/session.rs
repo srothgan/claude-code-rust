@@ -251,6 +251,14 @@ pub struct ExternalMessageUpdate {
     pub origin: MessageOrigin,
 }
 
+/// Observed live main-agent phase, interpreted by the bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivityPhase {
+    Working,
+    Thinking,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SessionUpdate {
     MessageMetadata {
@@ -271,7 +279,7 @@ pub enum SessionUpdate {
     AgentMessageChunk(ContentChunk),
     UserMessageChunk(ContentChunk),
     ExternalMessageUpdate(ExternalMessageUpdate),
-    AgentThoughtChunk(ContentChunk),
+    AgentActivityUpdate(AgentActivityPhase),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),
     TranscriptRetraction(TranscriptRetraction),

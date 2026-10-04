@@ -16,6 +16,7 @@ pub(super) fn handle_update(app: &mut App, update: model::CompactionUpdate) {
 
 fn handle_started(app: &mut App) {
     let was_active = app.turn.compaction.is_active();
+    app.begin_turn_activity(std::time::Instant::now());
     app.turn.compaction.begin();
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
@@ -67,6 +68,9 @@ fn handle_finished(
             let message = format_failure(error_code, error);
             super::push_system_message_with_severity(app, Some(SystemSeverity::Error), &message);
         }
+    }
+    if !matches!(app.status, super::super::AppStatus::Running | super::super::AppStatus::Thinking) {
+        app.turn.activity = None;
     }
     crate::app::session_runtime::request_context_usage_refresh(app);
     tracing::debug!(

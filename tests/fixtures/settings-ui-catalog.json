@@ -896,6 +896,28 @@
       "allows_custom": true,
       "reset": "Reset clears this scope's value and uses the other scopes or Default.",
       "application": "next_session"
+    },
+    {
+      "id": "spinnerTipsEnabled",
+      "label": "Show tips",
+      "description": "Show tips during active turns. Off hides tip text; activity and the Claude heading remain visible. Default: On.",
+      "key_path": [
+        "spinnerTipsEnabled"
+      ],
+      "kind": "boolean",
+      "category": "general",
+      "options": [
+        true,
+        false
+      ],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": false,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "host"
     }
   ]
 }

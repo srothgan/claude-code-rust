@@ -276,6 +276,131 @@ function makeSessionState(): SessionState {
   };
 }
 
+// The SDK assigns a fresh wrapper UUID per frame; message_start.message.id
+// scopes its ordered content-block boundaries to one API response.
+function activityStream(session: SessionState, event: Record<string, unknown>, parent: string | null = null): void {
+  handleSdkMessage(session, {
+    type: "stream_event", uuid: crypto.randomUUID(), session_id: session.sessionId,
+    parent_tool_use_id: parent, event,
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+}
+
+function activityPhases(events: ReturnType<typeof captureBridgeEvents>): string[] {
+  return events.flatMap(event => {
+    const update = event.update as Record<string, unknown> | undefined;
+    return update?.type === "agent_activity_update" ? [String(update.phase)] : [];
+  });
+}
+
+test("live thinking starts at the block boundary with text, omitted text, or redacted content", () => {
+  for (const block of [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "summary" }, { type: "redacted_thinking", data: "redacted" }]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+      activityStream(session, { type: "content_block_start", index: 0, content_block: block });
+      activityStream(session, { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "" } });
+      activityStream(session, { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signature" } });
+      activityStream(session, { type: "content_block_stop", index: 0 });
+      activityStream(session, { type: "message_stop" });
+    });
+    assert.deepEqual(activityPhases(events), ["thinking", "working"]);
+    assert.equal(session.mainAgentResponse, undefined);
+    assert.ok(events.every(event => (event.update as Record<string, unknown>)?.type !== "agent_thought_chunk"));
+  }
+});
+
+test("thinking boundaries exclude subagents and repeated events; text and tool blocks are working", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "message_start", message: { id: "msg-child" } }, "agent-tool");
+    activityStream(session, { type: "content_block_stop", index: 0 }, "agent-tool");
+    activityStream(session, { type: "message_stop" }, "agent-tool");
+    assert.equal(session.mainAgentResponse?.thinkingBlock, 0);
+    activityStream(session, { type: "content_block_stop", index: 9 });
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    activityStream(session, { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } });
+    activityStream(session, { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Writing" } });
+    activityStream(session, { type: "content_block_stop", index: 1 });
+    activityStream(session, { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "read-1", name: "Read", input: {} } });
+    activityStream(session, { type: "message_stop" });
+  });
+  assert.deepEqual(activityPhases(events), ["thinking", "working"]);
+});
+
+test("a new response clears thinking and completed messages only stop their own live response", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "message_start", message: { id: "msg-b" } });
+    activityStream(session, { type: "content_block_start", index: 1, content_block: { type: "thinking" } });
+    for (const [id, parent] of [["msg-a", null], ["msg-b", "child-tool"]]) {
+      handleSdkMessage(session, { type: "assistant", parent_tool_use_id: parent, message: { id, content: [{ type: "thinking", thinking: "finished" }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+    assert.equal(session.mainAgentResponse?.messageId, "msg-b");
+    assert.equal(session.mainAgentResponse?.thinkingBlock, 1);
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, message: { id: "msg-b", content: [], stop_reason: "end_turn" } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(activityPhases(events), ["thinking", "working", "thinking", "working"]);
+  assert.equal(session.mainAgentResponse, undefined);
+});
+
+test("per-block assistant frames keep the response open for subsequent thinking blocks", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    activityStream(session, { type: "message_start", message: { id: "msg-blocks" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+    activityStream(session, { type: "content_block_stop", index: 0 });
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, message: { id: "msg-blocks", stop_reason: null, content: [{ type: "thinking", thinking: "completed block" }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    assert.equal(session.mainAgentResponse?.messageId, "msg-blocks");
+    activityStream(session, { type: "content_block_start", index: 1, content_block: { type: "thinking" } });
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, aborted: true, message: { id: "msg-blocks", stop_reason: null, content: [] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(activityPhases(events), ["thinking", "working", "thinking", "working"]);
+  assert.equal(session.mainAgentResponse, undefined);
+});
+
+test("redacted thinking token estimates never select a main-agent phase", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    for (const attribution of [{}, { user_message_uuid: "typed-turn" }, { parent_tool_use_id: "child-tool", user_message_uuid: "typed-turn" }]) {
+      handleSdkMessage(session, { type: "system", subtype: "thinking_tokens", estimated_tokens: 120, estimated_tokens_delta: 20, ...attribution } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    }
+    handleSdkMessage(session, { type: "assistant", parent_tool_use_id: null, message: { id: "completed", content: [{ type: "thinking", thinking: "history" }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(activityPhases(events), []);
+  assert.equal(session.mainAgentResponse, undefined);
+});
+
+test("thinking is reset on stream errors, retry, fallback, conversation replacement, result, and close", () => {
+  const invalidations: Array<(session: SessionState) => void> = [
+    session => activityStream(session, { type: "error", error: { type: "overloaded_error" } }),
+    session => handleSdkMessage(session, { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 100 } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => handleSdkMessage(session, { type: "system", subtype: "model_fallback", retracted_message_uuids: ["retracted"], scope: "session" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => handleSdkMessage(session, { type: "conversation_reset", new_conversation_id: "new-conversation" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => handleSdkMessage(session, { type: "result", subtype: "success", result: "", is_error: false } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage),
+    session => beginSessionClose(session),
+    session => updateSessionId(session, "replacement-session"),
+  ];
+  for (const invalidate of invalidations) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      activityStream(session, { type: "message_start", message: { id: "msg-a" } });
+      activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "thinking" } });
+      invalidate(session);
+      activityStream(session, { type: "content_block_stop", index: 0 });
+    });
+    assert.deepEqual(activityPhases(events), ["thinking", "working"]);
+    assert.equal(session.mainAgentResponse, undefined);
+    sessions.delete("replacement-session");
+  }
+});
+
 function promptControlDeps(): Parameters<
   typeof handleSessionControlCommand
 >[2] {

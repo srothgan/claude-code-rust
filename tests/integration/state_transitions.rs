@@ -12,55 +12,80 @@ use crate::helpers::{send_client_event, session_update, test_app, turn_complete}
 // --- Full turn lifecycle ---
 
 #[tokio::test]
-async fn agent_thought_chunk_sets_thinking_without_writing_transcript() {
+async fn observed_activity_owns_phase_without_writing_transcript() {
     let mut app = test_app();
-    let original_message_count = app.transcript.messages.len();
-    let thought_text = "Planning...";
-    let thought =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(thought_text)));
-
-    send_client_event(&mut app, session_update(model::SessionUpdate::AgentThoughtChunk(thought)));
-
-    assert!(matches!(app.status, AppStatus::Thinking));
-    assert_eq!(app.transcript.messages.len(), original_message_count);
-    assert!(
-        !app.transcript.messages.iter().any(|message| {
-            message.blocks.iter().any(|block| match block {
-                MessageBlock::Text(text) => text.text.contains(thought_text),
-                _ => false,
-            })
-        }),
-        "thought chunks should not be persisted as transcript message text"
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
+            model::RuntimeSessionState::Running,
+        )),
     );
+    assert_eq!(app.status, AppStatus::Running);
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentActivityUpdate(
+            model::AgentActivityPhase::Thinking,
+        )),
+    );
+    assert_eq!(app.status, AppStatus::Thinking);
+    assert!(app.transcript.messages.is_empty());
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
+            model::RuntimeSessionState::Running,
+        )),
+    );
+    let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
+        "Here is my answer.",
+    )));
+    send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(chunk)));
+    assert_eq!(app.status, AppStatus::Thinking, "text and liveness cannot interpret the SDK phase");
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentActivityUpdate(
+            model::AgentActivityPhase::Working,
+        )),
+    );
+    assert_eq!(app.status, AppStatus::Running);
+    send_client_event(&mut app, turn_complete());
+    assert_eq!(app.status, AppStatus::Ready);
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentActivityUpdate(
+            model::AgentActivityPhase::Thinking,
+        )),
+    );
+    assert_eq!(app.status, AppStatus::Ready, "late phase cannot restart a completed turn");
 }
 
 #[tokio::test]
 async fn full_turn_lifecycle_text_only() {
     let mut app = test_app();
-    assert!(matches!(app.status, AppStatus::Ready));
-
-    // Agent starts thinking (thought chunk)
-    let thought =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Planning...")));
-    send_client_event(&mut app, session_update(model::SessionUpdate::AgentThoughtChunk(thought)));
-    assert!(matches!(app.status, AppStatus::Thinking));
-
-    // Agent streams text
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
+            model::RuntimeSessionState::Running,
+        )),
+    );
     let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
         "Here is my answer.",
     )));
     send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(chunk)));
-    assert!(matches!(app.status, AppStatus::Running));
-
-    // Turn completes
+    assert_eq!(app.status, AppStatus::Running);
     send_client_event(&mut app, turn_complete());
-    assert!(matches!(app.status, AppStatus::Ready));
+    assert_eq!(app.status, AppStatus::Ready);
     assert_eq!(app.transcript.messages.len(), 1);
 }
 
 #[tokio::test]
 async fn full_turn_lifecycle_with_tool_calls() {
     let mut app = test_app();
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
+            model::RuntimeSessionState::Running,
+        )),
+    );
 
     // Text chunk
     let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
@@ -82,7 +107,7 @@ async fn full_turn_lifecycle_with_tool_calls() {
             "tc-flow", fields,
         ))),
     );
-    assert!(matches!(app.status, AppStatus::Thinking));
+    assert!(matches!(app.status, AppStatus::Running));
 
     // More text
     let chunk2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
@@ -139,7 +164,8 @@ async fn error_then_new_turn_recovers() {
     );
     assert!(matches!(app.status, AppStatus::Error));
 
-    // New text chunk (simulates user retry) starts fresh
+    // A dispatched retry starts fresh before any output arrives.
+    app.status = AppStatus::Running;
     let chunk = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
         "Retry answer",
     )));
@@ -229,7 +255,7 @@ async fn stress_many_tool_calls_in_one_turn() {
         );
     }
 
-    assert!(matches!(app.status, AppStatus::Thinking));
+    assert!(matches!(app.status, AppStatus::Running));
 }
 
 // --- ModeStateUpdate ---
@@ -314,6 +340,12 @@ async fn rapid_turn_complete_then_new_streaming() {
     assert_eq!(app.files_accessed, 0);
 
     // Immediately start second turn
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::RuntimeSessionStateUpdate(
+            model::RuntimeSessionState::Running,
+        )),
+    );
     let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
     send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(c2)));
     assert!(matches!(app.status, AppStatus::Running));

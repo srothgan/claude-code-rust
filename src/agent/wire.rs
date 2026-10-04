@@ -1671,6 +1671,22 @@ mod tests {
     }
 
     #[test]
+    fn observed_activity_phase_roundtrips_without_thinking_content() {
+        for (name, expected) in [
+            ("working", super::super::model::AgentActivityPhase::Working),
+            ("thinking", super::super::model::AgentActivityPhase::Thinking),
+        ] {
+            let raw = serde_json::json!({"type":"agent_activity_update", "phase":name});
+            let decoded: types::SessionUpdate =
+                serde_json::from_value(raw.clone()).expect("activity update");
+            assert!(
+                matches!(decoded, types::SessionUpdate::AgentActivityUpdate { phase } if phase == expected)
+            );
+            assert_eq!(serde_json::to_value(decoded).expect("encode activity"), raw);
+        }
+    }
+
+    #[test]
     fn settings_categories_and_recursive_forms_cross_the_settings_result_wire() {
         let mut snapshot: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/settings-ui-catalog.json"))

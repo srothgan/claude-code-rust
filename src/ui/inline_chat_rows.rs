@@ -15,7 +15,6 @@ use crate::ui::message::{MessageRenderContext, SpinnerState, render_text_block_c
 use crate::ui::message_rows::{
     MessageRowSegment, build_user_system_message_rows, render_btw_exchange_lines,
 };
-use crate::ui::spinner_verbs::random_spinner_verb;
 use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::welcome;
@@ -38,12 +37,6 @@ enum AssistantInlineItemKind {
     Tool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AssistantRuntimeIndicator {
-    Thinking { verb: &'static str },
-    Compacting,
-}
-
 pub(crate) fn serialize_live_rows_with_boundaries_excluding(
     app: &mut App,
     width: u16,
@@ -51,8 +44,6 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
 ) -> SerializedLiveRows {
     let current_mode_id =
         app.session_runtime.mode.as_ref().map(|mode| mode.current_mode_id.clone());
-    let active_msg_idx = app.active_turn_assistant_idx();
-    let runtime_indicator = sync_runtime_indicator(app);
     let mut rows = Vec::new();
     let mut row_boundaries = Vec::new();
     let mut previous_block_kind = None;
@@ -66,8 +57,6 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
             &role,
             LiveRowsRenderContext {
                 current_mode_id: current_mode_id.as_deref(),
-                active_msg_idx,
-                runtime_indicator,
                 width,
                 excluded_ids,
             },
@@ -89,8 +78,6 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
 #[derive(Clone, Copy)]
 struct LiveRowsRenderContext<'a> {
     current_mode_id: Option<&'a str>,
-    active_msg_idx: Option<usize>,
-    runtime_indicator: Option<AssistantRuntimeIndicator>,
     width: u16,
     excluded_ids: &'a BTreeSet<HistoryOutputId>,
 }
@@ -116,8 +103,6 @@ fn render_live_message_rows(
             app,
             msg_idx,
             context.current_mode_id,
-            context.active_msg_idx,
-            context.runtime_indicator,
             context.width,
             context.excluded_ids,
         ),
@@ -207,24 +192,41 @@ fn render_assistant_live_rows(
     app: &mut App,
     msg_idx: usize,
     current_mode_id: Option<&str>,
-    active_msg_idx: Option<usize>,
-    runtime_indicator: Option<AssistantRuntimeIndicator>,
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> RenderedMessageRows {
     let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
+    let message_id = app.transcript.messages[msg_idx].id;
+    let presentation = app.activity_presentation(std::time::Instant::now());
+    let owns_activity = presentation.as_ref().is_some_and(|presentation| {
+        presentation.heading == crate::app::activity::ActivityHeading::Assistant(msg_idx)
+    });
+    let label_visibility = if excluded_ids.contains(&HistoryOutputId::AssistantLabel(message_id)) {
+        AssistantLabelVisibility::Hidden
+    } else if owns_activity {
+        AssistantLabelVisibility::WithActivity
+    } else {
+        AssistantLabelVisibility::WithContent
+    };
+    let show_thinking = presentation.as_ref().is_some_and(|presentation| {
+        presentation.thinking
+            && presentation.heading == crate::app::activity::ActivityHeading::Assistant(msg_idx)
+    });
     let items = assistant_render_items_from_message(
         &app.transcript.messages[msg_idx],
         msg_idx,
         active_mutable,
     );
     let selection = select_unexcluded_assistant_items(items, excluded_ids);
-    let indicator = assistant_runtime_indicator(msg_idx, active_msg_idx, runtime_indicator);
     let duration_pending =
         crate::app::presentation::duration_label(app, &app.transcript.messages[msg_idx]).is_some()
             && !excluded_ids
                 .contains(&HistoryOutputId::AssistantDuration(app.transcript.messages[msg_idx].id));
-    if selection.items.is_empty() && indicator.is_none() && !duration_pending {
+    if selection.items.is_empty()
+        && !duration_pending
+        && !show_thinking
+        && label_visibility != AssistantLabelVisibility::WithActivity
+    {
         return if selection.had_body_content {
             RenderedMessageRows::skipped_transcript_content()
         } else {
@@ -232,9 +234,6 @@ fn render_assistant_live_rows(
         };
     }
 
-    let message_id = app.transcript.messages[msg_idx].id;
-    let label_ids = vec![HistoryOutputId::AssistantLabel(message_id)];
-    let show_label = !ids_are_excluded(&label_ids, excluded_ids);
     let skipped_static_body = selection.skipped_body_before_rendered_content;
     let spinner = SpinnerState::for_app(app);
     let mut rendered = render_assistant_rows(AssistantRowsRequest {
@@ -242,11 +241,11 @@ fn render_assistant_live_rows(
         message_id,
         msg_idx,
         items: selection.items,
-        indicator,
         current_mode_id,
         width,
         spinner,
-        show_label,
+        show_thinking,
+        label_visibility,
         leading_blank_lines: 0,
         has_prior_assistant_content: skipped_static_body,
     });
@@ -276,12 +275,11 @@ fn render_assistant_live_rows(
         message = "assistant message block rendered from canonical app.transcript.messages",
         outcome = "success",
         assistant_turn_id = tracing::field::Empty,
-        show_label,
+        show_label = label_visibility != AssistantLabelVisibility::Hidden,
         leading_blank_lines = 0,
         skipped_static_body,
         committed_rendered_rows = rendered.rows.len(),
         live_rendered_rows = 0,
-        indicator = ?indicator,
         preview = %preview_rows(&rendered.rows, 4),
     );
     rendered
@@ -418,36 +416,6 @@ fn welcome_message_commit_ready(message: &ChatMessage) -> bool {
 
 fn welcome_value_ready(value: &str) -> bool {
     !value.trim().is_empty() && value != "-"
-}
-
-fn sync_runtime_indicator(app: &mut App) -> Option<AssistantRuntimeIndicator> {
-    if app.turn.compaction.is_active() {
-        app.chat_render.thinking_verb = None;
-        return Some(AssistantRuntimeIndicator::Compacting);
-    }
-
-    let thinking = matches!(app.status, crate::app::AppStatus::Thinking)
-        || (matches!(app.status, crate::app::AppStatus::Running)
-            && app
-                .active_turn_assistant_idx()
-                .and_then(|idx| app.transcript.messages.get(idx))
-                .is_some_and(|msg| msg.blocks.is_empty()));
-
-    if thinking {
-        let verb = app.chat_render.thinking_verb.get_or_insert_with(random_spinner_verb);
-        return Some(AssistantRuntimeIndicator::Thinking { verb });
-    }
-
-    app.chat_render.thinking_verb = None;
-    None
-}
-
-fn assistant_runtime_indicator(
-    msg_idx: usize,
-    active_msg_idx: Option<usize>,
-    runtime_indicator: Option<AssistantRuntimeIndicator>,
-) -> Option<AssistantRuntimeIndicator> {
-    (active_msg_idx == Some(msg_idx)).then_some(runtime_indicator).flatten()
 }
 
 fn serialize_compact_welcome_entry(
@@ -884,22 +852,39 @@ fn leading_blank_lines_between(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AssistantLabelVisibility {
+    Hidden,
+    WithContent,
+    WithActivity,
+}
+
 struct AssistantRowsRequest<'a> {
     app: Option<&'a mut App>,
     message_id: ChatMessageId,
     msg_idx: usize,
     items: Vec<AssistantRenderItemSpec>,
-    indicator: Option<AssistantRuntimeIndicator>,
     current_mode_id: Option<&'a str>,
     width: u16,
     spinner: SpinnerState,
-    show_label: bool,
+    show_thinking: bool,
+    label_visibility: AssistantLabelVisibility,
     leading_blank_lines: usize,
     has_prior_assistant_content: bool,
 }
 
+struct AssistantThinkingMeta {
+    message_id: ChatMessageId,
+    msg_idx: usize,
+    width: u16,
+    spinner: SpinnerState,
+}
+
 fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessageRows {
-    if request.items.is_empty() && request.indicator.is_none() {
+    if request.items.is_empty()
+        && !request.show_thinking
+        && request.label_visibility != AssistantLabelVisibility::WithActivity
+    {
         return RenderedMessageRows::empty();
     }
 
@@ -912,6 +897,12 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         has_body_content: request.has_prior_assistant_content,
         has_visible_content: request.has_prior_assistant_content,
     };
+    let thinking = request.show_thinking.then_some(AssistantThinkingMeta {
+        message_id: request.message_id,
+        msg_idx: request.msg_idx,
+        width: request.width,
+        spinner: request.spinner,
+    });
 
     let mut items = request.items.into_iter().peekable();
     while let Some(item) = items.next() {
@@ -991,37 +982,44 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         }
     }
 
-    finish_assistant_rows(
-        rows,
-        boundaries,
-        &state,
-        AssistantIndicatorMeta {
-            message_id: request.message_id,
-            msg_idx: request.msg_idx,
-            indicator: request.indicator,
-            spinner: request.spinner,
-            width: request.width,
-        },
-    )
+    finish_assistant_rows(rows, boundaries, &state, thinking, request.label_visibility)
 }
 
 fn finish_assistant_rows(
     mut rows: Vec<Line<'static>>,
     mut boundaries: Vec<LiveRowBoundary>,
     state: &AssistantInlineLayoutState,
-    meta: AssistantIndicatorMeta,
+    thinking: Option<AssistantThinkingMeta>,
+    label_visibility: AssistantLabelVisibility,
 ) -> RenderedMessageRows {
-    let indicator = meta.indicator;
-    append_assistant_indicator_rows(&mut rows, &mut boundaries, state, meta);
-    if !state.has_visible_content && indicator.is_none() {
+    if !state.has_visible_content
+        && thinking.is_none()
+        && label_visibility != AssistantLabelVisibility::WithActivity
+    {
         return RenderedMessageRows::empty();
     }
-
-    let mut rows = trim_trailing_blank_rows(rows);
-    if matches!(indicator, Some(AssistantRuntimeIndicator::Compacting)) {
-        rows.push(Line::default());
+    if let Some(meta) = thinking {
+        let boundary_start = rows.len();
+        if state.has_body_content {
+            rows.push(Line::default());
+        }
+        boundaries.push(LiveRowBoundary {
+            ids: vec![HistoryOutputId::AssistantThinking(meta.message_id)],
+            msg_idx: meta.msg_idx,
+            block_idx: None,
+            kind: LiveRowBoundaryKind::AssistantThinking,
+            start_row: boundary_start,
+            commit_ready: false,
+        });
+        rows.extend(wrap_lines_to_physical_rows(
+            &[Line::from(Span::styled(
+                format!("{} Thinking…", meta.spinner.icon()),
+                Style::default().fg(theme::DIM),
+            ))],
+            meta.width,
+        ));
     }
-    RenderedMessageRows::rendered(rows, boundaries)
+    RenderedMessageRows::rendered(trim_trailing_blank_rows(rows), boundaries)
 }
 
 fn assistant_text_trailing_gap(
@@ -1154,7 +1152,7 @@ fn append_assistant_label_rows(
     boundaries: &mut Vec<LiveRowBoundary>,
     request: &AssistantRowsRequest<'_>,
 ) {
-    if !request.show_label {
+    if request.label_visibility == AssistantLabelVisibility::Hidden {
         return;
     }
 
@@ -1229,43 +1227,6 @@ fn push_assistant_boundary(
         start_row,
         commit_ready: boundary.commit_ready,
     });
-}
-
-#[derive(Clone, Copy)]
-struct AssistantIndicatorMeta {
-    message_id: ChatMessageId,
-    msg_idx: usize,
-    indicator: Option<AssistantRuntimeIndicator>,
-    spinner: SpinnerState,
-    width: u16,
-}
-
-fn append_assistant_indicator_rows(
-    rows: &mut Vec<Line<'static>>,
-    boundaries: &mut Vec<LiveRowBoundary>,
-    state: &AssistantInlineLayoutState,
-    meta: AssistantIndicatorMeta,
-) {
-    let indicator_lines = match meta.indicator {
-        Some(AssistantRuntimeIndicator::Compacting) => compacting_lines(meta.spinner),
-        Some(AssistantRuntimeIndicator::Thinking { verb }) => {
-            vec![thinking_line(meta.spinner, verb)]
-        }
-        None => return,
-    };
-    let boundary_start = rows.len();
-    if state.has_body_content {
-        rows.push(Line::default());
-    }
-    boundaries.push(LiveRowBoundary {
-        ids: vec![HistoryOutputId::AssistantIndicator(meta.message_id)],
-        msg_idx: meta.msg_idx,
-        block_idx: None,
-        kind: LiveRowBoundaryKind::AssistantIndicator,
-        start_row: boundary_start,
-        commit_ready: false,
-    });
-    rows.extend(wrap_lines_to_physical_rows(&indicator_lines, meta.width));
 }
 
 fn message_render_context(current_mode_id: Option<&str>, width: u16) -> MessageRenderContext<'_> {
@@ -1377,33 +1338,11 @@ fn render_canonical_tool_rows(
     wrap_lines_to_physical_rows(&rows, render_context.width)
 }
 
-fn assistant_role_label_line() -> Line<'static> {
+pub(crate) fn assistant_role_label_line() -> Line<'static> {
     Line::from(vec![ratatui::text::Span::styled(
         "Claude",
         Style::default().fg(theme::ROLE_ASSISTANT).add_modifier(Modifier::BOLD),
     )])
-}
-
-fn thinking_line(spinner: SpinnerState, verb: &str) -> Line<'static> {
-    let ch = spinner.icon();
-    Line::from(ratatui::text::Span::styled(
-        format!("{ch} {verb}..."),
-        Style::default().fg(theme::DIM),
-    ))
-}
-
-fn compacting_lines(spinner: SpinnerState) -> Vec<Line<'static>> {
-    let ch = spinner.icon();
-    vec![
-        Line::from(ratatui::text::Span::styled(
-            format!("{ch} Compacting context..."),
-            Style::default().fg(theme::RUST_ORANGE),
-        )),
-        Line::from(ratatui::text::Span::styled(
-            "  └─ Keep drafting — sending resumes when compaction finishes.",
-            Style::default().fg(theme::DIM),
-        )),
-    ]
 }
 
 fn system_severity_color(severity: SystemSeverity) -> Color {
@@ -1454,8 +1393,35 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 mod tests {
     use super::{
         LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
-        serialize_live_rows_with_boundaries_excluding, thinking_line,
+        serialize_live_rows_with_boundaries_excluding,
     };
+
+    #[test]
+    fn tool_spinner_stays_in_its_row_and_respects_reduced_motion() {
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            tool_call_block_with_status_interaction(
+                "static-tool",
+                model::ToolCallStatus::InProgress,
+                false,
+                false,
+                false,
+            ),
+        ]));
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(true),
+        ));
+        let tool = line_texts(&serialize_live_rows(&mut app, 120));
+        assert!(
+            tool.iter().any(|line| line.contains('◆') && line.contains("Bash Child Tool")),
+            "{tool:?}"
+        );
+        app.spinner_frame = 8;
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 120)), tool);
+        app.config.snapshot = None;
+        assert_ne!(line_texts(&serialize_live_rows(&mut app, 120)), tool);
+    }
     use crate::agent::model;
     use crate::app::{
         App, AppStatus, BlockCache, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
@@ -1499,14 +1465,6 @@ mod tests {
             end_row,
             commit_ready,
         }
-    }
-
-    #[test]
-    fn thinking_line_uses_selected_verb() {
-        let text = line_text(&thinking_line(crate::ui::SpinnerState::Animated(0), "Pondering"));
-
-        assert!(text.contains("Pondering..."));
-        assert!(!text.contains("Thinking..."));
     }
 
     #[test]
@@ -2252,111 +2210,265 @@ mod tests {
     }
 
     #[test]
-    fn empty_active_assistant_renders_thinking_from_runtime_state() {
+    fn empty_assistant_heading_is_paired_with_activity_independently_of_tips() {
         let mut app = App::test_default();
+        app.transcript.messages.push(user_text_message("request"));
         app.transcript.messages.push(assistant_message());
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Thinking;
-        app.chat_render.thinking_verb = Some("Pondering");
-
-        let rows = serialize_live_rows(&mut app, 120);
-        let text = line_texts(&rows);
-
-        assert_eq!(text.first().map(String::as_str), Some("Claude"));
-        assert!(text.iter().any(|line| line.contains("Pondering...")));
+        app.bind_active_turn_assistant(1);
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request"]);
+        app.status = AppStatus::Running;
+        app.begin_turn_activity(std::time::Instant::now());
+        for width in [32, 120, 32] {
+            let serialized = serialize_all_rows_with_boundaries(&mut app, width);
+            assert_eq!(line_texts(serialized.rows()), ["User", "request", "Claude"]);
+            assert_eq!(serialized.stable_row_count(), 2);
+            assert_eq!(
+                serialized.first_mutable_boundary_kind(),
+                Some(LiveRowBoundaryKind::AssistantLabel)
+            );
+            assert!(app.transcript.messages[1].blocks.is_empty());
+        }
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "spinnerTipsEnabled",
+            serde_json::json!(false),
+        ));
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request", "Claude"]);
+        app.config.snapshot = None;
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request", "Claude"]);
+        app.session_runtime.runtime_session_state =
+            Some(model::RuntimeSessionState::RequiresAction);
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request"]);
+        app.session_runtime.runtime_session_state = Some(model::RuntimeSessionState::Running);
+        app.turn.pending_interaction_ids.push("permission".into());
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request"]);
+        app.turn.pending_interaction_ids.clear();
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request", "Claude"]);
+        let label_id = HistoryOutputId::AssistantLabel(app.transcript.messages[1].id);
+        let excluded = BTreeSet::from([label_id]);
+        let serialized = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &excluded);
+        assert_eq!(line_texts(serialized.rows()), ["User", "request"]);
+        app.status = AppStatus::Ready;
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request"]);
     }
 
     #[test]
-    fn active_compaction_renders_one_assistant_owned_indicator() {
+    fn activity_never_enters_transcript_rows_or_history_boundaries() {
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_message());
         app.bind_active_turn_assistant(0);
-        app.turn.compaction.begin();
-
+        app.status = AppStatus::Running;
+        app.begin_turn_activity(std::time::Instant::now());
         for width in [32, 120, 32] {
             let serialized = serialize_all_rows_with_boundaries(&mut app, width);
-            let text = line_texts(serialized.rows());
-            let compact = compact_text(serialized.rows());
-
-            assert_eq!(text.first().map(String::as_str), Some("Claude"));
-            assert_eq!(compact.matches("Compactingcontext...").count(), 1);
-            assert!(compact.contains("└─Keepdrafting—sendingresumeswhencompactionfinishes."));
-            assert!(text.iter().any(|line| line.starts_with("  └─ Keep drafting")));
-            assert_eq!(text.last().map(String::as_str), Some(""));
-            assert_eq!(
-                serialized
-                    .segments()
-                    .iter()
-                    .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantIndicator)
-                    .count(),
-                1
-            );
+            assert_eq!(line_texts(serialized.rows()), ["Claude"]);
+            assert_eq!(serialized.stable_row_count(), 0);
+            assert_eq!(serialized.segments().len(), 1);
+            assert_eq!(serialized.segments()[0].kind, LiveRowBoundaryKind::AssistantLabel);
+            app.turn.compaction.begin();
             assert!(app.transcript.messages[0].blocks.is_empty());
         }
     }
 
     #[test]
-    fn reduced_motion_renders_static_thinking_tool_and_compaction_indicators() {
+    fn sdk_thinking_renders_separately_for_empty_assistant_and_clears_on_work_or_wait() {
         let mut app = App::test_default();
+        app.session_runtime.session_id = Some("thinking-render".into());
         app.transcript.messages.push(assistant_message());
         app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Thinking;
-        app.chat_render.thinking_verb = Some("Pondering");
+        app.status = AppStatus::Running;
+        app.begin_turn_activity(std::time::Instant::now());
         app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
             "prefersReducedMotion",
             serde_json::json!(true),
         ));
-        let render = |app: &mut App| line_texts(&serialize_live_rows(app, 120));
-        let thinking = render(&mut app);
-        assert!(thinking.iter().any(|line| line.contains("\u{25C6} Pondering...")));
-        app.spinner_frame = 5;
-        assert_eq!(render(&mut app), thinking);
-        app.transcript.messages[0].blocks.push(tool_call_block_with_status_interaction(
-            "static-tool",
-            model::ToolCallStatus::InProgress,
-            false,
-            false,
-            false,
-        ));
-        app.status = AppStatus::Running;
-        let tool = render(&mut app);
-        assert!(
-            tool.iter().any(|line| line.contains("\u{25C6}") && line.contains("Bash Child Tool")),
-            "{tool:?}"
+        let verb = app.activity_presentation(std::time::Instant::now()).expect("active").text();
+        for phase in [
+            model::AgentActivityPhase::Thinking,
+            model::AgentActivityPhase::Working,
+            model::AgentActivityPhase::Thinking,
+        ] {
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionUpdate {
+                    session_id: "thinking-render".into(),
+                    update: model::SessionUpdate::AgentActivityUpdate(phase),
+                },
+            );
+            for width in [32, 120, 32] {
+                let serialized = serialize_all_rows_with_boundaries(&mut app, width);
+                if phase == model::AgentActivityPhase::Thinking {
+                    assert_eq!(line_texts(serialized.rows()), ["Claude", "◆ Thinking…"]);
+                    assert_eq!(serialized.stable_row_count(), 0);
+                    assert_eq!(serialized.rows_excluding_ids(&BTreeSet::new()), serialized.rows());
+                    assert!(serialized.segments().iter().all(|segment| !segment.commit_ready));
+                } else {
+                    assert_eq!(line_texts(serialized.rows()), ["Claude"]);
+                }
+                let activity = crate::ui::activity_rows::build_activity_rows(
+                    &app,
+                    width,
+                    std::time::Instant::now(),
+                );
+                assert!(line_text(&activity[0]).contains(&verb));
+                assert!(line_text(&activity[1]).contains("Tip:"));
+                assert!(app.transcript.messages[0].blocks.is_empty());
+            }
+        }
+        app.config.snapshot.as_mut().expect("settings").values.extend(
+            crate::agent::settings::SettingsSnapshot::test_value(
+                "spinnerTipsEnabled",
+                serde_json::json!(false),
+            )
+            .values,
         );
-        app.spinner_frame = 8;
-        assert_eq!(render(&mut app), tool);
+        let activity =
+            crate::ui::activity_rows::build_activity_rows(&app, 120, std::time::Instant::now());
+        assert_eq!(activity.len(), 1);
+        assert!(line_text(&activity[0]).contains(&verb));
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 120)), ["Claude", "◆ Thinking…"]);
+        app.turn.pending_interaction_ids.push("permission".into());
+        assert!(serialize_live_rows(&mut app, 120).is_empty());
+        app.turn.pending_interaction_ids.clear();
+        app.turn.cancel_requested = true;
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 120)), ["Claude"]);
+        app.turn.cancel_requested = false;
         app.turn.compaction.begin();
-        let compacting = render(&mut app);
-        assert!(compacting.iter().any(|line| line.contains("\u{25C6} Compacting context...")));
-        app.spinner_frame = 1;
-        assert_eq!(render(&mut app), compacting);
-        app.config.snapshot = None;
-        assert_ne!(render(&mut app), compacting, "reset restores animated indicators");
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 120)), ["Claude"]);
+        app.turn.reset_for_turn_exit();
+        app.status = AppStatus::Ready;
+        assert!(serialize_live_rows(&mut app, 120).is_empty());
     }
 
     #[test]
-    fn thinking_remains_render_only_across_width_rebuilds() {
+    fn disabled_tips_keep_activity_and_real_output_without_duplicate_headings() {
+        let session_update = |app: &mut App, update| {
+            crate::app::handle_client_event(
+                app,
+                crate::agent::events::ClientEvent::SessionUpdate {
+                    session_id: "heading-output".into(),
+                    update,
+                },
+            );
+        };
         let mut app = App::test_default();
+        app.session_runtime.session_id = Some("heading-output".into());
+        app.transcript.messages.push(assistant_message());
         app.transcript.messages.push(assistant_message());
         app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Thinking;
-        app.chat_render.thinking_verb = Some("Pondering");
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            assert_eq!(text.first().map(String::as_str), Some("Claude"));
-            assert!(
-                text.iter().any(|line| line.contains("Pondering...")),
-                "thinking indicator missing at width {width}: {text:?}"
-            );
-            assert!(
-                app.transcript.messages[0].blocks.is_empty(),
-                "thinking indicator must not be persisted into app.transcript.messages"
+        app.status = AppStatus::Running;
+        app.begin_turn_activity(std::time::Instant::now());
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "spinnerTipsEnabled",
+            serde_json::json!(false),
+        ));
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["Claude"]);
+        for update in [
+            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Thinking),
+            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Working),
+        ] {
+            session_update(&mut app, update);
+            let rows = line_texts(&serialize_live_rows(&mut app, 80));
+            assert_eq!(rows.iter().filter(|row| row.as_str() == "Claude").count(), 1);
+            assert_eq!(
+                rows.iter().any(|row| row.contains("Thinking…")),
+                app.status == AppStatus::Thinking
             );
         }
+        session_update(
+            &mut app,
+            model::SessionUpdate::ToolCall(
+                model::ToolCall::new("first-tool", "Read")
+                    .status(model::ToolCallStatus::InProgress),
+            ),
+        );
+        let tool_rows = line_texts(&serialize_live_rows(&mut app, 80));
+        assert_eq!(tool_rows.iter().filter(|row| row.as_str() == "Claude").count(), 1);
+        assert!(tool_rows.iter().any(|row| row.contains("Read")));
+        session_update(
+            &mut app,
+            model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "first-tool",
+                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+            )),
+        );
+        session_update(
+            &mut app,
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("Actual response")),
+            )),
+        );
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 80);
+        let output = line_texts(serialized.rows());
+        assert_eq!(output.iter().filter(|row| row.as_str() == "Claude").count(), 1);
+        assert!(output.iter().any(|row| row == "Actual response"));
+        let excluded =
+            BTreeSet::from([HistoryOutputId::AssistantLabel(app.transcript.messages[0].id)]);
+        app.config.snapshot = None;
+        let after_enable = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &excluded);
+        assert!(!line_texts(after_enable.rows()).iter().any(|row| row == "Claude"));
+        assert!(line_texts(after_enable.rows()).iter().any(|row| row == "Actual response"));
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "spinnerTipsEnabled",
+            serde_json::json!(false),
+        ));
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::TurnComplete {
+                session_id: "heading-output".into(),
+                queued_turn_count: Some(0),
+                terminal_reason: None,
+            },
+        );
+        let completed = line_texts(&serialize_live_rows(&mut app, 80));
+        assert_eq!(completed.iter().filter(|row| row.as_str() == "Claude").count(), 1);
+        assert!(completed.iter().any(|row| row == "Actual response"));
+        session_update(
+            &mut app,
+            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Thinking),
+        );
+        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), completed);
+        assert!(
+            crate::ui::activity_rows::build_activity_rows(&app, 80, std::time::Instant::now())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn thinking_keeps_completed_body_committable_and_survives_committed_body_exclusion() {
+        let mut app = App::test_default();
+        app.transcript
+            .messages
+            .push(assistant_blocks_message(vec![tool_call_block("done", false)]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Thinking;
+        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
+        let stable = &serialized.rows()[..serialized.stable_row_count()];
+        assert!(line_texts(stable).iter().any(|row| row.contains("Child Tool")));
+        assert!(!line_texts(stable).iter().any(|row| row.contains("Thinking")));
+        assert_eq!(
+            serialized.first_mutable_boundary_kind(),
+            Some(LiveRowBoundaryKind::AssistantThinking)
+        );
+        let excluded: BTreeSet<_> = serialized
+            .segments()
+            .iter()
+            .filter(|segment| segment.commit_ready)
+            .flat_map(|segment| segment.ids.iter().cloned())
+            .collect();
+        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded);
+        assert_eq!(remaining.stable_row_count(), 0);
+        assert!(line_texts(remaining.rows()).iter().any(|row| row.contains("Thinking…")));
+        assert!(!line_texts(remaining.rows()).iter().any(|row| row.contains("Child Tool")));
+        app.status = AppStatus::Running;
+        assert!(
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded)
+                .rows()
+                .is_empty()
+        );
+        app.status = AppStatus::Ready;
+        let completed = serialize_all_rows_with_boundaries(&mut app, 120);
+        assert_eq!(completed.stable_row_count(), completed.rows().len());
+        assert!(!line_texts(completed.rows()).iter().any(|row| row.contains("Thinking")));
     }
 
     #[test]

@@ -501,6 +501,170 @@ fn concurrent_resize_typing_and_paste_deliver_every_prompt_exactly_once() {
 }
 
 #[test]
+fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_saves() {
+    let mut test = TerminalTest::start("hold-activity-off", 3);
+    test.submit("NO_OUTPUT_YET", "NO_OUTPUT_YET");
+    test.wait_journal("reply-held");
+    test.wait_until("disabled tips retain immediate activity and assistant heading", |test| {
+        let screen = test.screen();
+        screen.contains("NO_OUTPUT_YET")
+            && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+            && screen.lines().any(|line| line.starts_with("│ ◆ "))
+            && !screen.contains("│ Tip:")
+    });
+    let activity_header = test
+        .screen()
+        .lines()
+        .find(|line| line.starts_with("│ ◆ "))
+        .expect("immediate activity header")
+        .trim_end()
+        .to_owned();
+    for (index, enabled) in [true, false, true].into_iter().enumerate() {
+        test.submit("/config", "/config");
+        test.wait_screen("Show tips");
+        if index == 0 {
+            test.send(b"\x1b[B\x1b[B"); // Language -> Reduce motion -> Show tips.
+        }
+        test.send(b" "); // Reopening settings retains the selected control.
+        test.wait_screen("Saved and applied.");
+        test.send(b"\x1b");
+        test.wait_until("only tips follow the acknowledged setting", |test| {
+            let screen = test.screen();
+            screen.lines().any(|line| line.trim() == "NO_OUTPUT_YET")
+                && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+                && screen.lines().any(|line| line.trim_end() == activity_header)
+                && screen.contains("│ Tip:") == enabled
+        });
+        test.resize(25, 61);
+        test.resize(SHORT_ROWS, COLS);
+        test.wait_until("resize retains activity and heading independently of tips", |test| {
+            let screen = test.screen();
+            screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+                && screen.lines().any(|line| line.trim_end() == activity_header)
+                && screen.contains("│ Tip:") == enabled
+        });
+    }
+    std::fs::write(&test.release_file, "requires_action").expect("wait boundary");
+    test.wait_until("waiting hides activity and its empty heading", |test| {
+        let screen = test.screen();
+        !screen.lines().any(|line| line.trim() == "Claude")
+            && !screen.contains(&activity_header)
+            && !screen.contains("│ Tip:")
+    });
+    std::fs::write(&test.release_file, "running").expect("resume boundary");
+    test.wait_screen("│ Tip:");
+    assert_eq!(test.screen().lines().filter(|line| line.trim() == "Claude").count(), 1);
+    assert!(test.screen().contains(&activity_header));
+    std::fs::write(&test.release_file, "done").expect("finish without output");
+    test.wait_screen("[READY]");
+    test.wait_until("completion removes the temporary heading", |test| {
+        let screen = test.screen();
+        !screen.lines().any(|line| line.trim() == "Claude")
+            && !screen.contains(&activity_header)
+            && !screen.contains("│ Tip:")
+    });
+    assert_eq!(test.commands("mutate_setting").len(), 3);
+    assert!(
+        test.commands("mutate_setting")
+            .iter()
+            .all(|command| command["mutation"]["id"] == "spinnerTipsEnabled")
+    );
+    test.assert_prompts(&["NO_OUTPUT_YET"]);
+    test.shutdown();
+}
+
+#[test]
+fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_completion() {
+    let mut test = TerminalTest::start("hold-activity", 3);
+    test.submit("START_ACTIVITY", "START_ACTIVITY");
+    test.wait_journal("reply-held");
+    test.wait_screen("│ ◆ ");
+    test.wait_screen("│ Tip:");
+    let initial_screen = test.screen();
+    let initial_rows: Vec<_> = initial_screen.lines().map(str::trim_end).collect();
+    let heading =
+        initial_rows.iter().position(|line| *line == "Claude").expect("assistant heading");
+    let activity = initial_rows.iter().position(|line| line.starts_with("│ ◆ ")).expect("activity");
+    assert_eq!(initial_rows.iter().filter(|line| **line == "Claude").count(), 1);
+    assert!(
+        initial_rows.iter().position(|line| line.contains("START_ACTIVITY")).expect("user message")
+            < heading
+    );
+    assert!(heading < activity, "tip text mentioning Claude must not count as the heading");
+    assert!(!initial_screen.contains("Thinking…"));
+    let activity_header = test
+        .screen()
+        .lines()
+        .find(|line| line.starts_with("│ ◆ "))
+        .expect("separate activity header")
+        .trim_end()
+        .to_owned();
+    std::fs::write(&test.release_file, "thinking").expect("thinking boundary");
+    test.wait_screen("◆ Thinking…");
+    assert_eq!(test.screen().matches("Thinking…").count(), 1);
+    assert!(test.screen().contains(&activity_header), "thinking retains the activity verb");
+    test.submit("QUEUED_ACTIVITY", "QUEUED_ACTIVITY");
+    test.paste("DRAFT_ACTIVITY");
+    test.wait_screen("DRAFT_ACTIVITY");
+    test.wait_screen("│ Tip:");
+    let screen = test.screen();
+    assert!(
+        screen.find("Thinking…").expect("assistant thinking")
+            < screen.find(&activity_header).expect("activity")
+    );
+    assert!(
+        screen.find(&activity_header).expect("activity")
+            < screen.find("│ Tip:").expect("grouped tip")
+    );
+    assert!(
+        screen.find("│ Tip:").expect("tip") < screen.find("QUEUED_ACTIVITY").expect("queued field")
+    );
+    test.resize(25, 61);
+    test.wait_screen("◆ Thinking…");
+    {
+        let output = test.output.lock().expect("output");
+        let (row, _) = output.parser.screen().cursor_position();
+        assert!(
+            output
+                .parser
+                .screen()
+                .contents()
+                .lines()
+                .nth(usize::from(row))
+                .is_some_and(|line| line.contains("DRAFT_ACTIVITY")),
+            "cursor remains in editor"
+        );
+    }
+    std::fs::write(&test.release_file, "requires_action").expect("wait boundary");
+    test.wait_until("hidden activity while input is required", |test| {
+        !test.screen().contains("Thinking…") && !test.screen().contains("Tip:")
+    });
+    std::fs::write(&test.release_file, "running").expect("work resumes");
+    test.wait_screen("Thinking…");
+    test.wait_screen("Tip:");
+    std::fs::write(&test.release_file, "working").expect("thinking ends");
+    test.wait_until("ordinary activity after thinking", |test| {
+        !test.screen().contains("Thinking…") && test.screen().contains("Tip:")
+    });
+    assert!(test.screen().contains(&activity_header), "work retains the activity verb");
+    test.resize(SHORT_ROWS, COLS);
+    std::fs::write(&test.release_file, "done").expect("completion");
+    test.wait_screen("[READY]");
+    test.wait_until("activity removed", |test| {
+        !test.screen().contains("Tip:") && !test.screen().contains("Thinking…")
+    });
+    test.wait_screen("DRAFT_ACTIVITY");
+    let output = test.output.lock().expect("output");
+    let mut screen = output.parser.screen().clone();
+    for offset in 0..100 {
+        screen.set_scrollback(offset);
+        assert!(!screen.contents().contains("Thinking…"));
+        assert!(!screen.contents().contains("Tip:"));
+        assert!(!screen.contents().contains(&activity_header));
+    }
+}
+
+#[test]
 fn queued_prompt_starts_once_after_active_reply_and_preserves_the_next_draft() {
     let mut test = TerminalTest::start("hold-success", 3);
     test.submit("FIRST", "FIRST");

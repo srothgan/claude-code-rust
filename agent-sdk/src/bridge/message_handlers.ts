@@ -1,3 +1,4 @@
+import { observeMainAgentStream, resetMainAgentActivity } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
@@ -998,6 +999,7 @@ function handleFallbackRetractionMessage(
   if (subtype !== "model_refusal_fallback" && subtype !== "model_fallback") {
     return false;
   }
+  if (msg.scope !== "subagent" && !msg.parent_tool_use_id) resetMainAgentActivity(session);
   const reason: TranscriptRetractionReason =
     subtype === "model_fallback" ? "model_fallback" : "model_refusal_fallback";
   const messageUuids = dedupeMessageUuids(msg.retracted_message_uuids);
@@ -1145,20 +1147,6 @@ export function handleContentBlock(
     return;
   }
 
-  if (blockType === "thinking") {
-    const text = typeof block.thinking === "string" ? block.thinking : "";
-    if (text) {
-      emitSessionUpdate(session.sessionId, {
-        type: "agent_thought_chunk",
-        content: { type: "text", text },
-        ...(linkage?.sourceMessageUuid
-          ? { source_message_uuid: linkage.sourceMessageUuid }
-          : {}),
-      });
-    }
-    return;
-  }
-
   if (
     blockType === "tool_use" ||
     blockType === "server_tool_use" ||
@@ -1217,6 +1205,7 @@ export function handleStreamEvent(
   parentToolUseId?: string,
   sourceMessageUuid?: string,
 ): void {
+  observeMainAgentStream(session, event, parentToolUseId);
   const eventType = typeof event.type === "string" ? event.type : "";
 
   if (eventType === "content_block_start") {
@@ -1251,17 +1240,6 @@ export function handleStreamEvent(
             : {}),
         });
       }
-    } else if (deltaType === "thinking_delta") {
-      const text = typeof delta.thinking === "string" ? delta.thinking : "";
-      if (text) {
-        emitSessionUpdate(session.sessionId, {
-          type: "agent_thought_chunk",
-          content: { type: "text", text },
-          ...(sourceMessageUuid
-            ? { source_message_uuid: sourceMessageUuid }
-            : {}),
-        });
-      }
     }
   }
 }
@@ -1270,6 +1248,15 @@ export function handleAssistantMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  const response = session.mainAgentResponse;
+  const completed = asRecordOrNull(message.message);
+  // The SDK also emits assistant frames for individual completed blocks with
+  // stop_reason null. Those do not close the response's streaming scope.
+  if (!message.parent_tool_use_id && response &&
+      completed?.id === response.messageId &&
+      (completed.stop_reason != null || message.aborted === true || typeof message.error === "string")) {
+    resetMainAgentActivity(session);
+  }
   const metadataUpdate = messageMetadata(message, "assistant");
   if (metadataUpdate) emitSessionUpdate(session.sessionId, metadataUpdate);
   const assistantMessageUuid = sourceMessageUuid(message);
@@ -1730,6 +1717,7 @@ export function handleSdkMessage(
   logSdkMessageOrigin(session, msg);
 
   if (type === "conversation_reset") {
+    resetMainAgentActivity(session);
     const newConversationId = trimmedStringField(msg, "new_conversation_id");
     if (!newConversationId) {
       bridgeLogger.warn({
@@ -1898,6 +1886,7 @@ export function handleSdkMessage(
     }
 
     if (subtype === "api_retry") {
+      if (!msg.parent_tool_use_id) resetMainAgentActivity(session);
       const noResponse = asRecordOrNull(msg.no_response);
       if (noResponse) {
         bridgeLogger.debug({
@@ -2460,6 +2449,7 @@ export function handleSdkMessage(
   }
 
   if (type === "result") {
+    resetMainAgentActivity(session);
     handleResultMessage(session, msg);
     return;
   }
