@@ -2,11 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.15.0] - 2026-10-04 [Changes][v0.15.0]
+
+### Features
+
+- **SDK-resolved settings and rebuilt `/config`** (#415, @srothgan): Rebuild `/config` on SDK settings with per-scope save and reset, searchable panes, and editors for hooks, permission rules, sandbox, memory, workflows, and worktrees. Add `/memory`, `/permissions`, `/sandbox`, and `/hooks` to open the matching pane.
+- **Session and presentation controls** (#415, @srothgan): Add `/thinking`, `/copy`, `/effort reset`, and `/fast [on|off]`, plus settings for default effort, default agent, message timestamps, Auto-scroll, and reduced motion.
+- **Notifications, automatic updates, and question timeout** (#415, @srothgan): Add per-category notification toggles, a Notification method setting, an Automatic updates preference (default Off), and a Question timeout setting.
+- **Startup flags and initial prompt** (#413, @srothgan): Add an initial prompt argument, `--resume [ID]`, `--continue`, and session-only `--model`, `--effort`, `--permission-mode`, and `--agent`.
+- **Shell completions and man pages** (#413, @srothgan): Add `claude-rs completions <shell>` for Bash, Zsh, Fish, PowerShell, and Elvish, and `claude-rs man <dir>`.
+- **Agent SDK 0.3.288 migration** (#414, @srothgan): Upgrade to Agent SDK `0.3.288` and update tool cards when detached web calls finish in a later turn.
+- **Installer prompts and cleanup** (#414, @srothgan): Add single-key `y`/`n` prompts, consistent progress output, and optional cleanup of other script and npm installations.
+
+### Fixes
+
+- **Inline resize crash** (#408, @srothgan): Stop the app from exiting when the terminal grows during a streamed reply. Fixes #407.
+- **`CLAUDE_CONFIG_DIR` profile paths** (#408, @srothgan): Honor `CLAUDE_CONFIG_DIR` for user settings, workspace trust, and file credentials.
+- **User message paragraph spacing** (#409, @srothgan): Keep blank lines between paragraphs in submitted user messages.
+- **Draft and input preservation** (#410, @srothgan): Stop losing unsent drafts, attachments, and typed input on send failures, turn errors, resize, paste, and authentication.
+- **Edit diff line numbers** (#412, @srothgan): Show file line numbers in completed Edit diffs instead of counting from 1.
 
 ### Removed
 
-- **Perf telemetry**: Remove the obsolete `perf` Cargo feature, `--enable-perf`, `--perf-log`, and `--perf-append` flags, and high-frequency telemetry sidecars. Runtime diagnostics remain available through the existing logging flags and presets. Doctor reports and debug bundles no longer advertise perf paths; the debug-bundle manifest schema is now `claude-rs-debug-bundle/v2`.
+- **Legacy commands** (#415, @srothgan): Remove `/1m-context` and `/opus-version`.
+- **Perf telemetry** (#411, @srothgan): Remove the `perf` Cargo feature and the `--enable-perf`, `--perf-log`, and `--perf-append` flags. Debug bundles now use manifest schema `claude-rs-debug-bundle/v2`.
+
+### Documentation
+
+- **Design history and performance claims** (#406, @srothgan): Link the article on the 0.12.0 move to inline rendering and note that no benchmark against the stock interface exists yet.
+- **CLI dependencies and feature overview** (#413, @srothgan): Document which operations need a separately installed `claude` command and which stock interface features are unavailable.
+- **Settings reference and agent instructions** (#415, @srothgan): Restructure the settings and architecture pages and move personal agent instructions to an untracked `PERSONAL.md`.
+
+### Release and Packaging
+
+- **Bundled manuals** (#413, @srothgan): Ship man pages in Unix install archives and install them with the script installer.
+
+### CI and Dependencies
+
+- **Real-terminal regression suite** (#408, #410, @srothgan): Add PTY tests of the real binary, required on Ubuntu, Windows, and macOS.
+- **Cross-platform Clippy and installer checks** (#414, #415, @srothgan): Run Clippy on Ubuntu, Windows, and macOS and add installer regression tests to the PR workflow.
+- **New dependencies** (#413, #415, @srothgan): Add `clap_complete`, `clap_mangen`, `chrono`, `chrono-tz`, and `sys-locale`.
 
 ## [0.14.9] - 2026-10-01 [Changes][v0.14.9]
 
@@ -885,6 +920,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.15.0]: https://github.com/srothgan/claude-code-rust/compare/v0.14.9...v0.15.0
 [v0.14.9]: https://github.com/srothgan/claude-code-rust/compare/v0.14.8...v0.14.9
 [v0.14.8]: https://github.com/srothgan/claude-code-rust/compare/v0.14.7...v0.14.8
 [v0.14.7]: https://github.com/srothgan/claude-code-rust/compare/v0.14.6...v0.14.7
