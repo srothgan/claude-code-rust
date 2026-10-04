@@ -1,4 +1,5 @@
 import { messageMetadata } from "./presentation_metadata.js";
+import { nativeNotification } from "./notifications.js";
 import type {
   SDKSessionInfo,
   SessionMessage,
@@ -402,6 +403,11 @@ export function mapSessionMessagesToUpdates(
     const candidates = messageCandidates(entry.message);
     if (entry.type === "system") {
       for (const message of candidates) {
+        if (message.subtype === "notification") {
+          const notification = nativeNotification({ ...entry, ...message });
+          if (notification) updates.push({ type: "notification_update", notification, replay: true });
+          break;
+        }
         if (
           pushResumeTaskSystemUpdate(
             updates,

@@ -146,6 +146,13 @@ export type ApiRetryError =
 export type RuntimeSessionState = "idle" | "running" | "requires_action";
 export type SystemNoticeSeverity = "info" | "warning" | "error";
 
+/** Native notices have no delivery category. Proactive intent comes from the tool. */
+export type SdkNotification =
+  | { origin: "sdk_notice"; session_id: string; uuid: string; key: string; text: string;
+      priority: string; color?: string; timeout_ms?: number }
+  | { origin: "model_tool"; session_id: string; tool_use_id: string; text: string;
+      push_sent?: boolean; local_sent?: boolean; disabled_reason?: string; sent_at?: string };
+
 export interface SettingsParseErrorUpdate {
   file?: string;
   path: string;
@@ -426,6 +433,7 @@ export type SessionUpdate =
   | { type: "runtime_session_state_update"; state: RuntimeSessionState }
   | ({ type: "settings_parse_error" } & SettingsParseErrorUpdate)
   | { type: "session_status_update"; status: "requesting" | "idle" }
+  | { type: "notification_update"; notification: SdkNotification; replay: boolean }
   | {
       type: "system_notice_update";
       severity: SystemNoticeSeverity;

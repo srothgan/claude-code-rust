@@ -5,6 +5,7 @@ mod api_retry;
 mod client;
 mod compaction;
 mod notices;
+mod notifications;
 mod rate_limit;
 mod retraction;
 mod session;
@@ -516,6 +517,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 session_status = ?status,
                 compacting = app.turn.compaction.is_active(),
             );
+        }
+        model::SessionUpdate::NotificationUpdate { notification, replay } => {
+            notifications::handle_sdk_notification(app, &notification, replay);
         }
         model::SessionUpdate::SystemNoticeUpdate { severity, message } => {
             let severity = match severity {

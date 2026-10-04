@@ -6962,7 +6962,7 @@ test("available command registry lets authoritative snapshots remove commands", 
   );
 });
 
-test("handleSdkMessage emits system notices for notifications and plugin failures", () => {
+test("handleSdkMessage preserves native notification metadata separately from plugin diagnostics", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
     handleSdkMessage(session, {
@@ -6989,9 +6989,8 @@ test("handleSdkMessage emits system notices for notifications and plugin failure
     events.map((event) => event.update),
     [
       {
-        type: "system_notice_update",
-        severity: "info",
-        message: "Sync completed",
+        type: "notification_update", replay: false,
+        notification: { origin: "sdk_notice", key: "sync", text: "Sync completed", priority: "low", uuid: "message-notification", session_id: "session-1" },
       },
       {
         type: "system_notice_update",
@@ -7331,9 +7330,8 @@ test("handleSdkMessage cancels pending worker shutdown after later SDK activity"
     events.map((event) => event.update),
     [
       {
-        type: "system_notice_update",
-        severity: "info",
-        message: "Still running",
+        type: "notification_update", replay: false,
+        notification: { origin: "sdk_notice", key: "", text: "Still running", priority: "low", uuid: "message-notification", session_id: "session-1" },
       },
     ],
   );
@@ -10411,4 +10409,64 @@ test("tool progress elapsed time survives a final result without becoming turn e
   const finalUpdate = events.filter(event => event.event === "session_update" && event.update.type === "tool_call_update").at(-1);
   assert.ok(finalUpdate?.event === "session_update" && finalUpdate.update.type === "tool_call_update");
   assert.deepEqual(finalUpdate.update.tool_call_update.fields.output_metadata, { timing: { duration_ms: 1250, source: "progress" }, agent: { resolved_model: "claude-sonnet-4-7" } });
+});
+
+
+test("live and replayed proactive tool results carry structured intent and upstream delivery reports", () => {
+  for (const replay of [false, true]) {
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      emitToolCall(session, "push-1", "PushNotification", { status: "proactive", message: "Review is ready" });
+      handleSdkMessage(session, {
+        type: "user", session_id: session.sessionId, uuid: "result-1", isReplay: replay,
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: "push-1", content: "Review is ready" }] },
+        tool_use_result: { data: { message: "Review is ready", pushSent: true, localSent: false, disabledReason: "no_transport", sentAt: "2026-10-04T10:00:00Z" } },
+      } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    });
+    assert.deepEqual(events.at(-1)?.update, {
+      type: "notification_update", replay,
+      notification: { origin: "model_tool", session_id: session.sessionId, tool_use_id: "push-1", text: "Review is ready", push_sent: true, local_sent: false, disabled_reason: "no_transport", sent_at: "2026-10-04T10:00:00Z" },
+    });
+    assert.ok(events.some(event => (event.update as { type?: string })?.type === "tool_call_update"));
+  }
+});
+
+test("native notices preserve original priority, replacement key and presentation hints", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, {
+      type: "system", subtype: "notification", session_id: session.sessionId,
+      uuid: "notice-1", key: "replaceable", text: "Native notice", priority: "immediate", color: "yellow", timeout_ms: 5000,
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  assert.deepEqual(events.at(-1)?.update, { type: "notification_update", replay: false, notification: {
+    origin: "sdk_notice", session_id: session.sessionId, uuid: "notice-1", key: "replaceable", text: "Native notice", priority: "immediate", color: "yellow", timeout_ms: 5000,
+  } });
+});
+
+
+test("historical SDK notices retain metadata in the replay projection", () => {
+  const updates = mapSessionMessagesToUpdates([{ type: "system", uuid: "old-notice", session_id: "session-1", message: {
+    type: "system", subtype: "notification", session_id: "session-1", uuid: "old-notice", key: "replaceable", text: "Historical notice", priority: "future-priority", timeout_ms: 0,
+  } }] as unknown as SessionMessage[]);
+  assert.deepEqual(updates, [{ type: "notification_update", replay: true, notification: {
+    origin: "sdk_notice", session_id: "session-1", uuid: "old-notice", key: "replaceable", text: "Historical notice", priority: "future-priority", timeout_ms: 0,
+  } }]);
+});
+
+
+test("failed proactive tool execution remains failed output instead of a local alert request", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "push-failed", "PushNotification", { status: "proactive", message: "Review is ready" });
+    handleSdkMessage(session, {
+      type: "user", session_id: session.sessionId, uuid: "failed-result",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "push-failed", content: "Send failed", is_error: true }] },
+      tool_use_result: { message: "Review is ready", localSent: false },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  const result = events.at(-1)?.update as { type?: string; tool_call_update?: { fields?: { status?: string } } };
+  assert.equal(result.type, "tool_call_update");
+  assert.equal(result.tool_call_update?.fields?.status, "failed");
+  assert.equal(events.length, 2);
 });

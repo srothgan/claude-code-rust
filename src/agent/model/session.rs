@@ -304,6 +304,10 @@ pub enum SessionUpdate {
         message: String,
     },
     SessionStatusUpdate(SessionStatus),
+    NotificationUpdate {
+        notification: crate::agent::notifications::SdkNotification,
+        replay: bool,
+    },
     SystemNoticeUpdate {
         severity: SystemNoticeSeverity,
         message: String,

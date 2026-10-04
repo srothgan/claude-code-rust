@@ -227,8 +227,10 @@ pub(super) fn handle_permission_request_event(
             app.claim_focus_target(FocusTarget::Permission);
         }
         app.notifications.notify(
-            app.config.preferred_notification_channel_effective(),
+            &app.config,
             super::super::notify::NotifyEvent::PermissionRequired,
+            &session_id,
+            Some(&tool_id),
         );
         log_permission_request_applied(
             &session_id,
@@ -441,8 +443,10 @@ pub(super) fn handle_question_request_event(
             app.claim_focus_target(FocusTarget::Permission);
         }
         app.notifications.notify(
-            app.config.preferred_notification_channel_effective(),
+            &app.config,
             super::super::notify::NotifyEvent::QuestionRequired,
+            &session_id,
+            Some(&tool_id),
         );
         tracing::info!(
             target: crate::logging::targets::APP_PERMISSION,
@@ -521,8 +525,10 @@ pub(super) fn handle_user_dialog_request_event(
         app.claim_focus_target(FocusTarget::Permission);
     }
     app.notifications.notify(
-        app.config.preferred_notification_channel_effective(),
+        &app.config,
         super::super::notify::NotifyEvent::QuestionRequired,
+        &session_id,
+        Some(&request_id),
     );
     app.sync_render_cache_slot(mi, bi);
     app.recompute_message_retained_bytes(mi);
@@ -621,10 +627,21 @@ pub(super) fn handle_turn_complete_event(
     finish_ready_turn_exit(app, exit, tool_status);
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
-    if turn_was_active {
+    if turn_was_active
+        && !exit.cancel_requested
+        && !matches!(
+            terminal_reason,
+            Some(
+                crate::agent::types::TerminalReason::AbortedStreaming
+                    | crate::agent::types::TerminalReason::AbortedTools
+            )
+        )
+    {
         app.notifications.notify(
-            app.config.preferred_notification_channel_effective(),
+            &app.config,
             super::super::notify::NotifyEvent::TurnComplete,
+            app.session_runtime.session_id.as_ref().map_or("", model::SessionId::as_str),
+            None,
         );
     }
 }

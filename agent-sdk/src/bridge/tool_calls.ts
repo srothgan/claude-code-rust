@@ -1,3 +1,4 @@
+import { proactiveNotification } from "./notifications.js";
 import type { TaskMetadata, ToolCall, ToolCallUpdateFields } from "../types.js";
 import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
@@ -538,6 +539,7 @@ export function emitToolResultUpdate(
   rawResult: unknown = rawContent,
   sourceMessageUuid?: string,
   nonExecutionMetadata?: import("../types.js").ToolNonExecutionMetadata,
+  replay = false,
 ): void {
   const base = session.toolCalls.get(toolUseId);
   const baseToolName = toolNameFromMeta(base?.meta) ?? "";
@@ -572,6 +574,10 @@ export function emitToolResultUpdate(
     }
   }
   emitToolCallUpdate(session, toolUseId, fields, "result", sourceMessageUuid);
+  if (fields.status === "completed" && !nonExecutionMetadata && base) {
+    const notification = proactiveNotification(session.sessionId, baseToolName, base, rawResult, rawContent);
+    if (notification) emitSessionUpdate(session.sessionId, { type: "notification_update", notification, replay });
+  }
   applyTaskToolResult(
     session,
     toolUseId,

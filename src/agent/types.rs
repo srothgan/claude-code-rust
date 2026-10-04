@@ -733,6 +733,10 @@ pub enum SessionUpdate {
     SessionStatusUpdate {
         status: SessionStatus,
     },
+    NotificationUpdate {
+        notification: super::notifications::SdkNotification,
+        replay: bool,
+    },
     SystemNoticeUpdate {
         severity: SystemNoticeSeverity,
         message: String,

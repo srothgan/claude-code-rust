@@ -11,6 +11,9 @@ const DEFINITIONS: Definition[] = [
   ["timeFormat", "Time format", "Clock format for message times. Custom strftime patterns in settings files are preserved.", "string", ["auto", "12-hour", "24-hour", "24-hour-utc"]],
   ["presentation.showStatusInTerminalTab", "Show activity in tab title", "Show a busy/idle icon beside the folder name in the terminal tab title. Off keeps just the folder name.", "boolean", undefined, ["user"]],
   ["presentation.copyFullResponse", "Skip the /copy picker", "Copy the entire last response directly instead of choosing the response or a code block.", "boolean", undefined, ["user"]],
+  ["notifications.actionsRequired", "Notify when input is needed", "Alert when a permission, question or dialog is waiting. Only while this terminal is unfocused. Default: On.", "boolean", undefined, ["user"]],
+  ["notifications.modelDirected", "Notify when Claude requests it", "Allow local alerts from proactive PushNotification tool results when available. Only while this terminal is unfocused. Default: On. Mobile push is configured separately.", "boolean", undefined, ["user"]],
+  ["notifications.turnComplete", "Notify when a turn finishes", "Alert after an active turn finishes successfully. Only while this terminal is unfocused. Default: On.", "boolean", undefined, ["user"]],
   ["autoCompactEnabled", "Auto compact", "Compact context automatically.", "boolean"],
   ["autoContinueAtUsageLimit", "Continue at usage limit", "Wait for a subscription usage limit to reset and continue automatically when available for your account.", "boolean", undefined, ["user"], "Automatic continuation at usage limits is not available yet."],
   ["switchModelsOnFlag", "Switch models on flagged messages", "Allow automatic alternate-model handling.", "boolean"],
@@ -25,7 +28,7 @@ const DEFINITIONS: Definition[] = [
   ["worktree.baseRef", "Worktree base ref", "Base used when creating a worktree.", "string", ["fresh", "head"]],
   ["useAutoModeDuringPlan", "Auto mode during planning", "Allow native auto mode while planning when the model, account and permission policy support it.", "boolean", undefined, ["user", "local"]],
   ["respectGitignore", "Respect .gitignore", "Hide ignored files from the file picker.", "boolean"],
-  ["preferredNotifChannel", "Notification method", "Choose how notifications are delivered.", "string", ["auto", "iterm2", "terminal_bell", "iterm2_with_bell", "kitty", "ghostty", "notifications_disabled"], ["user"], "Changing the notification method is not available yet."],
+  ["preferredNotifChannel", "Notification method", "Auto chooses this terminal's notification protocol, otherwise desktop alerts with a bell. A terminal-specific method falls back to desktop alerts when unsupported. Disabled silences every category.", "string", ["auto", "iterm2", "terminal_bell", "iterm2_with_bell", "kitty", "ghostty", "notifications_disabled"], ["user"]],
   ["outputStyle", "Output style", "Exact built-in or custom response-style name.", "string"],
   ["language", "Language", "Preferred response language or ISO code.", "string"],
   ["askUserQuestionTimeout", "Question timeout", "Continue with selected answers after this much idle time. The Never option waits for confirmation. Unanswered questions are skipped on timeout.", "string", ["never", "60s", "5m", "10m"], ["user"]],
@@ -86,7 +89,7 @@ export function settingsCatalog(models: AvailableModel[] = [], agents: Available
     writable_scopes: unavailable ? [] : scopes ?? ALL_SCOPES,
     allows_custom: kind !== "boolean" && choices === undefined,
     reset: "Reset clears this scope's value and uses the other scopes or Default.",
-    application: ["respectGitignore", "prefersReducedMotion", "autoScrollEnabled", "showTurnDuration", "showMessageTimestamps", "timeFormat"].includes(id) || isAppSetting({ id }) ? "host" : "next_session",
+    application: ["respectGitignore", "prefersReducedMotion", "autoScrollEnabled", "showTurnDuration", "showMessageTimestamps", "timeFormat", "preferredNotifChannel"].includes(id) || isAppSetting({ id }) ? "host" : "next_session",
     ...(unavailable ? { unavailable } : {}),
   }));
   for (const setting of catalog) {
@@ -110,7 +113,7 @@ export function settingsCatalog(models: AvailableModel[] = [], agents: Available
   return catalog.sort((left, right) => left.label.localeCompare(right.label, "en", { sensitivity: "base" }));
 }
 
-/** Personal host preferences occupy this namespace in the app document. */
+/** Personal host preferences occupy these namespaces in the app document. */
 export function isAppSetting(setting: Pick<SettingDescriptor, "id">): boolean {
-  return setting.id.startsWith("presentation.");
+  return setting.id.startsWith("presentation.") || setting.id.startsWith("notifications.");
 }

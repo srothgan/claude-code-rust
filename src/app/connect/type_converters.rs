@@ -540,6 +540,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 types::SessionStatus::Idle => model::SessionStatus::Idle,
             }))
         }
+        types::SessionUpdate::NotificationUpdate { notification, replay } => {
+            Some(model::SessionUpdate::NotificationUpdate { notification, replay })
+        }
         types::SessionUpdate::SystemNoticeUpdate { severity, message } => {
             Some(model::SessionUpdate::SystemNoticeUpdate {
                 severity: map_system_notice_severity(severity),

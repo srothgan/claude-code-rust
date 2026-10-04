@@ -125,7 +125,7 @@ impl TerminalTest {
     }
 
     fn start_with_auth(scenario: &str, lines: u16, auth_mode: Option<&str>) -> Self {
-        Self::start_with_options(scenario, lines, auth_mode, &[])
+        Self::start_with_options(scenario, lines, auth_mode, &[], false)
     }
 
     fn start_with_options(
@@ -133,6 +133,7 @@ impl TerminalTest {
         lines: u16,
         auth_mode: Option<&str>,
         args: &[&str],
+        has_initial_prompt: bool,
     ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
@@ -141,7 +142,7 @@ impl TerminalTest {
         let release_file = temp.path().join("release");
         std::fs::create_dir_all(&profile).expect("profile");
         std::fs::create_dir_all(&project).expect("project");
-        if !args.is_empty() {
+        if has_initial_prompt {
             std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}"#).expect("saved settings");
         }
         let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-bridge.js");
@@ -219,13 +220,13 @@ impl TerminalTest {
         let mut test = Self { child, master: pair.master, output, journal, release_file, temp };
         test.wait_screen("Trust this project");
         test.send(b"y");
-        if args.is_empty() {
+        if has_initial_prompt {
+            test.wait_until("initial prompt", |test| !test.prompts().is_empty());
+        } else {
             test.wait_screen("Type a message");
             // The composer is editable during Connecting, but Enter cannot submit
             // until the connected event has been applied and painted.
             test.wait_screen("[READY]");
-        } else {
-            test.wait_until("initial prompt", |test| !test.prompts().is_empty());
         }
         test
     }
@@ -378,7 +379,7 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
         let mut args = common.to_vec();
         args.extend(selection);
         args.push("Review this project");
-        let mut test = TerminalTest::start_with_options("stream", 3, None, &args);
+        let mut test = TerminalTest::start_with_options("stream", 3, None, &args, true);
         test.wait_journal("turn_complete");
         test.assert_prompts(&["Review this project"]);
         assert_eq!(test.prompts()[0]["session_id"], expected_session);
@@ -959,4 +960,99 @@ fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
     .expect("settings JSON");
     assert_eq!(saved["autoScrollEnabled"], false);
     test.shutdown();
+}
+
+#[allow(clippy::expect_used)]
+fn notification_bells(test: &TerminalTest) -> usize {
+    let output = test.output.lock().expect("captured terminal");
+    let mut in_osc = false;
+    let mut bells = 0;
+    for (index, byte) in output.raw.iter().enumerate() {
+        if *byte == b']' && index > 0 && output.raw[index - 1] == 0x1b {
+            in_osc = true;
+        }
+        if *byte == 7 {
+            if !in_osc {
+                bells += 1;
+            }
+            in_osc = false;
+        }
+        if *byte == b'\\' && index > 0 && output.raw[index - 1] == 0x1b {
+            in_osc = false;
+        }
+    }
+    bells
+}
+
+#[test]
+fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_real_terminal() {
+    let mut test = TerminalTest::start_with_options(
+        "notifications",
+        3,
+        None,
+        &["--diagnostics-preset", "full"],
+        false,
+    );
+    test.send(b"\x1b[O"); // Focus lost.
+    test.submit("Notify test", "Notify test");
+    test.wait_journal("turn_complete");
+    test.wait_until("one proactive bell", |test| notification_bells(test) == 1);
+    test.wait_screen("Native notice 1"); // A visible notice does not imply a desktop alert.
+    test.send(b"\x1b[I"); // Focus gained.
+    test.submit("Focused test", "Focused test");
+    test.wait_screen("reply 2 started");
+    test.wait_until("focused turn finished", |test| {
+        test.journal().iter().filter(|entry| entry["event"] == "turn_complete").count() == 2
+    });
+    assert_eq!(notification_bells(&test), 1);
+    test.submit("/config", "/config");
+    test.wait_screen("Notification method");
+    test.send(b"\x1b[B\x1b[B"); // Pass turn completion and select proactive alerts.
+    test.send(b" "); // On -> Off, immediate acknowledged save.
+    test.wait_screen("Saved and applied.");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.send(b"\x1b[O");
+    test.submit("Disabled category", "Disabled category");
+    test.wait_until("third turn finished", |test| {
+        test.journal().iter().filter(|entry| entry["event"] == "turn_complete").count() == 3
+    });
+    test.wait_screen("Native notice 3");
+    assert_eq!(notification_bells(&test), 1);
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile/app-settings.json"))
+            .expect("saved categories"),
+    )
+    .expect("category JSON");
+    assert_eq!(saved["notifications"]["modelDirected"], false);
+    assert_eq!(saved["notifications"]["turnComplete"], false);
+    assert_eq!(saved["notifications"]["actionsRequired"], true);
+    test.assert_prompts(&["Notify test", "Focused test", "Disabled category"]);
+    test.shutdown();
+    let diagnostics = std::fs::read_to_string(test.temp.path().join("runtime.log"))
+        .expect("notification diagnostics");
+    let records: Vec<Value> = diagnostics
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("diagnostic JSON"))
+        .collect();
+    for reason in
+        ["duplicate", "replay", "upstream_local_delivery", "terminal_focused", "category_disabled"]
+    {
+        assert!(
+            records
+                .iter()
+                .any(|record| record["target"] == "app.notify" && record["reason"] == reason),
+            "missing {reason}"
+        );
+    }
+    assert!(records.iter().any(|record| record["event_name"] == "notification_focus_observed"
+        && record["terminal_focused"] == false));
+    let bell = records
+        .iter()
+        .find(|record| {
+            record["event_name"] == "notification_transport_result" && record["transport"] == "bell"
+        })
+        .expect("bell result");
+    assert_eq!(bell["outcome"], "success");
+    assert_eq!(bell["span"]["tool_call_id"], "push-1");
 }

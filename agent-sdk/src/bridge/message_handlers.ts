@@ -1,3 +1,4 @@
+import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
@@ -629,10 +630,6 @@ export function flushPendingWorkerShutdown(session: SessionState): void {
     "warning",
     workerShutdownMessage(pending.reason),
   );
-}
-
-function notificationSeverity(priority: unknown): SystemNoticeSeverity {
-  return priority === "high" || priority === "immediate" ? "warning" : "info";
 }
 
 function isTerminalToolStatus(status: ToolCallUpdateFields["status"]): boolean {
@@ -1529,6 +1526,7 @@ export function handleUserToolResultBlocks(
         messageToolUseResult(message) ?? blockRecord,
         sourceMessageUuid(message),
         nonExecutionByToolUseId.get(toolUseId),
+        message.isReplay === true,
       );
     }
   }
@@ -1781,8 +1779,8 @@ export function handleSdkMessage(
     }
 
     if (subtype === "notification") {
-      const text = typeof msg.text === "string" ? msg.text : "";
-      emitSystemNoticeUpdate(session, notificationSeverity(msg.priority), text);
+      const notification = nativeNotification(msg);
+      if (notification) emitSessionUpdate(session.sessionId, { type: "notification_update", notification, replay: false });
       return;
     }
 
@@ -2413,6 +2411,8 @@ export function handleSdkMessage(
           notification.output,
           undefined,
           sourceMessageUuid(msg),
+          undefined,
+          msg.isReplay === true,
         );
       }
       return;
@@ -2439,6 +2439,7 @@ export function handleSdkMessage(
         rawToolUseResult,
         sourceMessageUuid(msg),
         parseToolNonExecutionMetadata(msg.tool_result_meta).get(toolUseId),
+        msg.isReplay === true,
       );
     }
     return;

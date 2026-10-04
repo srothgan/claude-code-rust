@@ -700,6 +700,20 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn notification_payload_round_trips_original_sdk_metadata_and_replay_provenance() {
+        let payload = serde_json::json!({
+            "event": "session_update", "session_id": "s1",
+            "update": { "type": "notification_update", "replay": true,
+                "notification": { "origin": "sdk_notice", "session_id": "s1", "uuid": "n1",
+                    "key": "replaceable", "text": "Ready", "priority": "immediate", "color": "yellow", "timeout_ms": 5000.0 }
+            }
+        });
+        let envelope: EventEnvelope =
+            serde_json::from_value(payload.clone()).expect("notification event");
+        assert_eq!(serde_json::to_value(envelope).expect("serialize notification"), payload);
+    }
+
+    #[test]
     fn sdk_result_alignment_metadata_survives_the_wire() {
         let event: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "session_update", "session_id": "s1",

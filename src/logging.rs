@@ -28,6 +28,7 @@ pub mod targets {
     pub const APP_INPUT: &str = "app.input";
     pub const APP_LIFECYCLE: &str = "app.lifecycle";
     pub const APP_NETWORK: &str = "app.network";
+    pub const APP_NOTIFY: &str = "app.notify";
     pub const APP_PASTE: &str = "app.paste";
     pub const APP_PERMISSION: &str = "app.permission";
     pub const APP_RENDER: &str = "app.render";

@@ -1,35 +1,50 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use std::borrow::Cow;
+use crate::agent::notifications::SdkNotification;
+use crate::app::config::ConfigState;
+use crate::logging::targets::APP_NOTIFY;
+use std::collections::VecDeque;
 
-/// Events that can trigger a user notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotifyEvent {
-    /// A tool call requires explicit user approval.
     PermissionRequired,
-    /// `AskUserQuestion` is waiting for structured input.
     QuestionRequired,
-    /// The agent finished its turn.
     TurnComplete,
+    ModelDirected,
 }
 
-/// Central notification manager.
-///
-/// Tracks whether the terminal window is focused (via crossterm
-/// `FocusGained`/`FocusLost` events backed by DECSET 1004) and dispatches
-/// notifications only when the window is **not** focused.
-///
-/// Two notification layers fire in parallel:
-/// 1. **Terminal bell** (`BEL \x07`) -- causes a taskbar flash / dock bounce
-///    on virtually every terminal emulator.
-/// 2. **Desktop notification** via `notify-rust` -- OS-native toast popup
-///    (Windows Toast, macOS Notification Center, Linux freedesktop D-Bus).
-///    Spawned on a background thread so it never blocks the TUI event loop.
-///    Silently ignored when the notification backend is unavailable (e.g. SSH).
+/// Focus, category policy, transport selection and SDK delivery identity have one owner.
+/// Local callers notify only after a real waiting/completion transition is accepted.
 #[derive(Debug)]
 pub struct NotificationManager {
     terminal_focused: bool,
+    capabilities: TerminalCapabilities,
+    recent: VecDeque<(String, NotificationIdentity)>,
+    deliver: fn(NotificationDelivery),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NotificationIdentity {
+    Notice(String),
+    Tool(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NotificationDelivery {
+    pub(crate) ring_bell: bool,
+    pub(crate) send_desktop: bool,
+    pub(crate) escape_sequence: Option<String>,
+    pub(crate) body: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum TerminalCapabilities {
+    #[default]
+    Other,
+    Iterm2,
+    Ghostty,
+    Kitty,
 }
 
 impl Default for NotificationManager {
@@ -38,360 +53,303 @@ impl Default for NotificationManager {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NotificationPlan {
-    ring_bell: bool,
-    send_desktop: bool,
-    osc9_text: Option<&'static str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct TerminalCapabilities {
-    osc9_notifications: bool,
-}
-
 impl NotificationManager {
     #[must_use]
-    pub const fn new() -> Self {
-        // Default to `true` (focused) so that terminals which do not support
-        // DECSET 1004 never fire spurious notifications.
-        Self { terminal_focused: true }
+    pub fn new() -> Self {
+        let manager = Self {
+            terminal_focused: true,
+            capabilities: terminal_capabilities_from_env(std::env::vars_os().filter_map(
+                |(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)),
+            )),
+            recent: VecDeque::new(),
+            deliver: deliver_notification,
+        };
+        tracing::debug!(target: APP_NOTIFY, event_name = "notification_manager_initialized",
+            terminal_focused = manager.terminal_focused, terminal_capabilities = ?manager.capabilities);
+        manager
     }
 
-    /// Call when the terminal emits a `FocusGained` event.
     pub fn on_focus_gained(&mut self) {
-        self.terminal_focused = true;
+        self.observe_focus(true);
     }
-
-    /// Call when the terminal emits a `FocusLost` event.
     pub fn on_focus_lost(&mut self) {
-        self.terminal_focused = false;
+        self.observe_focus(false);
     }
 
-    /// Send a notification if the terminal is not focused.
-    ///
-    /// This is the single entry-point that all event handlers should call.
-    /// It is intentionally cheap when focused (just a bool check).
-    pub fn notify(&self, channel: PreferredNotifChannel, event: NotifyEvent) {
-        if self.terminal_focused {
-            return;
+    fn observe_focus(&mut self, focused: bool) {
+        let previous = self.terminal_focused;
+        self.terminal_focused = focused;
+        tracing::debug!(target: APP_NOTIFY, event_name = "notification_focus_observed",
+            terminal_focused = focused, previously_focused = previous);
+    }
+
+    pub fn notify(
+        &self,
+        config: &ConfigState,
+        event: NotifyEvent,
+        session_id: &str,
+        interaction_id: Option<&str>,
+    ) {
+        let _span = tracing::debug_span!(target: APP_NOTIFY, "local_notification",
+            session_id, interaction_id = interaction_id.unwrap_or_default(), origin = "local_transition").entered();
+        self.dispatch(config, event, notification_text(event));
+    }
+
+    /// Replay seeds identities without sending alerts. Suppressed live events are also
+    /// consumed: switching focus/settings later must not turn an old event into an alert.
+    /// Return whether a native notice is new for transcript presentation.
+    pub(crate) fn observe_sdk(
+        &mut self,
+        config: &ConfigState,
+        notification: &SdkNotification,
+        replay: bool,
+    ) -> bool {
+        match notification {
+            SdkNotification::SdkNotice { session_id, uuid, priority, .. } => {
+                let new = self.remember(session_id, NotificationIdentity::Notice(uuid.clone()));
+                let visible = new || replay;
+                tracing::debug!(target: APP_NOTIFY, event_name = "notification_sdk_handled",
+                    origin = "sdk_notice", session_id, notification_uuid = uuid, priority, replay,
+                    outcome = if visible { "transcript" } else { "suppressed" },
+                    reason = if visible { "native_ui_notice" } else { "duplicate" });
+                visible
+            }
+            SdkNotification::ModelTool {
+                session_id,
+                tool_use_id,
+                text,
+                local_sent,
+                push_sent,
+                disabled_reason,
+                ..
+            } => {
+                let _span = tracing::debug_span!(target: APP_NOTIFY, "sdk_notification",
+                    session_id, tool_call_id = tool_use_id, origin = "model_tool", replay)
+                .entered();
+                let new =
+                    self.remember(session_id, NotificationIdentity::Tool(tool_use_id.clone()));
+                let reason = if !new {
+                    Some("duplicate")
+                } else if replay {
+                    Some("replay")
+                } else if *local_sent == Some(true) {
+                    Some("upstream_local_delivery")
+                } else if local_sent.is_none() {
+                    Some("missing_local_report")
+                } else if !matches!(disabled_reason.as_deref(), None | Some("no_transport")) {
+                    Some("sdk_suppressed")
+                } else {
+                    None
+                };
+                tracing::debug!(target: APP_NOTIFY, event_name = "notification_sdk_handled",
+                    outcome = if reason.is_some() { "suppressed" } else { "local_candidate" },
+                    reason = reason.unwrap_or("eligible"),
+                    local_report_present = local_sent.is_some(), local_sent = local_sent.unwrap_or(false),
+                    push_report_present = push_sent.is_some(), push_sent = push_sent.unwrap_or(false),
+                    disabled_reason = disabled_reason.as_deref().unwrap_or_default());
+                if reason.is_none() {
+                    self.dispatch(config, NotifyEvent::ModelDirected, text);
+                }
+                false // The canonical tool call already shows the input and delivery report.
+            }
         }
-        let plan = notification_plan(channel, detect_terminal_capabilities(), event);
-        if let Some(text) = plan.osc9_text {
-            send_osc9_notification(text);
+    }
+
+    /// Completed historical tools can be replayed later on the live stream. Their IDs
+    /// establish a replay boundary even when old SDK history omits delivery metadata.
+    pub(crate) fn observe_history_tool(&mut self, session_id: &str, tool_id: &str) {
+        self.remember(session_id, NotificationIdentity::Tool(tool_id.to_owned()));
+    }
+
+    fn remember(&mut self, session_id: &str, identity: NotificationIdentity) -> bool {
+        const MAX_IDENTITIES: usize = 512;
+        if self.recent.iter().any(|(session, seen)| session == session_id && seen == &identity) {
+            return false;
         }
-        if plan.ring_bell {
-            ring_bell();
+        if self.recent.len() == MAX_IDENTITIES {
+            self.recent.pop_front();
         }
-        if plan.send_desktop {
-            send_desktop_notification(event);
+        self.recent.push_back((session_id.to_owned(), identity));
+        true
+    }
+
+    fn dispatch(&self, config: &ConfigState, event: NotifyEvent, body: &str) {
+        let settings_available = config.snapshot.is_some();
+        let category_enabled = config.notification_enabled(event);
+        let channel = config.preferred_notification_channel_effective();
+        let suppression = if !settings_available {
+            Some("settings_unavailable")
+        } else if self.terminal_focused {
+            Some("terminal_focused")
+        } else if !category_enabled {
+            Some("category_disabled")
+        } else {
+            None
+        };
+        let delivery =
+            suppression.is_none().then(|| notification_plan(channel, self.capabilities, body));
+        let ring_bell = delivery.as_ref().is_some_and(|plan| plan.ring_bell);
+        let send_desktop = delivery.as_ref().is_some_and(|plan| plan.send_desktop);
+        let terminal_protocol =
+            delivery.as_ref().is_some_and(|plan| plan.escape_sequence.is_some());
+        let will_deliver = ring_bell || send_desktop || terminal_protocol;
+        tracing::debug!(target: APP_NOTIFY, event_name = "notification_delivery_decided",
+            category = ?event, settings_available, terminal_focused = self.terminal_focused, category_enabled,
+            notification_method = ?channel, terminal_capabilities = ?self.capabilities,
+            ring_bell, send_desktop, terminal_protocol,
+            outcome = if will_deliver { "dispatch" } else { "suppressed" },
+            reason = suppression.unwrap_or(if will_deliver { "transport_selected" } else { "notifications_disabled" }));
+        if will_deliver && let Some(delivery) = delivery {
+            (self.deliver)(delivery);
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_delivery(
+        deliver: fn(NotificationDelivery),
+        capabilities: TerminalCapabilities,
+    ) -> Self {
+        Self { capabilities, deliver, ..Self::new() }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
-/// Write the ASCII BEL character to stdout, causing a taskbar flash / dock
-/// bounce in most terminal emulators.
-fn ring_bell() {
-    use std::io::Write;
-    let _ = std::io::stdout().write_all(b"\x07");
-    let _ = std::io::stdout().flush();
+fn deliver_notification(delivery: NotificationDelivery) {
+    let mut stdout = std::io::stdout().lock();
+    deliver_terminal_notification(&delivery, &mut stdout);
+    drop(stdout);
+    if delivery.send_desktop {
+        // OS delivery may block on COM/D-Bus. Keep it outside the TUI loop.
+        let span = tracing::Span::current();
+        std::thread::spawn(move || {
+            let _entered = span.enter();
+            if let Err(error) =
+                notify_rust::Notification::new().summary("Claude Code").body(&delivery.body).show()
+            {
+                tracing::debug!(target: APP_NOTIFY, event_name = "notification_transport_result",
+                    transport = "desktop", outcome = "failure", error_kind = "desktop_backend", %error);
+            } else {
+                tracing::debug!(target: APP_NOTIFY, event_name = "notification_transport_result",
+                    transport = "desktop", outcome = "success", reason = "backend_accepted");
+            }
+        });
+    }
 }
 
-/// Spawn a background thread that sends an OS-native desktop notification.
-///
-/// Runs on `std::thread::spawn` rather than tokio because `notify-rust`'s
-/// `show()` may block on a D-Bus round-trip (Linux) or COM call (Windows).
-/// Errors are silently discarded -- the bell is the reliable fallback.
-fn send_desktop_notification(event: NotifyEvent) {
-    let (summary, body) = match event {
-        NotifyEvent::PermissionRequired => {
-            ("Claude Code", "Permission required -- waiting for your approval")
-        }
-        NotifyEvent::QuestionRequired => {
-            ("Claude Code", "Question required -- waiting for your input")
-        }
-        NotifyEvent::TurnComplete => ("Claude Code", "Turn complete"),
-    };
-    std::thread::spawn(move || {
-        let _ = notify_rust::Notification::new().summary(summary).body(body).show();
-    });
+fn deliver_terminal_notification(
+    delivery: &NotificationDelivery,
+    writer: &mut impl std::io::Write,
+) {
+    if let Some(sequence) = &delivery.escape_sequence {
+        log_terminal_result("terminal_protocol", writer.write_all(sequence.as_bytes()));
+    }
+    if delivery.ring_bell {
+        log_terminal_result("bell", writer.write_all(b"\x07"));
+    }
+    log_terminal_result("terminal_flush", writer.flush());
 }
 
-fn send_osc9_notification(message: &str) {
-    use std::io::Write;
-
-    let sequence = osc9_escape_sequence(message);
-    let _ = std::io::stdout().write_all(sequence.as_bytes());
-    let _ = std::io::stdout().flush();
+fn log_terminal_result(transport: &str, result: std::io::Result<()>) {
+    match result {
+        Ok(()) => tracing::debug!(target: APP_NOTIFY, event_name = "notification_transport_result",
+            transport, outcome = "success", reason = "output_written"),
+        Err(error) => {
+            tracing::debug!(target: APP_NOTIFY, event_name = "notification_transport_result",
+            transport, outcome = "failure", error_kind = ?error.kind(), %error);
+        }
+    }
 }
 
 fn notification_plan(
     channel: PreferredNotifChannel,
     capabilities: TerminalCapabilities,
-    event: NotifyEvent,
-) -> NotificationPlan {
-    let osc9_text = capabilities.osc9_notifications.then(|| notification_text(event));
-    match channel {
-        PreferredNotifChannel::NotificationsDisabled => {
-            NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
+    body: &str,
+) -> NotificationDelivery {
+    use PreferredNotifChannel as Channel;
+    let protocol = match (channel, capabilities) {
+        (Channel::Auto, terminal) => terminal,
+        (Channel::Iterm2 | Channel::Iterm2WithBell, TerminalCapabilities::Iterm2) => {
+            TerminalCapabilities::Iterm2
         }
-        PreferredNotifChannel::TerminalBell => {
-            NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
+        (Channel::Ghostty, TerminalCapabilities::Ghostty) => TerminalCapabilities::Ghostty,
+        (Channel::Kitty, TerminalCapabilities::Kitty) => TerminalCapabilities::Kitty,
+        _ => TerminalCapabilities::Other,
+    };
+    let escape_sequence = match protocol {
+        TerminalCapabilities::Kitty => {
+            Some(format!("\x1b]99;;Claude Code: {}\x1b\\", sanitize_message(body)))
         }
-        // "Auto / iTerm2" replaced the original always-bell-plus-desktop behavior.
-        // Preserve that reliable fallback whenever OSC 9 is unavailable.
-        PreferredNotifChannel::Iterm2 => NotificationPlan {
-            ring_bell: osc9_text.is_none(),
-            send_desktop: osc9_text.is_none(),
-            osc9_text,
-        },
-        PreferredNotifChannel::Ghostty => {
-            NotificationPlan { ring_bell: false, send_desktop: osc9_text.is_none(), osc9_text }
+        TerminalCapabilities::Iterm2 | TerminalCapabilities::Ghostty => {
+            Some(format!("\x1b]9;Claude Code: {}\x1b\\", sanitize_message(body)))
         }
-        PreferredNotifChannel::Iterm2WithBell => {
-            NotificationPlan { ring_bell: true, send_desktop: osc9_text.is_none(), osc9_text }
-        }
+        TerminalCapabilities::Other => None,
+    };
+    let disabled = channel == Channel::NotificationsDisabled;
+    let bell_only = channel == Channel::TerminalBell;
+    NotificationDelivery {
+        ring_bell: !disabled
+            && (bell_only
+                || channel == Channel::Iterm2WithBell
+                || (channel == Channel::Auto && escape_sequence.is_none())),
+        send_desktop: !disabled && !bell_only && escape_sequence.is_none(),
+        escape_sequence: if disabled || bell_only { None } else { escape_sequence },
+        body: sanitize_message(body),
     }
 }
 
-fn detect_terminal_capabilities() -> TerminalCapabilities {
-    terminal_capabilities_from_env(
-        std::env::vars_os()
-            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))),
-    )
-}
-
-fn terminal_capabilities_from_env<I>(vars: I) -> TerminalCapabilities
-where
-    I: IntoIterator<Item = (String, String)>,
-{
-    let mut term_program = None::<String>;
-    let mut iterm_session = false;
-
+fn terminal_capabilities_from_env<I: IntoIterator<Item = (String, String)>>(
+    vars: I,
+) -> TerminalCapabilities {
+    let mut program = None;
+    let mut iterm = false;
+    let mut kitty = false;
     for (key, value) in vars {
         match key.as_str() {
-            "TERM_PROGRAM" => term_program = Some(value),
-            "ITERM_SESSION_ID" if !value.is_empty() => iterm_session = true,
+            "TERM_PROGRAM" => program = Some(value),
+            "ITERM_SESSION_ID" if !value.is_empty() => iterm = true,
+            "KITTY_WINDOW_ID" if !value.is_empty() => kitty = true,
+            "TERM" if value == "xterm-kitty" => kitty = true,
             _ => {}
         }
     }
-
-    let osc9_notifications =
-        matches!(term_program.as_deref(), Some("iTerm.app" | "ghostty")) || iterm_session;
-    TerminalCapabilities { osc9_notifications }
+    match program.as_deref() {
+        Some("iTerm.app") => TerminalCapabilities::Iterm2,
+        Some("ghostty") => TerminalCapabilities::Ghostty,
+        Some("kitty") => TerminalCapabilities::Kitty,
+        _ if iterm => TerminalCapabilities::Iterm2,
+        _ if kitty => TerminalCapabilities::Kitty,
+        _ => TerminalCapabilities::Other,
+    }
 }
 
 const fn notification_text(event: NotifyEvent) -> &'static str {
     match event {
-        NotifyEvent::PermissionRequired => "Claude Code: Permission required",
-        NotifyEvent::QuestionRequired => "Claude Code: Question required",
-        NotifyEvent::TurnComplete => "Claude Code: Turn complete",
+        NotifyEvent::PermissionRequired => "Permission required -- waiting for your approval",
+        NotifyEvent::QuestionRequired => "Question required -- waiting for your input",
+        NotifyEvent::TurnComplete => "Turn complete",
+        NotifyEvent::ModelDirected => "Claude requests your attention",
     }
 }
 
-fn osc9_escape_sequence(message: &str) -> Cow<'_, str> {
-    let sanitized = sanitize_osc9_message(message);
-    let mut sequence = String::with_capacity(sanitized.len() + 8);
-    sequence.push('\u{1b}');
-    sequence.push_str("]9;");
-    sequence.push_str(&sanitized);
-    sequence.push('\u{1b}');
-    sequence.push('\\');
-    Cow::Owned(sequence)
-}
-
-fn sanitize_osc9_message(message: &str) -> String {
-    let mut sanitized = String::with_capacity(message.len());
-    for ch in message.chars() {
-        match ch {
-            '\u{07}' | '\u{1b}' | '\u{9c}' => {}
-            '\r' | '\n' => sanitized.push(' '),
-            _ => sanitized.push(ch),
-        }
-    }
-    sanitized
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_to_focused() {
-        let mgr = NotificationManager::new();
-        assert!(
-            mgr.terminal_focused,
-            "should default to focused to suppress spurious notifications"
-        );
-    }
-
-    #[test]
-    fn focus_lost_sets_unfocused() {
-        let mut mgr = NotificationManager::new();
-        mgr.on_focus_lost();
-        assert!(!mgr.terminal_focused);
-    }
-
-    #[test]
-    fn focus_gained_restores_focused() {
-        let mut mgr = NotificationManager::new();
-        mgr.on_focus_lost();
-        mgr.on_focus_gained();
-        assert!(mgr.terminal_focused);
-    }
-
-    #[test]
-    fn disabled_notifications_plan_is_silent() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::NotificationsDisabled,
-                TerminalCapabilities { osc9_notifications: true },
-                NotifyEvent::TurnComplete,
-            ),
-            NotificationPlan { ring_bell: false, send_desktop: false, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn terminal_bell_plan_skips_desktop_notification() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::TerminalBell,
-                TerminalCapabilities { osc9_notifications: true },
-                NotifyEvent::TurnComplete,
-            ),
-            NotificationPlan { ring_bell: true, send_desktop: false, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn iterm2_uses_osc9_when_supported() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: true },
-                NotifyEvent::TurnComplete,
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                send_desktop: false,
-                osc9_text: Some("Claude Code: Turn complete"),
-            }
-        );
-    }
-
-    #[test]
-    fn iterm2_auto_preserves_bell_and_desktop_fallback_when_osc9_is_unavailable() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2,
-                TerminalCapabilities { osc9_notifications: false },
-                NotifyEvent::TurnComplete,
-            ),
-            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn iterm2_with_bell_uses_osc9_and_bell_when_supported() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: true },
-                NotifyEvent::PermissionRequired,
-            ),
-            NotificationPlan {
-                ring_bell: true,
-                send_desktop: false,
-                osc9_text: Some("Claude Code: Permission required"),
-            }
-        );
-    }
-
-    #[test]
-    fn iterm2_with_bell_falls_back_to_desktop_and_bell() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Iterm2WithBell,
-                TerminalCapabilities { osc9_notifications: false },
-                NotifyEvent::PermissionRequired,
-            ),
-            NotificationPlan { ring_bell: true, send_desktop: true, osc9_text: None }
-        );
-    }
-
-    #[test]
-    fn ghostty_uses_osc9_when_supported() {
-        assert_eq!(
-            notification_plan(
-                PreferredNotifChannel::Ghostty,
-                TerminalCapabilities { osc9_notifications: true },
-                NotifyEvent::TurnComplete,
-            ),
-            NotificationPlan {
-                ring_bell: false,
-                send_desktop: false,
-                osc9_text: Some("Claude Code: Turn complete"),
-            }
-        );
-    }
-
-    #[test]
-    fn detects_iterm2_via_term_program() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "iTerm.app".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_iterm2_via_session_id() {
-        let capabilities =
-            terminal_capabilities_from_env([("ITERM_SESSION_ID".to_owned(), "w0t1p0".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn detects_ghostty_via_term_program() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "ghostty".to_owned())]);
-
-        assert!(capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn unsupported_term_does_not_advertise_osc9() {
-        let capabilities =
-            terminal_capabilities_from_env([("TERM_PROGRAM".to_owned(), "wezterm".to_owned())]);
-
-        assert!(!capabilities.osc9_notifications);
-    }
-
-    #[test]
-    fn osc9_sequence_uses_st_terminator_and_sanitizes_message() {
-        assert_eq!(
-            osc9_escape_sequence("hello\n\u{1b}world\u{07}").as_ref(),
-            "\u{1b}]9;hello world\u{1b}\\"
-        );
-    }
+fn sanitize_message(message: &str) -> String {
+    message
+        .chars()
+        .filter_map(|ch| match ch {
+            '\r' | '\n' | '\t' => Some(' '),
+            _ if ch.is_control() => None,
+            _ => Some(ch),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PreferredNotifChannel {
     #[default]
+    Auto,
     Iterm2,
     Iterm2WithBell,
     TerminalBell,
     NotificationsDisabled,
+    Kitty,
     Ghostty,
 }
 
@@ -399,12 +357,80 @@ impl PreferredNotifChannel {
     #[must_use]
     pub fn from_stored(value: &str) -> Option<Self> {
         match value {
+            "auto" => Some(Self::Auto),
             "iterm2" => Some(Self::Iterm2),
             "iterm2_with_bell" => Some(Self::Iterm2WithBell),
             "terminal_bell" => Some(Self::TerminalBell),
             "notifications_disabled" => Some(Self::NotificationsDisabled),
+            "kitty" => Some(Self::Kitty),
             "ghostty" => Some(Self::Ghostty),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_plans_match_real_terminal_protocols_and_fallbacks() {
+        for (channel, terminal, prefix) in [
+            (PreferredNotifChannel::Iterm2, TerminalCapabilities::Iterm2, "\x1b]9;"),
+            (PreferredNotifChannel::Ghostty, TerminalCapabilities::Ghostty, "\x1b]9;"),
+            (PreferredNotifChannel::Kitty, TerminalCapabilities::Kitty, "\x1b]99;;"),
+        ] {
+            let plan = notification_plan(channel, terminal, "hello\n\x1bworld\x07\u{9c}");
+            assert_eq!(
+                plan.escape_sequence,
+                Some(format!("{prefix}Claude Code: hello world\x1b\\"))
+            );
+            assert!(!plan.ring_bell && !plan.send_desktop);
+            assert!(notification_plan(channel, TerminalCapabilities::Other, "hello").send_desktop);
+            assert_eq!(
+                notification_plan(PreferredNotifChannel::Auto, terminal, "hello"),
+                notification_plan(channel, terminal, "hello")
+            );
+        }
+        let auto =
+            notification_plan(PreferredNotifChannel::Auto, TerminalCapabilities::Other, "hello");
+        assert!(auto.ring_bell && auto.send_desktop);
+        let bell = notification_plan(
+            PreferredNotifChannel::TerminalBell,
+            TerminalCapabilities::Kitty,
+            "hello",
+        );
+        assert!(bell.ring_bell && !bell.send_desktop && bell.escape_sequence.is_none());
+        let both = notification_plan(
+            PreferredNotifChannel::Iterm2WithBell,
+            TerminalCapabilities::Iterm2,
+            "hello",
+        );
+        assert!(both.ring_bell && both.escape_sequence.is_some() && !both.send_desktop);
+        let disabled = notification_plan(
+            PreferredNotifChannel::NotificationsDisabled,
+            TerminalCapabilities::Kitty,
+            "hello",
+        );
+        assert!(
+            !disabled.ring_bell && !disabled.send_desktop && disabled.escape_sequence.is_none()
+        );
+    }
+
+    #[test]
+    fn detects_terminal_notification_capabilities_without_confusing_platforms() {
+        for (key, value, expected) in [
+            ("TERM_PROGRAM", "iTerm.app", TerminalCapabilities::Iterm2),
+            ("ITERM_SESSION_ID", "w0t1", TerminalCapabilities::Iterm2),
+            ("TERM_PROGRAM", "ghostty", TerminalCapabilities::Ghostty),
+            ("KITTY_WINDOW_ID", "1", TerminalCapabilities::Kitty),
+            ("TERM", "xterm-kitty", TerminalCapabilities::Kitty),
+            ("TERM_PROGRAM", "Windows_Terminal", TerminalCapabilities::Other),
+        ] {
+            assert_eq!(
+                terminal_capabilities_from_env([(key.to_owned(), value.to_owned())]),
+                expected
+            );
         }
     }
 }

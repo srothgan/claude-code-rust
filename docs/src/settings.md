@@ -52,7 +52,7 @@ The bridge uses the installed Agent SDK's public `resolveSettings()` to inspect 
 | Local | `./.claude/settings.local.json` | Private project defaults. |
 | Managed | SDK-reported policy source | Policy contributions are shown and affected controls are read-only. |
 | Workspace trust | `~/.claude.json` | A separate trust owner reads and accepts workspace trust; this is not a settings fallback. |
-| App preferences | OS config directory, `claude-code-rust/settings.json` | Personal presentation preferences and updater state, separate from Claude settings. |
+| App preferences | OS config directory, `claude-code-rust/settings.json` | Personal presentation and notification preferences plus updater state, separate from Claude settings. |
 
 Set `CLAUDE_CONFIG_DIR` before startup to isolate the Claude profile. User settings use `<directory>/settings.json`, trust uses `<directory>/.claude.json`, and file credentials use `<directory>/.credentials.json`. Sessions, plugins, and authentication inherit that directory. App preferences and diagnostics retain their normal OS locations. Existing settings sources use paths reported by the SDK; missing writable sources use the corresponding profile or working-directory path.
 
@@ -80,7 +80,7 @@ Default effort is one inline choice control for the currently saved Default mode
 
 `Default` means no configured value was returned for this preference. It does not promise On or Off. The installed SDK's file resolver does not fill in built-in defaults; its applied-settings response exposes selected session values rather than effective defaults for the whole catalog. Keep this label until the fallback for an individual setting can be determined reliably, without treating a current-session override as its default.
 
-Continuation at usage limits, notification transport, and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification delivery and updater preferences remain subsequent implementation groups in `config.md`.
+Continuation at usage limits and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification controls are described below; updater preferences remain a subsequent implementation group in `config.md`.
 
 When Reduce motion is On, active thinking, tool execution, compaction, cancellation, and pending commands use a static diamond (`◆`) instead of an animated spinner. Animation-only redraws stop; incoming state changes still update normally. This setting is ready and applies immediately after saving, with reset following the remaining scopes or Default.
 
@@ -163,3 +163,23 @@ The Plugins tab is available through `/plugins`. It shows installed plugins, mar
 Supported actions include enabling, disabling, updating, uninstalling, and installing plugins into user, project, or local scopes when those actions are available for the selected plugin.
 
 After plugin changes, the app requests a session runtime plugin reload when an active session is available.
+
+
+## Notifications
+
+Notifications apply immediately after an acknowledged save. They alert only when the terminal reports that it is unfocused; terminals without focus reporting remain silent. These controls appear alphabetically in the same Settings editor:
+
+| Setting | Choices / default | Behavior |
+| --- | --- | --- |
+| Notification method | Auto, iTerm2, Terminal bell, iTerm2 with bell, Kitty, Ghostty, Disabled; default Auto | Choose local delivery. Disabled silences every category. |
+| Notify when input is needed | On / Off; default On | Alert for a waiting permission, question or user dialog. Duplicate pending requests do not alert again. |
+| Notify when Claude requests it | On / Off; default On | Allow local alerts from successful proactive `PushNotification` tool results, when the native account/runtime exposes that tool. |
+| Notify when a turn finishes | On / Off; default On | Alert after an active turn completes; cancellation, errors, idle command results and history do not trigger completion alerts. |
+
+Auto detects iTerm2/Ghostty OSC 9 or Kitty OSC 99 support; otherwise it preserves desktop notification plus terminal bell delivery. A terminal-specific method uses its protocol only on that terminal and falls back to an OS desktop notification elsewhere. iTerm2 with bell adds the bell; Terminal bell sends only BEL. The OS backend runs outside the TUI loop and may be unavailable over SSH. Terminal alert text strips control characters before constructing escape sequences. Protocol references: [iTerm2](https://iterm2.com/documentation-escape-codes.html), [Ghostty](https://ghostty.org/docs/vt/osc/9), and [Kitty](https://sw.kovidgoyal.net/kitty/desktop-notifications/).
+
+The three category toggles are personal app preferences under `notifications.actionsRequired`, `notifications.modelDirected`, and `notifications.turnComplete`. Notification method saves `preferredNotifChannel` in User Claude settings and consumes its resolved value. The category toggles do not change the native mobile-push settings `inputNeededNotifEnabled` or `agentPushNotifEnabled`. Reset removes the selected saved value and resumes inheritance or the documented default.
+
+Ordinary native CLI notices remain visible in the transcript, including high-priority notices; their SDK payload does not identify them as requests for a local alert. Proactive tool reports distinguish mobile delivery from local delivery: a mobile push alone does not suppress our local alert, but an upstream local delivery does. Native configuration/presence suppression remains respected; `no_transport` allows local fallback. Missing local-delivery reports are not guessed. Repeated tool results and replayed history never queue alerts for later delivery after focus or settings change. Reused native notice keys can produce a new visible notice when the UUID changes.
+
+For notification diagnostics, use `--diagnostics-preset full`, `runtime` or `session`, or include `app.notify=debug` in a custom log filter. The `app.notify` records show observed terminal focus, SDK origin and delivery reports, duplicate/replay handling, category and method decisions, and terminal/desktop transport outcomes. Session and interaction identities follow delivery through the background desktop thread. Question and notification text are omitted. A successful terminal write or accepted OS request confirms submission to the transport; it does not prove that the terminal or operating system displayed or sounded an alert.

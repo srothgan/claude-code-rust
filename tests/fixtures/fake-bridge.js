@@ -35,6 +35,17 @@ const settingDefinitions = [
   ['permissions.deny', 'Permissions: deny rules', 'One denied tool rule per line', 'string_list', ['permissions', 'deny']],
   ['alwaysThinkingEnabled', 'Thinking', 'Saved thinking preference', 'boolean', ['alwaysThinkingEnabled']],
 ];
+const notificationScenario = SCENARIO === 'notifications';
+let notificationAppPath;
+if (notificationScenario) {
+  Object.assign(preferences, { preferredNotifChannel: 'terminal_bell', 'notifications.modelDirected': true, 'notifications.actionsRequired': true, 'notifications.turnComplete': false });
+  fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify({ preferredNotifChannel: 'terminal_bell' }));
+  settingDefinitions.splice(0, settingDefinitions.length,
+    ['preferredNotifChannel', 'Notification method', 'Choose local transport', 'string', ['preferredNotifChannel']],
+    ['notifications.turnComplete', 'Notify when a turn finishes', 'Completed turns', 'boolean', ['notifications', 'turnComplete']],
+    ['notifications.modelDirected', 'Notify when Claude requests it', 'Local proactive alerts', 'boolean', ['notifications', 'modelDirected']],
+    ['notifications.actionsRequired', 'Notify when input is needed', 'Waiting interactions', 'boolean', ['notifications', 'actionsRequired']]);
+}
 const presentationScenario = SCENARIO.includes('presentation');
 if (presentationScenario) {
   Object.assign(preferences, { autoScrollEnabled: true, showMessageTimestamps: true, showTurnDuration: true, timeFormat: '24-hour-utc' });
@@ -46,9 +57,9 @@ function settingsSnapshot() {
   return {
     cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
     catalog: settingDefinitions.map(([id, label, description, kind, key_path]) => ({
-      id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : [],
-      allows_custom: kind !== 'boolean', writable_scopes: ['user'],
-      reset: 'Reset removes the saved value here', application: presentationScenario ? 'host' : 'next_session',
+      id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
+      allows_custom: kind !== 'boolean' && id !== 'preferredNotifChannel', writable_scopes: ['user'],
+      reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario ? 'host' : 'next_session',
     })),
     sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
       values: Object.entries(preferences).map(([id, value]) => ({ id, value, revision: String(settingsRevision) })) }],
@@ -94,6 +105,15 @@ function streamReply(messageUuid) {
   if (presentationScenario) {
     for (const [role, uuid] of [['user', messageUuid], ['assistant', undefined]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'message_metadata', role, timestamp: '2026-10-03T15:02:01Z', source_message_uuid: uuid } });
     if (SCENARIO === 'presentation') send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '\n```rust\nlet answer = 42;\n```\n' }, source_message_uuid: null } });
+  }
+  if (notificationScenario) {
+    const alert = notification => send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification, replay: false } });
+    const native = { origin: 'sdk_notice', session_id: SESSION, uuid: `notice-${replyNumber}`, key: 'replaceable', text: `Native notice ${replyNumber}`, priority: 'immediate', color: 'yellow', timeout_ms: 5000 };
+    alert(native); alert(native);
+    const proactive = { origin: 'model_tool', session_id: SESSION, tool_use_id: `push-${replyNumber}`, text: 'Review is ready', push_sent: true, local_sent: false, disabled_reason: 'no_transport', sent_at: '2026-10-04T10:00:00Z' };
+    alert(proactive); alert(proactive);
+    alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
   // Follow-up replies stay short so their start marker remains on screen.
   const lines = replyNumber === 1 ? LINES : FOLLOW_UP_LINES;
@@ -225,6 +245,10 @@ readline
         } else streamReply(message.message_uuid);
         break;
       case 'inspect_settings':
+        if (notificationScenario) {
+          notificationAppPath = path.join(process.env.CLAUDE_CONFIG_DIR, 'app-settings.json');
+          if (!fs.existsSync(notificationAppPath)) fs.writeFileSync(notificationAppPath, JSON.stringify({ notifications: { actionsRequired: true, modelDirected: true, turnComplete: false } }));
+        }
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
           persistence: 'not_requested', application: 'blocked', snapshot: settingsSnapshot(),
         } });
@@ -233,7 +257,7 @@ readline
         const mutation = message.mutation;
         const definition = settingDefinitions.find(([id]) => id === mutation.id);
         if (!definition || mutation.scope !== 'user' || mutation.expected_revision !== String(settingsRevision)) throw new Error('Unexpected settings mutation');
-        const file = path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json');
+        const file = notificationScenario && mutation.id.startsWith('notifications.') ? notificationAppPath : path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json');
         const document = JSON.parse(fs.readFileSync(file, 'utf8'));
         const keys = definition[4];
         let parent = document;
@@ -248,7 +272,7 @@ readline
         fs.writeFileSync(file, JSON.stringify(document));
         settingsRevision++;
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
-          persistence: 'saved', application: presentationScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
+          persistence: 'saved', application: presentationScenario || notificationScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
         } });
         break;
       }

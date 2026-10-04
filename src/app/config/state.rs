@@ -78,6 +78,17 @@ impl ConfigState {
     pub fn status_in_terminal_tab_effective(&self) -> bool {
         self.saved_bool("presentation.showStatusInTerminalTab", true)
     }
+    pub(crate) fn notification_enabled(&self, event: crate::app::notify::NotifyEvent) -> bool {
+        use crate::app::notify::NotifyEvent;
+        let (id, default) = match event {
+            NotifyEvent::PermissionRequired | NotifyEvent::QuestionRequired => {
+                ("notifications.actionsRequired", true)
+            }
+            NotifyEvent::TurnComplete => ("notifications.turnComplete", true),
+            NotifyEvent::ModelDirected => ("notifications.modelDirected", true),
+        };
+        self.saved_bool(id, default)
+    }
     pub fn time_format(&self) -> &str {
         self.saved_value("timeFormat").and_then(Value::as_str).unwrap_or("auto")
     }

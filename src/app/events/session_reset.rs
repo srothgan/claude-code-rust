@@ -231,7 +231,26 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     app.push_message_tracked(welcome);
     app.sync_welcome_snapshot();
     for update in history_updates {
+        let completed_tool = match update {
+            model::SessionUpdate::ToolCall(tool) if tool.status.is_terminal() => {
+                Some(tool.tool_call_id.as_str())
+            }
+            model::SessionUpdate::ToolCallUpdate(tool)
+                if tool.fields.status.is_some_and(model::ToolCallStatus::is_terminal) =>
+            {
+                Some(tool.tool_call_id.as_str())
+            }
+            _ => None,
+        };
+        if let Some(tool_id) = completed_tool
+            && let Some(session_id) = &app.session_runtime.session_id
+        {
+            app.notifications.observe_history_tool(session_id.as_str(), tool_id);
+        }
         match update {
+            model::SessionUpdate::NotificationUpdate { notification, .. } => {
+                super::notifications::handle_sdk_notification(app, notification, true);
+            }
             model::SessionUpdate::UserMessageChunk(chunk) => {
                 app.clear_active_turn_assistant();
                 append_resume_user_message_chunk(app, chunk);

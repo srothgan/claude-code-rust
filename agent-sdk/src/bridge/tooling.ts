@@ -2147,17 +2147,7 @@ function pushNotificationDisabledReason(value: unknown): string | undefined {
   }
 }
 
-function pushNotificationResultText(
-  toolName: string,
-  rawResult: unknown,
-  rawContent: unknown,
-  rawInput: Json | undefined,
-): string | undefined {
-  if (toolName !== PUSH_NOTIFICATION_TOOL_NAME) {
-    return undefined;
-  }
-
-  const inputMessage = nonEmptyString(asRecordOrNull(rawInput)?.message);
+export function pushNotificationOutput(rawResult: unknown, rawContent: unknown): Record<string, unknown> | undefined {
   const candidates = resultRecordCandidates(rawResult, rawContent);
   for (const parsed of [
     parseJsonCandidate(rawResult),
@@ -2175,10 +2165,24 @@ function pushNotificationResultText(
       "idleSec" in candidate ||
       "hasFocus" in candidate ||
       "sentAt" in candidate;
-    if (!isStructuredPushOutput) {
-      continue;
-    }
+    if (isStructuredPushOutput) return candidate;
+  }
+  return undefined;
+}
 
+function pushNotificationResultText(
+  toolName: string,
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: Json | undefined,
+): string | undefined {
+  if (toolName !== PUSH_NOTIFICATION_TOOL_NAME) {
+    return undefined;
+  }
+
+  const inputMessage = nonEmptyString(asRecordOrNull(rawInput)?.message);
+  const candidate = pushNotificationOutput(rawResult, rawContent);
+  if (candidate) {
     const lines: string[] = [];
     const outputMessage = nonEmptyString(candidate.message);
     if (outputMessage && outputMessage !== inputMessage) {

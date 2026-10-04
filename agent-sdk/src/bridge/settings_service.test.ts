@@ -382,3 +382,44 @@ test("default agent is chosen from SDK inventory and scoped reset restores the s
   assert.equal(reset.persistence, "saved", reset.error ?? "save");
   assert.equal(reset.snapshot?.values.find(value => value.id === "agent")?.value, "reviewer");
 });
+
+
+test("notification controls save, reset and reject concurrent edits without changing mobile or unrelated preferences", async () => {
+  const appFile = path.join(root, "notification-settings.json");
+  await fs.writeFile(appFile, JSON.stringify({ notifications: { future: 7 }, presentation: { copyFullResponse: true }, updates: { skipped_version: "keep" } }));
+  await write("user", { inputNeededNotifEnabled: true, agentPushNotifEnabled: true, future: 17 });
+  const inspect = () => inspectSettings(cwd, [], [], appFile);
+  for (const id of ["notifications.actionsRequired", "notifications.modelDirected", "notifications.turnComplete"]) {
+    const shown = await inspect();
+    const row = shown.catalog.find(row => row.id === id);
+    assert.ok(row);
+    assert.deepEqual(row.writable_scopes, ["user"]);
+    assert.deepEqual(row.options, [true, false]);
+    const saved = await mutateSetting(cwd, mutation(shown, id, "user", false), [], [], appFile);
+    assert.equal(saved.persistence, "saved");
+    assert.equal(saved.application, "host");
+    assert.equal(saved.snapshot?.values.find(value => value.id === id)?.value, false);
+    assert.equal((await mutateSetting(cwd, mutation(await inspect(), id, "local", true), [], [], appFile)).persistence, "failure");
+    const stale = mutation(await inspect(), id, "user", true);
+    const document = JSON.parse(await fs.readFile(appFile, "utf8"));
+    document.notifications[id.split(".")[1]] = true;
+    await fs.writeFile(appFile, JSON.stringify(document));
+    assert.equal((await mutateSetting(cwd, stale, [], [], appFile)).persistence, "conflict");
+    const reset = await mutateSetting(cwd, mutation(await inspect(), id, "user"), [], [], appFile);
+    assert.equal(reset.persistence, "saved");
+    assert.equal(reset.snapshot?.values.find(value => value.id === id)?.value, undefined);
+  }
+  for (const method of ["auto", "iterm2", "terminal_bell", "iterm2_with_bell", "kitty", "ghostty", "notifications_disabled"]) {
+    const saved = await mutateSetting(cwd, mutation(await inspect(), "preferredNotifChannel", "user", method), [], [], appFile);
+    assert.equal(saved.application, "host");
+    assert.equal(saved.snapshot?.values.find(value => value.id === "preferredNotifChannel")?.value, method);
+  }
+  const app = JSON.parse(await fs.readFile(appFile, "utf8"));
+  assert.deepEqual(app, { notifications: { future: 7 }, presentation: { copyFullResponse: true }, updates: { skipped_version: "keep" } });
+  const user = (await inspect()).sources.find(source => source.scope === "user");
+  assert.ok(user);
+  const native = JSON.parse(await fs.readFile(user.path, "utf8"));
+  assert.equal(native.inputNeededNotifEnabled, true);
+  assert.equal(native.agentPushNotifEnabled, true);
+  assert.equal(native.future, 17);
+});
