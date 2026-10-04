@@ -44,6 +44,11 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Cancel => handle_cancel_submit(app),
         AppSlashCommand::Compact => handle_compact_submit(app),
         AppSlashCommand::Config => handle_config_submit(app),
+        AppSlashCommand::Memory => handle_settings_category_submit(app, "memory"),
+        AppSlashCommand::Permissions => handle_settings_category_submit(app, "permissions"),
+        AppSlashCommand::Sandbox => handle_settings_category_submit(app, "sandbox"),
+        AppSlashCommand::Hooks => handle_settings_category_submit(app, "hooks"),
+
         AppSlashCommand::Copy => {
             crate::app::copy::open(app);
             true
@@ -125,6 +130,13 @@ fn handle_compact_submit(app: &mut App) -> bool {
 
     app.turn.compaction.begin_manual();
     false
+}
+
+fn handle_settings_category_submit(app: &mut App, category: &str) -> bool {
+    if let Err(error) = crate::app::config::open_category(app, category) {
+        push_system_message(app, &error);
+    }
+    true
 }
 
 fn handle_config_submit(app: &mut App) -> bool {

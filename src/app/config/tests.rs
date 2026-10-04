@@ -223,7 +223,7 @@ fn help_tab_left_right_switches_help_sections() {
 fn plugins_tab_uses_arrow_keys_for_inner_navigation() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Plugins;
-    app.config.selected_setting_index = 3;
+    app.config.settings.select("remembered-setting".into());
     app.plugins.installed = vec![
         installed_plugin_entry("frontend-design@claude-plugins-official"),
         installed_plugin_entry("rust-analyzer-lsp@claude-plugins-official"),
@@ -233,7 +233,10 @@ fn plugins_tab_uses_arrow_keys_for_inner_navigation() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
-    assert_eq!(app.config.selected_setting_index, 3);
+    assert_eq!(
+        app.config.settings.position().expect("position").selected.as_deref(),
+        Some("remembered-setting")
+    );
     assert_eq!(app.config.active_tab, ConfigTab::Plugins);
     assert_eq!(app.plugins.installed_selected_index, 1);
     assert_eq!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Plugins);

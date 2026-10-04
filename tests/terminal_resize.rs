@@ -768,7 +768,7 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
 }
 
 #[test]
-fn structured_settings_editor_preserves_multiline_rules_on_resize_and_saves_them() {
+fn structured_settings_editor_adds_individual_rules_and_preserves_them_on_resize() {
     let mut test = TerminalTest::start("hold-success", 8);
     std::fs::write(
         test.temp.path().join("profile/settings.json"),
@@ -777,14 +777,13 @@ fn structured_settings_editor_preserves_multiline_rules_on_resize_and_saves_them
     .expect("initial settings");
     test.submit("go", "go");
     test.wait_journal("reply-held");
-    test.submit("/config", "/config");
-    test.wait_screen("Saved in user: German");
-    test.send(b"\x1b[B");
+    test.submit("/permissions", "/permissions");
     test.wait_screen("Permissions: deny rules");
     test.send(b" ");
     test.wait_screen("Ctrl+S save");
-    test.send(b"\x15");
-    test.paste("Read(./.env)\nBash(git push *)");
+    test.send(b"a");
+    test.paste("Bash(git push *)");
+    test.send(b"\r");
     for (rows, cols) in [(18, 61), (38, 87), (55, 120)] {
         test.resize(rows, cols);
         test.wait_screen("Bash(git push *)");
@@ -806,6 +805,58 @@ fn structured_settings_editor_preserves_multiline_rules_on_resize_and_saves_them
         serde_json::json!(["Read(./.env)", "Bash(git push *)"])
     );
     assert_eq!(document["permissions"]["defaultMode"], "default");
+    test.send(b"\x1b");
+    test.wait_screen("streamed line 8");
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
+    test.shutdown();
+}
+
+#[test]
+fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_data() {
+    let mut test = TerminalTest::start("hold-hooks", 8);
+    std::fs::write(
+        test.temp.path().join("profile/settings.json"),
+        r#"{"permissions":{"defaultMode":"default"},"unrelated":"keep"}"#,
+    )
+    .expect("initial settings");
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.submit("/hooks", "/hooks");
+    test.wait_screen("Definitions");
+    test.send(b"\r");
+    test.wait_screen("Stop");
+    test.send(b"a");
+    test.wait_screen("Choose event");
+    test.send(b"\x1b[H\r");
+    test.wait_screen("Matcher (optional)");
+    test.paste("Write|Edit");
+    test.send(b"\r");
+    test.wait_screen("Choose action");
+    test.wait_screen("mcp_tool");
+    test.send(b"\r");
+    test.wait_screen("Command *");
+    test.paste("npm run lint");
+    test.send(b"\r");
+    test.wait_screen("Review");
+    test.send(b"\r\x1b[B");
+    for (rows, cols) in [(16, 42), (38, 87), (55, 120)] {
+        test.resize(rows, cols);
+        test.wait_screen("npm run lint");
+    }
+    test.send(b"\x13");
+    test.wait_until("hook settings mutation", |test| test.commands("mutate_setting").len() == 1);
+    let expected = serde_json::json!({"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"npm run lint"}]}],"Stop":[{"hooks":[{"type":"command","command":"keep-original","future":"keep"}]}]});
+    assert_eq!(test.commands("mutate_setting")[0]["mutation"]["value"], expected);
+    test.wait_screen("Saved in user");
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved file"),
+    )
+    .expect("settings JSON");
+    assert_eq!(saved["hooks"], expected);
+    assert_eq!(saved["unrelated"], "keep");
+    assert_eq!(saved["permissions"]["defaultMode"], "default");
     test.send(b"\x1b");
     test.wait_screen("streamed line 8");
     test.assert_prompts(&["go"]);

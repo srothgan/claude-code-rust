@@ -821,12 +821,24 @@ export interface BridgeCommandEnvelope {
 }
 
 export type SettingsScope = "user" | "project" | "local";
+export interface SettingsCategory { id: string; label: string; short_label: string }
+export interface SettingsEditorSchema {
+  description?: string;
+  type: "string" | "number" | "boolean" | "object" | "array" | "map" | "variant" | "json";
+  fields?: Array<{ key: string; label: string; schema: SettingsEditorSchema; required?: boolean }>;
+  item?: SettingsEditorSchema;
+  options?: Json[];
+  keys?: string[];
+  variants?: Record<string, SettingsEditorSchema>;
+}
 export interface SettingDescriptor {
   id: string; label: string; description: string; key_path: string[];
+  category: string; editor?: SettingsEditorSchema;
   kind: "boolean" | "string" | "string_list" | "number" | "json"; options: Json[]; writable_scopes: SettingsScope[];
   allows_custom: boolean; reset: string; application: "host" | "next_session"; unavailable?: string;
 }
 export interface SettingsSnapshot {
+  categories: SettingsCategory[];
   cwd: string; context: string; catalog: SettingDescriptor[];
   sources: Array<{ scope: SettingsScope; path: string; status: string; error?: string; values: Array<{ id: string; revision: string; value?: Json }> }>;
   values: Array<{ id: string; value?: Json; contributors: string[]; policy_restricted: boolean }>;

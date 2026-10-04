@@ -37,11 +37,7 @@ impl App {
 
     pub fn bump_session_scope_epoch(&mut self) {
         self.session_runtime.bump_session_scope_epoch();
-        self.config.snapshot = None;
-        self.config.pending_settings_request = None;
-        if matches!(self.config.overlay, Some(crate::app::config::ConfigOverlayState::Setting(_))) {
-            self.config.clear_overlay();
-        }
+        self.config.invalidate_session();
         // Side-question work belongs to this conversation scope, not the next one.
         self.btw.clear();
     }

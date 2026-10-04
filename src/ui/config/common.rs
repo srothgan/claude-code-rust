@@ -194,9 +194,13 @@ pub(super) fn tab_line(
     Line::from(spans)
 }
 
-pub(super) fn hint_text(mut hints: Vec<&str>, width: u16) -> String {
+pub(super) fn hint_text(hints: Vec<&str>, width: u16) -> String {
+    hint_text_with_escape(hints, width, "Esc close")
+}
+
+pub(super) fn hint_text_with_escape(mut hints: Vec<&str>, width: u16, escape: &str) -> String {
     loop {
-        let help = hints.iter().copied().chain(["Esc close"]).collect::<Vec<_>>().join(" | ");
+        let help = hints.iter().copied().chain([escape]).collect::<Vec<_>>().join(" | ");
         if wrapped_height(help.as_str(), width) <= 3 || hints.is_empty() {
             return help;
         }

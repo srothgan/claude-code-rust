@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use unicode_width::UnicodeWidthChar;
 
 pub(super) fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> Line<'static> {
@@ -40,6 +40,65 @@ pub(super) fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> 
     }
 
     Line::from(spans)
+}
+
+pub(super) fn search_field_line(
+    query: &str,
+    cursor: Option<usize>,
+    placeholder: &str,
+) -> Line<'static> {
+    cursor.map_or_else(
+        || {
+            Line::styled(
+                if query.is_empty() { placeholder } else { query }.to_owned(),
+                Style::default().fg(if query.is_empty() { theme::DIM } else { Color::White }),
+            )
+        },
+        |cursor| text_input_line(query, cursor, placeholder),
+    )
+}
+
+pub(super) fn search_height(query: &str, cursor: Option<usize>, width: u16) -> u16 {
+    common::wrapped_height(
+        search_field_line(query, cursor, "Type to filter this list"),
+        width.saturating_sub(2),
+    )
+    .saturating_add(2)
+}
+
+pub(super) fn render_search_field(
+    frame: &mut Frame,
+    area: Rect,
+    query: &str,
+    cursor: Option<usize>,
+) {
+    let focused = cursor.is_some();
+    let prefix =
+        query.chars().take(cursor.unwrap_or_else(|| query.chars().count())).collect::<String>();
+    let cursor_line = common::wrapped_height(
+        search_field_line(&prefix, cursor.map(|_| prefix.chars().count()), ""),
+        area.width.saturating_sub(2),
+    )
+    .saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new(search_field_line(query, cursor, "Type to filter this list"))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(if focused { " Search " } else { " Search (Up to focus) " })
+                    .border_style(Style::default().fg(if focused {
+                        theme::RUST_ORANGE
+                    } else {
+                        theme::DIM
+                    })),
+            )
+            .wrap(Wrap { trim: false })
+            .scroll((
+                common::selected_scroll(usize::from(cursor_line), 1, area.height.saturating_sub(2)),
+                0,
+            )),
+        area,
+    );
 }
 
 pub(super) fn render_text_input_field(

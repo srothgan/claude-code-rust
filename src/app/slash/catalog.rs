@@ -9,6 +9,11 @@ pub(crate) enum AppSlashCommand {
     Cancel,
     Compact,
     Config,
+    Memory,
+    Permissions,
+    Sandbox,
+    Hooks,
+
     Copy,
     Docs,
     Agent,
@@ -108,6 +113,38 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /config",
         short_description: "Open settings",
         long_description: "Open the fullscreen settings tab.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Memory,
+        name: "/memory",
+        usage: "Usage: /memory",
+        short_description: "Open memory settings",
+        long_description: "Open the memory pane of Settings without changing session choices.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Permissions,
+        name: "/permissions",
+        usage: "Usage: /permissions",
+        short_description: "Open permissions settings",
+        long_description: "Open the permissions pane of Settings without changing session choices.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Sandbox,
+        name: "/sandbox",
+        usage: "Usage: /sandbox",
+        short_description: "Open sandbox settings",
+        long_description: "Open the sandbox pane of Settings without changing session choices.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Hooks,
+        name: "/hooks",
+        usage: "Usage: /hooks",
+        short_description: "Open hooks settings",
+        long_description: "Open the hooks pane of Settings without changing session choices.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -286,6 +323,11 @@ impl AppSlashCommand {
             Self::Cancel => "/cancel",
             Self::Compact => "/compact",
             Self::Config => "/config",
+            Self::Memory => "/memory",
+            Self::Permissions => "/permissions",
+            Self::Sandbox => "/sandbox",
+            Self::Hooks => "/hooks",
+
             Self::Copy => "/copy",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
@@ -328,7 +370,16 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Config | Self::Help | Self::Mcp | Self::Plugins | Self::Status | Self::Usage => {
+            Self::Config
+            | Self::Memory
+            | Self::Permissions
+            | Self::Sandbox
+            | Self::Hooks
+            | Self::Help
+            | Self::Mcp
+            | Self::Plugins
+            | Self::Status
+            | Self::Usage => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
                 } else {

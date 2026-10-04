@@ -132,7 +132,18 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
     let classify = |input: &str| ResolvedSubmission::resolve(input.to_owned()).class();
 
     assert_eq!(classify("/cancel"), SubmissionClass::TurnControl);
-    for input in ["/config", "/help", "/mcp", "/plugins", "/status", "/usage"] {
+    for input in [
+        "/config",
+        "/memory",
+        "/permissions",
+        "/sandbox",
+        "/hooks",
+        "/help",
+        "/mcp",
+        "/plugins",
+        "/status",
+        "/usage",
+    ] {
         assert_eq!(classify(input), SubmissionClass::Fullscreen, "unexpected class for {input}");
     }
     assert_eq!(classify("/docs commands"), SubmissionClass::Informational);
@@ -333,6 +344,45 @@ fn app_config_shadows_advertised_config_command() {
         app.surface_mode,
         super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
     );
+}
+
+#[test]
+fn settings_shortcuts_own_completion_and_route_to_their_pane_during_an_active_turn() {
+    for (name, category) in [
+        ("/config", "general"),
+        ("/memory", "memory"),
+        ("/permissions", "permissions"),
+        ("/sandbox", "sandbox"),
+        ("/hooks", "hooks"),
+    ] {
+        let mut app = App::test_default();
+        app.sdk_inventory.available_commands =
+            vec![model::AvailableCommand::new(name, "SDK command").input_hint("<action>")];
+        app.input.set_text(name);
+        let _ = app.input.set_cursor(0, name.chars().count());
+        let suggestions = requested_slash_state(&app).expect("suggestions");
+        assert_eq!(
+            suggestions.candidates.iter().filter(|candidate| candidate.primary == name).count(),
+            1
+        );
+        app.config.settings.query = "old query".into();
+        app.config.selected_scope = crate::agent::settings::SettingsScope::Local;
+        app.status = AppStatus::Thinking;
+        assert!(try_handle_submit(&mut app, name));
+        assert_eq!(app.config.settings.category, category);
+        assert!(app.config.settings.query.is_empty());
+        assert_eq!(app.config.settings.focus, crate::app::config::SettingsFocus::Content);
+        assert_eq!(app.config.selected_scope, crate::agent::settings::SettingsScope::Local);
+        assert_eq!(app.status, AppStatus::Thinking);
+        assert!(app.pending_submit.is_none());
+        assert_eq!(
+            app.surface_mode,
+            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
+        );
+        assert!(try_handle_submit(&mut app, &format!("{name} extra")));
+        let message = app.transcript.messages.last().expect("usage feedback");
+        assert!(message.blocks.iter().any(|block|matches!(block, crate::app::MessageBlock::Text(text) if text.text == format!("Usage: {name}"))));
+    }
 }
 
 #[test]

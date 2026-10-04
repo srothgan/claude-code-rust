@@ -4,6 +4,44 @@
 use super::prelude::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsEditTarget {
+    id: String,
+    scope: crate::agent::settings::SettingsScope,
+    context: String,
+    revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingSettingsRequest {
+    Inspection(String),
+    Mutation { request_id: String, target: Box<SettingsEditTarget> },
+}
+impl PendingSettingsRequest {
+    pub fn mutation(
+        request_id: String,
+        mutation: &crate::agent::settings::SettingsMutation,
+    ) -> Self {
+        Self::Mutation {
+            request_id,
+            target: Box::new(SettingsEditTarget {
+                id: mutation.id.clone(),
+                scope: mutation.scope,
+                context: mutation.context.clone(),
+                revision: mutation.expected_revision.clone(),
+            }),
+        }
+    }
+    pub fn request_id(&self) -> &str {
+        match self {
+            Self::Inspection(id) | Self::Mutation { request_id: id, .. } => id,
+        }
+    }
+    pub fn owns_editor(&self, editor: &SettingOverlayState) -> bool {
+        matches!(self, Self::Mutation { target, .. } if target.id == editor.setting.id && target.scope == editor.scope && target.context == editor.context && target.revision == editor.revision)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingSessionTitleChangeKind {
     Rename { requested_title: Option<String> },
     Generate,
@@ -18,8 +56,7 @@ pub struct PendingSessionTitleChangeState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
     pub active_tab: ConfigTab,
-    pub selected_setting_index: usize,
-    pub settings_scroll_offset: usize,
+    pub settings: Box<super::SettingsBrowse>,
     pub mcp_selected_server_index: usize,
     pub help_section: ConfigHelpSection,
     pub help_dialog: DialogState,
@@ -27,7 +64,7 @@ pub struct ConfigState {
     pub overlay: Option<ConfigOverlayState>,
     pub snapshot: Option<crate::agent::settings::SettingsSnapshot>,
     pub selected_scope: crate::agent::settings::SettingsScope,
-    pub pending_settings_request: Option<String>,
+    pub pending_settings_request: Option<PendingSettingsRequest>,
     pub status_message: Option<String>,
     pub last_error: Option<String>,
     pub overlay_message: Option<OverlayMessage>,
@@ -38,8 +75,7 @@ impl Default for ConfigState {
     fn default() -> Self {
         Self {
             active_tab: ConfigTab::Settings,
-            selected_setting_index: 0,
-            settings_scroll_offset: 0,
+            settings: Box::default(),
             mcp_selected_server_index: 0,
             help_section: ConfigHelpSection::default(),
             help_dialog: DialogState::default(),
@@ -113,7 +149,7 @@ impl ConfigState {
             .unwrap_or_default()
     }
     pub fn selected_setting(&self) -> Option<&crate::agent::settings::SettingDescriptor> {
-        self.snapshot.as_ref()?.catalog.get(self.selected_setting_index)
+        self.settings.selected(self.snapshot.as_ref()?)
     }
     pub fn setting_overlay(&self) -> Option<&SettingOverlayState> {
         if let Some(ConfigOverlayState::Setting(overlay)) = &self.overlay {
@@ -138,6 +174,17 @@ impl ConfigState {
     pub fn clear_overlay(&mut self) {
         self.overlay = None;
         self.overlay_message = None;
+    }
+
+    pub fn invalidate_session(&mut self) {
+        self.snapshot = None;
+        self.pending_settings_request = None;
+        self.pending_session_title_change = None;
+        self.status_message = None;
+        self.last_error = None;
+        if self.setting_overlay().is_none() {
+            self.clear_overlay();
+        }
     }
 
     pub fn set_overlay_info(&mut self, message: impl Into<String>) {

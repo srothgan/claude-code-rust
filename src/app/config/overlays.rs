@@ -8,12 +8,14 @@ use super::mcp::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingOverlayState {
-    pub id: String,
+    // Captured metadata keeps the draft inspectable after its session snapshot is invalidated.
+    pub setting: Box<crate::agent::settings::SettingDescriptor>,
     pub scope: crate::agent::settings::SettingsScope,
     pub context: String,
     pub revision: String,
     pub draft: String,
     pub cursor: usize,
+    pub structured: Option<Box<super::StructuredEditor>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

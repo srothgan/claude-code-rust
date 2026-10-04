@@ -4,19 +4,84 @@ use crate::agent::settings::{SettingsApplication, SettingsScope};
 use crate::app::App;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table},
 };
 
+pub(super) fn help_text(app: &App, width: u16) -> String {
+    use crate::app::config::SettingsFocus;
+    let mut hints = match app.config.settings.focus {
+        SettingsFocus::CategoryTabs => {
+            vec!["Left/Right pane", "Down search", "Enter list", "Tab/Shift+Tab tabs"]
+        }
+        SettingsFocus::Search => {
+            vec!["Type to search this pane", "Up panes", "Down/Enter list", "Tab/Shift+Tab tabs"]
+        }
+        SettingsFocus::Content => {
+            if let Some(setting) = app.config.selected_setting() {
+                let writable = setting.writable_at(app.config.selected_scope);
+                let mut hints = vec![
+                    if !writable {
+                        if setting.kind.is_structured() { "Enter inspect" } else { "Read-only" }
+                    } else if setting.allows_custom {
+                        "Space edit"
+                    } else {
+                        "Space change"
+                    },
+                    "Up/Down select",
+                    "/ search",
+                    "s scope",
+                    "r refresh",
+                    "Tab/Shift+Tab tabs",
+                ];
+                if writable {
+                    hints.push("Del reset");
+                }
+                if !setting.allows_custom && writable {
+                    hints.push("Left/Right change");
+                }
+                if !app.config.settings.query.is_empty() {
+                    hints.push("Enter reveal");
+                } else if setting.kind.is_structured() && writable {
+                    hints.push("Enter edit");
+                } else if !setting.kind.is_structured() {
+                    hints.push("Enter close");
+                }
+                hints
+            } else {
+                vec!["/ search", "r refresh", "Tab/Shift+Tab tabs"]
+            }
+        }
+    };
+    let escape = if !app.config.settings.query.is_empty() {
+        "Esc clear search"
+    } else if app.config.settings.focus == SettingsFocus::Search {
+        "Esc back"
+    } else {
+        "Esc close"
+    };
+    if let Some(index) = hints.iter().position(|hint| *hint == "Tab/Shift+Tab tabs") {
+        let tabs = hints.remove(index);
+        hints.insert(1.min(hints.len()), tabs);
+    }
+    super::common::hint_text_with_escape(hints, width, escape)
+}
+use std::fmt::Write as _;
+
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    let [scope_area, body] = render_navigation(frame, area, app);
     let Some(snapshot) = &app.config.snapshot else {
+        frame.render_widget(
+            Paragraph::new(format!("Save in: {}", app.config.selected_scope.label())),
+            scope_area,
+        );
         let loading = app.config.pending_settings_request.is_some()
             || app.status == crate::app::AppStatus::Connecting;
         super::common::render_message(
             frame,
-            area,
+            body,
             if loading { "Loading settings" } else { "Settings unavailable" },
             if loading {
                 "Waiting for the settings snapshot."
@@ -26,107 +91,176 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         );
         return;
     };
-    let [list_area, _, details_area] = super::common::list_and_details(area);
-    let panels = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(if area.width < 70 { 2 } else { 1 }),
-            Constraint::Length(u16::from(details_area.height > 0)),
-            Constraint::Min(3),
-        ])
-        .split(list_area);
-    let headers = if area.width < 70 {
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(panels[0])
-    } else {
-        Layout::horizontal([Constraint::Min(25), Constraint::Length(8)]).split(panels[0])
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Save in: ", Style::default().fg(theme::DIM)),
-            Span::styled(
-                if headers[0].width < 40 {
-                    app.config.selected_scope.label()
-                } else {
-                    scope_label(app.config.selected_scope)
-                },
-                super::common::accent_style(),
-            ),
-        ])),
-        headers[0],
-    );
-
-    let row_height = if area.height >= 22 { 2 } else { 1 };
-    let visible = usize::from(panels[2].height.saturating_sub(2) / row_height).max(1);
-    let selected = app.config.selected_setting_index;
-    if selected < app.config.settings_scroll_offset {
-        app.config.settings_scroll_offset = selected;
+    let items = app.config.settings.items(snapshot);
+    let selected = app.config.settings.selected_index(snapshot);
+    let mut scope = Line::from(vec![
+        Span::styled("Save in: ", Style::default().fg(theme::DIM)),
+        Span::styled(
+            if scope_area.width < 35 {
+                app.config.selected_scope.label()
+            } else {
+                scope_label(app.config.selected_scope)
+            },
+            super::common::accent_style(),
+        ),
+        Span::raw("  "),
+        super::common::position_counter(selected, items.len()),
+    ]);
+    scope.alignment = Some(ratatui::layout::Alignment::Right);
+    frame.render_widget(Paragraph::new(scope), scope_area);
+    let [list_area, _, details_area] = super::common::list_and_details(body);
+    if items.is_empty() {
+        super::common::render_message(
+            frame,
+            list_area,
+            "No matching settings in this pane",
+            "Change the search or press Esc to clear it.",
+        );
+        return;
     }
-    if selected >= app.config.settings_scroll_offset.saturating_add(visible) {
-        app.config.settings_scroll_offset = selected.saturating_add(1).saturating_sub(visible);
-    }
-    frame.render_widget(
-        Paragraph::new(super::common::position_counter(selected, snapshot.catalog.len()))
-            .alignment(ratatui::layout::Alignment::Right),
-        headers[1],
-    );
-    render_table(frame, panels[2], app, row_height, visible);
+    render_table(frame, list_area, app, area.height >= 22);
     render_details(frame, details_area, app);
 }
 
-fn render_table(frame: &mut Frame, area: Rect, app: &App, row_height: u16, visible: usize) {
+fn render_navigation(frame: &mut Frame, area: Rect, app: &App) -> [Rect; 2] {
+    use crate::app::config::SettingsFocus;
+    let cursor =
+        (app.config.settings.focus == SettingsFocus::Search).then_some(app.config.settings.cursor);
+    let search_height = super::input::search_height(&app.config.settings.query, cursor, area.width)
+        .min(area.height.saturating_sub(3))
+        .max(2);
+    let [tabs, search_area, scope_area, body] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(search_height),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .areas(area);
+    let categories = app.config.snapshot.as_ref().map(|snapshot| &snapshot.categories);
+    let labels = categories
+        .map(|categories| {
+            categories
+                .iter()
+                .map(|category| {
+                    if area.width < 100 {
+                        category.short_label.clone()
+                    } else {
+                        category.label.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let active = categories
+        .and_then(|categories| {
+            categories.iter().position(|category| category.id == app.config.settings.category)
+        })
+        .unwrap_or(0);
+    let mut category_line = super::common::tab_line(
+        &labels,
+        active,
+        tabs.width.saturating_sub(2),
+        super::common::TabStyle::Secondary,
+    );
+    category_line.spans.insert(
+        0,
+        super::common::marker_span(app.config.settings.focus == SettingsFocus::CategoryTabs),
+    );
+    frame.render_widget(Paragraph::new(category_line), tabs);
+    super::input::render_search_field(frame, search_area, &app.config.settings.query, cursor);
+    [scope_area, body]
+}
+
+fn render_table(frame: &mut Frame, list_area: Rect, app: &mut App, spacious: bool) {
     let Some(snapshot) = &app.config.snapshot else {
         return;
     };
-    let offset = app.config.settings_scroll_offset;
-    let selected = app.config.selected_setting_index;
+    let items = app.config.settings.items(snapshot);
+    let selected = app.config.settings.selected_index(snapshot);
+    let row_height = if spacious { 2 } else { 1 };
+    let viewport = (usize::from(list_area.height) / usize::from(row_height)).max(1);
+    let position = app.config.settings.position_mut();
+    if selected < position.scroll {
+        position.scroll = selected;
+    }
+    if selected >= position.scroll + viewport {
+        position.scroll = selected + 1 - viewport;
+    }
+    let offset = position.scroll;
     let rows =
-        snapshot.catalog.iter().enumerate().skip(offset).take(visible).map(|(index, setting)| {
-            let selected = index == selected;
-            let value = if setting.kind.is_structured() {
-                snapshot
-                    .scoped(&setting.id, app.config.selected_scope)
-                    .and_then(|value| value.value.as_ref())
-            } else {
-                snapshot.value(&setting.id)
-            };
-            let label_style =
-                Style::default().fg(if setting.writable_at(app.config.selected_scope) {
+        table_rows(app, &items, selected, row_height).into_iter().skip(offset).collect::<Vec<_>>();
+    app.config.settings.visible_count = viewport.min(items.len().saturating_sub(offset)).max(1);
+    let table =
+        Table::new(rows, [Constraint::Length(1), Constraint::Percentage(55), Constraint::Min(8)])
+            .column_spacing(if list_area.width < 50 { 1 } else { 2 });
+    frame.render_widget(table, list_area);
+}
+
+fn table_rows<'a>(
+    app: &App,
+    items: &[&'a crate::agent::settings::SettingDescriptor],
+    selected: usize,
+    row_height: u16,
+) -> Vec<Row<'a>> {
+    use crate::app::config::SettingsFocus;
+    let Some(snapshot) = &app.config.snapshot else {
+        return vec![];
+    };
+    let mut rows = Vec::new();
+    for (index, setting) in items.iter().enumerate() {
+        let focused = index == selected && app.config.settings.focus == SettingsFocus::Content;
+        let value = if setting.kind.is_structured() {
+            snapshot
+                .scoped(&setting.id, app.config.selected_scope)
+                .and_then(|value| value.value.as_ref())
+        } else {
+            snapshot.value(&setting.id)
+        };
+        let writable = setting.writable_at(app.config.selected_scope);
+        rows.push(
+            Row::new(vec![
+                Cell::from(super::common::marker_span(focused)),
+                Cell::from(setting.label.clone()).style(Style::default().fg(if writable {
                     ratatui::style::Color::White
                 } else {
                     theme::DIM
-                });
-            let value_style = Style::default()
-                .fg(if value.is_some() && setting.writable_at(app.config.selected_scope) {
-                    theme::BTW_ACCENT
-                } else {
-                    theme::DIM
-                })
-                .add_modifier(if value.is_some() { Modifier::BOLD } else { Modifier::empty() });
-            Row::new(vec![
-                Cell::from(super::common::marker_span(selected)),
-                Cell::from(setting.label.clone()).style(label_style),
-                Cell::from(value.map_or_else(|| "Default".to_owned(), display)).style(value_style),
+                })),
+                Cell::from(value.map_or_else(
+                    || {
+                        if setting.kind.is_structured() {
+                            "Not set here".into()
+                        } else {
+                            "Default".into()
+                        }
+                    },
+                    display,
+                ))
+                .style(
+                    Style::default()
+                        .fg(if value.is_some() && writable {
+                            theme::BTW_ACCENT
+                        } else {
+                            theme::DIM
+                        })
+                        .add_modifier(if value.is_some() {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
             ])
-            .style(super::common::selection_style(selected))
-            .height(row_height)
-        });
-    frame.render_widget(
-        Table::new(rows, [Constraint::Length(1), Constraint::Percentage(55), Constraint::Min(12)])
-            .column_spacing(2)
-            .header(
-                Row::new(["", "Setting", "Value"])
-                    .style(Style::default().fg(theme::DIM))
-                    .bottom_margin(1),
-            ),
-        area,
-    );
+            .style(super::common::selection_style(focused))
+            .height(row_height),
+        );
+    }
+    rows
 }
 
 fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     let Some(snapshot) = &app.config.snapshot else {
         return;
     };
-    let Some(setting) = snapshot.catalog.get(app.config.selected_setting_index) else {
+    let Some(setting) = app.config.selected_setting() else {
         return;
     };
     let saved = snapshot
@@ -171,6 +305,9 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(setting.description.clone()),
         Line::styled(context, Style::default().fg(theme::DIM)),
     ];
+    if let Some(line) = configured_line(app, setting) {
+        lines.push(line);
+    }
     if let Some(error) = snapshot
         .sources
         .iter()
@@ -184,6 +321,40 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(theme::DIM),
     ));
     super::common::render_details(frame, area, lines);
+}
+
+fn configured_line(
+    app: &App,
+    setting: &crate::agent::settings::SettingDescriptor,
+) -> Option<Line<'static>> {
+    let snapshot = app.config.snapshot.as_ref()?;
+    if let Some(value) = snapshot.values.iter().find(|value| value.id == setting.id) {
+        let mut configured = format!(
+            "Configured: {}",
+            value.value.as_ref().map_or_else(|| "Default".into(), display)
+        );
+        if !value.contributors.is_empty() {
+            let _ = write!(configured, "  ·  Sources: {}", value.contributors.join(", "));
+        }
+        let running = match setting.id.as_str() {
+            "model" => app
+                .session_runtime
+                .current_model
+                .as_ref()
+                .filter(|model| model.is_authoritative)
+                .map(|model| model.display_name_short.clone()),
+            "defaultEffort" => app.session_runtime.config_options.get("effortLevel").map(display),
+            "alwaysThinkingEnabled" | "agent" => {
+                app.session_runtime.config_options.get(&setting.id).map(display)
+            }
+            _ => None,
+        };
+        if let Some(running) = running {
+            let _ = write!(configured, "  ·  Current session: {running}");
+        }
+        return Some(Line::styled(configured, Style::default().fg(theme::DIM)));
+    }
+    None
 }
 
 pub(super) fn display(value: &serde_json::Value) -> String {

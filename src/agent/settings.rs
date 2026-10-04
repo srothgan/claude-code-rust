@@ -87,10 +87,57 @@ impl SettingsScope {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingsCategory {
+    pub id: String,
+    pub label: String,
+    pub short_label: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditorType {
+    String,
+    Number,
+    Boolean,
+    Object,
+    Array,
+    Map,
+    Variant,
+    Json,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorField {
+    pub key: String,
+    pub label: String,
+    pub schema: EditorSchema,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorSchema {
+    pub description: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: EditorType,
+    #[serde(default)]
+    pub fields: Vec<EditorField>,
+    pub item: Option<Box<EditorSchema>>,
+    #[serde(default)]
+    pub options: Vec<Value>,
+    #[serde(default)]
+    pub keys: Vec<String>,
+    #[serde(default)]
+    pub variants: std::collections::BTreeMap<String, EditorSchema>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingDescriptor {
     pub id: String,
     pub label: String,
     pub description: String,
+    pub category: String,
+    pub editor: Option<EditorSchema>,
     pub key_path: Vec<String>,
     pub kind: SettingKind,
     pub options: Vec<Value>,
@@ -130,6 +177,7 @@ pub struct SavedSetting {
 pub struct SettingsSnapshot {
     pub cwd: String,
     pub context: String,
+    pub categories: Vec<SettingsCategory>,
     pub catalog: Vec<SettingDescriptor>,
     pub sources: Vec<SettingsSource>,
     pub values: Vec<SavedSetting>,
@@ -140,6 +188,9 @@ pub struct SettingsSnapshot {
     pub time_zone: Option<String>,
 }
 impl SettingsSnapshot {
+    pub fn matches_context(&self, context: &str, cwd: &str) -> bool {
+        self.context == context && self.cwd == cwd
+    }
     pub fn value(&self, id: &str) -> Option<&Value> {
         self.values.iter().find(|entry| entry.id == id).and_then(|entry| entry.value.as_ref())
     }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-use super::{common, theme};
+use super::common;
 use crate::app::App;
 use crate::app::plugins::{
     InstalledPluginEntry, PluginsViewTab, display_label, filtered_marketplace_plugins,
@@ -7,9 +7,9 @@ use crate::app::plugins::{
 };
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let top_height = top_region_height(app, area.width).min(area.height.saturating_sub(3));
@@ -79,36 +79,13 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
     if search_enabled(app.plugins.active_tab) {
-        frame.render_widget(
-            Paragraph::new(search_field_line(app))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(if app.plugins.search_focused {
-                            " Search "
-                        } else {
-                            " Search (Up to focus) "
-                        })
-                        .border_style(if app.plugins.search_focused {
-                            Style::default().fg(theme::RUST_ORANGE)
-                        } else {
-                            Style::default().fg(theme::DIM)
-                        }),
-                )
-                .wrap(Wrap { trim: false })
-                .scroll((
-                    common::selected_scroll(
-                        usize::from(common::wrapped_height(
-                            search_field_line(app),
-                            area.width.saturating_sub(2),
-                        ))
-                        .saturating_sub(1),
-                        1,
-                        area.height.saturating_sub(2),
-                    ),
-                    0,
-                )),
+        super::input::render_search_field(
+            frame,
             area,
+            app.plugins.search_query_for(app.plugins.active_tab),
+            app.plugins
+                .search_focused
+                .then(|| app.plugins.search_query_for(app.plugins.active_tab).chars().count()),
         );
         return;
     }
@@ -128,29 +105,12 @@ fn top_region_height(app: &App, width: u16) -> u16 {
 }
 
 fn search_field_line(app: &App) -> Line<'static> {
-    let cursor_style = common::cursor_style();
-    let text_style = Style::default().fg(Color::White);
-    let hint_style = Style::default().fg(theme::DIM);
     let query = app.plugins.search_query_for(app.plugins.active_tab);
-
-    if query.is_empty() {
-        if app.plugins.search_focused {
-            return Line::from(vec![
-                Span::styled(" ".to_owned(), cursor_style),
-                Span::styled("Type to filter this list".to_owned(), hint_style),
-            ]);
-        }
-        return Line::from(Span::styled("Type to filter this list", hint_style));
-    }
-
-    if app.plugins.search_focused {
-        return Line::from(vec![
-            Span::styled(query.to_owned(), text_style),
-            Span::styled(" ".to_owned(), cursor_style),
-        ]);
-    }
-
-    Line::from(Span::styled(query.to_owned(), text_style))
+    super::input::search_field_line(
+        query,
+        app.plugins.search_focused.then(|| query.chars().count()),
+        "Type to filter this list",
+    )
 }
 
 fn list_content(app: &App) -> Vec<Vec<Line<'static>>> {

@@ -35,6 +35,13 @@ const settingDefinitions = [
   ['permissions.deny', 'Permissions: deny rules', 'One denied tool rule per line', 'string_list', ['permissions', 'deny']],
   ['alwaysThinkingEnabled', 'Thinking', 'Saved thinking preference', 'boolean', ['alwaysThinkingEnabled']],
 ];
+const settingsUiFixture = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings-ui-catalog.json'), 'utf8'));
+const hooksScenario = SCENARIO === 'hold-hooks';
+if (hooksScenario) {
+  preferences.hooks = { Stop: [{ hooks: [{ type: 'command', command: 'keep-original', future: 'keep' }] }] };
+  const setting = settingsUiFixture.catalog.find(setting => setting.id === 'hooks');
+  settingDefinitions.push([setting.id, setting.label, setting.description, setting.kind, setting.key_path]);
+}
 const notificationScenario = SCENARIO === 'notifications';
 let notificationAppPath;
 if (notificationScenario) {
@@ -55,12 +62,13 @@ if (presentationScenario) {
 }
 function settingsSnapshot() {
   return {
-    cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
+    categories: hooksScenario ? settingsUiFixture.categories : [{ id: 'general', label: 'General', short_label: 'General' }, { id: 'permissions', label: 'Permissions', short_label: 'Permissions' }], cwd, context: 'fixture-settings', diagnostics: [], resolution_sources: [], provenance: {},
     catalog: settingDefinitions.map(([id, label, description, kind, key_path]) => ({
-      id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
+      category: id === 'hooks' ? 'hooks' : id.startsWith('permissions.') ? 'permissions' : 'general', id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
+      ...(settingsUiFixture.catalog.find(setting => setting.id === id)?.editor ? { editor: settingsUiFixture.catalog.find(setting => setting.id === id).editor } : {}),
       allows_custom: kind !== 'boolean' && id !== 'preferredNotifChannel', writable_scopes: ['user'],
       reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario ? 'host' : 'next_session',
-    })),
+    })).sort((a, b) => a.label.localeCompare(b.label)),
     sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
       values: Object.entries(preferences).map(([id, value]) => ({ id, value, revision: String(settingsRevision) })) }],
     values: Object.entries(preferences).map(([id, value]) => ({ id, value, contributors: ['user'], policy_restricted: false })),

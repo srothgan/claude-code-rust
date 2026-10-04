@@ -1,0 +1,901 @@
+{
+  "categories": [
+    {
+      "id": "general",
+      "label": "General",
+      "short_label": "General"
+    },
+    {
+      "id": "memory",
+      "label": "Memory",
+      "short_label": "Memory"
+    },
+    {
+      "id": "permissions",
+      "label": "Permissions",
+      "short_label": "Permissions"
+    },
+    {
+      "id": "sandbox",
+      "label": "Sandbox",
+      "short_label": "Sandbox"
+    },
+    {
+      "id": "hooks",
+      "label": "Hooks",
+      "short_label": "Hooks"
+    },
+    {
+      "id": "workflows",
+      "label": "Workflows & Worktrees",
+      "short_label": "Workflows"
+    }
+  ],
+  "catalog": [
+    {
+      "id": "permissions.allow",
+      "label": "Allow rules",
+      "description": "Add one entry per tool rule, e.g. Bash(npm run test *) or Read(./docs/**). Lists merge across scopes; deny rules take precedence.",
+      "key_path": [
+        "permissions",
+        "allow"
+      ],
+      "kind": "string_list",
+      "category": "permissions",
+      "editor": {
+        "type": "array",
+        "item": {
+          "type": "string",
+          "description": "Enter one tool permission rule, for example Read(./src/**) or Bash(npm test *). Use a separate entry for each rule."
+        }
+      },
+      "options": [],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": true,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    },
+    {
+      "id": "sandbox.credentials",
+      "label": "Credential protection",
+      "description": "Configure file, environment-variable and AWS credential protection. Choose a collection and add an entry; required fields are marked. Native platform restrictions apply. No credentials are read or injected while editing.",
+      "key_path": [
+        "sandbox",
+        "credentials"
+      ],
+      "kind": "json",
+      "category": "sandbox",
+      "editor": {
+        "type": "object",
+        "fields": [
+          {
+            "key": "files",
+            "label": "Credential files",
+            "schema": {
+              "type": "array",
+              "item": {
+                "type": "object",
+                "fields": [
+                  {
+                    "key": "path",
+                    "label": "File path",
+                    "schema": {
+                      "type": "string",
+                      "description": "Enter a filesystem path. Paths keep their native settings-file meaning; the editor does not open the file."
+                    },
+                    "required": true
+                  },
+                  {
+                    "key": "mode",
+                    "label": "Protection mode",
+                    "schema": {
+                      "type": "string",
+                      "options": [
+                        "deny",
+                        "mask"
+                      ],
+                      "description": "deny blocks access to the credential; mask substitutes a sentinel inside the sandbox."
+                    },
+                    "required": true
+                  },
+                  {
+                    "key": "extract",
+                    "label": "Extraction pattern",
+                    "schema": {
+                      "type": "string",
+                      "description": "Optional regular expression for mask mode: capture group 1 contains the credential."
+                    }
+                  },
+                  {
+                    "key": "onExtractNoMatch",
+                    "label": "If extraction finds nothing",
+                    "schema": {
+                      "type": "string",
+                      "options": [
+                        "warn",
+                        "deny",
+                        "error"
+                      ],
+                      "description": "When extraction finds nothing: warn leaves it readable, deny blocks access, error stops sandbox setup. Native restrictions apply for JWT decoding."
+                    }
+                  },
+                  {
+                    "key": "decode",
+                    "label": "Encoded credential format",
+                    "schema": {
+                      "type": "string",
+                      "options": [
+                        "jwt"
+                      ],
+                      "description": "Mask a JWT with a structurally valid substitute. Reset this field to use ordinary masking."
+                    }
+                  },
+                  {
+                    "key": "maskClaims",
+                    "label": "JWT claims to mask",
+                    "schema": {
+                      "type": "array",
+                      "item": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "key": "injectHosts",
+                    "label": "Injection hosts",
+                    "schema": {
+                      "type": "array",
+                      "item": {
+                        "type": "string"
+                      },
+                      "description": "Add one allowed injection host per entry, for example api.example.com."
+                    }
+                  },
+                  {
+                    "key": "maskDuplicates",
+                    "label": "Mask repeated values",
+                    "schema": {
+                      "type": "boolean"
+                    }
+                  }
+                ]
+              },
+              "description": "Add a credential file, then set its required path and protection mode. Optional fields control extraction and injection."
+            }
+          },
+          {
+            "key": "envVars",
+            "label": "Environment variables",
+            "schema": {
+              "type": "array",
+              "item": {
+                "type": "object",
+                "fields": [
+                  {
+                    "key": "name",
+                    "label": "Variable name",
+                    "schema": {
+                      "type": "string",
+                      "description": "Enter an environment variable name, for example API_TOKEN. Enter the name, not its secret value."
+                    },
+                    "required": true
+                  },
+                  {
+                    "key": "mode",
+                    "label": "Protection mode",
+                    "schema": {
+                      "type": "string",
+                      "options": [
+                        "deny",
+                        "mask"
+                      ],
+                      "description": "deny blocks access to the credential; mask substitutes a sentinel inside the sandbox."
+                    },
+                    "required": true
+                  },
+                  {
+                    "key": "extract",
+                    "label": "Extraction pattern",
+                    "schema": {
+                      "type": "string",
+                      "description": "Optional regular expression for mask mode: capture group 1 contains the credential."
+                    }
+                  },
+                  {
+                    "key": "onExtractNoMatch",
+                    "label": "If extraction finds nothing",
+                    "schema": {
+                      "type": "string",
+                      "options": [
+                        "warn",
+                        "deny",
+                        "error"
+                      ],
+                      "description": "When extraction finds nothing: warn leaves it readable, deny blocks access, error stops sandbox setup. Native restrictions apply for JWT decoding."
+                    }
+                  },
+                  {
+                    "key": "decode",
+                    "label": "Encoded credential format",
+                    "schema": {
+                      "type": "string",
+                      "options": [
+                        "jwt"
+                      ],
+                      "description": "Mask a JWT with a structurally valid substitute. Reset this field to use ordinary masking."
+                    }
+                  },
+                  {
+                    "key": "maskClaims",
+                    "label": "JWT claims to mask",
+                    "schema": {
+                      "type": "array",
+                      "item": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "key": "injectHosts",
+                    "label": "Injection hosts",
+                    "schema": {
+                      "type": "array",
+                      "item": {
+                        "type": "string"
+                      },
+                      "description": "Add one allowed injection host per entry, for example api.example.com."
+                    }
+                  }
+                ]
+              },
+              "description": "Add an environment variable, then set its required name and protection mode. No secret values are read while editing."
+            }
+          },
+          {
+            "key": "awsPairs",
+            "label": "AWS credential pairs",
+            "schema": {
+              "type": "array",
+              "item": {
+                "type": "object",
+                "fields": [
+                  {
+                    "key": "accessKeyIdVar",
+                    "label": "Access key variable",
+                    "schema": {
+                      "type": "string",
+                      "description": "Enter an environment variable name, for example API_TOKEN. Enter the name, not its secret value."
+                    },
+                    "required": true
+                  },
+                  {
+                    "key": "secretAccessKeyVar",
+                    "label": "Secret key variable",
+                    "schema": {
+                      "type": "string",
+                      "description": "Enter an environment variable name, for example API_TOKEN. Enter the name, not its secret value."
+                    },
+                    "required": true
+                  },
+                  {
+                    "key": "sessionTokenVar",
+                    "label": "Session token variable",
+                    "schema": {
+                      "type": "string",
+                      "description": "Enter an environment variable name, for example API_TOKEN. Enter the name, not its secret value."
+                    }
+                  }
+                ]
+              },
+              "description": "Add a pair and enter the required access-key and secret-key variable names. The session-token variable is optional."
+            }
+          },
+          {
+            "key": "allowPlaintextInject",
+            "label": "Allow plain HTTP injection",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "key": "sigv4",
+            "label": "AWS request policies",
+            "schema": {
+              "type": "object",
+              "fields": [
+                {
+                  "key": "streaming",
+                  "label": "Streaming requests",
+                  "schema": {
+                    "type": "string",
+                    "options": [
+                      "deny",
+                      "passthrough"
+                    ]
+                  }
+                },
+                {
+                  "key": "presigned",
+                  "label": "Presigned requests",
+                  "schema": {
+                    "type": "string",
+                    "options": [
+                      "deny",
+                      "passthrough"
+                    ]
+                  }
+                },
+                {
+                  "key": "sigv4a",
+                  "label": "Sigv4a",
+                  "schema": {
+                    "type": "string",
+                    "options": [
+                      "deny",
+                      "passthrough"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "description": "Choose a collection to add credential protection, or edit the optional request policies. Required fields are marked; save after completing them."
+      },
+      "options": [],
+      "writable_scopes": [
+        "user"
+      ],
+      "allows_custom": true,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    },
+    {
+      "id": "model",
+      "label": "Default model",
+      "description": "Choose a model for new sessions. Use /model to change the current session.",
+      "key_path": [
+        "model"
+      ],
+      "kind": "string",
+      "category": "general",
+      "options": [],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": false,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    },
+    {
+      "id": "hooks",
+      "label": "Definitions",
+      "description": "Add a hook by choosing an event, optional matcher, action and required values. Existing hooks can be edited individually. Browsing and validation do not run hooks.",
+      "key_path": [
+        "hooks"
+      ],
+      "kind": "json",
+      "category": "hooks",
+      "editor": {
+        "type": "map",
+        "item": {
+          "type": "array",
+          "item": {
+            "type": "object",
+            "fields": [
+              {
+                "key": "matcher",
+                "label": "Matcher",
+                "schema": {
+                  "type": "string",
+                  "description": "Optional event matcher. For tool events use a tool name or pattern, for example Bash or Write|Edit. Leave blank for all matching events. Editing a group's matcher affects every hook in that group."
+                }
+              },
+              {
+                "key": "hooks",
+                "label": "Handlers",
+                "schema": {
+                  "type": "array",
+                  "item": {
+                    "type": "variant",
+                    "options": [
+                      "command",
+                      "prompt",
+                      "agent",
+                      "http",
+                      "mcp_tool"
+                    ],
+                    "variants": {
+                      "command": {
+                        "type": "object",
+                        "fields": [
+                          {
+                            "key": "command",
+                            "label": "Command",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter the command to run, for example npm run lint. Editing does not execute it."
+                            },
+                            "required": true
+                          },
+                          {
+                            "key": "args",
+                            "label": "Arguments",
+                            "schema": {
+                              "type": "array",
+                              "item": {
+                                "type": "string",
+                                "description": "Enter one literal command argument. Add a separate entry for each argument; do not enter a shell-quoted argument list."
+                              }
+                            }
+                          },
+                          {
+                            "key": "shell",
+                            "label": "Shell",
+                            "schema": {
+                              "type": "string",
+                              "options": [
+                                "bash",
+                                "powershell"
+                              ]
+                            }
+                          },
+                          {
+                            "key": "if",
+                            "label": "Tool rule filter",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter one tool permission rule, for example Read(./src/**) or Bash(npm test *). Use a separate entry for each rule."
+                            }
+                          },
+                          {
+                            "key": "timeout",
+                            "label": "Timeout (seconds)",
+                            "schema": {
+                              "type": "number",
+                              "description": "Enter a timeout in seconds."
+                            }
+                          },
+                          {
+                            "key": "statusMessage",
+                            "label": "Status message",
+                            "schema": {
+                              "type": "string"
+                            }
+                          },
+                          {
+                            "key": "once",
+                            "label": "Run once",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          },
+                          {
+                            "key": "async",
+                            "label": "Run in background",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          },
+                          {
+                            "key": "asyncRewake",
+                            "label": "Wake model on blocking exit",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          }
+                        ]
+                      },
+                      "prompt": {
+                        "type": "object",
+                        "fields": [
+                          {
+                            "key": "prompt",
+                            "label": "Prompt",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter the hook's evaluation prompt. Ctrl+J inserts a new line."
+                            },
+                            "required": true
+                          },
+                          {
+                            "key": "if",
+                            "label": "Tool rule filter",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter one tool permission rule, for example Read(./src/**) or Bash(npm test *). Use a separate entry for each rule."
+                            }
+                          },
+                          {
+                            "key": "timeout",
+                            "label": "Timeout (seconds)",
+                            "schema": {
+                              "type": "number",
+                              "description": "Enter a timeout in seconds."
+                            }
+                          },
+                          {
+                            "key": "statusMessage",
+                            "label": "Status message",
+                            "schema": {
+                              "type": "string"
+                            }
+                          },
+                          {
+                            "key": "once",
+                            "label": "Run once",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          },
+                          {
+                            "key": "model",
+                            "label": "Model",
+                            "schema": {
+                              "type": "string"
+                            }
+                          },
+                          {
+                            "key": "continueOnBlock",
+                            "label": "Continue after a block",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          }
+                        ]
+                      },
+                      "agent": {
+                        "type": "object",
+                        "fields": [
+                          {
+                            "key": "prompt",
+                            "label": "Prompt",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter the task for the hook agent. Ctrl+J inserts a new line."
+                            },
+                            "required": true
+                          },
+                          {
+                            "key": "if",
+                            "label": "Tool rule filter",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter one tool permission rule, for example Read(./src/**) or Bash(npm test *). Use a separate entry for each rule."
+                            }
+                          },
+                          {
+                            "key": "timeout",
+                            "label": "Timeout (seconds)",
+                            "schema": {
+                              "type": "number",
+                              "description": "Enter a timeout in seconds."
+                            }
+                          },
+                          {
+                            "key": "statusMessage",
+                            "label": "Status message",
+                            "schema": {
+                              "type": "string"
+                            }
+                          },
+                          {
+                            "key": "once",
+                            "label": "Run once",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          },
+                          {
+                            "key": "model",
+                            "label": "Model",
+                            "schema": {
+                              "type": "string"
+                            }
+                          }
+                        ]
+                      },
+                      "http": {
+                        "type": "object",
+                        "fields": [
+                          {
+                            "key": "url",
+                            "label": "Url",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter the hook endpoint URL, for example https://example.com/hook."
+                            },
+                            "required": true
+                          },
+                          {
+                            "key": "if",
+                            "label": "Tool rule filter",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter one tool permission rule, for example Read(./src/**) or Bash(npm test *). Use a separate entry for each rule."
+                            }
+                          },
+                          {
+                            "key": "timeout",
+                            "label": "Timeout (seconds)",
+                            "schema": {
+                              "type": "number",
+                              "description": "Enter a timeout in seconds."
+                            }
+                          },
+                          {
+                            "key": "statusMessage",
+                            "label": "Status message",
+                            "schema": {
+                              "type": "string"
+                            }
+                          },
+                          {
+                            "key": "once",
+                            "label": "Run once",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          },
+                          {
+                            "key": "headers",
+                            "label": "Headers",
+                            "schema": {
+                              "type": "map",
+                              "item": {
+                                "type": "string"
+                              },
+                              "description": "Add a header name, then its value. Values appear only while editing that header."
+                            }
+                          },
+                          {
+                            "key": "allowedEnvVars",
+                            "label": "Allowed environment variables",
+                            "schema": {
+                              "type": "array",
+                              "item": {
+                                "type": "string",
+                                "description": "Enter an environment variable name, for example API_TOKEN. Enter the name, not its secret value."
+                              }
+                            }
+                          }
+                        ]
+                      },
+                      "mcp_tool": {
+                        "type": "object",
+                        "fields": [
+                          {
+                            "key": "server",
+                            "label": "Server",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter the exact name of an already configured MCP server."
+                            },
+                            "required": true
+                          },
+                          {
+                            "key": "tool",
+                            "label": "Tool",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter the exact tool name exposed by that server."
+                            },
+                            "required": true
+                          },
+                          {
+                            "key": "input",
+                            "label": "Tool arguments",
+                            "schema": {
+                              "type": "map",
+                              "item": {
+                                "type": "json"
+                              },
+                              "description": "Add an argument name, then enter its JSON value."
+                            }
+                          },
+                          {
+                            "key": "if",
+                            "label": "Tool rule filter",
+                            "schema": {
+                              "type": "string",
+                              "description": "Enter one tool permission rule, for example Read(./src/**) or Bash(npm test *). Use a separate entry for each rule."
+                            }
+                          },
+                          {
+                            "key": "timeout",
+                            "label": "Timeout (seconds)",
+                            "schema": {
+                              "type": "number",
+                              "description": "Enter a timeout in seconds."
+                            }
+                          },
+                          {
+                            "key": "statusMessage",
+                            "label": "Status message",
+                            "schema": {
+                              "type": "string"
+                            }
+                          },
+                          {
+                            "key": "once",
+                            "label": "Run once",
+                            "schema": {
+                              "type": "boolean"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "keys": [
+          "PreToolUse",
+          "PostToolUse",
+          "PostToolUseFailure",
+          "PostToolBatch",
+          "Notification",
+          "UserPromptSubmit",
+          "UserPromptExpansion",
+          "SessionStart",
+          "SessionEnd",
+          "Stop",
+          "StopFailure",
+          "SubagentStart",
+          "SubagentStop",
+          "PreCompact",
+          "PostCompact",
+          "PreModelSwitch",
+          "PostModelSwitch",
+          "PermissionRequest",
+          "PermissionDenied",
+          "Setup",
+          "TeammateIdle",
+          "TaskCreated",
+          "TaskCompleted",
+          "Elicitation",
+          "ElicitationResult",
+          "ConfigChange",
+          "WorktreeCreate",
+          "WorktreeRemove",
+          "InstructionsLoaded",
+          "CwdChanged",
+          "FileChanged",
+          "DirectoryAdded",
+          "MessageDisplay"
+        ]
+      },
+      "options": [],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": true,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    },
+    {
+      "id": "permissions.deny",
+      "label": "Deny rules",
+      "description": "Add one entry per tool rule. Matching operations are denied, even if another scope allows them.",
+      "key_path": [
+        "permissions",
+        "deny"
+      ],
+      "kind": "string_list",
+      "category": "permissions",
+      "editor": {
+        "type": "array",
+        "item": {
+          "type": "string",
+          "description": "Enter one tool permission rule, for example Read(./src/**) or Bash(npm test *). Use a separate entry for each rule."
+        }
+      },
+      "options": [],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": true,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    },
+    {
+      "id": "sandbox.enabled",
+      "label": "Enabled",
+      "description": "Run shell commands in the native sandbox when supported and installed. Platform and organization restrictions still apply.",
+      "key_path": [
+        "sandbox",
+        "enabled"
+      ],
+      "kind": "boolean",
+      "category": "sandbox",
+      "options": [
+        true,
+        false
+      ],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": false,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    },
+    {
+      "id": "language",
+      "label": "Language",
+      "description": "Preferred response language or ISO code.",
+      "key_path": [
+        "language"
+      ],
+      "kind": "string",
+      "category": "general",
+      "options": [],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": true,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    },
+    {
+      "id": "sandbox.ripgrep",
+      "label": "Ripgrep command",
+      "description": "JSON object with command and optional args for the native sandbox's ripgrep helper. Project settings cannot configure it.",
+      "key_path": [
+        "sandbox",
+        "ripgrep"
+      ],
+      "kind": "json",
+      "category": "sandbox",
+      "editor": {
+        "type": "object",
+        "fields": [
+          {
+            "key": "command",
+            "label": "Command",
+            "schema": {
+              "type": "string",
+              "description": "Enter the ripgrep executable name or path, for example rg."
+            },
+            "required": true
+          },
+          {
+            "key": "args",
+            "label": "Arguments",
+            "schema": {
+              "type": "array",
+              "item": {
+                "type": "string",
+                "description": "Enter one literal command argument. Add a separate entry for each argument; do not enter a shell-quoted argument list."
+              }
+            }
+          }
+        ],
+        "description": "Set the required command; arguments are optional and edited one at a time."
+      },
+      "options": [],
+      "writable_scopes": [
+        "user"
+      ],
+      "allows_custom": true,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
+    }
+  ]
+}

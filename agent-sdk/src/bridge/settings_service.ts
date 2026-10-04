@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type { Json, SettingDescriptor, SettingsMutation, SettingsScope, SettingsSnapshot, SettingsResult, AvailableModel, AvailableAgent } from "../types.js";
 import { isAppSetting, settingsCatalog } from "./settings_catalog.js";
+import { SETTINGS_CATEGORIES } from "./settings_layout.js";
 import { settingLeaf as leaf, validateSettingValue } from "./settings_values.js";
 
 const SCOPES: SettingsScope[] = ["user", "project", "local"];
@@ -93,7 +94,7 @@ export async function inspectSettings(cwd: string, models: AvailableModel[] = []
     const source = resolved.provenance[setting.key_path[0] as keyof typeof resolved.provenance];
     if (source) provenance[setting.id] = { source: source.source, ...(source.path ? { path: source.path } : {}), ...(source.policyOrigin ? { policy_origin: source.policyOrigin } : {}) };
   }
-  return { cwd, context: revision({ cwd, paths, appSettingsPath, effortPath: catalog.find(setting => setting.id === "defaultEffort")?.key_path }), catalog, sources, values, resolution_sources, provenance, ...(resolved.effective.timeZone ? { time_zone: resolved.effective.timeZone } : {}), diagnostics: ["SDK raw cascade: active session choices and trust filtering are separate. policyHelper is not executed by resolveSettings."] };
+  return { cwd, context: revision({ cwd, paths, appSettingsPath, effortPath: catalog.find(setting => setting.id === "defaultEffort")?.key_path }), categories: SETTINGS_CATEGORIES, catalog, sources, values, resolution_sources, provenance, ...(resolved.effective.timeZone ? { time_zone: resolved.effective.timeZone } : {}), diagnostics: ["SDK raw cascade: active session choices and trust filtering are separate. policyHelper is not executed by resolveSettings."] };
 }
 
 function patch(document: Record<string, Json>, keys: string[], value: Json | undefined): void {

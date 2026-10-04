@@ -10,6 +10,7 @@ mod overlay;
 mod plugin_overlay;
 mod plugins;
 mod settings;
+mod settings_form;
 mod settings_overlay;
 mod status;
 mod usage;
@@ -43,7 +44,8 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    let inner = frame_area.inner(Margin { vertical: 1, horizontal: 2 });
+    let compact = frame_area.height < 18;
+    let inner = frame_area.inner(Margin { vertical: u16::from(!compact), horizontal: 2 });
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
         (error, true)
     } else if let Some(status) = app.config.status_message.clone() {
@@ -52,14 +54,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         (String::new(), false)
     };
     let help = config_help_text(app, inner.width);
-    let message_height =
-        common::wrapped_height(message.as_str(), inner.width).clamp(1, (inner.height / 3).max(1));
+    let message_height = if message.is_empty() {
+        0
+    } else {
+        common::wrapped_height(message.as_str(), inner.width).clamp(1, (inner.height / 3).max(1))
+    };
     let help_height = common::wrapped_height(help.as_str(), inner.width).clamp(1, 3);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(u16::from(!compact)),
             Constraint::Min(3),
             Constraint::Length(message_height),
             Constraint::Length(help_height),
@@ -100,32 +105,7 @@ fn config_help_text(app: &App, width: u16) -> String {
     }
 
     let hints = match app.config.active_tab {
-        ConfigTab::Settings => {
-            if let Some(setting) = app.config.selected_setting() {
-                let mut hints = vec![
-                    if !setting.writable_at(app.config.selected_scope) {
-                        "Read-only"
-                    } else if setting.allows_custom {
-                        "Space edit"
-                    } else {
-                        "Space change"
-                    },
-                    "Up/Down select",
-                    "Tab/Shift+Tab tabs",
-                    "s scope",
-                ];
-                if setting.writable_at(app.config.selected_scope) {
-                    hints.push("Del reset");
-                }
-                hints.push("r refresh");
-                if !setting.allows_custom && setting.writable_at(app.config.selected_scope) {
-                    hints.push("Left/Right change");
-                }
-                hints
-            } else {
-                vec!["r refresh", "Tab/Shift+Tab tabs"]
-            }
-        }
+        ConfigTab::Settings => return settings::help_text(app, width),
         ConfigTab::Plugins => {
             if app.plugins.search_focused
                 && crate::app::plugins::search_enabled(app.plugins.active_tab)
@@ -419,7 +399,7 @@ mod tests {
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
             app.config.snapshot = Some(serde_json::from_value(serde_json::json!({
                 "cwd": app.cwd_raw, "context": "received", "diagnostics": [], "resolution_sources": [], "provenance": {},
-                "catalog": [{ "id": "language", "label": "Language", "description": "Preferred response language", "key_path": ["language"], "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
+                "categories": [{"id":"general", "label":"General", "short_label":"General"}], "catalog": [{ "id": "language", "label": "Language", "description": "Preferred response language", "key_path": ["language"], "category":"general", "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
                 "sources": [{ "scope": "user", "path": "profile/settings.json", "status": "valid", "values": [{ "id": "language", "revision": "r1", "value": "German" }] }],
                 "values": [{ "id": "language", "value": "German", "contributors": ["user"], "policy_restricted": false }]
             })).expect("SDK snapshot"));
@@ -462,9 +442,9 @@ mod tests {
         app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.snapshot = Some(serde_json::from_value(serde_json::json!({
             "cwd": app.cwd_raw, "context": "preview", "diagnostics": [], "resolution_sources": [], "provenance": {},
-            "catalog": [
-                {"id": "alwaysThinkingEnabled", "label": "Thinking", "description": "Prefer thinking where the model permits it.", "key_path": ["alwaysThinkingEnabled"], "kind": "boolean", "options": [true, false], "allows_custom": false, "writable_scopes": ["user", "project", "local"], "reset": "Reset clears this scope's value and uses the other scopes or Default.", "application": "next_session"},
-                {"id": "language", "label": "Language", "description": "Preferred response language or ISO code.", "key_path": ["language"], "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset clears this scope's value and uses the other scopes or Default.", "application": "next_session"}
+            "categories": [{"id":"general", "label":"General", "short_label":"General"}], "catalog": [
+                {"id": "alwaysThinkingEnabled", "label": "Thinking", "description": "Prefer thinking where the model permits it.", "key_path": ["alwaysThinkingEnabled"], "category":"general", "kind": "boolean", "options": [true, false], "allows_custom": false, "writable_scopes": ["user", "project", "local"], "reset": "Reset clears this scope's value and uses the other scopes or Default.", "application": "next_session"},
+                {"id": "language", "label": "Language", "description": "Preferred response language or ISO code.", "key_path": ["language"], "category":"general", "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset clears this scope's value and uses the other scopes or Default.", "application": "next_session"}
             ],
             "sources": [{"scope": "user", "path": "settings.json", "status": "valid", "values": [{"id": "alwaysThinkingEnabled", "revision": "r", "value": true}, {"id": "language", "revision": "r"}]}],
             "values": [{"id": "alwaysThinkingEnabled", "value": true, "contributors": ["user"], "policy_restricted": false}]
@@ -532,7 +512,7 @@ mod tests {
         assert!(text.contains("Window too small"));
         assert!(text.contains("Esc close"));
         let mut app = settings_preview_app();
-        app.config.selected_setting_index = 1;
+        app.config.settings.select("language".into());
         crate::app::config::handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
@@ -557,7 +537,7 @@ mod tests {
             contributors: vec!["local".to_owned()],
             policy_restricted: false,
         });
-        app.config.selected_setting_index = 1;
+        app.config.settings.select("language".into());
         let mut terminal = Terminal::new(TestBackend::new(110, 32)).expect("terminal");
         terminal.draw(|frame| super::render(frame, &mut app)).expect("override");
         let text = buffer_text(terminal.backend().buffer());
@@ -579,7 +559,7 @@ mod tests {
     fn setting_save_errors_wrap_without_hiding_the_editor_controls() {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = settings_preview_app();
-        app.config.selected_setting_index = 1;
+        app.config.settings.select("language".into());
         crate::app::config::handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
@@ -603,7 +583,7 @@ mod tests {
                 serde_json::from_value(serde_json::json!({
                     "id": format!("row-{index}"), "label": format!("Setting {index}"),
                     "description": "Received setting", "key_path": [format!("row-{index}")],
-                    "kind": "boolean", "options": [true, false], "writable_scopes": ["user"],
+                    "category":"general", "kind": "boolean", "options": [true, false], "writable_scopes": ["user"],
                     "allows_custom": false, "reset": "Reset removes the saved value here",
                     "application": "next_session"
                 }))
@@ -624,7 +604,7 @@ mod tests {
         assert!(text.lines().any(|line| line.contains("Setting 21") && line.contains("Default")));
         assert!(text.contains("22/22"));
         assert!(text.contains("Up/Down select"));
-        assert!(app.config.settings_scroll_offset > 0);
+        assert!(app.config.settings.position().expect("position").scroll > 0);
     }
 
     #[test]
@@ -1238,7 +1218,7 @@ mod tests {
         use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, SessionId};
         let mut app = settings_preview_app();
         app.config.active_tab = tab;
-        app.config.selected_setting_index = 1;
+        app.config.settings.select("language".into());
         app.session_runtime.session_id = Some(SessionId::new("preview-session"));
         app.plugins.installed = (0..9)
             .map(|index| installed_plugin_entry(&format!("p{index}@market"), "user", None))

@@ -20,7 +20,7 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
         return;
     };
     let scope = app.config.selected_scope;
-    if !setting.writable_at(scope) {
+    if !setting.writable_at(scope) && setting.editor.is_none() {
         app.config.last_error = Some(
             setting
                 .unavailable
@@ -36,31 +36,36 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
         .value
         .as_ref()
         .or_else(|| (!setting.kind.is_structured()).then(|| snapshot.value(&setting.id)).flatten());
-    let draft = initial.map_or_else(
-        || if setting.kind == SettingKind::Json { "{}".to_owned() } else { String::new() },
-        |value| match setting.kind {
-            SettingKind::StringList => value.as_array().map_or_else(
-                || value.to_string(),
-                |items| {
-                    items
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                },
-            ),
-            SettingKind::Json => serde_json::to_string_pretty(value).unwrap_or_default(),
-            _ => value.as_str().map_or_else(|| value.to_string(), str::to_owned),
-        },
-    );
+    let structured = setting.editor.as_ref().map(|schema| {
+        Box::new(super::StructuredEditor {
+            schema: schema.clone(),
+            path: vec![],
+            selected: 0,
+            input: None,
+            advanced: false,
+            read_only: !setting.writable_at(scope),
+            hook_creation: None,
+        })
+    });
+    let draft = if let Some(form) = &structured {
+        serde_json::to_string_pretty(
+            &initial.cloned().unwrap_or_else(|| super::structured::empty(&form.schema)),
+        )
+        .unwrap_or_default()
+    } else {
+        initial.map_or_else(String::new, |value| {
+            value.as_str().map_or_else(|| value.to_string(), str::to_owned)
+        })
+    };
     let cursor = draft.chars().count();
     app.config.replace_overlay(ConfigOverlayState::Setting(SettingOverlayState {
-        id: setting.id.clone(),
+        setting: Box::new(setting.clone()),
         scope,
         context: snapshot.context.clone(),
         revision: value.revision.clone(),
         draft,
         cursor,
+        structured,
     }));
 }
 
@@ -155,10 +160,15 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
     }
     match app.config.overlay {
         Some(ConfigOverlayState::Setting(_)) => {
-            if app.config.pending_settings_request.is_none() && setting_accepts_text(app) {
+            if app.config.pending_settings_request.is_some() {
+                return true;
+            }
+            if super::structured_edit::handle_paste(app, text) {
+                return true;
+            }
+            if setting_accepts_text(app) {
                 if setting_is_multiline(app) {
-                    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-                    insert_multiline_text(app.config.setting_overlay_mut(), &normalized);
+                    insert_multiline_text(app.config.setting_overlay_mut(), text);
                 } else {
                     insert_text_str(app.config.setting_overlay_mut(), text);
                 }
@@ -178,6 +188,27 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
 }
 fn handle_setting_key(app: &mut App, key: KeyEvent) {
     if app.config.pending_settings_request.is_some() {
+        return;
+    }
+    if super::structured_edit::handle_key(app, key) {
+        return;
+    }
+    if app
+        .config
+        .setting_overlay()
+        .and_then(|editor| editor.structured.as_ref())
+        .is_some_and(|form| form.read_only)
+        && !matches!(
+            key.code,
+            KeyCode::Esc
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Home
+                | KeyCode::End
+        )
+    {
         return;
     }
     match (key.code, key.modifiers) {
@@ -210,10 +241,10 @@ fn handle_setting_key(app: &mut App, key: KeyEvent) {
             move_text_cursor_right(app.config.setting_overlay_mut());
         }
         (KeyCode::Up, KeyModifiers::NONE) if setting_is_multiline(app) => {
-            move_setting_line(app, false);
+            move_text_line(app.config.setting_overlay_mut(), false);
         }
         (KeyCode::Down, KeyModifiers::NONE) if setting_is_multiline(app) => {
-            move_setting_line(app, true);
+            move_text_line(app.config.setting_overlay_mut(), true);
         }
         (KeyCode::Home, KeyModifiers::NONE) => set_text_cursor(app.config.setting_overlay_mut(), 0),
         (KeyCode::End, KeyModifiers::NONE) => {
@@ -232,46 +263,36 @@ fn handle_setting_key(app: &mut App, key: KeyEvent) {
     }
 }
 fn setting_accepts_text(app: &App) -> bool {
-    app.config.setting_overlay().is_some_and(|overlay| {
-        app.config.snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot.catalog.iter().any(|setting| setting.id == overlay.id && setting.allows_custom)
-        })
-    })
+    app.config.setting_overlay().is_some_and(|overlay| overlay.setting.allows_custom)
 }
 fn setting_kind(app: &App) -> Option<SettingKind> {
-    let editor = app.config.setting_overlay()?;
-    app.config
-        .snapshot
-        .as_ref()?
-        .catalog
-        .iter()
-        .find(|setting| setting.id == editor.id)
-        .map(|setting| setting.kind)
+    app.config.setting_overlay().map(|editor| editor.setting.kind)
 }
 fn setting_is_multiline(app: &App) -> bool {
     setting_kind(app).is_some_and(SettingKind::is_structured)
 }
-fn insert_multiline_text(overlay: Option<&mut SettingOverlayState>, text: &str) {
+pub(super) fn insert_multiline_text<T: TextInputOverlay>(overlay: Option<&mut T>, text: &str) {
     let Some(overlay) = overlay else {
         return;
     };
-    let byte = char_to_byte_index(&overlay.draft, overlay.cursor);
-    overlay.draft.insert_str(byte, text);
-    overlay.cursor += text.chars().count();
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let byte = char_to_byte_index(overlay.draft(), overlay.cursor());
+    overlay.draft_mut().insert_str(byte, &normalized);
+    *overlay.cursor_mut() += normalized.chars().count();
 }
-fn move_setting_line(app: &mut App, down: bool) {
-    let Some(editor) = app.config.setting_overlay_mut() else {
+pub(super) fn move_text_line<T: TextInputOverlay>(overlay: Option<&mut T>, down: bool) {
+    let Some(editor) = overlay else {
         return;
     };
-    let chars = editor.draft.chars().collect::<Vec<_>>();
-    let start =
-        chars[..editor.cursor].iter().rposition(|ch| *ch == '\n').map_or(0, |index| index + 1);
-    let column = editor.cursor - start;
+    let chars = editor.draft().chars().collect::<Vec<_>>();
+    let cursor = editor.cursor();
+    let start = chars[..cursor].iter().rposition(|ch| *ch == '\n').map_or(0, |index| index + 1);
+    let column = cursor - start;
     let next_start = if down {
-        let Some(end) = chars[editor.cursor..].iter().position(|ch| *ch == '\n') else {
+        let Some(end) = chars[cursor..].iter().position(|ch| *ch == '\n') else {
             return;
         };
-        editor.cursor + end + 1
+        cursor + end + 1
     } else {
         if start == 0 {
             return;
@@ -280,26 +301,22 @@ fn move_setting_line(app: &mut App, down: bool) {
     };
     let len =
         chars[next_start..].iter().position(|ch| *ch == '\n').unwrap_or(chars.len() - next_start);
-    editor.cursor = next_start + column.min(len);
+    *editor.cursor_mut() = next_start + column.min(len);
 }
-fn confirm_setting(app: &mut App, remove: bool) {
+pub(super) fn confirm_setting(app: &mut App, remove: bool) {
     let Some(overlay) = app.config.setting_overlay().cloned() else {
         return;
     };
     let value = if remove {
         None
     } else {
-        let parsed = match setting_kind(app) {
-            Some(SettingKind::StringList) => Ok(serde_json::Value::Array(
-                overlay
-                    .draft
-                    .lines()
-                    .filter(|line| !line.is_empty())
-                    .map(|line| serde_json::Value::String(line.to_owned()))
-                    .collect(),
-            )),
-            Some(SettingKind::Json | SettingKind::Number) => serde_json::from_str(&overlay.draft),
-            _ => Ok(serde_json::Value::String(overlay.draft)),
+        let parsed = if overlay.structured.is_some() {
+            serde_json::from_str(&overlay.draft)
+        } else {
+            match setting_kind(app) {
+                Some(SettingKind::Number) => serde_json::from_str(&overlay.draft),
+                _ => Ok(serde_json::Value::String(overlay.draft)),
+            }
         };
         match parsed {
             Ok(value) => Some(value),
@@ -313,7 +330,7 @@ fn confirm_setting(app: &mut App, remove: bool) {
         app,
         SettingsMutation {
             context: overlay.context,
-            id: overlay.id,
+            id: overlay.setting.id,
             scope: overlay.scope,
             expected_revision: overlay.revision,
             operation: if remove { SettingsOperation::Remove } else { SettingsOperation::Set },
@@ -618,13 +635,8 @@ pub(super) fn insert_text_char<T: TextInputOverlay>(overlay: Option<&mut T>, ch:
 }
 
 pub(super) fn insert_text_str<T: TextInputOverlay>(overlay: Option<&mut T>, text: &str) {
-    let Some(overlay) = overlay else {
-        return;
-    };
-    let byte_index = char_to_byte_index(overlay.draft(), overlay.cursor());
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', " ");
-    overlay.draft_mut().insert_str(byte_index, &normalized);
-    *overlay.cursor_mut() += normalized.chars().count();
+    insert_multiline_text(overlay, &normalized);
 }
 
 pub(super) fn delete_text_before_cursor<T: TextInputOverlay>(overlay: Option<&mut T>) {
@@ -723,6 +735,4 @@ impl TextInputOverlay for SettingOverlayState {
     }
 }
 
-pub(super) fn accepts_text_input(modifiers: KeyModifiers) -> bool {
-    modifiers.is_empty() || modifiers == KeyModifiers::SHIFT
-}
+pub(super) use crate::app::keys::is_printable_text_modifiers as accepts_text_input;

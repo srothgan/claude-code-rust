@@ -12,6 +12,10 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/cancel` | `/cancel` | Cancel the active assistant turn. |
 | `/compact` | `/compact` | Ask the active session to compact conversation context. |
 | `/config` | `/config` | Open fullscreen settings. |
+| `/memory` | `/memory` | Open the Memory settings pane. |
+| `/permissions` | `/permissions` | Open saved permission defaults, rules and directories. |
+| `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
+| `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |

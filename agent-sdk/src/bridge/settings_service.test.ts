@@ -219,7 +219,9 @@ test("alphabetical settings expose SDK model choices for validated save and rese
   await write("local", {});
   const models = ["opus", "sonnet"].map(id => ({ id, display_name: id, supports_effort: true, supported_effort_levels: [] }));
   let shown = await inspectSettings(cwd, models);
-  assert.deepEqual(shown.catalog.slice(0, 4).map(setting => setting.label), ["Auto compact", "Auto mode during planning", "Auto-scroll", "Automatic updates"]);
+  const general = shown.catalog.filter(setting => setting.category === "general");
+  assert.ok(general.some(setting => setting.id === "model"));
+  assert.ok(general.some(setting => setting.id === "updates.autoInstall"));
   assert.deepEqual(shown.catalog.find(setting => setting.id === "model")?.options, ["opus", "sonnet"]);
   for (const id of ["opus", "sonnet"]) {
     const saved = await mutateSetting(cwd, mutation(shown, "model", "user", id), models);
@@ -312,6 +314,29 @@ test("unrelated rejected settings do not prevent targeted saves or reset", async
   assert.equal(reset.persistence, "saved");
   assert.equal(reset.application, "next_session");
   assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), opaque);
+});
+
+test("hook and sandbox form saves validate supported edits and preserve extra object fields", async () => {
+  const hooks: { PreToolUse: Array<{ matcher: string; futureGroup: Json; hooks: Array<Record<string, Json>> }> } = { PreToolUse: [{ matcher: "Write|Edit", futureGroup: { keep: true }, hooks: [{ type: "command", command: "never-execute", futureAction: "keep" }, { type: "http", url: "https://example.com/hook" }] }] };
+  const ripgrep = { command: "rg", args: ["--hidden"], future: { keep: true } };
+  await write("user", { hooks, sandbox: { ripgrep, enabled: true }, unrelated: "keep" });
+  await write("project", {});
+  await write("local", {});
+  const editedHooks = structuredClone(hooks);
+  editedHooks.PreToolUse[0].hooks[0].command = "never-execute-new";
+  const first = await mutateSetting(cwd, mutation(await inspectSettings(cwd), "hooks", "user", editedHooks));
+  assert.equal(first.persistence, "saved", first.error ?? "hooks save");
+  assert.equal(first.application, "next_session", first.error ?? "hooks application");
+  const editedRipgrep = { ...ripgrep, command: "custom-rg" };
+  const second = await mutateSetting(cwd, mutation(await inspectSettings(cwd), "sandbox.ripgrep", "user", editedRipgrep));
+  assert.equal(second.persistence, "saved", second.error ?? "ripgrep save");
+  const source = second.snapshot?.sources.find(source => source.scope === "user");
+  assert.ok(source);
+  assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { hooks: editedHooks, sandbox: { ripgrep: editedRipgrep, enabled: true }, unrelated: "keep" });
+  const invalid = await mutateSetting(cwd, mutation(await inspectSettings(cwd), "hooks", "user", { ...editedHooks, PreToolUse: [{ ...editedHooks.PreToolUse[0], hooks: [{ type: "command", command: 42, futureAction: "keep" }] }] }));
+  assert.equal(invalid.persistence, "failure");
+  const stored = JSON.parse(await fs.readFile(source.path, "utf8"));
+  assert.deepEqual(stored.hooks, editedHooks);
 });
 
 test("files containing only ignored entries can acquire and reset supported settings", async () => {

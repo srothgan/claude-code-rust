@@ -17,14 +17,11 @@ pub(super) fn render_setting_overlay(frame: &mut Frame, area: Rect, app: &App) {
     let Some(overlay) = app.config.setting_overlay() else {
         return;
     };
-    let Some(setting) = app
-        .config
-        .snapshot
-        .as_ref()
-        .and_then(|snapshot| snapshot.catalog.iter().find(|setting| setting.id == overlay.id))
-    else {
+    let setting = &overlay.setting;
+    if overlay.structured.as_ref().is_some_and(|form| !form.advanced) {
+        super::settings_form::render(frame, area, app, overlay);
         return;
-    };
+    }
     let multiline = setting.kind.is_structured();
     let rendered = render_overlay_shell(
         frame,
@@ -43,6 +40,10 @@ pub(super) fn render_setting_overlay(frame: &mut Frame, area: Rect, app: &App) {
             subtitle: Some(super::settings::scope_label(overlay.scope)),
             help: Some(if app.config.pending_settings_request.is_some() {
                 "Saving..."
+            } else if overlay.structured.as_ref().is_some_and(|form| form.read_only) {
+                "Read-only | Ctrl+F form | Esc back"
+            } else if overlay.structured.is_some() {
+                "Ctrl+S save | Ctrl+F form | Enter new line | Esc cancel"
             } else if multiline {
                 "Ctrl+S save | Enter new line | Ctrl+U clear | Ctrl+R reset | Esc cancel"
             } else {
@@ -85,10 +86,17 @@ fn setting_details(
         .config
         .snapshot
         .as_ref()
-        .and_then(|snapshot| snapshot.scoped(&overlay.id, overlay.scope))
+        .and_then(|snapshot| snapshot.scoped(&overlay.setting.id, overlay.scope))
         .and_then(|value| value.value.as_ref())
         .map_or_else(|| "not set".to_owned(), super::settings::display);
     let mut lines = vec![Line::from(setting.description.clone()), Line::from("")];
+    if stale_context(app, overlay) {
+        lines.push(Line::styled(
+            "Settings location changed. Cancel and reopen to save.",
+            Style::default().fg(theme::STATUS_WARNING),
+        ));
+        return lines;
+    }
     lines.push(Line::styled(
         format!("Saved in {}: {current}", overlay.scope.label()),
         Style::default().fg(theme::DIM),
@@ -98,6 +106,13 @@ fn setting_details(
         lines.push(Line::styled("Applies immediately.", Style::default().fg(theme::DIM)));
     }
     lines
+}
+
+fn stale_context(app: &App, overlay: &SettingOverlayState) -> bool {
+    app.config
+        .snapshot
+        .as_ref()
+        .is_none_or(|snapshot| !snapshot.matches_context(&overlay.context, &app.cwd_raw))
 }
 
 pub(super) fn render_session_rename_overlay(frame: &mut Frame, area: Rect, app: &App) {

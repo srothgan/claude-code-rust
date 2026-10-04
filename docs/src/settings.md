@@ -4,7 +4,11 @@ Claude Code Rust has a fullscreen settings surface with multiple tabs. These sla
 
 | Command | Tab | Purpose |
 | --- | --- | --- |
-| `/config` | Settings | Edit supported Claude-compatible settings. |
+| `/config` | Settings → General | Edit saved defaults and everyday preferences. |
+| `/memory` | Settings → Memory | Configure context, checkpoints, automatic memory and plans. |
+| `/permissions` | Settings → Permissions | Configure saved permission defaults, rules and working directories. |
+| `/sandbox` | Settings → Sandbox | Configure sandbox execution, filesystem, network and credentials. |
+| `/hooks` | Settings → Hooks | Inspect and edit saved hook handlers without executing them. |
 | `/mcp` | MCP | Inspect live MCP server status and complete MCP authorization flows. |
 | `/plugins` | Plugins | Manage installed plugins, marketplace plugins, and marketplaces. |
 | `/status` | Status | Inspect session, account, authentication, and runtime status. |
@@ -24,6 +28,10 @@ Settings -> Plugins -> Status -> Usage -> MCP -> Help
 ```
 
 Use `Tab` to move to the next tab and `Shift+Tab` to move to the previous tab. The active tab can also have its own navigation and action keys. For example, the Settings tab edits persisted settings, the Plugins tab navigates plugin lists and overlays, the MCP tab opens server actions and authorization flows, and the Usage and Status tabs refresh live session-backed data.
+
+Inside Settings, a second tab row contains General, Memory, Permissions, Sandbox, Hooks, and Workflows & Worktrees. Models and everyday preferences stay in General. Up from the first item focuses search; Up again focuses the pane tabs. Down returns through search to the list. Left/Right changes panes only while the pane row has focus; it changes supported setting choices while the list has focus. Home/End and Page Up/Down navigate the current list. Tab/Shift+Tab still changes top-level tabs. An open editor owns its keys and keeps its captured save scope.
+
+Press `/` to search the current pane. Search matches labels, descriptions and canonical setting IDs, using case-insensitive matching for all entered words. It never searches another pane or saved hook commands, credential content or environment values. Enter in search focuses results; Enter on a result clears the query and reveals its setting without editing. Esc clears search and restores the browsing position; Esc without a query closes the window. Choosing another pane clears search and restores that pane's remembered selection. Leaving Settings for another top-level tab preserves browsing and search state.
 
 The surface is not only for editing JSON settings. It is the shared fullscreen control area for settings, plugins, MCP, account/session status, usage, and in-app help.
 
@@ -72,15 +80,23 @@ A revision for the displayed target detects conflicting edits. Unrelated edits a
 
 The window states once that saved changes apply to new sessions and marks immediate exceptions. The app does not turn a settings save into a session flag override. Use `/model`, `/mode`, `/effort`, `/thinking`, `/agent`, `/fast`, or `/ultracode` for their existing session actions. Host presentation preferences, `respectGitignore`, and `prefersReducedMotion` apply immediately after acknowledgement. New sessions and resumed sessions retain native settings inheritance. The footer's effort badge reflects the SDK's applied level at initialization and after session changes, including model restrictions and organization caps. Per-turn init observations supersede earlier reads. If the SDK reports no discrete level, the footer shows the model without an effort suffix.
 
+## Structured editors
+
+Lists, including permission Allow/Ask/Deny rules, open an item editor. Press `a` to add, Enter/Space to edit an item, and Delete to remove it. Hooks show individual event/matcher/action entries, with guided creation and direct field editing for command, prompt, agent, HTTP and MCP-tool actions. Sandbox forms cover TLS certificate paths, ripgrep command/arguments, violation mappings, credential files/environment variables, AWS pairs and request policies. Forms preserve unknown fields and sibling entries; native validation remains authoritative.
+
+An editor loads entries saved at the selected scope, rather than reconstructing a merged list. Other sources contribute separately. Ctrl+S submits the draft, Ctrl+R resets the whole selected setting at that scope, and Esc returns to the parent or cancels the draft at its root. Removing the last item saves an explicit empty collection; reset removes the setting key. Field input uses Enter to accept, Ctrl+U to clear, Ctrl+J to insert a newline, and Esc to cancel the field. Optional fields can be removed with Delete. Configured values may be inspected in read-only scopes; saving remains unavailable.
+
+Ctrl+J outside a field opens advanced JSON for the same draft; Ctrl+F returns to the form after valid JSON. There is one mutation and persistence path. Invalid JSON or a native validation failure retains the draft. A conflict loads the latest revision and requires deliberate retry. A changed project/settings context blocks saving until the editor is canceled and reopened. Delayed acknowledgements belong to their originating mutation and cannot close another editor. Inspection and validation never execute hooks or credential helpers or resolve secret files and environment variables; ordinary header and arbitrary argument summaries are redacted.
+
 ## Current catalog
 
-The catalog exposes 67 rows, sorted alphabetically by their displayed names. It enables validated boolean and string editors for auto-compaction, flagged-message model switching, thinking, fast mode, prompt suggestions, checkpoints, workflows, keyword triggers, workflow size, default permission mode, worktree base reference, file-picker Gitignore behavior, output style, language, default model, and reduced motion. The catalog describes per-row writable scopes; not every setting can be saved at every scope. Default model cycles only through the session's SDK-advertised choices; it does not accept typed model IDs. Existing externally configured values remain preserved on disk until explicitly changed or reset. Output style still accepts custom style names. Default agent uses the SDK-advertised agent inventory.
+The catalog exposes 77 settings, organized into one alphabetical list per pane. The bridge supplies category assignments, alphabetical ordering and structured-editor metadata; Rust uses that one catalog for rendering, navigation, search and mutation targets. It enables validated boolean and string editors for auto-compaction, flagged-message model switching, thinking, fast mode, prompt suggestions, checkpoints, workflows, keyword triggers, workflow size, default permission mode, worktree base reference, file-picker Gitignore behavior, output style, language, default model, and reduced motion. The catalog describes per-row writable scopes; not every setting can be saved at every scope. Default model cycles only through the session's SDK-advertised choices; it does not accept typed model IDs. Existing externally configured values remain preserved on disk until explicitly changed or reset. Output style still accepts custom style names. Default agent uses the SDK-advertised agent inventory.
 
 Default effort is one inline choice control for the currently saved Default model, using the same Left/Right/Space interaction as Default model. Its choices come from that model's SDK capabilities, excluding session-only `max`. Saving writes `modelSettings.<canonical model>.effortLevel` at the chosen scope and preserves other models' preferences and sibling fields. Changing Default model retargets the effort control; mutation context checks prevent an outdated edit from silently targeting a different model. An unsupported or unresolved model leaves the effort editor read-only. Reset removes only that model's effort at the selected scope. SDK model metadata determines the target; aliases and dated/context/provider spellings are normalized to Claude's canonical key, while unknown model identities remain read-only. The saved snapshot is the SDK's file cascade; environment settings, top-level effort fallbacks, trust, and policy caps can still change the running effort, which is shown in the footer.
 
 `Default` means no configured value was returned for this preference. It does not promise On or Off. The installed SDK's file resolver does not fill in built-in defaults; its applied-settings response exposes selected session values rather than effective defaults for the whole catalog. Keep this label until the fallback for an individual setting can be determined reliably, without treating a current-session override as its default.
 
-Continuation at usage limits and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification controls are described below; updater preferences remain a subsequent implementation group in `config.md`.
+Continuation at usage limits and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification and automatic-update controls remain in General; their runtime behavior is described below.
 
 When Reduce motion is On, active thinking, tool execution, compaction, cancellation, and pending commands use a static diamond (`◆`) instead of an animated spinner. Animation-only redraws stop; incoming state changes still update normally. This setting is ready and applies immediately after saving, with reset following the remaining scopes or Default.
 
@@ -115,11 +131,11 @@ Question timeout offers Never, 60 seconds, 5 minutes, or 10 minutes. After the c
 
 Dialog expiry offers 60 seconds, 5 minutes, 10 minutes, or Never. Reset restores the native fallback of 5 minutes. It expires forwarded remote dialogs and held cross-session messages with safe cancellation; ordinary local-only permission prompts have no added deadline. `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` takes precedence. Native cancellation removes the affected question, permission, or user dialog from the interaction queue, preserving other pending interactions and the composer draft.
 
-Permission rules and additional directories, memory exclusions, worktree directories, sandbox paths/domains, and hook allowlists open a multiline list editor. Enter inserts a newline, Ctrl+S saves, Ctrl+U clears, Ctrl+R resets the setting, and Escape cancels. Each nonempty line is one item; paths and rule whitespace are retained. Clearing and saving writes an explicit empty list, while reset deletes the setting. Many native lists merge across scopes, so an empty list does not necessarily remove rules contributed elsewhere. The editor opens this scope's own entries, not a copy of the merged list. List rows show the selected scope's item count. Change scope on the settings list with `s`; an open dialog keeps its scope fixed until it closes.
+Permission rules and additional directories, memory exclusions, worktree directories, sandbox paths/domains, and hook allowlists use the item editor described above. Many native lists merge across scopes, so an empty list does not necessarily remove rules contributed elsewhere. List rows show the selected scope's item count. Change scope on the settings list with `s`; an open editor keeps its scope fixed until it closes.
 
-Hooks, sandbox credentials, ignored violations, TLS termination, and the ripgrep helper use a multiline JSON-object editor with the same shortcuts. Object rows show their entry count. Syntax errors and native schema errors retain the draft for correction. Validation checks only the edited leaf through the installed SDK's public resolver; it does not run hooks, read credential contents, or change unrelated settings. Organization restrictions can make permission rules, hooks, and sandbox allowlists read-only. Numeric proxy ports accept whole numbers from 1 through 65535.
+Hooks, sandbox credentials, ignored violations, TLS termination, and the ripgrep helper open structured forms with advanced JSON access. Object rows show their entry count. Syntax errors and native schema errors retain the draft for correction. Validation checks only the edited leaf through the installed SDK's public resolver; it does not run hooks, read credential contents, or change unrelated settings. Organization restrictions can make permission rules, hooks, and sandbox allowlists read-only. Numeric proxy ports accept whole numbers from 1 through 65535.
 
-For example, a Hooks: definitions value can be:
+For example, a Hooks definitions value can be:
 
 ```json
 {
@@ -167,7 +183,7 @@ After plugin changes, the app requests a session runtime plugin reload when an a
 
 ## Notifications
 
-Notifications apply immediately after an acknowledged save. They alert only when the terminal reports that it is unfocused; terminals without focus reporting remain silent. These controls appear alphabetically in the same Settings editor:
+Notifications apply immediately after an acknowledged save. They alert only when the terminal reports that it is unfocused; terminals without focus reporting remain silent. These controls appear in General under Files, notifications and updates:
 
 | Setting | Choices / default | Behavior |
 | --- | --- | --- |
@@ -189,3 +205,15 @@ For notification diagnostics, use `--diagnostics-preset full`, `runtime` or `ses
 Automatic updates is a personal app setting, saved as `updates.autoInstall` in the app settings file. It defaults to Off. Off keeps the existing startup update window and manual installation choices. On skips that window and installs an available newer claude-rs version after a normal exit, using the running installation's detected script or npm method. Source builds and unrecognized installations are not automatically replaced. The setting does not update an external Claude CLI installation or independently change the bundled SDK.
 
 Update checks run in both modes, retaining the existing 24-hour cache. Explicit `--no-update-check` or `CLAUDE_RUST_NO_UPDATE_CHECK` disablement still takes precedence and also prevents automatic installation. The updater reads the current saved setting again at exit, so saving Off or resetting cancels automatic installation. Forced shutdown and application errors skip automatic installation. Installation errors are reported and saved without opening another window; the session remains resumable.
+
+## Structured editor interactions
+
+Each pane has one alphabetical list without subsection headings or column headers. Settings and Plugins share the same bordered search field. Escape appears with the other keyboard hints and wraps only when needed.
+
+For Permissions, open Allow rules, Ask rules, Deny rules or Additional directories at the desired save scope. Press `a` to add one entry, Enter to edit an entry, and Delete to remove it. Rule inputs include tool-rule examples. Enter accepts the field into the draft; Ctrl+S saves the collection. Removing its final entry saves an explicit empty list; resetting the setting removes that scope's key. Other scopes can still supply rules.
+
+For Hooks, Definitions shows a flat list with each hook's event, matcher and action. Press `a` to add a hook: choose an event from a visible list, enter an optional matcher, choose an action, enter its required fields and review. Enter on Review adds the hook to the draft and opens its optional fields; Ctrl+S persists it. Esc goes back within creation and cancels adding at the first step. Enter edits an existing hook; `m` edits its group's matcher, with a warning that sibling hooks share it; Delete removes only that hook.
+
+For Sandbox, select a field or collection. Lists and maps offer Add/Edit/Remove; objects offer field editing and field reset. Required fields have `*` and a `* Required` legend; optional fields have no marker. Fixed choices show a visible picker navigated with Up/Down and accepted with Enter. Inputs explain expected paths, variable names, command arguments or patterns. Credential entries take names and paths, never secret values. Edits remain in the draft until Ctrl+S and receive native validation on save.
+
+Config text fields accept AltGr characters, including `|` in matchers and `\` in paths. Native validation checks supported structured fields without discarding additional saved object fields; invalid supported values keep the draft open instead of changing the file.

@@ -64,8 +64,6 @@ pub(super) fn reset_for_conversation(
     app.clear_tool_call_index();
     app.sdk_inventory.tasks.clear();
     app.focus = super::super::FocusManager::default();
-    app.config.clear_overlay();
-    app.config.pending_session_title_change = None;
     clear_cached_active_session_title(app);
     reset_messages_for_new_session(app, false);
     app.chat_render.reset();
@@ -162,8 +160,6 @@ fn reset_interaction_state_for_new_session(app: &mut App) {
     app.focus = super::super::FocusManager::default();
     app.sdk_inventory.available_commands.clear();
     app.sdk_inventory.available_agents.clear();
-    app.config.clear_overlay();
-    app.config.pending_session_title_change = None;
 }
 
 fn reset_render_state_for_new_session(app: &mut App) {

@@ -1669,4 +1669,47 @@ mod tests {
             settings
         );
     }
+
+    #[test]
+    fn settings_categories_and_recursive_forms_cross_the_settings_result_wire() {
+        let mut snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/settings-ui-catalog.json"))
+                .expect("catalog fixture");
+        snapshot["cwd"] = serde_json::json!("/project");
+        snapshot["context"] = serde_json::json!("context");
+        snapshot["sources"] = serde_json::json!([]);
+        snapshot["values"] = serde_json::json!([]);
+        snapshot["resolution_sources"] = serde_json::json!([]);
+        snapshot["provenance"] = serde_json::json!({});
+        snapshot["diagnostics"] = serde_json::json!([]);
+        let envelope: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event":"settings_result", "session_id":"session", "request_id":"inspect",
+            "result":{"persistence":"not_requested", "application":"blocked", "snapshot":snapshot}
+        }))
+        .expect("settings event");
+        let BridgeEvent::SettingsResult { result, .. } = envelope.event else {
+            panic!("settings result");
+        };
+        let snapshot = result.snapshot.expect("snapshot");
+        assert_eq!(snapshot.categories.len(), 6);
+        let hook = snapshot.catalog.iter().find(|setting| setting.id == "hooks").expect("hooks");
+        let encoded = serde_json::to_value(hook).expect("descriptor");
+        assert_eq!(encoded["category"], "hooks");
+        assert_eq!(
+            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
+                ["fields"][0]["key"],
+            "command"
+        );
+        assert_eq!(
+            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
+                ["fields"][0]["required"],
+            true
+        );
+        assert!(
+            encoded["editor"]["item"]["item"]["fields"][1]["schema"]["item"]["variants"]["command"]
+                ["fields"][0]["schema"]["description"]
+                .as_str()
+                .is_some()
+        );
+    }
 }

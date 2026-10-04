@@ -1,19 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
+mod browse;
 mod controller;
 mod edit;
 mod help;
+pub(crate) mod hooks;
 mod mcp;
 mod mcp_edit;
 mod overlays;
 mod service;
 mod state;
 mod status;
+mod structured;
+mod structured_edit;
 mod tabs;
 
 pub use controller::{handle_key, handle_paste, open};
-pub(crate) use controller::{open_tab, refresh_runtime_tabs_for_session_change};
+pub(crate) use controller::{open_category, open_tab, refresh_runtime_tabs_for_session_change};
 pub(crate) use mcp::{
     McpAuthRedirectOverlayState, McpDetailsOverlayState, McpElicitationOverlayState,
     apply_mcp_config_remove_failure, apply_mcp_config_remove_success,
@@ -28,11 +32,17 @@ pub(crate) use mcp::{
     reconcile_stale_plugin_mcp_servers, refresh_mcp_snapshot,
 };
 // Used by the binary UI target, but not by the library target in isolation.
+pub use browse::{SettingsBrowse, SettingsFocus};
 #[allow(unused_imports)]
 pub(crate) use mcp::McpCallbackUrlOverlayState;
 pub use overlays::*;
 pub(crate) use service::{apply_settings_result, request_settings};
-pub use state::{ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState};
+pub use state::{
+    ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
+    PendingSettingsRequest,
+};
+pub(crate) use structured::{FieldInput, FormRow};
+pub use structured::{StructuredEditor, summary as structured_summary};
 pub use tabs::{ConfigHelpSection, ConfigTab};
 
 mod prelude {
@@ -47,5 +57,7 @@ mod prelude {
     pub(super) use serde_json::Value;
 }
 
+#[cfg(test)]
+mod navigation_tests;
 #[cfg(test)]
 mod tests;

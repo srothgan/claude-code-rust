@@ -9,10 +9,23 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::json;
 use std::rc::Rc;
 
+fn catalog_editor(id: &str) -> Option<crate::agent::settings::EditorSchema> {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../tests/fixtures/settings-ui-catalog.json"))
+            .expect("catalog fixture");
+    let setting = fixture["catalog"]
+        .as_array()
+        .expect("catalog")
+        .iter()
+        .find(|setting| setting["id"] == id)
+        .expect("setting");
+    serde_json::from_value(setting["editor"].clone()).expect("editor schema")
+}
+
 fn snapshot(cwd: &str, value: &str) -> SettingsSnapshot {
     serde_json::from_value(json!({
         "cwd": cwd, "context": "context-1", "diagnostics": [], "resolution_sources": [], "provenance": {},
-        "catalog": [{ "id": "language", "label": "Language", "description": "Response language", "key_path": ["language"], "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
+        "categories": [{"id":"general", "label":"General", "short_label":"General"}], "catalog": [{ "id": "language", "label": "Language", "description": "Response language", "key_path": ["language"], "category":"general", "kind": "string", "options": [], "allows_custom": true, "writable_scopes": ["user", "project", "local"], "reset": "Reset removes the saved value here", "application": "next_session" }],
         "sources": [{ "scope": "user", "path": "settings.json", "status": "valid", "values": [{ "id": "language", "revision": "revision-1", "value": value }] }],
         "values": [{ "id": "language", "value": value, "contributors": ["user"], "policy_restricted": false }]
     })).expect("snapshot contract")
@@ -110,6 +123,7 @@ async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_
     saved.catalog[0].id = "permissions.deny".to_owned();
     saved.catalog[0].label = "Permissions: deny rules".to_owned();
     saved.catalog[0].kind = SettingKind::StringList;
+    saved.catalog[0].editor = catalog_editor("permissions.allow");
     saved.catalog[0].key_path = vec!["permissions".to_owned(), "deny".to_owned()];
     saved.values[0].id = "permissions.deny".to_owned();
     saved.values[0].value = Some(json!(["Read(./.env)", "Bash(git push *)", "Bash(rm *)"]));
@@ -152,7 +166,10 @@ async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_
         );
         let editor = app.config.setting_overlay().expect("scoped list");
         assert_eq!(editor.scope, scope);
-        assert_eq!(editor.draft, rules.join("\n"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&editor.draft).expect("draft JSON"),
+            json!(rules)
+        );
         crate::app::config::handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
@@ -168,7 +185,7 @@ async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn multiline_rule_editor_preserves_draft_across_resize_conflict_and_acknowledged_save() {
+async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledged_save() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -182,6 +199,7 @@ async fn multiline_rule_editor_preserves_draft_across_resize_conflict_and_acknow
             saved.catalog[0].id = "permissions.allow".to_owned();
             saved.catalog[0].label = "Permissions: allow rules".to_owned();
             saved.catalog[0].kind = crate::agent::settings::SettingKind::StringList;
+            saved.catalog[0].editor = catalog_editor("permissions.allow");
             saved.catalog[0].key_path = vec!["permissions".to_owned(), "allow".to_owned()];
             saved.values[0].id = "permissions.allow".to_owned();
             saved.values[0].value = Some(json!(["Read(./src/**)"]));
@@ -192,17 +210,23 @@ async fn multiline_rule_editor_preserves_draft_across_resize_conflict_and_acknow
                 &mut app,
                 KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
             );
-            crate::app::config::handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            );
-            assert!(crate::app::config::handle_paste(
-                &mut app,
-                "Read(./docs/**)\r\nBash(npm test *)"
-            ));
+            for rule in ["Read(./docs/**)", "Bash(npm test *)"] {
+                crate::app::config::handle_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+                );
+                assert!(crate::app::config::handle_paste(&mut app, rule));
+                crate::app::config::handle_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                );
+            }
             assert_eq!(
-                app.config.setting_overlay().expect("editor").draft,
-                "Read(./src/**)\nRead(./docs/**)\nBash(npm test *)"
+                serde_json::from_str::<serde_json::Value>(
+                    &app.config.setting_overlay().expect("editor").draft
+                )
+                .expect("JSON"),
+                json!(["Read(./src/**)", "Read(./docs/**)", "Bash(npm test *)"])
             );
             for (width, height) in [(100, 35), (42, 16), (87, 25)] {
                 let mut terminal =
@@ -290,10 +314,12 @@ async fn structured_editor_reports_parse_error_and_saves_corrected_json_without_
         app.session_runtime.session_id = Some("session-1".into());
         let mut saved = snapshot(&app.cwd_raw, "{}");
         saved.catalog[0].kind = crate::agent::settings::SettingKind::Json;
+        saved.catalog[0].editor = catalog_editor("hooks");
         saved.values[0].value = Some(json!({}));
         saved.sources[0].values[0].value = Some(json!({}));
         app.config.snapshot = Some(saved);
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
         assert!(app.config.overlay_message.as_ref().expect("error").text.contains("Check the value"));
@@ -347,7 +373,8 @@ async fn config_edits_and_resets_use_correlated_snapshot_mutations() {
 #[test]
 fn request_correlation_and_session_epoch_protect_editor_state() {
     let mut app = App::test_default();
-    app.config.pending_settings_request = Some("current".to_owned());
+    app.config.pending_settings_request =
+        Some(crate::app::config::PendingSettingsRequest::Inspection("current".to_owned()));
     let saved = snapshot(&app.cwd_raw, "German");
     app.config.snapshot = Some(saved.clone());
     let incoming = snapshot(&app.cwd_raw, "Greek");
@@ -594,7 +621,12 @@ async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshe
                 &mut app,
                 KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
             );
-            app.config.pending_settings_request = Some("save".to_owned());
+            crate::app::config::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let first = commands.recv_envelope().await.expect("initial save");
+            assert!(matches!(first.command, BridgeCommand::MutateSetting { .. }));
             // Keep the submitted draft frozen while its acknowledgement is pending.
             assert!(crate::app::config::handle_paste(&mut app, "pending"));
             assert_eq!(app.config.setting_overlay().expect("draft").draft, "German");
@@ -602,7 +634,7 @@ async fn conflict_refresh_preserves_draft_and_deliberate_retry_uses_the_refreshe
             refreshed.sources[0].values[0].revision = "revision-2".to_owned();
             apply_settings_result(
                 &mut app,
-                Some("save"),
+                first.request_id.as_deref(),
                 SettingsResult {
                     persistence: SettingsPersistence::Conflict,
                     application: SettingsApplication::Blocked,
@@ -711,7 +743,7 @@ async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_save
                 assert!(text.contains("1/1"));
                 assert!(text.contains("Space change"));
                 assert!(text.contains("Left/Right change"));
-                assert_eq!(app.config.selected_setting_index, 0);
+                assert_eq!(app.config.selected_setting().expect("selection").id, id);
             }
         }
     }).await;
