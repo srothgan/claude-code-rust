@@ -15,25 +15,46 @@ Claude Code Rust has a fullscreen settings surface with multiple tabs. These sla
 | `/usage` | Usage | Inspect quota and usage information reported by the active session. |
 | `/help` | Help | Open fullscreen in-app help. |
 
-The settings surface is session-aware. Some tabs need an active bridge session before they can show live SDK-backed state.
+The settings surface is session-aware. Settings load when the app's session starts, and some tabs need an active session before they can show live data.
 
-## Usage
+## Opening and navigating
 
-Open the settings surface with any command in the table above. Each command opens the same fullscreen surface but targets a different starting tab.
-
-The tab order is:
+Every command in the table above opens the same fullscreen surface on a different starting tab. The tab order is:
 
 ```text
 Settings -> Plugins -> Status -> Usage -> MCP -> Help
 ```
 
-Use `Tab` to move to the next tab and `Shift+Tab` to move to the previous tab. The active tab can also have its own navigation and action keys. For example, the Settings tab edits persisted settings, the Plugins tab navigates plugin lists and overlays, the MCP tab opens server actions and authorization flows, and the Usage and Status tabs refresh live session-backed data.
+`Tab` moves to the next tab and `Shift+Tab` to the previous one. `Esc` closes the surface. `Enter` closes it as well wherever the selected item has no action of its own. The hint line at the bottom of the surface shows what `Enter` and `Esc` do at the current position. Each tab also has its own keys: the Plugins tab navigates plugin lists, the MCP tab opens server actions and authorization flows, the Status tab renames the session with `r` or generates a title with `g`, and the Usage tab refreshes with `r`.
 
-Inside Settings, a second tab row contains General, Memory, Permissions, Sandbox, Hooks, and Workflows & Worktrees. Models and everyday preferences stay in General. Up from the first item focuses search; Up again focuses the pane tabs. Down returns through search to the list. Left/Right changes panes only while the pane row has focus; it changes supported setting choices while the list has focus. Home/End and Page Up/Down navigate the current list. Tab/Shift+Tab still changes top-level tabs. An open editor owns its keys and keeps its captured save scope.
+### Settings panes
 
-Press `/` to search the current pane. Search matches labels, descriptions and canonical setting IDs, using case-insensitive matching for all entered words. It never searches another pane or saved hook commands, credential content or environment values. Enter in search focuses results; Enter on a result clears the query and reveals its setting without editing. Esc clears search and restores the browsing position; Esc without a query closes the window. Choosing another pane clears search and restores that pane's remembered selection. Leaving Settings for another top-level tab preserves browsing and search state.
+The Settings tab has a second row with six panes: General, Memory, Permissions, Sandbox, Hooks, and Workflows & Worktrees. Each pane is one alphabetical list. Focus moves between three areas stacked from top to bottom: the pane row, the search field, and the list.
 
-The surface is not only for editing JSON settings. It is the shared fullscreen control area for settings, plugins, MCP, account/session status, usage, and in-app help.
+| Focus | Key | Action |
+| --- | --- | --- |
+| List | `Up` on the first item | Move to the search field. |
+| Search field | `Up` | Move to the pane row. |
+| Search field | `Down`, `Enter` | Move to the list. |
+| Pane row | `Left`, `Right` | Switch pane. |
+| Pane row | `Down` | Move to the search field. |
+| Pane row | `Enter` | Move to the list. |
+
+Each pane remembers its own selection. Switching to another top-level tab and back keeps the pane, selection and search.
+
+Below 30 columns or 12 rows the surface asks you to resize the window instead of drawing an unusable layout.
+
+### Search
+
+Press `/` to search the current pane. A setting matches when its label, description or setting ID contains every word you typed, ignoring case. Search covers only the current pane and never looks inside saved values such as hook commands, credential entries or environment values.
+
+| Key | Action |
+| --- | --- |
+| `Enter` in the search field | Move to the results. |
+| `Enter` on a result | Clear the query and keep that setting selected in the full list. |
+| `Esc` | Clear the query and return to the previous position. Without a query, `Esc` closes the surface. |
+
+Switching panes clears the search.
 
 ## Help
 
@@ -49,94 +70,124 @@ Use `Left` and `Right` inside the Help tab to switch sections. Use `Up` and `Dow
 
 The Help tab is live UI, not a static manual page. Its Shortcuts section changes with focus and state, and its Commands and Subagents sections depend on what the active SDK session advertises.
 
-## Settings ownership and scopes
+## Where settings are saved
 
-The bridge uses the installed Agent SDK's public `resolveSettings()` to inspect Claude settings. Rust displays the received catalog and snapshot; it does not merge Claude files or manufacture saved defaults. The SDK snapshot is a raw cascade, while the running Claude session separately applies trust, managed policy, capability restrictions, and explicit session choices.
+Each save goes to one scope. Press `s` in the list to cycle the save scope through User, Project and Local.
 
-| Source | Default file | Purpose |
+| Scope | File | Use |
 | --- | --- | --- |
-| User | `~/.claude/settings.json` | Personal Claude defaults. |
-| Project | `./.claude/settings.json` | Shared project defaults. |
-| Local | `./.claude/settings.local.json` | Private project defaults. |
-| Managed | SDK-reported policy source | Policy contributions are shown and affected controls are read-only. |
-| Workspace trust | `~/.claude.json` | A separate trust owner reads and accepts workspace trust; this is not a settings fallback. |
-| App preferences | OS config directory, `claude-code-rust/settings.json` | Personal presentation and notification preferences plus updater state, separate from Claude settings. |
+| User | `~/.claude/settings.json` | Personal defaults for every project. |
+| Project | `./.claude/settings.json` | Defaults shared with the repository. |
+| Local | `./.claude/settings.local.json` | Private defaults for this project. |
+| Managed | Organization policy | Shown for information. Settings restricted by policy are read-only. |
+| App preferences | `claude-code-rust/settings.json` in the OS config directory | This app's own preferences: tab-title activity, the `/copy` picker, notification categories and automatic updates. Always saved for the user. |
 
-Set `CLAUDE_CONFIG_DIR` before startup to isolate the Claude profile. User settings use `<directory>/settings.json`, trust uses `<directory>/.claude.json`, and file credentials use `<directory>/.credentials.json`. Sessions, plugins, and authentication inherit that directory. App preferences and diagnostics retain their normal OS locations. Existing settings sources use paths reported by the SDK; missing writable sources use the corresponding profile or working-directory path.
+Not every setting can be saved at every scope. A setting that the selected scope cannot hold is read-only until you switch scope; [Settings by pane](#settings-by-pane) lists the restrictions.
 
-Settings load automatically when the app's session starts; the user does not connect a session manually. The Settings tab shows aligned setting/value columns, highlights the selected row, and displays the selected row and total, such as `1/24`. Saved values and `Default` use distinct styles. Below the list, `Description:` explains the selected setting and one context line identifies its saved scope or default and application timing. The list value is repeated only when explaining a different value saved at the selected scope. Collection controls describe other contributing scopes without treating merged entries as an override. Read-only restrictions and settings-file errors appear as warnings; the detail area grows to fit wrapped text and prioritizes warnings in short windows. Observed current-session values appear here only when they differ from an explicit configured value; general session information belongs in Status and the chat footer. Source metadata remains available in the bridge contract; SDK provenance is provided at top-level key granularity and is not proof that a particular leaf is an enforced policy. `resolveSettings()` does not execute `policyHelper`.
+Workspace trust is recorded separately in `~/.claude.json`. It is not a settings scope and is never used as a fallback for a setting.
 
-## Editing saved settings
+Set `CLAUDE_CONFIG_DIR` before startup to use an isolated Claude profile. User settings then live in `<directory>/settings.json`, workspace trust in `<directory>/.claude.json`, and file credentials in `<directory>/.credentials.json`. Sessions, plugins and authentication use the same directory. Project and Local settings stay in the project, and app preferences and diagnostics keep their normal OS locations.
 
-Use Up/Down to select and scroll, Home/End to jump to the first/last setting, `s` to cycle user/project/local scope, and `r` to refresh. Left/Right cycles fixed choices and saves the change; Space is equivalent to Right. These settings have no separate dialog. Booleans display as On/Off. Space opens a text editor for free-text fields such as Language; Enter saves, Ctrl+R resets, and Escape cancels. Delete on a row resets its saved value at the selected scope. Reset displays the remaining scope's value or `Default`; it does not restore an earlier edit or save a replacement value. `Default` is a display label for an unset resolved preference, not a literal SDK value. The bridge validates values and writable scopes against its single catalog immediately before saving. A pending save keeps the last acknowledged value visible until the result arrives.
+The Settings tab shows saved values. A running session can differ, because workspace trust, managed policy, model capabilities, startup arguments and session commands also apply. The Status tab and the chat footer show what the session is running with.
 
-Compact windows keep the selected row, value, and essential controls visible. Below 30 columns or 12 rows, the settings surface asks the user to resize instead of showing an unusable layout; Escape cancels an editor or closes the list.
+## Reading the list
 
-Each edit reads the current file and patches only its target key. Unrelated keys and siblings survive. Reset removes the key and empty ancestor objects; it does not write a substitute default. Missing files may be created; invalid JSON, non-object documents, unreadable files, and symlinks are blocked for editing without backup, repair, or replacement. Local saves in Git repositories add a literal exclusion to Git's private `info/exclude` when needed and reject an already tracked local settings file.
+Each row shows a setting and its value, and a counter such as `1/27` shows the position in the pane. Below the list, `Description:` explains the selected setting and a context line states where its value comes from at the selected scope:
 
-Validation applies to the setting being edited, not to unrelated fields or the whole document's schema. Unknown keys, newer settings, and unrelated invalid values are preserved. Claude decides which settings it loads: some invalid entries are ignored while other schema errors exclude the entire file. A nonempty file absent from the resolved sources is labeled `not loaded`, without claiming the cause. Targeted saves and resets remain available for readable JSON objects. If a set is saved but the resulting file still does not load, the editor reports the successful save separately from the loading problem; correcting the offending value can restore loading. Reset remains a successful deletion even when only unrelated ignored or invalid fields remain. Local temporary files containing settings data are also protected by the private Git exclusion before they are written.
+| Context line | Meaning |
+| --- | --- |
+| `Saved in User` | The value is saved at the selected scope. |
+| `User value: … · Overridden by Project` | A value is saved at the selected scope, but another scope takes precedence. |
+| `From Project · Not set in User` | The value comes from another scope. |
+| `Using Default` | No scope sets a value. |
+| `Not set in User` | A list or structured setting has no entries at the selected scope. |
+| `Saved in User · Not loaded` | The file contains the value, but Claude did not load it. |
+| `· Also supplied by Project` | Another scope contributes as well, as with merged lists. |
+| `· Applies immediately`, `· Applies to new sessions` | When a saved change takes effect. |
 
-A revision for the displayed target detects conflicting edits. Unrelated edits are incorporated into the fresh document; a conflict refreshes the snapshot while preserving the editor draft. Writes use a cooperative lock, byte rechecks, and atomic replacement. An external editor that does not honor the lock can still race between the final recheck and replacement; this is not filesystem compare-and-swap.
+`Default` means that no scope sets a value. It does not say whether the built-in behavior is On or Off; where the built-in behavior is known, the description states it, for example `Default: On`.
 
-The selected setting's context states either `Applies to new sessions` or `Applies immediately`; successful saves show the short confirmation `Saved.` without repeating application timing. Confirmation lifetime and error handling retain their existing behavior. The app does not turn a settings save into a session flag override. Use `/model`, `/mode`, `/effort`, `/thinking`, `/agent`, `/fast`, or `/ultracode` for their existing session actions. Host presentation preferences, `respectGitignore`, and `prefersReducedMotion` apply immediately after acknowledgement. New sessions and resumed sessions retain native settings inheritance. The footer's effort badge reflects the SDK's applied level at initialization and after session changes, including model restrictions and organization caps. Per-turn init observations supersede earlier reads. If the SDK reports no discrete level, the footer shows the model without an effort suffix.
+Read-only restrictions and settings-file errors appear as warnings below the description.
 
-## Structured editors
+Claude decides which settings files it loads: some invalid entries are ignored individually, while other schema errors exclude the whole file. `Not loaded` reports that outcome without naming the cause. Saving and resetting still work on any readable file, and correcting the offending value restores loading.
 
-Lists, including permission Allow/Ask/Deny rules, open an item editor. Press `a` to add, Enter/Space to edit an item, and Delete to remove it. Hooks show individual event/matcher/action entries, with guided creation and direct field editing for command, prompt, agent, HTTP and MCP-tool actions. Sandbox forms cover TLS certificate paths, ripgrep command/arguments, violation mappings, credential files/environment variables, AWS pairs and request policies. Forms preserve unknown fields and sibling entries; native validation remains authoritative.
+## Editing a value
 
-An editor loads entries saved at the selected scope, rather than reconstructing a merged list. Other sources contribute separately. Ctrl+S submits the draft, Ctrl+R resets the whole selected setting at that scope, and Esc returns to the parent or cancels the draft at its root. Removing the last item saves an explicit empty collection; reset removes the setting key. Field input uses Enter to accept, Ctrl+U to clear, Ctrl+J to insert a newline, and Esc to cancel the field. Optional fields can be removed with Delete. Configured values may be inspected in read-only scopes; saving remains unavailable.
+| Key | Action |
+| --- | --- |
+| `Up`, `Down` | Select the previous or next setting. |
+| `Home`, `End` | Select the first or last setting. |
+| `Page Up`, `Page Down` | Move one page. |
+| `Left`, `Right` | Step through the choices of an On/Off or fixed-choice setting. The change is saved immediately. |
+| `Space` | Same as `Right` for fixed choices. Opens the editor for text, number, list and structured settings. |
+| `Enter` | On a list or structured setting, opens the editor, or opens it for inspection when the scope is read-only. On any other setting, closes the surface. |
+| `Delete` | Reset the setting at the selected scope. |
+| `s` | Cycle the save scope. |
+| `r` | Reload settings from disk. |
 
-Ctrl+J outside a field opens advanced JSON for the same draft; Ctrl+F returns to the form after valid JSON. There is one mutation and persistence path. Invalid JSON or a native validation failure retains the draft. A conflict loads the latest revision and requires deliberate retry. A changed project/settings context blocks saving until the editor is canceled and reopened. Delayed acknowledgements belong to their originating mutation and cannot close another editor. Inspection and validation never execute hooks or credential helpers or resolve secret files and environment variables; ordinary header and arbitrary argument summaries are redacted.
+Changes made with `Left`, `Right` or `Space` are saved as you make them, so closing with `Enter` or `Esc` discards nothing.
 
-## Current catalog
+The text editor used for settings such as Language takes `Enter` to save, `Ctrl+R` to reset and `Esc` to cancel.
 
-The catalog exposes 77 settings, organized into one alphabetical list per pane. The bridge supplies category assignments, alphabetical ordering and structured-editor metadata; Rust uses that one catalog for rendering, navigation, search and mutation targets. It enables validated boolean and string editors for auto-compaction, flagged-message model switching, thinking, fast mode, prompt suggestions, checkpoints, workflows, keyword triggers, workflow size, default permission mode, worktree base reference, file-picker Gitignore behavior, output style, language, default model, and reduced motion. The catalog describes per-row writable scopes; not every setting can be saved at every scope. Default model cycles only through the session's SDK-advertised choices; it does not accept typed model IDs. Existing externally configured values remain preserved on disk until explicitly changed or reset. Output style still accepts custom style names. Default agent uses the SDK-advertised agent inventory.
+Reset removes the value saved at the selected scope. The row then shows the value from another scope, or `Default`. Reset does not write a replacement value and does not restore an earlier edit.
 
-Default effort is one inline choice control for the currently saved Default model, using the same Left/Right/Space interaction as Default model. Its choices come from that model's SDK capabilities, excluding session-only `max`. Saving writes `modelSettings.<canonical model>.effortLevel` at the chosen scope and preserves other models' preferences and sibling fields. Changing Default model retargets the effort control; mutation context checks prevent an outdated edit from silently targeting a different model. An unsupported or unresolved model leaves the effort editor read-only. Reset removes only that model's effort at the selected scope. SDK model metadata determines the target; aliases and dated/context/provider spellings are normalized to Claude's canonical key, while unknown model identities remain read-only. The saved snapshot is the SDK's file cascade; environment settings, top-level effort fallbacks, trust, and policy caps can still change the running effort, which is shown in the footer.
+While a save is in progress the row keeps showing the last confirmed value. A successful save shows `Saved.`
 
-`Default` means no configured value was returned for this preference. It does not promise On or Off. The installed SDK's file resolver does not fill in built-in defaults; its applied-settings response exposes selected session values rather than effective defaults for the whole catalog. Keep this label until the fallback for an individual setting can be determined reliably, without treating a current-session override as its default.
+Saving a default never changes the running session. Use `/model`, `/mode`, `/effort`, `/thinking`, `/agent`, `/fast` or `/ultracode` for the current session; see [Session Commands](commands.md#session-commands).
 
-Continuation at usage limits and cross-session inbound policy remain read-only until their host workflows are completed. The installed runtime gates native automatic continuation on interactive mode; the SDK session cannot activate that coordinator by loading the preference. Auto mode during planning is editable as a saved preference, subject to native capabilities. Themes and Vim/editor modes are omitted. Notification and automatic-update controls remain in General; their runtime behavior is described below.
+## Lists and structured settings
 
-When Reduce motion is On, active thinking, tool execution, compaction, cancellation, and pending commands use a static diamond (`◆`) instead of an animated spinner. Animation-only redraws stop; incoming state changes still update normally. This setting is ready and applies immediately after saving, with reset following the remaining scopes or Default.
+Permission rules, directory and domain lists, hook definitions and the structured sandbox settings open an editor instead of changing in place. The row in the main list shows how many entries are saved at the selected scope.
 
-## Presentation and scrolling
+The editor loads only the entries saved at the selected scope, not a merged view of all scopes, and keeps that scope until it closes.
 
-These settings apply after saving, including to the retained conversation:
+| Key | Action |
+| --- | --- |
+| `Up`, `Down`, `Home`, `End` | Move through entries or fields. |
+| `a` | Add an entry. |
+| `Enter`, `Space` | Edit the selected entry, open a nested group, or toggle an On/Off field. |
+| `Delete` | Remove the selected entry or optional field. |
+| `Ctrl+S` | Save the draft. |
+| `Ctrl+R` | Reset the whole setting at this scope. |
+| `Esc` | Go up one level. At the top level, discard the draft and close the editor. |
+| `Ctrl+J` | Switch to a JSON view of the same draft. |
+| `Ctrl+F` | Return from JSON to the form. The JSON must be valid. |
 
-| Setting | Choices | Behavior |
-| --- | --- | --- |
-| Auto-scroll | On / Off | Follow new output when On; hold the reading position when Off. |
-| Show tips | On / Off | Show tips during active turns. Off hides tip text; activity and the Claude heading remain visible. Default: On. |
-| Show message timestamps | On / Off | Show the first available message time beside its role label. |
-| Show turn duration | On / Off | Show one total elapsed duration per completed response, and tool/task elapsed observations when available. |
-| Time format | Auto / 12-hour / 24-hour / 24-hour UTC | Format clocks without changing elapsed durations. |
-| Show activity in tab title | On / Off | Show a busy/idle icon beside the folder name in the terminal tab title. Reduced motion keeps activity static. |
-| Skip the /copy picker | On / Off | Copy the complete response directly, or choose the response or a code block. |
+While typing in a field:
 
-Turn durations and message timestamps default to Off when no saved value is present. Saved On/Off choices take precedence. A completed response shows one total elapsed duration when enabled; completion time (`Done`) is included only when message timestamps are enabled. API timing is retained internally.
+| Key | Action |
+| --- | --- |
+| `Enter` | Accept the field into the draft. |
+| `Esc` | Cancel the field. |
+| `Ctrl+U` | Clear the field. |
+| `Ctrl+J` | Insert a line break. |
+| `Up`, `Down`, `Left`, `Right` | Choose a value when the field offers fixed choices. |
 
-SDK timestamps retain their original times during session resume. When no native timestamp is supplied, live messages use a locally observed time labeled `(observed)`; resumed messages without timestamps remain unstamped. Turn elapsed time and API time are separate SDK result measurements. Without a result measurement, a completed live response shows an `Observed` duration from a monotonic clock. Tool progress elapsed time is a lower bound (`≥`), and task usage time is labeled separately; neither is added to turn elapsed time. Public session history may omit result timing, so resumed responses do not invent old durations.
+Rules that apply to every editor:
 
-Auto follows the system locale. Explicit 12-hour clocks show AM/PM; 24-hour UTC shows a `Z` suffix. Valid custom strftime patterns already present in settings files are consumed and preserved, while the picker offers the four presets. An externally saved IANA `timeZone`, such as `Europe/Berlin`, controls local presets and custom patterns; an unknown name falls back to the system zone. The UTC preset always uses UTC.
+- Edits stay in a draft until `Ctrl+S`. Accepting a field does not write the file.
+- Many lists merge across scopes. Removing the last entry saves an explicit empty list, and entries from other scopes still apply. Reset removes the setting from this scope instead.
+- Invalid JSON or a value that Claude rejects keeps the draft open for correction. Nothing is written.
+- If the file changed on disk while the editor was open, the editor loads the latest version and keeps your draft. Save again to confirm.
+- If the session moves to another project while an editor is open, saving is blocked. Close the editor and open it again.
+- A scope that cannot be edited can still be opened for inspection.
+- Opening, browsing and validating never run hooks or credential helpers, and never read secret files or environment values. Header values and command arguments are redacted in summaries.
+- Fields that the form does not know are preserved when you save.
 
-Page Up pauses following and reads earlier output; Page Down reads later output. Ctrl+End jumps to the latest output and resumes following when Auto-scroll is On. With Auto-scroll Off, it jumps once and continues holding that position. Reading remains anchored through new output and resize/reflow within retained history. These actions use the existing keybinding catalog and appear in shortcut help. Ordinary mouse-wheel behavior belongs to terminal scrollback unless the terminal delivers mouse events to the application; use the page keys for application-controlled reading.
+### Editing permission rules
 
-`/copy` uses the last completed assistant response's original Markdown, including responses loaded from history; it excludes thinking and tool output. With code blocks and the picker enabled, Up/Down selects the full response or an individual fenced/indented code block, Enter copies, and Escape cancels. Without code blocks, it copies the response directly. Clipboard failures keep the picker open for retry, and an empty conversation displays a short explanation.
+In the Permissions pane, open Allow rules, Ask rules, Deny rules or Additional directories. Add one tool rule per entry, for example `Bash(npm test *)` or `Read(./src/**)`. A deny rule wins over an allow rule from any scope.
 
-The four Claude-compatible presentation preferences use the resolved user/project/local cascade. Terminal-tab status and copy-picker preference are personal User-only app preferences under `presentation.showStatusInTerminalTab` and `presentation.copyFullResponse`. They appear in the same editor and use the same targeted save/reset acknowledgements. Native global preferences are not a fallback. The updater writes only its own fields and honors the shared document lock so its saves preserve presentation edits.
+### Editing hooks
 
-## Behavioral and structured settings
+Hooks → Definitions shows a flat list with each hook's event, matcher and action.
 
-Question timeout offers Never, 60 seconds, 5 minutes, or 10 minutes. After the configured idle time, the current question submits only answers explicitly selected by navigation or toggling, plus any notes; untouched questions are skipped. Keyboard, paste, and mouse activity restart the idle interval. The timer pauses while another screen or input owns focus. It starts afresh when the question regains focus. Timeout comes from trusted user or managed settings, rather than a checked-in repository preference. The default waits for confirmation.
+- `a` starts guided creation: choose an event, enter an optional matcher, choose an action, fill its required fields, then review. `Enter` on the review step adds the hook to the draft and opens its optional fields. `Esc` goes back one step and cancels at the first step.
+- `Enter` edits the selected hook.
+- `m` edits the matcher of the hook's group. Every hook in that group shares the matcher.
+- `Delete` removes only the selected hook.
 
-Dialog expiry offers 60 seconds, 5 minutes, 10 minutes, or Never. Reset restores the native fallback of 5 minutes. It expires forwarded remote dialogs and held cross-session messages with safe cancellation; ordinary local-only permission prompts have no added deadline. `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` takes precedence. Native cancellation removes the affected question, permission, or user dialog from the interaction queue, preserving other pending interactions and the composer draft.
-
-Permission rules and additional directories, memory exclusions, worktree directories, sandbox paths/domains, and hook allowlists use the item editor described above. Many native lists merge across scopes, so an empty list does not necessarily remove rules contributed elsewhere. List rows show the selected scope's item count. Change scope on the settings list with `s`; an open editor keeps its scope fixed until it closes.
-
-Hooks, sandbox credentials, ignored violations, TLS termination, and the ripgrep helper open structured forms with advanced JSON access. Object rows show their entry count. Syntax errors and native schema errors retain the draft for correction. Validation checks only the edited leaf through the installed SDK's public resolver; it does not run hooks, read credential contents, or change unrelated settings. Organization restrictions can make permission rules, hooks, and sandbox allowlists read-only. Numeric proxy ports accept whole numbers from 1 through 65535.
-
-For example, a Hooks definitions value can be:
+Hook actions are command, prompt, agent, HTTP and MCP tool. Event names come from the installed SDK. The JSON view shows the same definitions in the settings-file format:
 
 ```json
 {
@@ -151,13 +202,173 @@ For example, a Hooks definitions value can be:
 }
 ```
 
-Supported hook actions include command, prompt, agent, HTTP, and MCP tool actions. Event names come from the installed SDK. Saving replaces the `hooks` object at the chosen scope; hooks from other sources retain their native merging behavior. Disable all hooks is a separate boolean. Opening or validating hook definitions does not execute them.
+Saving replaces the `hooks` object at the selected scope. Hooks from other scopes keep merging in. Disable all is a separate On/Off setting.
 
-Workflow size is an advisory agent-count guideline: Small aims below 5, Medium below 10, Large below 50, and Unrestricted supplies no guideline. Workflow availability still depends on the account and runtime. Worktree settings configure fresh/head base reference, symlink directories, sparse-checkout paths, and background isolation with worktree/none choices. Memory controls configure automatic memory, its directory, excluded instruction paths/globs, and the plans directory. Project settings cannot redirect automatic memory. Sandbox descriptions identify platform restrictions; native enforcement and workspace trust still determine which saved values take effect.
+### Editing sandbox settings
+
+Path, domain and command lists use the list editor. Credential protection, TLS termination, Ignored violations and Ripgrep command open forms:
+
+- Required fields are marked with `*`.
+- Fixed choices open a picker.
+- Credential entries take file paths and variable names, never secret values.
+- TLS termination takes both a CA certificate path and a CA key path, or neither.
+- Proxy ports accept whole numbers from 1 to 65535.
+
+## Settings by pane
+
+Every row has a description in the app. This section covers behavior that needs more explanation. Unless noted, a setting can be saved at User, Project or Local scope and applies to new sessions.
+
+### General
+
+| Setting | Key | Choices | Notes |
+| --- | --- | --- | --- |
+| Default model | `model` | Models offered by the session | A model ID cannot be typed. A value written by another tool is kept until you change or reset it. |
+| Default effort | `modelSettings.<model>.effortLevel` | Effort levels of the default model, without `max` | See below. |
+| Default agent | `agent` | Agents offered by the session | |
+| Thinking | `alwaysThinkingEnabled` | On / Off | A preference. The model may still require or restrict thinking. |
+| Fast mode | `fastMode` | On / Off | Account and model eligibility still apply. |
+| Output style | `outputStyle` | Text | A built-in or custom style name. |
+| Language | `language` | Text | Preferred response language. Does not translate the app. |
+| Question timeout | `askUserQuestionTimeout` | Never / 60 seconds / 5 minutes / 10 minutes | User only. See below. |
+| Dialog expiry | `dialogExpiry` | 60 seconds / 5 minutes / 10 minutes / Never | User only. See below. |
+| Respect .gitignore | `respectGitignore` | On / Off | Hides ignored files from the file picker. Applies immediately. |
+| Reduce motion | `prefersReducedMotion` | On / Off | Shows a static `◆` in place of animated spinners. Applies immediately. |
+
+General also holds the settings described under [Presentation and scrolling](#presentation-and-scrolling), [Notifications](#notifications) and [Automatic updates](#automatic-updates).
+
+**Default effort** belongs to the saved Default model and is saved per model, so changing Default model switches the effort row to the new model. `max` is available only through `/effort` in a session. The row is read-only when the default model is unknown or offers no effort levels. Environment settings, workspace trust and organization caps can still change the effort a session runs with; the chat footer shows the applied level.
+
+**Question timeout** submits a waiting question after the chosen idle time. Only answers you explicitly selected are sent, together with any notes; untouched questions are skipped. Keyboard, paste and mouse activity restart the interval, and the timer pauses while another screen has focus. Never waits for confirmation.
+
+**Dialog expiry** cancels forwarded remote dialogs and held cross-session messages after the chosen time. Local permission prompts get no deadline. Reset restores 5 minutes. The `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` environment variable takes precedence.
+
+### Memory
+
+| Setting | Key | Notes |
+| --- | --- | --- |
+| Auto compact | `autoCompactEnabled` | Compacts context automatically. |
+| File checkpoints | `fileCheckpointingEnabled` | Records file snapshots for code rewind. |
+| Automatic memory | `autoMemoryEnabled` | Reads and writes automatic memory for the project. |
+| Directory | `autoMemoryDirectory` | User and Local only; shared Project settings cannot redirect memory. Supports `~/`. |
+| Excluded instructions | `claudeMdExcludes` | One glob or absolute path per entry. Managed instructions cannot be excluded. |
+| Plans directory | `plansDirectory` | Relative paths are relative to the project root. |
+
+### Permissions
+
+| Setting | Key | Notes |
+| --- | --- | --- |
+| Default permission mode | `permissions.defaultMode` | User only. `default`, `plan`, `acceptEdits`, `auto`, `dontAsk` or `bypassPermissions`, subject to workspace trust and account restrictions. |
+| Auto mode during planning | `useAutoModeDuringPlan` | User and Local only. |
+| Disable bypass | `permissions.disableBypassPermissionsMode` | Removes the bypass permission mode. Reset removes this scope's restriction. |
+| Block outside reads | `permissions.blockReadsOutsideWorkingDirectories` | Blocks Read, Grep, Glob and LSP outside working directories. On in any scope wins. |
+| Allow rules, Ask rules, Deny rules | `permissions.allow`, `permissions.ask`, `permissions.deny` | See [Editing permission rules](#editing-permission-rules). |
+| Additional directories | `permissions.additionalDirectories` | One directory per entry. |
+
+### Sandbox
+
+The Sandbox pane covers sandbox execution, filesystem paths, network domains, proxy ports and credential protection under the `sandbox.` key. Descriptions name the settings that apply to one platform only. Workspace trust, platform support and organization restrictions decide which saved values take effect, and can make rules and allowlists read-only.
+
+These settings are User only: Disable filesystem isolation, Strict domain allowlist, TLS termination, Credential protection, Allow Apple Events and Ripgrep command.
+
+### Hooks
+
+| Setting | Key | Notes |
+| --- | --- | --- |
+| Definitions | `hooks` | See [Editing hooks](#editing-hooks). |
+| Disable all | `disableAllHooks` | Disables settings and plugin hooks, including status-line execution. |
+| Allowed HTTP URLs | `allowedHttpHookUrls` | One URL pattern per entry; `*` is a wildcard. An empty list blocks all HTTP hooks. |
+| Allowed environment variables | `httpHookAllowedEnvVars` | Variable names that HTTP hook headers may interpolate. |
+
+### Workflows & Worktrees
+
+| Setting | Key | Notes |
+| --- | --- | --- |
+| Dynamic workflows | `enableWorkflows` | Availability depends on the account. |
+| Workflow keyword trigger | `workflowKeywordTriggerEnabled` | Allows keyword-triggered workflows. |
+| Workflow size | `workflowSizeGuideline` | An advisory agent count: Small aims below 5, Medium below 10, Large below 50. Unrestricted gives no guideline. |
+| Worktree base ref | `worktree.baseRef` | `fresh` or `head`. |
+| Symlink directories | `worktree.symlinkDirectories` | Repository directories shared with new worktrees, for example `node_modules`. |
+| Sparse paths | `worktree.sparsePaths` | Directories included through Git sparse-checkout. |
+| Background isolation | `worktree.bgIsolation` | `worktree` makes background jobs enter a worktree before editing; `none` allows edits in the main checkout. |
+
+### Unavailable settings
+
+Continue at usage limit and Messages from other sessions are listed in General but are read-only in this version. Themes and Vim editor mode are not offered.
+
+## Presentation and scrolling
+
+These General settings apply immediately, including to the conversation already on screen.
+
+| Setting | Key | Choices | Behavior |
+| --- | --- | --- | --- |
+| Auto-scroll | `autoScrollEnabled` | On / Off | Follow new output when On; hold the reading position when Off. |
+| Show tips | `spinnerTipsEnabled` | On / Off | Show tips during active turns. Off hides only the tip text. Default: On. |
+| Show message timestamps | `showMessageTimestamps` | On / Off | Show the message time beside its role label. Default: Off. |
+| Show turn duration | `showTurnDuration` | On / Off | Show one total elapsed time per completed response. Default: Off. |
+| Time format | `timeFormat` | Auto / 12-hour / 24-hour / 24-hour UTC | Format clock times. Elapsed durations are unaffected. |
+| Show activity in tab title | `presentation.showStatusInTerminalTab` | On / Off | Show a busy/idle icon beside the folder name in the terminal tab title. |
+| Skip the /copy picker | `presentation.copyFullResponse` | On / Off | Copy the complete response directly. See [Copying responses](commands.md#copying-responses). |
+
+The first five are Claude settings and can be saved at User, Project or Local scope. The last two are app preferences and are always saved for the user.
+
+**Timestamps and durations.** When Claude supplies no timestamp, a live message shows the locally observed time marked `(observed)`; resumed messages without a timestamp stay unstamped. With both settings On, the duration row also shows the completion time (`Done`). When the SDK reports no turn timing, a live response shows an `Observed` duration. Tool progress time is a lower bound, shown with `≥`, and task time is labelled separately; neither is added to the turn total. Resumed responses show a duration only when the session history contains one.
+
+**Time format.** Auto follows the system locale. 12-hour shows AM/PM and 24-hour UTC adds a `Z` suffix. A custom strftime pattern written into a settings file is used and preserved; the picker offers only the four presets. A `timeZone` entry in a settings file, such as `Europe/Berlin`, sets the zone for local presets and custom patterns. An unknown zone name falls back to the system zone.
+
+**Scrolling.** `Page Up` pauses following and reads earlier output; `Page Down` reads later output. `Ctrl+End` jumps to the latest output and resumes following when Auto-scroll is On. With Auto-scroll Off it jumps once and then holds that position. The reading position survives new output and window resizing. The mouse wheel belongs to the terminal's own scrollback unless the terminal forwards mouse events to the app.
+
+## Notifications
+
+Notifications alert only while the terminal reports that it is unfocused. A terminal without focus reporting stays silent. These General settings apply immediately:
+
+| Setting | Key | Choices | Behavior |
+| --- | --- | --- | --- |
+| Notification method | `preferredNotifChannel` | Auto, iTerm2, Terminal bell, iTerm2 with bell, Kitty, Ghostty, Disabled. Default: Auto | How alerts are delivered. Disabled silences every category. |
+| Notify when input is needed | `notifications.actionsRequired` | On / Off. Default: On | Alert for a waiting permission, question or dialog. A request that is already waiting does not alert twice. |
+| Notify when Claude requests it | `notifications.modelDirected` | On / Off. Default: On | Allow alerts that Claude sends through the `PushNotification` tool, when the account offers that tool. |
+| Notify when a turn finishes | `notifications.turnComplete` | On / Off. Default: On | Alert when an active turn completes. Cancelled turns, errors and resumed history do not alert. |
+
+Notification method is a Claude setting saved for the user. The three category toggles are app preferences. They do not change the mobile-push settings `inputNeededNotifEnabled` and `agentPushNotifEnabled`.
+
+Auto uses the terminal's own notification protocol on iTerm2, Ghostty and Kitty, and otherwise sends a desktop notification with a terminal bell. A terminal-specific method uses its protocol on that terminal and falls back to a desktop notification elsewhere. iTerm2 with bell adds the bell, and Terminal bell sends only the bell. Desktop notifications can be unavailable over SSH. Protocol references: [iTerm2](https://iterm2.com/documentation-escape-codes.html), [Ghostty](https://ghostty.org/docs/vt/osc/9), and [Kitty](https://sw.kovidgoyal.net/kitty/desktop-notifications/).
+
+Two limits apply to every method:
+
+- Ordinary notices from Claude, including high-priority ones, appear in the transcript and do not raise an alert.
+- An alert is sent when its event happens or not at all. Resuming a session, regaining focus or changing a setting never delivers earlier alerts.
+
+If Claude already delivered a requested alert on this machine, the app does not send a second one. A mobile push alone does not suppress the local alert.
+
+To investigate a missing alert, see [Notification diagnostics](diagnostics.md#notification-diagnostics).
+
+## Automatic updates
+
+Automatic updates is an app preference saved as `updates.autoInstall`. It defaults to Off.
+
+| Value | Behavior |
+| --- | --- |
+| Off | A newer version opens the update window at startup, with manual installation choices. |
+| On | The window is skipped. A newer version is installed after a normal exit, using the installation method of the running app (script or npm). |
+
+Update checks run in both modes and are cached for 24 hours. `--no-update-check` and `CLAUDE_RUST_NO_UPDATE_CHECK` disable checking and therefore automatic installation.
+
+Automatic installation is skipped for source builds and unrecognized installations, after a forced shutdown, and after an application error. The setting is read again at exit, so switching it Off during a session cancels the pending installation. An installation error is reported without opening another window, and the session remains resumable.
+
+The setting updates only `claude-rs`. It does not update a separately installed Claude CLI.
+
+## How files are changed
+
+- A save changes only the key of the edited setting. Other keys, unknown keys and values the app does not understand are left as they are.
+- Reset removes the key and any parent object that becomes empty. It never writes a substitute default.
+- A missing settings file is created on the first save.
+- A file that contains invalid JSON, is not a JSON object, cannot be read, or is a symlink is blocked from editing. The app does not repair, replace or back up such a file.
+- Saving at Local scope inside a Git repository adds `.claude/settings.local.json` to the repository's private `.git/info/exclude` when needed. A Local settings file that Git already tracks is rejected.
+- Only the edited setting is validated. An unrelated invalid value elsewhere in the file does not block the save, but it can still prevent Claude from loading the file; see `Not loaded` under [Reading the list](#reading-the-list).
+- A change made to the same setting by another program is detected before writing. The app reloads and keeps your draft. An editor that writes at the same instant without honoring the app's lock file can still overwrite a save.
 
 ## Offline inspection
 
-These read-only commands inspect redacted physical files without a TUI session or mutation:
+These read-only commands inspect redacted settings files without starting the TUI:
 
 ```bash
 claude-rs config
@@ -165,7 +376,7 @@ claude-rs config show --which project-settings
 claude-rs config export --output claude-rs-config.json
 ```
 
-Offline output includes user, shared project, local settings, and preferences. It reports malformed files rather than rewriting them. It does not resolve the SDK cascade or virtual managed policy sources.
+The output covers User, Project and Local settings and the preferences file. Malformed files are reported, not rewritten. The commands read the files as they are on disk: they do not combine scopes and do not include managed policy. See [Config Inspection](diagnostics.md#config-inspection).
 
 ## MCP
 
@@ -180,41 +391,3 @@ The Plugins tab is available through `/plugins`. It shows installed plugins, mar
 Supported actions include enabling, disabling, updating, uninstalling, and installing plugins into user, project, or local scopes when those actions are available for the selected plugin.
 
 After plugin changes, the app requests a session runtime plugin reload when an active session is available.
-
-
-## Notifications
-
-Notifications apply immediately after an acknowledged save. They alert only when the terminal reports that it is unfocused; terminals without focus reporting remain silent. These controls appear in General under Files, notifications and updates:
-
-| Setting | Choices / default | Behavior |
-| --- | --- | --- |
-| Notification method | Auto, iTerm2, Terminal bell, iTerm2 with bell, Kitty, Ghostty, Disabled; default Auto | Choose local delivery. Disabled silences every category. |
-| Notify when input is needed | On / Off; default On | Alert for a waiting permission, question or user dialog. Duplicate pending requests do not alert again. |
-| Notify when Claude requests it | On / Off; default On | Allow local alerts from successful proactive `PushNotification` tool results, when the native account/runtime exposes that tool. |
-| Notify when a turn finishes | On / Off; default On | Alert after an active turn completes; cancellation, errors, idle command results and history do not trigger completion alerts. |
-
-Auto detects iTerm2/Ghostty OSC 9 or Kitty OSC 99 support; otherwise it preserves desktop notification plus terminal bell delivery. A terminal-specific method uses its protocol only on that terminal and falls back to an OS desktop notification elsewhere. iTerm2 with bell adds the bell; Terminal bell sends only BEL. The OS backend runs outside the TUI loop and may be unavailable over SSH. Terminal alert text strips control characters before constructing escape sequences. Protocol references: [iTerm2](https://iterm2.com/documentation-escape-codes.html), [Ghostty](https://ghostty.org/docs/vt/osc/9), and [Kitty](https://sw.kovidgoyal.net/kitty/desktop-notifications/).
-
-The three category toggles are personal app preferences under `notifications.actionsRequired`, `notifications.modelDirected`, and `notifications.turnComplete`. Notification method saves `preferredNotifChannel` in User Claude settings and consumes its resolved value. The category toggles do not change the native mobile-push settings `inputNeededNotifEnabled` or `agentPushNotifEnabled`. Reset removes the selected saved value and resumes inheritance or the documented default.
-
-Ordinary native CLI notices remain visible in the transcript, including high-priority notices; their SDK payload does not identify them as requests for a local alert. Proactive tool reports distinguish mobile delivery from local delivery: a mobile push alone does not suppress our local alert, but an upstream local delivery does. Native configuration/presence suppression remains respected; `no_transport` allows local fallback. Missing local-delivery reports are not guessed. Repeated tool results and replayed history never queue alerts for later delivery after focus or settings change. Reused native notice keys can produce a new visible notice when the UUID changes.
-
-For notification diagnostics, use `--diagnostics-preset full`, `runtime` or `session`, or include `app.notify=debug` in a custom log filter. The `app.notify` records show observed terminal focus, SDK origin and delivery reports, duplicate/replay handling, category and method decisions, and terminal/desktop transport outcomes. Session and interaction identities follow delivery through the background desktop thread. Question and notification text are omitted. A successful terminal write or accepted OS request confirms submission to the transport; it does not prove that the terminal or operating system displayed or sounded an alert.
-
-## Automatic updates
-
-Automatic updates is a personal app setting, saved as `updates.autoInstall` in the app settings file. It defaults to Off. Off keeps the existing startup update window and manual installation choices. On skips that window and installs an available newer claude-rs version after a normal exit, using the running installation's detected script or npm method. Source builds and unrecognized installations are not automatically replaced. The setting does not update an external Claude CLI installation or independently change the bundled SDK.
-
-Update checks run in both modes, retaining the existing 24-hour cache. Explicit `--no-update-check` or `CLAUDE_RUST_NO_UPDATE_CHECK` disablement still takes precedence and also prevents automatic installation. The updater reads the current saved setting again at exit, so saving Off or resetting cancels automatic installation. Forced shutdown and application errors skip automatic installation. Installation errors are reported and saved without opening another window; the session remains resumable.
-
-## Structured editor interactions
-
-Each pane has one alphabetical list without subsection headings or column headers. Settings and Plugins share the same bordered search field. Escape appears with the other keyboard hints and wraps only when needed.
-
-For Permissions, open Allow rules, Ask rules, Deny rules or Additional directories at the desired save scope. Press `a` to add one entry, Enter to edit an entry, and Delete to remove it. Rule inputs include tool-rule examples. Enter accepts the field into the draft; Ctrl+S saves the collection. Removing its final entry saves an explicit empty list; resetting the setting removes that scope's key. Other scopes can still supply rules.
-
-For Hooks, Definitions shows a flat list with each hook's event, matcher and action. Press `a` to add a hook: choose an event from a visible list, enter an optional matcher, choose an action, enter its required fields and review. Enter on Review adds the hook to the draft and opens its optional fields; Ctrl+S persists it. Esc goes back within creation and cancels adding at the first step. Enter edits an existing hook; `m` edits its group's matcher, with a warning that sibling hooks share it; Delete removes only that hook.
-
-For Sandbox, select a field or collection. Lists and maps offer Add/Edit/Remove; objects offer field editing and field reset. Required fields have `*` and a `* Required` legend; optional fields have no marker. Fixed choices show a visible picker navigated with Up/Down and accepted with Enter. Inputs explain expected paths, variable names, command arguments or patterns. Credential entries take names and paths, never secret values. Edits remain in the draft until Ctrl+S and receive native validation on save.
-
-Config text fields accept AltGr characters, including `|` in matchers and `\` in paths. Native validation checks supported structured fields without discarding additional saved object fields; invalid supported values keep the draft open instead of changing the file.

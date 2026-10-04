@@ -12,6 +12,20 @@ Keyboard shortcuts are context-sensitive. Use `/docs shortcuts` in the app to sh
 
 In a fullscreen view, `Ctrl+C` closes the view and returns to chat. After shutdown begins, pressing `Ctrl+C` again forces any remaining cleanup to stop.
 
+## Chat Reading
+
+| Shortcut | Action |
+| --- | --- |
+| `Page Up` | Pause following and read earlier output. |
+| `Page Down` | Read later output. |
+| `Ctrl+End` | Jump to the latest output. Following resumes when Auto-scroll is On. |
+
+See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the Auto-scroll setting.
+
+## Settings Surface
+
+The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
+
 ## Chat Input
 
 | Shortcut | Action |

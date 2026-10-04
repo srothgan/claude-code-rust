@@ -48,7 +48,7 @@ The command menu includes the full merged inventory and scrolls as you move thro
 
 ## Copying responses
 
-`/copy` copies the last completed assistant response. If it contains code blocks, choose Full response or a code block with Up/Down, then Enter; Escape cancels. Enable Skip the /copy picker in `/config` to copy the complete Markdown response directly. Responses without code blocks copy directly. The command can copy an earlier completed response while a new response is still running; it does not submit a model request.
+`/copy` copies the last completed assistant response as its original Markdown, without thinking or tool output. Responses loaded from session history can be copied too. If the response contains code blocks, choose Full response or a code block with Up/Down, then Enter; Escape cancels. Enable Skip the /copy picker in `/config` to copy the complete Markdown response directly. Responses without code blocks copy directly. If the clipboard is unavailable, the picker stays open so you can retry. The command can copy an earlier completed response while a new response is still running; it does not submit a model request.
 
 ## Side Questions
 

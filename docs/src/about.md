@@ -42,7 +42,7 @@ The Rust TUI implements its own interface and uses the SDK's session capabilitie
 | Usage information | SDK, OAuth, or installed Claude CLI | The CLI is conditional; see the dependency table above. |
 | Whole-session background detach/attach and stock agent view | Unavailable in the Rust TUI | SDK background tasks are supported, but the stock `/background` and `claude agents` interface is not provided. |
 | Remote Control and stock IDE integrations | Unavailable in the Rust TUI | No equivalent to the stock `/remote-control` or `/ide` integration. Running in an IDE terminal still works. |
-| Vim input mode | Unavailable in the Rust TUI | The editor-mode preference is visible in settings but is not implemented; see [unsupported settings](settings.md#currently-unsupported-settings). |
+| Vim input mode | Unavailable in the Rust TUI | The settings surface does not offer an editor-mode preference; see [unavailable settings](settings.md#unavailable-settings). |
 | Dedicated `/diff` review panel | Unavailable in the Rust TUI | Inline edit diffs remain available. |
 | Stock `/tui` renderer switch | Unavailable in the Rust TUI | Rendering and fullscreen settings screens are owned by the Rust application. |
 | Mouse interaction with app controls | Unavailable in the Rust TUI | Use keyboard controls. Terminal text selection and native scrollback depend on your terminal. |

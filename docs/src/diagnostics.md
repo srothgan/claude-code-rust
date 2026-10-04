@@ -187,6 +187,19 @@ CLAUDE_RS_AGENT_BRIDGE_RUNTIME=/path/to/bun
 
 Release npm installs use the root package launcher to start the native platform binary and point it at the bundled bridge script. The native binary resolves the private `claude-rs-bridge-bun` executable from the installed platform package. In `doctor --json`, the runtime checks are reported as `bridge_runtime`, `bridge_runtime_version`, and `bridge_script`.
 
+## Notification Diagnostics
+
+To investigate a missing or unexpected alert, run with a preset that includes notification records, or add the target to a custom filter:
+
+```bash
+claude-rs --enable-logs --diagnostics-preset session
+claude-rs --log-filter "info,app.notify=debug"
+```
+
+The `runtime`, `session` and `full` presets include `app.notify`. Its records show the observed terminal focus, the origin and delivery report supplied by the SDK, duplicate and replay handling, the category and method decision, and the outcome of the terminal or desktop transport. Question and notification text are omitted.
+
+A successful terminal write or an accepted OS request confirms that the alert was handed to the transport. It does not prove that the terminal or operating system displayed or sounded it. See [Notifications](settings.md#notifications) for the delivery rules.
+
 ## Useful Issue Reports
 
 Include:
