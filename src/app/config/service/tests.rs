@@ -19,6 +19,88 @@ fn snapshot(cwd: &str, value: &str) -> SettingsSnapshot {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn automatic_update_editor_cycles_acknowledged_choices_and_resets_the_personal_value() {
+    use ratatui::{Terminal, backend::TestBackend};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some("session-1".into());
+            app.surface_mode =
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            let mut initial = snapshot(&app.cwd_raw, "");
+            let descriptor = &mut initial.catalog[0];
+            descriptor.id = "updates.autoInstall".into();
+            descriptor.label = "Automatic updates".into();
+            descriptor.description = "Install automatically after exit. Default: Off.".into();
+            descriptor.key_path = vec!["updates".into(), "autoInstall".into()];
+            descriptor.kind = crate::agent::settings::SettingKind::Boolean;
+            descriptor.options = vec![json!(true), json!(false)];
+            descriptor.allows_custom = false;
+            descriptor.application = SettingsApplication::Host;
+            descriptor.writable_scopes = vec![SettingsScope::User];
+            initial.sources[0].values[0].id = "updates.autoInstall".into();
+            initial.sources[0].values[0].value = None;
+            initial.values[0].id = "updates.autoInstall".into();
+            initial.values[0].value = None;
+            app.config.snapshot = Some(initial);
+            let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+            for expected in [Some(true), Some(false), None] {
+                let before = app.config.saved_value("updates.autoInstall").cloned();
+                let key = if expected.is_some() { KeyCode::Char(' ') } else { KeyCode::Delete };
+                crate::app::config::handle_key(&mut app, KeyEvent::new(key, KeyModifiers::NONE));
+                let request = commands.recv_envelope().await.expect("mutation");
+                let BridgeCommand::MutateSetting { mutation, .. } = request.command else {
+                    panic!("setting mutation");
+                };
+                assert_eq!(mutation.id, "updates.autoInstall");
+                assert_eq!(mutation.scope, SettingsScope::User);
+                assert_eq!(mutation.value, expected.map(serde_json::Value::Bool));
+                assert_eq!(app.config.saved_value("updates.autoInstall"), before.as_ref());
+                let mut saved = app.config.snapshot.clone().expect("snapshot");
+                saved.sources[0].values[0].value = mutation.value.clone();
+                saved.values[0].value = mutation.value;
+                crate::app::events::handle_client_event(
+                    &mut app,
+                    ClientEvent::SettingsResultReceived {
+                        session_id: "session-1".into(),
+                        request_id: request.request_id,
+                        result: SettingsResult {
+                            persistence: SettingsPersistence::Saved,
+                            application: SettingsApplication::Host,
+                            snapshot: Some(saved),
+                            error: None,
+                        },
+                    },
+                );
+                terminal
+                    .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
+                    .expect("render choice");
+                let rendered: String = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(ratatui::buffer::Cell::symbol)
+                    .collect();
+                assert!(rendered.contains("Automatic updates"));
+                assert!(rendered.contains(match expected {
+                    Some(true) => "On",
+                    Some(false) => "Off",
+                    None => "Default",
+                }));
+                assert_eq!(
+                    app.surface_mode,
+                    crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config)
+                );
+                assert!(!app.shutdown_requested());
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_fixed() {
     use crate::agent::settings::SettingKind;
     use ratatui::{Terminal, backend::TestBackend};

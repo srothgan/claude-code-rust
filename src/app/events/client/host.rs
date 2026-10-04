@@ -5,6 +5,9 @@ use crate::agent::events::ClientEvent;
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
+        ClientEvent::UpdateCheckCompleted { result } => {
+            crate::app::update_check::apply_check_result(app, &result);
+        }
         ClientEvent::TerminalReleasedToChild { reason, ready_tx, cancel_tx } => {
             app.terminal_lifecycle = crate::app::TerminalLifecycleState::ReleasedToChild(reason);
             app.surface_dirty.clear_for_child_release();

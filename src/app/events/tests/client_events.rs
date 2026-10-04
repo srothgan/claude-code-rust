@@ -337,15 +337,21 @@ fn auth_required_sets_hint_without_prefilling_login_command() {
 }
 
 #[test]
-fn update_available_records_settings_without_transcript_message() {
+fn update_check_result_records_settings_without_transcript_message() {
     let mut app = make_test_app();
     assert!(app.global_settings.updates.last_result.is_none());
 
     handle_client_event(
         &mut app,
-        ClientEvent::UpdateAvailable {
-            latest_version: "0.3.0".into(),
-            current_version: "0.2.0".into(),
+        ClientEvent::UpdateCheckCompleted {
+            result: crate::app::settings::UpdateCheckResult {
+                latest_version: "0.3.0".into(),
+                current_version: "0.2.0".into(),
+                release_url: crate::app::settings::release_url_for_version("0.3.0")
+                    .expect("release URL"),
+                checked_at_unix_secs: 10,
+                source: "github_release".into(),
+            },
         },
     );
 

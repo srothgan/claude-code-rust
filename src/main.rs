@@ -104,7 +104,9 @@ fn run() -> anyhow::Result<i32> {
 
         result?;
 
-        if let Some(action) = post_exit_action {
+        if let Some(action) =
+            post_exit_action.or_else(|| claude_code_rust::app::automatic_update_action(&app, &cli))
+        {
             return Ok(run_post_exit_action(&mut app, action));
         }
 
@@ -129,7 +131,7 @@ fn run_update_install(
 ) -> i32 {
     let method_label = method.label();
     let result = match method {
-        InstallMethod::Npm => run_npm_update(),
+        InstallMethod::Npm => run_npm_update(latest_version),
         InstallMethod::Script { install_dir } => {
             run_script_update(latest_version, install_dir.as_deref())
         }
@@ -161,10 +163,10 @@ fn run_update_install(
     }
 }
 
-fn run_npm_update() -> Result<ExitStatus, String> {
+fn run_npm_update(latest_version: &str) -> Result<ExitStatus, String> {
     let npm = resolve_npm().map_err(|error| format!("failed to resolve npm: {error}"))?;
     Command::new(&npm)
-        .args(["install", "-g", "claude-code-rust"])
+        .args(["install", "-g", &format!("claude-code-rust@{latest_version}")])
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

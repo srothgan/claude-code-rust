@@ -88,7 +88,6 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::SessionResumeFailed { .. }
         | ClientEvent::SessionReplaced { .. }
         | ClientEvent::SessionsListed { .. }
-        | ClientEvent::UpdateAvailable { .. }
         | ClientEvent::ServiceStatus { .. }
         | ClientEvent::AuthCompleted { .. }
         | ClientEvent::LogoutCompleted
@@ -97,7 +96,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::RewindTargetsReceived { .. }
         | ClientEvent::RewindResultReceived { .. }
         | ClientEvent::FatalError(_) => ClientEventFamily::Session,
-        ClientEvent::TerminalReleasedToChild { .. }
+        ClientEvent::UpdateCheckCompleted { .. }
+        | ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }
         | ClientEvent::RuntimeReloadHeld { .. }

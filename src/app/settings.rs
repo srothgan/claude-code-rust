@@ -17,6 +17,9 @@ pub struct AppSettings {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSettings {
+    // Edited through the config writer; metadata saves must not overwrite it.
+    #[serde(default, rename = "autoInstall", skip_serializing)]
+    pub auto_install: bool,
     #[serde(default)]
     pub last_result: Option<UpdateCheckResult>,
     #[serde(default)]
@@ -96,6 +99,9 @@ pub fn update_prompt_candidate(
     current_version: &str,
     now_unix_secs: u64,
 ) -> Option<UpdatePrompt> {
+    if settings.updates.auto_install {
+        return None;
+    }
     let result = settings.updates.last_result.as_ref()?;
     if !super::update_check::is_newer_version(&result.latest_version, current_version) {
         return None;
@@ -160,7 +166,7 @@ pub fn release_url_for_version(version: &str) -> Option<String> {
         .then(|| format!("{GITHUB_RELEASE_BASE_URL}/v{version}"))
 }
 
-fn load_from_path(path: &Path) -> Result<AppSettings, String> {
+pub(crate) fn load_from_path(path: &Path) -> Result<AppSettings, String> {
     match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<AppSettings>(&raw)
             .map_err(|err| format!("Failed to parse app settings: {err}")),
@@ -220,7 +226,7 @@ mod tests {
         let path = fixture.path().join("settings.json");
         std::fs::write(
             &path,
-            r#"{"presentation":{"copyFullResponse":true,"showStatusInTerminalTab":false},"updates":{"future":42,"skipped_version":"old"}}"#,
+            r#"{"presentation":{"copyFullResponse":true,"showStatusInTerminalTab":false},"updates":{"autoInstall":true,"future":42,"skipped_version":"old"}}"#,
         )
         .expect("fixture");
         save_global_settings(&path, &AppSettings::default()).expect("save");
@@ -229,6 +235,7 @@ mod tests {
         assert_eq!(saved["presentation"]["copyFullResponse"], true);
         assert_eq!(saved["presentation"]["showStatusInTerminalTab"], false);
         assert_eq!(saved["updates"]["future"], 42);
+        assert_eq!(saved["updates"]["autoInstall"], true);
         assert!(saved["updates"].get("skipped_version").is_none());
     }
 

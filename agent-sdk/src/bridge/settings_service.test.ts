@@ -29,6 +29,33 @@ async function write(scope: SettingsScope, value: Json): Promise<void> {
   assert.ok(source);
   await fs.writeFile(source.path, JSON.stringify(value));
 }
+
+test("automatic updates are personal app preferences with targeted saves, reset and conflicts", async () => {
+  const appFile = path.join(root, "updater-settings.json");
+  await write("user", { updates: { autoInstall: true }, future: "Claude data" });
+  await fs.writeFile(appFile, JSON.stringify({ updates: { last_result: { latest_version: "9.0.0" }, future: 42 }, notifications: { actionsRequired: false } }));
+  const inspect = () => inspectSettings(cwd, [], [], appFile);
+  const initial = await inspect();
+  const setting = initial.catalog.find(setting => setting.id === "updates.autoInstall");
+  assert.ok(setting);
+  assert.deepEqual(setting.options, [true, false]);
+  assert.deepEqual(setting.writable_scopes, ["user"]);
+  assert.equal(setting.application, "host");
+  assert.equal(initial.values.find(value => value.id === setting.id)?.value, undefined);
+  const changed = await mutateSetting(cwd, mutation(initial, setting.id, "user", true), [], [], appFile);
+  assert.equal(changed.persistence, "saved");
+  assert.equal(changed.snapshot?.values.find(value => value.id === setting.id)?.value, true);
+  assert.equal((await mutateSetting(cwd, mutation(await inspect(), setting.id, "project", false), [], [], appFile)).persistence, "failure");
+  const stale = mutation(await inspect(), setting.id, "user", false);
+  const document = JSON.parse(await fs.readFile(appFile, "utf8"));
+  document.updates.autoInstall = false;
+  await fs.writeFile(appFile, JSON.stringify(document));
+  assert.equal((await mutateSetting(cwd, stale, [], [], appFile)).persistence, "conflict");
+  const reset = await mutateSetting(cwd, mutation(await inspect(), setting.id, "user"), [], [], appFile);
+  assert.equal(reset.persistence, "saved");
+  assert.equal(reset.snapshot?.values.find(value => value.id === setting.id)?.value, undefined);
+  assert.deepEqual(JSON.parse(await fs.readFile(appFile, "utf8")), { updates: { last_result: { latest_version: "9.0.0" }, future: 42 }, notifications: { actionsRequired: false } });
+});
 function mutation(snapshot: SettingsSnapshot, id: string, scope: SettingsScope, value?: Json): SettingsMutation {
   const source = snapshot.sources.find(source => source.scope === scope);
   const previous = source?.values.find(value => value.id === id);
@@ -192,7 +219,7 @@ test("alphabetical settings expose SDK model choices for validated save and rese
   await write("local", {});
   const models = ["opus", "sonnet"].map(id => ({ id, display_name: id, supports_effort: true, supported_effort_levels: [] }));
   let shown = await inspectSettings(cwd, models);
-  assert.deepEqual(shown.catalog.slice(0, 4).map(setting => setting.label), ["Auto compact", "Auto mode during planning", "Auto-scroll", "Continue at usage limit"]);
+  assert.deepEqual(shown.catalog.slice(0, 4).map(setting => setting.label), ["Auto compact", "Auto mode during planning", "Auto-scroll", "Automatic updates"]);
   assert.deepEqual(shown.catalog.find(setting => setting.id === "model")?.options, ["opus", "sonnet"]);
   for (const id of ["opus", "sonnet"]) {
     const saved = await mutateSetting(cwd, mutation(shown, "model", "user", id), models);

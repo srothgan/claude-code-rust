@@ -76,9 +76,6 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::SessionResumeFailed { session_id, operation_id, message } => {
             session::handle_session_resume_failed_event(app, &session_id, &operation_id, &message);
         }
-        ClientEvent::UpdateAvailable { latest_version, current_version } => {
-            session::handle_update_available_event(app, &latest_version, &current_version);
-        }
         ClientEvent::ServiceStatus { severity, message } => {
             session::handle_service_status_event(app, severity, &message);
         }

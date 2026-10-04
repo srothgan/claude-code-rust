@@ -179,8 +179,8 @@ pub enum ClientEvent {
     },
     /// Recent sessions discovered via SDK session listing.
     SessionsListed { sessions: Vec<crate::agent::types::SessionListEntry> },
-    /// Startup update check found a newer published version.
-    UpdateAvailable { latest_version: String, current_version: String },
+    /// Background app update check completed with current release metadata.
+    UpdateCheckCompleted { result: crate::app::settings::UpdateCheckResult },
     /// Startup Claude Code status check detected degraded/outage conditions.
     ServiceStatus { severity: ServiceStatusSeverity, message: String },
     /// /login completed via `claude auth login` -- credentials stored, ready to start a session.
@@ -283,7 +283,7 @@ impl ClientEvent {
             | Self::SessionReplaced { .. }
             | Self::SessionsListed { .. }
             | Self::RewindTargetsReceived { .. }
-            | Self::UpdateAvailable { .. }
+            | Self::UpdateCheckCompleted { .. }
             | Self::ServiceStatus { .. }
             | Self::AuthCompleted { .. }
             | Self::LogoutCompleted

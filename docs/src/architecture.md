@@ -87,6 +87,8 @@ The bridge settings service owns the Claude settings catalog, scoped mutation va
 
 Workspace trust has its own state and store under `src/app/trust`; it never uses the config snapshot as authority. Trust acceptance reads the current preferences document and preserves unrelated authentication and MCP data. App preferences retain their separate owner under `src/app/settings.rs`, with no legacy update-cache import. Shared atomic file replacement is an I/O mechanism rather than a domain resolver. Offline CLI config inspection is a separate read-only physical-file view.
 
+Automatic updates uses the same catalog and targeted config writer for the User-only `updates.autoInstall` preference. The Rust updater owns application of that preference: startup prompt selection skips the manual window when enabled, background check results return through the app event queue, and normal post-TUI exit reads fresh saved consent and cached release metadata before selecting the existing installer. Metadata saves omit the editable preference and preserve it under the shared document lock. Checking is independent of automatic installation; CLI/environment disablement, forced shutdown, unknown installation layouts and application errors prevent automatic installation. The bundled SDK and external native CLI have no separate auto-update path here.
+
 
 ## Notification ownership
 

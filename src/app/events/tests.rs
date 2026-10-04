@@ -3103,9 +3103,15 @@ fn update_result_persists_across_connected_session_reset_without_notice() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::UpdateAvailable {
-            latest_version: "0.11.2".into(),
-            current_version: "0.11.1".into(),
+        ClientEvent::UpdateCheckCompleted {
+            result: crate::app::settings::UpdateCheckResult {
+                latest_version: "0.11.2".into(),
+                current_version: "0.11.1".into(),
+                release_url: crate::app::settings::release_url_for_version("0.11.2")
+                    .expect("release URL"),
+                checked_at_unix_secs: 10,
+                source: "github_release".into(),
+            },
         },
     );
     handle_client_event(&mut app, connected_event("claude-updated"));
@@ -3126,9 +3132,15 @@ fn update_result_persists_across_session_replaced_reset_without_notice() {
 
     handle_client_event(
         &mut app,
-        ClientEvent::UpdateAvailable {
-            latest_version: "0.11.2".into(),
-            current_version: "0.11.1".into(),
+        ClientEvent::UpdateCheckCompleted {
+            result: crate::app::settings::UpdateCheckResult {
+                latest_version: "0.11.2".into(),
+                current_version: "0.11.1".into(),
+                release_url: crate::app::settings::release_url_for_version("0.11.2")
+                    .expect("release URL"),
+                checked_at_unix_secs: 10,
+                source: "github_release".into(),
+            },
         },
     );
     handle_client_event(

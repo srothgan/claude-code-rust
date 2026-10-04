@@ -4,6 +4,8 @@
 use super::App;
 use super::settings;
 use crate::Cli;
+use crate::agent::events::ClientEvent;
+use crate::install_method::{InstallMethod, detect_install_method};
 use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
 use serde::Deserialize;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -38,7 +40,15 @@ struct LatestRelease {
 }
 
 pub fn start_update_check(app: &App, cli: &Cli) {
-    if update_check_disabled(cli.no_update_check) {
+    start_update_check_at(
+        app,
+        update_check_disabled(cli.no_update_check),
+        GITHUB_LATEST_RELEASE_API_URL,
+    );
+}
+
+fn start_update_check_at(app: &App, disabled: bool, endpoint: &str) {
+    if disabled {
         tracing::debug!(
             target: crate::logging::targets::APP_UPDATE,
             event_name = "update_check_skipped",
@@ -50,8 +60,9 @@ pub fn start_update_check(app: &App, cli: &Cli) {
     }
 
     let current_version = env!("CARGO_PKG_VERSION").to_owned();
-    let settings_path = app.global_settings_path.clone();
     let settings_snapshot = app.global_settings.clone();
+    let event_tx = app.event_tx.clone();
+    let endpoint = endpoint.to_owned();
     tracing::info!(
         target: crate::logging::targets::APP_UPDATE,
         event_name = "update_check_started",
@@ -69,7 +80,7 @@ pub fn start_update_check(app: &App, cli: &Cli) {
     tokio::task::spawn_local(
         async move {
             let Some((mut global_settings, release)) =
-                resolve_latest_release(settings_snapshot).await
+                resolve_latest_release(settings_snapshot, &endpoint).await
             else {
                 return;
             };
@@ -81,21 +92,81 @@ pub fn start_update_check(app: &App, cli: &Cli) {
                 &release.release_url,
                 unix_now_secs().unwrap_or(0),
             );
-            if let Some(path) = settings_path.as_ref()
-                && let Err(err) = settings::save_global_settings(path, &global_settings)
-            {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_UPDATE,
-                    event_name = "update_settings_write_failed",
-                    message = "failed to write update check result",
-                    outcome = "failure",
-                    settings_path = %path.display(),
-                    error_message = %err,
-                );
+            if let Some(result) = global_settings.updates.last_result {
+                let _ = event_tx.send(ClientEvent::UpdateCheckCompleted { result }).await;
             }
         }
         .instrument(update_check_span),
     );
+}
+
+pub(crate) fn apply_check_result(app: &mut App, result: &settings::UpdateCheckResult) {
+    tracing::info!(
+        target: crate::logging::targets::APP_UPDATE,
+        event_name = "update_check_completed",
+        latest_version = %result.latest_version,
+        outcome = "success",
+    );
+    settings::record_update_check_result(
+        &mut app.global_settings,
+        &result.current_version,
+        &result.latest_version,
+        &result.release_url,
+        result.checked_at_unix_secs,
+    );
+    if let Some(path) = app.global_settings_path.as_ref()
+        && let Err(error) = settings::save_global_settings(path, &app.global_settings)
+    {
+        tracing::warn!(
+            target: crate::logging::targets::APP_UPDATE,
+            event_name = "update_settings_write_failed",
+            outcome = "failure",
+            error_message = %error,
+        );
+    }
+}
+
+/// Decide only after terminal and bridge cleanup; read current saved consent.
+pub fn automatic_update_action(app: &App, cli: &Cli) -> Option<super::PostExitAction> {
+    automatic_update_action_with(app, cli, detect_install_method)
+}
+
+fn automatic_update_action_with(
+    app: &App,
+    cli: &Cli,
+    install_method: impl FnOnce() -> InstallMethod,
+) -> Option<super::PostExitAction> {
+    if app.shutdown_forced() || update_check_disabled(cli.no_update_check) {
+        return None;
+    }
+    let path = app.global_settings_path.as_deref()?;
+    let settings = match settings::load_from_path(path) {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(target: crate::logging::targets::APP_UPDATE,
+                event_name = "automatic_update_skipped", reason = "settings_unavailable", error_message = %error);
+            return None;
+        }
+    };
+    if !settings.updates.auto_install {
+        return None;
+    }
+    let result = settings.updates.last_result.as_ref()?;
+    if !is_newer_version(&result.latest_version, env!("CARGO_PKG_VERSION")) {
+        return None;
+    }
+    let method = install_method();
+    if method == InstallMethod::Unknown {
+        tracing::warn!(target: crate::logging::targets::APP_UPDATE,
+            event_name = "automatic_update_skipped", reason = "unknown_install_method", latest_version = %result.latest_version);
+        return None;
+    }
+    tracing::info!(target: crate::logging::targets::APP_UPDATE,
+        event_name = "automatic_update_selected", latest_version = %result.latest_version, install_method = method.label());
+    Some(super::PostExitAction::InstallUpdate {
+        latest_version: result.latest_version.clone(),
+        method,
+    })
 }
 
 pub(crate) fn update_check_disabled(no_update_check_flag: bool) -> bool {
@@ -109,6 +180,7 @@ pub(crate) fn update_check_disabled(no_update_check_flag: bool) -> bool {
 
 async fn resolve_latest_release(
     settings: settings::AppSettings,
+    endpoint: &str,
 ) -> Option<(settings::AppSettings, LatestRelease)> {
     let now = unix_now_secs()?;
 
@@ -126,7 +198,7 @@ async fn resolve_latest_release(
         return None;
     }
 
-    let release = fetch_latest_release().await?;
+    let release = fetch_latest_release(endpoint).await?;
     Some((settings, release))
 }
 
@@ -134,15 +206,10 @@ pub(crate) fn unix_now_secs() -> Option<u64> {
     SystemTime::now().duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
-async fn fetch_latest_release() -> Option<LatestRelease> {
+async fn fetch_latest_release(endpoint: &str) -> Option<LatestRelease> {
     let client = reqwest::Client::builder().timeout(UPDATE_CHECK_TIMEOUT).build().ok()?;
 
-    let response = client
-        .get(GITHUB_LATEST_RELEASE_API_URL)
-        .headers(github_api_headers())
-        .send()
-        .await
-        .ok()?;
+    let response = client.get(endpoint).headers(github_api_headers()).send().await.ok()?;
 
     if !response.status().is_success() {
         tracing::warn!(
@@ -151,7 +218,7 @@ async fn fetch_latest_release() -> Option<LatestRelease> {
             message = "update check request failed",
             outcome = "failure",
             status = %response.status(),
-            url = GITHUB_LATEST_RELEASE_API_URL,
+            url = endpoint,
         );
         return None;
     }
@@ -207,53 +274,4 @@ pub(crate) fn is_newer_version(candidate: &str, current: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_simple_version_accepts_v_prefix() {
-        assert_eq!(
-            parse_simple_version("v1.2.3"),
-            Some(SimpleVersion { major: 1, minor: 2, patch: 3 })
-        );
-    }
-
-    #[test]
-    fn parse_simple_version_rejects_invalid_shapes() {
-        assert_eq!(parse_simple_version("1.2"), None);
-        assert_eq!(parse_simple_version("1.2.3.4"), None);
-        assert_eq!(parse_simple_version("v1.two.3"), None);
-    }
-
-    #[test]
-    fn parse_simple_version_ignores_prerelease_suffix() {
-        assert_eq!(
-            parse_simple_version("v2.4.6-rc1"),
-            Some(SimpleVersion { major: 2, minor: 4, patch: 6 })
-        );
-    }
-
-    #[test]
-    fn normalize_version_string_accepts_release_tag() {
-        assert_eq!(normalize_version_string("v0.10.0").as_deref(), Some("0.10.0"));
-    }
-
-    #[test]
-    fn github_release_payload_parses_tag_name() {
-        let payload = r#"{"tag_name":"v0.11.0"}"#;
-        let parsed = serde_json::from_str::<GithubLatestRelease>(payload).ok();
-        assert_eq!(parsed.map(|r| r.tag_name), Some("v0.11.0".to_owned()));
-    }
-
-    #[test]
-    fn update_check_disabled_prefers_flag() {
-        assert!(update_check_disabled(true));
-    }
-
-    #[test]
-    fn is_newer_version_compares_semver_triplets() {
-        assert!(is_newer_version("0.3.0", "0.2.9"));
-        assert!(!is_newer_version("0.2.9", "0.3.0"));
-        assert!(!is_newer_version("bad", "0.3.0"));
-    }
-}
+mod tests;
