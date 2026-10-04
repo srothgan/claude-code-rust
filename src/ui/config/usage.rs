@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::common::{render_message, wrapped_height};
 use super::theme;
 use crate::app::usage;
 use crate::app::{
@@ -11,14 +12,14 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let content_area = area.inner(Margin { vertical: 1, horizontal: 2 });
+    let content_area = area;
     if content_area.width == 0 || content_area.height == 0 {
         return;
     }
 
     let windows = app.usage.snapshot.as_ref().map_or_else(Vec::new, usage::visible_windows);
 
-    let mut constraints = vec![Constraint::Length(1)];
+    let mut constraints = vec![Constraint::Length(u16::from(app.usage.snapshot.is_some()))];
     let snapshot = app.usage.snapshot.as_ref();
     let has_snapshot_content = !windows.is_empty()
         || snapshot.and_then(|snapshot| snapshot.extra_usage.as_ref()).is_some()
@@ -112,36 +113,14 @@ fn render_spacer(frame: &mut Frame, area: Rect) {
 }
 
 fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
-    if app.usage.in_flight {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "Loading usage data...",
-                Style::default().fg(theme::DIM),
-            ))),
-            area,
-        );
-        return;
-    }
-
-    let (title, body, color) = if let Some(error) = app.usage.last_error.as_deref() {
-        ("Unable to load usage", error, theme::STATUS_ERROR)
+    let (title, body) = if app.usage.in_flight {
+        ("Loading usage data", "Waiting for the current account's usage snapshot.")
+    } else if let Some(error) = app.usage.last_error.as_deref() {
+        ("Unable to load usage", error)
     } else {
-        (
-            "No usage snapshot yet",
-            "Press r to fetch Claude usage for the current account.",
-            theme::DIM,
-        )
+        ("No usage snapshot yet", "Press r to fetch Claude usage for the current account.")
     };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(Style::default().fg(color));
-    frame.render_widget(block.clone(), area);
-    frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false }),
-        area.inner(Margin { vertical: 1, horizontal: 2 }),
-    );
+    render_message(frame, area, title, body);
 }
 
 fn render_window(frame: &mut Frame, area: Rect, window: &UsageWindow) {
@@ -408,12 +387,6 @@ fn error_height(error: &str, width: u16) -> u16 {
     wrapped_height(Text::from(error.to_owned()), inner_width).saturating_add(2)
 }
 
-fn wrapped_height(text: Text<'static>, width: u16) -> u16 {
-    u16::try_from(Paragraph::new(text).wrap(Wrap { trim: false }).line_count(width))
-        .unwrap_or(u16::MAX)
-        .max(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,7 +439,7 @@ mod tests {
         let mut app = usage_app();
         app.usage.in_flight = true;
         let rendered = render_usage(&app);
-        assert!(rendered.contains("Loading usage data..."));
+        assert!(rendered.contains("Loading usage data"));
     }
 
     #[test]

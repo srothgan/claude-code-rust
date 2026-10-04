@@ -3,14 +3,14 @@
 
 use crate::app::{App, ConfigHelpSection};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
+use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 
-use super::super::theme;
 use super::super::two_column_list::{self, TwoColumnItem};
 use super::super::wrap::display_width;
+use super::common;
 
 const COLUMN_GAP: usize = 4;
 const NAME_MIN_WIDTH: usize = 12;
@@ -29,26 +29,25 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(1)])
         .areas(area);
 
-    render_section_header(frame, tabs_area, app.config.help_section);
+    let header = Layout::horizontal([Constraint::Min(1), Constraint::Length(7)]).split(tabs_area);
+    render_section_header(frame, header[0], app.config.help_section);
+    let count = crate::ui::help::help_items(app, app.config.help_section).len();
+    frame.render_widget(
+        Paragraph::new(common::position_counter(app.config.help_dialog.selected, count))
+            .alignment(Alignment::Right),
+        header[1],
+    );
     render_section_body(frame, body_area, app);
 }
 
 fn render_section_header(frame: &mut Frame, area: Rect, active: ConfigHelpSection) {
-    let mut spans = Vec::new();
-    for (index, section) in ConfigHelpSection::ALL.iter().copied().enumerate() {
-        if index > 0 {
-            spans.push(Span::styled(" | ", Style::default().fg(theme::DIM)));
-        }
-
-        let style = if section == active {
-            Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(ratatui::style::Color::White)
-        };
-        spans.push(Span::styled(section.title().to_owned(), style));
-    }
-
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let labels =
+        ConfigHelpSection::ALL.iter().map(|section| section.title().to_owned()).collect::<Vec<_>>();
+    let active = ConfigHelpSection::ALL.iter().position(|section| *section == active).unwrap_or(0);
+    frame.render_widget(
+        Paragraph::new(common::tab_line(&labels, active, area.width, common::TabStyle::Secondary)),
+        area,
+    );
 }
 
 fn render_section_body(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -58,7 +57,7 @@ fn render_section_body(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let inner_width = usize::from(area.width);
+    let inner_width = usize::from(area.width.saturating_sub(2));
     let (name_width, desc_width) = item_column_widths(&items, inner_width);
     let visible_count = visible_item_count(app, &items, area.height, name_width, desc_width);
     app.config.help_visible_count = visible_count;
@@ -68,27 +67,28 @@ fn render_section_body(frame: &mut Frame, area: Rect, app: &mut App) {
     let end = (start + visible_count).min(items.len());
     let selected = app.config.help_dialog.selected;
     let visible_items = &items[start..end];
-    let list_items = visible_items
-        .iter()
-        .enumerate()
-        .map(|(offset, (left, right))| {
-            let row_index = start + offset;
-            let is_selected = row_index == selected;
-            let left_style = if is_selected {
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().add_modifier(Modifier::BOLD)
-            };
-            let right_style = if is_selected {
-                Style::default().fg(theme::RUST_ORANGE)
-            } else {
-                Style::default()
-            };
-            TwoColumnItem { left: left.clone(), right: right.clone(), left_style, right_style }
-        })
-        .collect::<Vec<_>>();
-
-    let lines = two_column_list::render_lines(&list_items, name_width, desc_width, COLUMN_GAP, 1);
+    let mut lines = Vec::new();
+    for (offset, (left, right)) in visible_items.iter().enumerate() {
+        if offset > 0 {
+            lines.push(ratatui::text::Line::default());
+        }
+        let is_selected = start + offset == selected;
+        let item = TwoColumnItem {
+            left: left.clone(),
+            right: right.clone(),
+            left_style: common::title_style(),
+            right_style: Style::default(),
+        };
+        for (row, line) in
+            two_column_list::render_lines(&[item], name_width, desc_width, COLUMN_GAP, 0)
+                .into_iter()
+                .enumerate()
+        {
+            let mut line = common::selection_line(line, is_selected && row == 0);
+            line.style = line.style.patch(common::selection_style(is_selected));
+            lines.push(line);
+        }
+    }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
@@ -107,7 +107,7 @@ fn visible_item_count(
         .map(|(left, right)| TwoColumnItem {
             left: left.clone(),
             right: right.clone(),
-            left_style: Style::default().add_modifier(Modifier::BOLD),
+            left_style: common::title_style(),
             right_style: Style::default(),
         })
         .collect::<Vec<_>>();

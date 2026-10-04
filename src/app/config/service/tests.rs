@@ -468,7 +468,7 @@ async fn settings_load_automatically_after_startup_without_a_manual_refresh() {
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
                 .collect();
-            assert!(text.contains("Loading settings..."));
+            assert!(text.contains("Loading settings"));
             let cwd = app.cwd_raw.clone();
             crate::app::events::handle_client_event(
                 &mut app,
@@ -709,7 +709,8 @@ async fn fixed_model_and_effort_choices_cycle_in_place_through_acknowledged_save
                 assert!(text.contains(label));
                 assert!(text.contains(expected.as_str().expect("string choice")));
                 assert!(text.contains("1/1"));
-                assert!(text.contains("Left/Right or Space change"));
+                assert!(text.contains("Space change"));
+                assert!(text.contains("Left/Right change"));
                 assert_eq!(app.config.selected_setting_index, 0);
             }
         }

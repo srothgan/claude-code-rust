@@ -1,33 +1,80 @@
 // SPDX-License-Identifier: Apache-2.0
-use super::theme;
+use super::{common, theme};
 use crate::app::App;
 use crate::app::plugins::{
     InstalledPluginEntry, PluginsViewTab, display_label, filtered_marketplace_plugins,
     ordered_installed, search_enabled, visible_marketplaces,
 };
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-use unicode_width::UnicodeWidthStr;
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let body = area.inner(Margin { vertical: 1, horizontal: 1 });
-    let top_height = top_region_height(app, body.width);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(top_height),
-            Constraint::Min(1),
-        ])
-        .split(body);
-
-    frame.render_widget(Paragraph::new(tab_header_line(app)), sections[0]);
+    let top_height = top_region_height(app, area.width).min(area.height.saturating_sub(3));
+    let sections = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(top_height),
+        Constraint::Min(1),
+    ])
+    .split(area);
+    let blocks = list_content(app);
+    let selected = app.plugins.selected_index_for(app.plugins.active_tab);
+    let labels = PluginsViewTab::ALL
+        .iter()
+        .map(|tab| {
+            let count = match tab {
+                PluginsViewTab::Installed => ordered_installed(&app.plugins, &app.cwd_raw).len(),
+                PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
+                PluginsViewTab::Marketplace => visible_marketplaces(&app.plugins).len(),
+            };
+            format!("{} ({count})", tab.title())
+        })
+        .collect::<Vec<_>>();
+    let header = Layout::horizontal([Constraint::Min(1), Constraint::Length(7)]).split(sections[0]);
+    let active =
+        PluginsViewTab::ALL.iter().position(|tab| *tab == app.plugins.active_tab).unwrap_or(0);
+    frame.render_widget(
+        Paragraph::new(common::tab_line(
+            &labels,
+            active,
+            header[0].width,
+            common::TabStyle::Secondary,
+        )),
+        header[0],
+    );
+    frame.render_widget(
+        Paragraph::new(common::position_counter(selected, blocks.len()))
+            .alignment(Alignment::Right),
+        header[1],
+    );
     render_top_region(frame, sections[2], app);
-    render_list_region(frame, sections[3], app);
+    if blocks.is_empty() {
+        let loading = app.plugins.loading;
+        let body = if loading {
+            "Waiting for the plugin inventory."
+        } else if !app.plugins.search_query_for(app.plugins.active_tab).is_empty() {
+            "No plugins match the current search."
+        } else {
+            "No plugins found. Switch lists or press r to refresh."
+        };
+        common::render_message(
+            frame,
+            sections[3],
+            if loading { "Loading plugins" } else { "No plugins" },
+            body,
+        );
+    } else {
+        common::render_selection_blocks(
+            frame,
+            sections[3],
+            blocks,
+            selected,
+            !app.plugins.search_focused || !search_enabled(app.plugins.active_tab),
+        );
+    }
 }
 
 fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
@@ -48,35 +95,27 @@ fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
                             Style::default().fg(theme::DIM)
                         }),
                 )
-                .wrap(Wrap { trim: false }),
+                .wrap(Wrap { trim: false })
+                .scroll((
+                    common::selected_scroll(
+                        usize::from(common::wrapped_height(
+                            search_field_line(app),
+                            area.width.saturating_sub(2),
+                        ))
+                        .saturating_sub(1),
+                        1,
+                        area.height.saturating_sub(2),
+                    ),
+                    0,
+                )),
             area,
         );
         return;
     }
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(
-                "Configured marketplaces",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-        ])),
+        Paragraph::new(Line::styled("Configured marketplaces", common::title_style())),
         area,
-    );
-}
-
-fn render_list_region(frame: &mut Frame, area: Rect, app: &App) {
-    let list_area =
-        if area.width > 1 { area.inner(Margin { vertical: 0, horizontal: 1 }) } else { area };
-    let rendered = match app.plugins.active_tab {
-        PluginsViewTab::Installed => installed_list(app, list_area.width, list_area.height),
-        PluginsViewTab::Plugins => plugins_list(app, list_area.width, list_area.height),
-        PluginsViewTab::Marketplace => marketplace_list(app, list_area.width, list_area.height),
-    };
-    frame.render_widget(
-        Paragraph::new(rendered.lines).scroll((rendered.scroll, 0)).wrap(Wrap { trim: false }),
-        list_area,
     );
 }
 
@@ -85,47 +124,11 @@ fn top_region_height(app: &App, width: u16) -> u16 {
         return 1;
     }
 
-    let content_height = Paragraph::new(search_field_line(app))
-        .wrap(Wrap { trim: false })
-        .line_count(width.saturating_sub(2).max(1));
-    u16::try_from(content_height).unwrap_or(u16::MAX).max(1).saturating_add(2)
-}
-
-fn tab_header_line(app: &App) -> Line<'static> {
-    let spans = PluginsViewTab::ALL
-        .into_iter()
-        .enumerate()
-        .flat_map(|(index, tab)| {
-            let active = tab == app.plugins.active_tab;
-            let count = match tab {
-                PluginsViewTab::Installed => ordered_installed(&app.plugins, &app.cwd_raw).len(),
-                PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
-                PluginsViewTab::Marketplace => visible_marketplaces(&app.plugins).len(),
-            };
-            let label = format!(" {} ({count}) ", tab.title());
-            let mut spans = vec![Span::styled(
-                label,
-                if active {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(theme::RUST_ORANGE)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-                },
-            )];
-            if index + 1 < PluginsViewTab::ALL.len() {
-                spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-            }
-            spans
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans)
+    common::wrapped_height(search_field_line(app), width.saturating_sub(2)).saturating_add(2)
 }
 
 fn search_field_line(app: &App) -> Line<'static> {
-    let cursor_style =
-        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+    let cursor_style = common::cursor_style();
     let text_style = Style::default().fg(Color::White);
     let hint_style = Style::default().fg(theme::DIM);
     let query = app.plugins.search_query_for(app.plugins.active_tab);
@@ -150,248 +153,127 @@ fn search_field_line(app: &App) -> Line<'static> {
     Line::from(Span::styled(query.to_owned(), text_style))
 }
 
-fn installed_list(app: &App, viewport_width: u16, viewport_height: u16) -> RenderedList {
-    let entries = ordered_installed(&app.plugins, &app.cwd_raw);
-    if entries.is_empty() {
-        return RenderedList::single(
-            if app.plugins.loading {
-                "Loading installed plugins..."
-            } else if app.plugins.search_query_for(PluginsViewTab::Installed).is_empty() {
-                "No installed plugins found."
-            } else {
-                "No installed plugins match the current search."
-            },
-            viewport_height,
-        );
+fn list_content(app: &App) -> Vec<Vec<Line<'static>>> {
+    match app.plugins.active_tab {
+        PluginsViewTab::Installed => installed_content(app),
+        PluginsViewTab::Plugins => plugins_content(app),
+        PluginsViewTab::Marketplace => marketplace_content(app),
     }
+}
 
-    let blocks = entries
+fn installed_content(app: &App) -> Vec<Vec<Line<'static>>> {
+    ordered_installed(&app.plugins, &app.cwd_raw)
         .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let selected =
-                index == app.plugins.installed_selected_index && !app.plugins.search_focused;
+        .map(|entry| {
             let mut lines = vec![
-                title_line_with_badge(
-                    &display_label(&entry.id),
-                    Some(installed_plugin_badge(entry)),
-                    selected,
+                Line::from(vec![
+                    Span::styled(display_label(&entry.id), common::title_style()),
+                    Span::raw("  "),
+                    installed_plugin_badge(entry),
+                ]),
+                common::detail_kv("Plugin", &entry.id, Color::White),
+                common::detail_kv(
+                    "Status",
+                    if entry.enabled { "enabled" } else { "disabled" },
+                    Color::White,
                 ),
-                meta_line(
-                    &format!(
-                        "{} | {}{}",
-                        if entry.enabled { "enabled" } else { "disabled" },
-                        entry.scope,
-                        entry
-                            .version
-                            .as_deref()
-                            .map_or_else(String::new, |version| format!(" | {version}"))
-                    ),
-                    selected,
-                ),
+                common::detail_kv("Scope", &entry.scope, Color::White),
             ];
-            if let Some(project_path) = entry.project_path.as_deref() {
-                lines.push(meta_line(&format!("project | {project_path}"), selected));
+            if let Some(description) = app
+                .plugins
+                .marketplace
+                .iter()
+                .find(|plugin| plugin.plugin_id == entry.id)
+                .and_then(|plugin| plugin.description.as_ref())
+            {
+                lines.push(common::detail_kv("Description", description, Color::White));
+            }
+            if let Some(version) = &entry.version {
+                lines.push(common::detail_kv("Version", version, Color::White));
+            }
+            if let Some(path) = &entry.project_path {
+                lines.push(common::detail_kv("Project", path, Color::White));
+            }
+            if let Some(installed_at) = &entry.installed_at {
+                lines.push(common::detail_kv("Installed", installed_at, Color::White));
+            }
+            if let Some(last_updated) = &entry.last_updated {
+                lines.push(common::detail_kv("Updated", last_updated, Color::White));
+            }
+            if !entry.mcp_server_names.is_empty() {
+                lines.push(common::detail_kv(
+                    "MCP servers",
+                    &entry.mcp_server_names.join(", "),
+                    Color::White,
+                ));
             }
             lines
         })
-        .collect::<Vec<_>>();
-
-    RenderedList::from_blocks(
-        &blocks,
-        app.plugins.installed_selected_index,
-        viewport_width,
-        viewport_height,
-    )
+        .collect()
 }
 
-fn plugins_list(app: &App, viewport_width: u16, viewport_height: u16) -> RenderedList {
-    let entries = filtered_marketplace_plugins(&app.plugins);
-    if entries.is_empty() {
-        return RenderedList::single(
-            if app.plugins.loading {
-                "Loading marketplace plugins..."
-            } else if app.plugins.search_query_for(PluginsViewTab::Plugins).is_empty() {
-                "No plugins are available from the configured marketplaces."
-            } else {
-                "No marketplace plugins match the current search."
-            },
-            viewport_height,
-        );
-    }
-
-    let blocks = entries
+fn plugins_content(app: &App) -> Vec<Vec<Line<'static>>> {
+    filtered_marketplace_plugins(&app.plugins)
         .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let selected =
-                index == app.plugins.plugins_selected_index && !app.plugins.search_focused;
-            let mut lines = vec![title_line(&display_label(&entry.name), selected)];
-            lines.push(meta_line(&format!("Plugin: {}", entry.plugin_id), selected));
-            if let Some(description) = entry.description.as_deref() {
-                lines.push(meta_line(description, selected));
+        .map(|entry| {
+            let mut lines = vec![
+                Line::styled(display_label(&entry.name), common::title_style()),
+                common::detail_kv("Plugin", &entry.plugin_id, Color::White),
+            ];
+            if let Some(description) = &entry.description {
+                lines.push(common::detail_kv("Description", description, Color::White));
             }
-            if let Some(marketplace_name) = entry.marketplace_name.as_deref() {
-                lines.push(meta_line(&format!("Marketplace: {marketplace_name}"), selected));
+            if let Some(marketplace) = &entry.marketplace_name {
+                lines.push(common::detail_kv("Marketplace", marketplace, Color::White));
             }
-            if let Some(version) = entry.version.as_deref() {
-                lines.push(meta_line(&format!("Version: {version}"), selected));
+            if let Some(version) = &entry.version {
+                lines.push(common::detail_kv("Version", version, Color::White));
+            }
+            if let Some(count) = entry.install_count {
+                lines.push(common::detail_kv("Installs", &count.to_string(), Color::White));
+            }
+            if let Some(source) = &entry.source {
+                let source = source.as_str().map_or_else(|| source.to_string(), str::to_owned);
+                lines.push(common::detail_kv("Source", &source, Color::White));
             }
             lines
         })
-        .collect::<Vec<_>>();
-    RenderedList::from_blocks(
-        &blocks,
-        app.plugins.plugins_selected_index,
-        viewport_width,
-        viewport_height,
-    )
+        .collect()
 }
 
-fn marketplace_list(app: &App, viewport_width: u16, viewport_height: u16) -> RenderedList {
+fn marketplace_content(app: &App) -> Vec<Vec<Line<'static>>> {
     let entries = visible_marketplaces(&app.plugins);
     if entries.is_empty() && app.plugins.loading {
-        return RenderedList::single("Loading configured marketplaces...", viewport_height);
+        return Vec::new();
     }
     let mut blocks = entries
         .iter()
-        .enumerate()
-        .map(|(index, marketplace)| {
-            let selected = index == app.plugins.marketplace_selected_index;
-            let mut lines = vec![title_line(&display_label(&marketplace.name), selected)];
-            if let Some(source) = marketplace.source.as_deref() {
-                lines.push(meta_line(&format!("Source: {source}"), selected));
+        .map(|entry| {
+            let mut lines = vec![
+                Line::styled(display_label(&entry.name), common::title_style()),
+                common::detail_kv("Marketplace", &entry.name, Color::White),
+            ];
+            if let Some(source) = &entry.source {
+                lines.push(common::detail_kv("Source", source, Color::White));
             }
-            if let Some(repo) = marketplace.repo.as_deref() {
-                lines.push(meta_line(&format!("Repo: {repo}"), selected));
+            if let Some(repo) = &entry.repo {
+                lines.push(common::detail_kv("Repo", repo, Color::White));
             }
             lines
         })
         .collect::<Vec<_>>();
-
     blocks.push(vec![
-        title_line("Add marketplace", app.plugins.marketplace_selected_index == entries.len()),
-        meta_line(
-            "Add a marketplace from a GitHub repo, URL, or local path.",
-            app.plugins.marketplace_selected_index == entries.len(),
-        ),
+        Line::styled("Add marketplace", common::title_style()),
+        Line::from("Add a marketplace from a GitHub repo, URL, or local path."),
     ]);
-
-    RenderedList::from_blocks(
-        &blocks,
-        app.plugins.marketplace_selected_index,
-        viewport_width,
-        viewport_height,
-    )
+    blocks
 }
 
-fn title_line(text: &str, selected: bool) -> Line<'static> {
-    title_line_with_badge(text, None, selected)
-}
-
-#[derive(Clone, Copy)]
-struct TitleBadge {
-    label: &'static str,
-    fg: Color,
-    bg: Color,
-}
-
-fn title_line_with_badge(text: &str, badge: Option<TitleBadge>, selected: bool) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        text.to_owned(),
-        if selected {
-            Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-        },
-    )];
-    if let Some(badge) = badge {
-        spans.push(Span::styled("  ", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(
-            format!(" {} ", badge.label),
-            Style::default().fg(badge.fg).bg(badge.bg).add_modifier(Modifier::BOLD),
-        ));
-    }
-    Line::from(spans)
-}
-
-fn meta_line(text: &str, selected: bool) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("  {text}"),
-        if selected { Style::default().fg(Color::White) } else { Style::default().fg(theme::DIM) },
-    ))
-}
-
-struct RenderedList {
-    lines: Vec<Line<'static>>,
-    scroll: u16,
-}
-
-impl RenderedList {
-    fn single(message: &str, _viewport_height: u16) -> Self {
-        Self {
-            lines: vec![Line::from(Span::styled(
-                message.to_owned(),
-                Style::default().fg(theme::DIM),
-            ))],
-            scroll: 0,
-        }
-    }
-
-    fn from_blocks(
-        blocks: &[Vec<Line<'static>>],
-        selected_index: usize,
-        viewport_width: u16,
-        viewport_height: u16,
-    ) -> Self {
-        let mut lines = Vec::new();
-        let mut selected_start = 0usize;
-        let mut selected_height = 1usize;
-        let mut offset = 0usize;
-
-        for (index, block) in blocks.iter().enumerate() {
-            let block_height = visual_block_height(block, viewport_width).saturating_add(1);
-            if index == selected_index {
-                selected_start = offset;
-                selected_height = block_height;
-            }
-            lines.extend(block.iter().cloned());
-            lines.push(Line::default());
-            offset = offset.saturating_add(block_height);
-        }
-
-        Self { lines, scroll: selected_scroll(selected_start, selected_height, viewport_height) }
-    }
-}
-
-fn selected_scroll(selected_start: usize, selected_height: usize, viewport_height: u16) -> u16 {
-    let viewport_height = usize::from(viewport_height.max(1));
-    if selected_start.saturating_add(selected_height) <= viewport_height {
-        0
-    } else {
-        u16::try_from(
-            selected_start.saturating_add(selected_height).saturating_sub(viewport_height),
-        )
-        .unwrap_or(u16::MAX)
-    }
-}
-
-fn visual_block_height(block: &[Line<'static>], viewport_width: u16) -> usize {
-    block.iter().map(|line| visual_line_height(line, viewport_width)).sum::<usize>()
-}
-
-fn visual_line_height(line: &Line<'static>, viewport_width: u16) -> usize {
-    let width = usize::from(viewport_width.max(1));
-    let content = line.spans.iter().map(|span| span.content.as_ref()).collect::<String>();
-    let visual_width = UnicodeWidthStr::width(content.as_str()).max(1);
-    visual_width.div_ceil(width)
-}
-
-fn installed_plugin_badge(entry: &InstalledPluginEntry) -> TitleBadge {
+fn installed_plugin_badge(entry: &InstalledPluginEntry) -> Span<'static> {
     if entry.mcp_server_names.is_empty() {
-        TitleBadge { label: "SKILL", fg: Color::White, bg: Color::Rgb(64, 64, 64) }
+        common::badge_span("SKILL", Color::White, Color::Rgb(64, 64, 64))
     } else {
-        TitleBadge { label: "MCP", fg: Color::White, bg: Color::Rgb(34, 92, 124) }
+        common::badge_span("MCP", Color::White, Color::Rgb(34, 92, 124))
     }
 }
 

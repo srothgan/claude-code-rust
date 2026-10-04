@@ -7,46 +7,38 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Table, Wrap},
+    widgets::{Cell, Paragraph, Row, Table},
 };
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let Some(snapshot) = &app.config.snapshot else {
-        frame.render_widget(
-            Paragraph::new(
-                if app.config.pending_settings_request.is_some()
-                    || app.status == crate::app::AppStatus::Connecting
-                {
-                    "Loading settings..."
-                } else {
-                    "Settings are currently unavailable."
-                },
-            ),
+        let loading = app.config.pending_settings_request.is_some()
+            || app.status == crate::app::AppStatus::Connecting;
+        super::common::render_message(
+            frame,
             area,
+            if loading { "Loading settings" } else { "Settings unavailable" },
+            if loading {
+                "Waiting for the settings snapshot."
+            } else {
+                "Press r to refresh settings."
+            },
         );
         return;
     };
+    let [list_area, _, details_area] = super::common::list_and_details(area);
     let panels = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(u16::from(area.height >= 12)),
             Constraint::Length(if area.width < 70 { 2 } else { 1 }),
-            Constraint::Length(u16::from(area.height >= 12)),
+            Constraint::Length(u16::from(details_area.height > 0)),
             Constraint::Min(3),
-            Constraint::Length(u16::from(area.height >= 12)),
-            Constraint::Length(if area.height >= 18 {
-                4
-            } else if area.height >= 12 {
-                3
-            } else {
-                0
-            }),
         ])
-        .split(area);
+        .split(list_area);
     let headers = if area.width < 70 {
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(panels[1])
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(panels[0])
     } else {
-        Layout::horizontal([Constraint::Min(25), Constraint::Length(8)]).split(panels[1])
+        Layout::horizontal([Constraint::Min(25), Constraint::Length(8)]).split(panels[0])
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -57,14 +49,14 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                 } else {
                     scope_label(app.config.selected_scope)
                 },
-                Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
+                super::common::accent_style(),
             ),
         ])),
         headers[0],
     );
 
     let row_height = if area.height >= 22 { 2 } else { 1 };
-    let visible = usize::from(panels[3].height.saturating_sub(2) / row_height).max(1);
+    let visible = usize::from(panels[2].height.saturating_sub(2) / row_height).max(1);
     let selected = app.config.selected_setting_index;
     if selected < app.config.settings_scroll_offset {
         app.config.settings_scroll_offset = selected;
@@ -73,17 +65,12 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         app.config.settings_scroll_offset = selected.saturating_add(1).saturating_sub(visible);
     }
     frame.render_widget(
-        Paragraph::new(format!(
-            "{}/{}",
-            if snapshot.catalog.is_empty() { 0 } else { selected + 1 },
-            snapshot.catalog.len()
-        ))
-        .alignment(ratatui::layout::Alignment::Right)
-        .style(Style::default().fg(theme::DIM)),
+        Paragraph::new(super::common::position_counter(selected, snapshot.catalog.len()))
+            .alignment(ratatui::layout::Alignment::Right),
         headers[1],
     );
-    render_table(frame, panels[3], app, row_height, visible);
-    render_details(frame, panels[5], app);
+    render_table(frame, panels[2], app, row_height, visible);
+    render_details(frame, details_area, app);
 }
 
 fn render_table(frame: &mut Frame, area: Rect, app: &App, row_height: u16, visible: usize) {
@@ -116,16 +103,11 @@ fn render_table(frame: &mut Frame, area: Rect, app: &App, row_height: u16, visib
                 })
                 .add_modifier(if value.is_some() { Modifier::BOLD } else { Modifier::empty() });
             Row::new(vec![
-                Cell::from(if selected { "›" } else { " " })
-                    .style(Style::default().fg(theme::RUST_ORANGE)),
+                Cell::from(super::common::marker_span(selected)),
                 Cell::from(setting.label.clone()).style(label_style),
                 Cell::from(value.map_or_else(|| "Default".to_owned(), display)).style(value_style),
             ])
-            .style(if selected {
-                Style::default().bg(theme::USER_MSG_BG)
-            } else {
-                Style::default()
-            })
+            .style(super::common::selection_style(selected))
             .height(row_height)
         });
     frame.render_widget(
@@ -201,7 +183,7 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
         "Saved changes apply to new sessions unless marked immediate.",
         Style::default().fg(theme::DIM),
     ));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    super::common::render_details(frame, area, lines);
 }
 
 pub(super) fn display(value: &serde_json::Value) -> String {

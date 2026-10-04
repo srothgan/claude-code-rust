@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::common::{
+    badge_span, detail_kv, overlay_line_style, render_message, section_heading, selected_scroll,
+    selection_marker, selection_style, wrapped_height,
+};
 use super::input::render_text_input_field;
 use super::overlay::{
-    OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_separator,
-    render_overlay_shell, selected_scroll,
+    OverlayChrome, OverlayLayoutSpec, render_overlay_separator, render_overlay_shell,
 };
 use super::theme;
 use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
@@ -13,19 +16,19 @@ use crate::app::config::{
 };
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let content_area = area.inner(Margin { vertical: 1, horizontal: 2 });
+    let content_area = area;
     if content_area.width == 0 || content_area.height == 0 {
         return;
     }
 
     let summary = summary_lines(app);
-    let summary_height =
-        wrapped_height(Text::from(summary.clone()), content_area.width).min(content_area.height);
+    let summary_height = wrapped_height(Text::from(summary.clone()), content_area.width)
+        .min(content_area.height.saturating_sub(if app.mcp.servers.is_empty() { 1 } else { 3 }));
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(summary_height), Constraint::Min(1)])
@@ -282,7 +285,7 @@ pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &
 fn render_server_list(frame: &mut Frame, area: Rect, app: &App) {
     let items = app.mcp.servers.iter().enumerate().map(|(index, server)| {
         let selected = index == app.config.mcp_selected_server_index;
-        ListItem::new(server_list_lines(server, selected)).style(server_row_style(selected))
+        ListItem::new(server_list_lines(server, selected)).style(selection_style(selected))
     });
 
     let mut state = ListState::default().with_selected(Some(app.config.mcp_selected_server_index));
@@ -297,6 +300,11 @@ fn action_area_height(lines: Vec<Line<'static>>, viewport_width: u16, body_heigh
 fn summary_lines(app: &App) -> Vec<Line<'static>> {
     let counts = status_counts(app);
     let mut stats_spans = vec![
+        super::common::position_counter(
+            app.config.mcp_selected_server_index,
+            app.mcp.servers.len(),
+        ),
+        Span::raw(" "),
         badge_span(&format!("total {}", app.mcp.servers.len()), Color::Black, Color::White),
         Span::styled(" ", Style::default()),
         badge_span(&format!("connected {}", counts.connected), Color::Black, theme::RUST_ORANGE),
@@ -318,7 +326,7 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
         stats_spans.push(badge_span("refreshing", Color::Black, Color::Cyan));
     }
 
-    let mut lines = vec![Line::default(), Line::from(stats_spans), Line::default()];
+    let mut lines = vec![Line::from(stats_spans), Line::default()];
 
     if let Some(error) = app.mcp.last_error.as_deref() {
         lines.push(Line::from(Span::styled(
@@ -332,21 +340,23 @@ fn summary_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn server_list_lines(server: &McpServerStatus, selected: bool) -> Vec<Line<'static>> {
-    let marker = if selected { ">" } else { " " };
     vec![
-        Line::from(vec![
-            Span::styled(format!("{marker} {}", server.name), list_title_style(selected)),
-            Span::styled("  ", Style::default()),
-            badge_span(
-                status_label(server.status),
-                status_badge_fg(server.status),
-                status_color(server.status),
-            ),
-            Span::styled(" ", Style::default()),
-            badge_span(scope_label(server.scope.as_deref()), Color::White, Color::DarkGray),
-            Span::styled(" ", Style::default()),
-            badge_span(transport_label(server.config.as_ref()), Color::Black, Color::White),
-        ]),
+        super::common::selection_line(
+            Line::from(vec![
+                Span::styled(server.name.clone(), super::common::title_style()),
+                Span::styled("  ", Style::default()),
+                badge_span(
+                    status_label(server.status),
+                    status_badge_fg(server.status),
+                    status_color(server.status),
+                ),
+                Span::styled(" ", Style::default()),
+                badge_span(scope_label(server.scope.as_deref()), Color::White, Color::DarkGray),
+                Span::styled(" ", Style::default()),
+                badge_span(transport_label(server.config.as_ref()), Color::Black, Color::White),
+            ]),
+            selected,
+        ),
         Line::from(Span::styled(
             format!("  {}", server_summary_line(server)),
             server_secondary_style(server),
@@ -422,7 +432,7 @@ fn mcp_action_lines(
     for (index, action) in actions.into_iter().enumerate() {
         let selected = index == overlay.selected_index;
         let mut spans = vec![Span::styled(
-            format!("{} {}", if selected { ">" } else { " " }, action.label()),
+            format!("{} {}", selection_marker(selected), action.label()),
             overlay_line_style(selected, true),
         )];
         if !is_mcp_action_available(app, server, action) {
@@ -486,7 +496,7 @@ fn elicitation_action_lines(
     for (index, action) in actions.iter().enumerate() {
         let selected = index == overlay.selected_index;
         lines.push(Line::from(Span::styled(
-            format!("{} {}", if selected { ">" } else { " " }, elicitation_action_label(*action)),
+            format!("{} {}", selection_marker(selected), elicitation_action_label(*action)),
             overlay_line_style(selected, true),
         )));
         if index < last_index {
@@ -535,7 +545,7 @@ fn auth_redirect_action_lines(
     for (index, label) in ACTIONS.iter().enumerate() {
         let selected = index == overlay.selected_index;
         lines.push(Line::from(Span::styled(
-            format!("{} {}", if selected { ">" } else { " " }, label),
+            format!("{} {}", selection_marker(selected), label),
             overlay_line_style(selected, true),
         )));
         if index + 1 < ACTIONS.len() {
@@ -658,60 +668,8 @@ fn format_mcp_tool_policy_summary(tool: &crate::agent::model::McpServerToolPolic
     }
 }
 
-fn render_message(frame: &mut Frame, area: Rect, title: &str, body: &str) {
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                title,
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            )),
-            Line::default(),
-            Line::from(Span::styled(body, Style::default().fg(theme::DIM))),
-        ])
-        .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn detail_kv(key: &str, value: &str, value_color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!("{key}: "), Style::default().fg(theme::DIM)),
-        Span::styled(value.to_owned(), Style::default().fg(value_color)),
-    ])
-}
-
 fn detail_value(value: &str, color: Color) -> Line<'static> {
     Line::from(Span::styled(value.to_owned(), Style::default().fg(color)))
-}
-
-fn section_heading(title: &str) -> Line<'static> {
-    Line::from(Span::styled(
-        title.to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    ))
-}
-
-fn badge_span(label: &str, fg: Color, bg: Color) -> Span<'static> {
-    Span::styled(format!(" {label} "), Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD))
-}
-
-fn wrapped_height(text: Text<'static>, width: u16) -> u16 {
-    u16::try_from(Paragraph::new(text).wrap(Wrap { trim: false }).line_count(width))
-        .unwrap_or(u16::MAX)
-        .max(1)
-}
-
-fn list_title_style(selected: bool) -> Style {
-    let base = Style::default().fg(Color::White);
-    if selected {
-        base.fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD)
-    } else {
-        base.add_modifier(Modifier::BOLD)
-    }
-}
-
-fn server_row_style(selected: bool) -> Style {
-    if selected { Style::default().bg(theme::USER_MSG_BG) } else { Style::default() }
 }
 
 fn server_secondary_style(server: &McpServerStatus) -> Style {

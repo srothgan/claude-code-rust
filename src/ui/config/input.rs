@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::common;
 use crate::ui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -8,8 +9,7 @@ use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthChar;
 
 pub(super) fn text_input_line(draft: &str, cursor: usize, placeholder: &str) -> Line<'static> {
-    let cursor_style =
-        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+    let cursor_style = common::cursor_style();
     let text_style = Style::default().fg(Color::White);
     let placeholder_style = Style::default().fg(theme::DIM);
 
@@ -52,13 +52,10 @@ pub(super) fn render_text_input_field(
     let content_width = area.width.saturating_sub(2);
     let content = text_input_line_for_width(draft, cursor, placeholder, content_width);
     let mut spans = Vec::with_capacity(content.spans.len().saturating_add(2));
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
+    spans.push(Span::styled(" ", common::input_style()));
     spans.extend(content.spans);
-    spans.push(Span::styled(" ", Style::default().bg(theme::USER_MSG_BG)));
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::USER_MSG_BG)),
-        area,
-    );
+    spans.push(Span::styled(" ", common::input_style()));
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(common::input_style()), area);
 }
 
 pub(super) fn render_multiline_input_field(
@@ -84,8 +81,7 @@ pub(super) fn render_multiline_input_field(
             render_text_input_field(frame, row, line, cursor_column, "");
         } else {
             frame.render_widget(
-                Paragraph::new(format!(" {line}"))
-                    .style(Style::default().fg(Color::White).bg(theme::USER_MSG_BG)),
+                Paragraph::new(format!(" {line}")).style(common::input_style()),
                 row,
             );
         }
@@ -105,8 +101,7 @@ fn text_input_line_for_width(
         return text_input_line(draft, cursor, placeholder);
     }
 
-    let cursor_style =
-        Style::default().fg(Color::Black).bg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD);
+    let cursor_style = common::cursor_style();
     let text_style = Style::default().fg(Color::White);
     let overflow_style = Style::default().fg(theme::DIM);
     let chars = draft.chars().collect::<Vec<_>>();

@@ -3,16 +3,16 @@ use std::borrow::Cow;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::app::config::OverlayMessage;
 use crate::ui::theme;
 
+use super::common::{overlay_line_style, selected_scroll, selection_marker};
 use super::overlay::{
-    OverlayChrome, OverlayLayoutSpec, overlay_line_style, render_overlay_separator,
-    render_overlay_shell, selected_scroll,
+    OverlayChrome, OverlayLayoutSpec, render_overlay_separator, render_overlay_shell,
 };
 
 pub(super) struct ActionOverlayRow<'a> {
@@ -68,7 +68,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, view: &ActionOverlayView<'_>
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             view.heading.to_owned(),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            super::common::title_style(),
         ))),
         sections[0],
     );
@@ -96,7 +96,7 @@ fn action_overlay_lines(
     for (index, action) in actions.iter().enumerate() {
         let selected = index == selected_index;
         lines.push(Line::from(Span::styled(
-            format!("{} {}", if selected { ">" } else { " " }, action.label),
+            format!("{} {}", selection_marker(selected), action.label),
             overlay_line_style(selected, true),
         )));
         if index + 1 < actions.len() {

@@ -1,112 +1,95 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::theme;
+use super::common::{detail_kv, section_heading};
 use crate::app::App;
 use ratatui::Frame;
-use ratatui::layout::{Margin, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::layout::Rect;
+use ratatui::style::Color;
+use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let lines = status_lines(app);
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        area.inner(Margin { vertical: 1, horizontal: 2 }),
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     // ---- Session ----
-    section_header(&mut lines, "Session");
-    kv_line(&mut lines, "Version", env!("CARGO_PKG_VERSION"));
-    kv_line(&mut lines, "Session name", &derive_session_name(app));
+    lines.push(section_heading("Session"));
+    lines.push(detail_kv("Version", env!("CARGO_PKG_VERSION"), Color::White));
+    lines.push(detail_kv("Session name", &derive_session_name(app), Color::White));
 
     let session_id_str = app
         .session_runtime
         .session_id
         .as_ref()
         .map_or_else(|| "(none)".to_owned(), std::string::ToString::to_string);
-    kv_line(&mut lines, "Session ID", &session_id_str);
+    lines.push(detail_kv("Session ID", &session_id_str, Color::White));
 
-    kv_line(&mut lines, "cwd", &app.cwd);
+    lines.push(detail_kv("cwd", &app.cwd, Color::White));
 
     if let Some(branch) = app.git_branch() {
-        kv_line(&mut lines, "Git branch", branch);
+        lines.push(detail_kv("Git branch", branch, Color::White));
     }
 
     lines.push(Line::default());
 
     // ---- Account ----
     if let Some(ref account) = app.session_runtime.account_info {
-        section_header(&mut lines, "Account");
-        kv_line(&mut lines, "Login method", &login_method_label(account));
+        lines.push(section_heading("Account"));
+        lines.push(detail_kv("Login method", &login_method_label(account), Color::White));
         if let Some(ref provider) = account.api_provider {
-            kv_line(&mut lines, "API provider", provider.label());
+            lines.push(detail_kv("API provider", provider.label(), Color::White));
         }
         if let Some(ref org) = account.organization
             && !org.is_empty()
         {
-            kv_line(&mut lines, "Organization", org);
+            lines.push(detail_kv("Organization", org, Color::White));
         }
         if let Some(ref email) = account.email
             && !email.is_empty()
         {
-            kv_line(&mut lines, "Email", email);
+            lines.push(detail_kv("Email", email, Color::White));
         }
         if let Some(ref sub) = account.subscription_type
             && !sub.is_empty()
         {
-            kv_line(&mut lines, "Subscription", sub);
+            lines.push(detail_kv("Subscription", sub, Color::White));
         }
         lines.push(Line::default());
     }
 
     // ---- Model ----
-    section_header(&mut lines, "Model");
-    kv_line(&mut lines, "Model", &model_display(app));
+    lines.push(section_heading("Model"));
+    lines.push(detail_kv("Model", &model_display(app), Color::White));
     if let Some(current_model) = app.session_runtime.current_model.as_ref() {
-        kv_line(&mut lines, "Resolved model ID", &current_model.resolved_id);
+        lines.push(detail_kv("Resolved model ID", &current_model.resolved_id, Color::White));
         if let Some(requested_id) = current_model.requested_id.as_deref()
             && requested_id != current_model.resolved_id
         {
-            kv_line(&mut lines, "Requested model", requested_id);
+            lines.push(detail_kv("Requested model", requested_id, Color::White));
         }
     }
 
     if let Some(ref mode) = app.session_runtime.mode {
-        kv_line(&mut lines, "Mode", &mode.current_mode_name);
+        lines.push(detail_kv("Mode", &mode.current_mode_name, Color::White));
     }
 
     lines.push(Line::default());
 
     // ---- Settings ----
-    section_header(&mut lines, "Settings");
+    lines.push(section_heading("Settings"));
 
     let memory_path = resolve_memory_path(app);
-    kv_line(&mut lines, "Memory", &memory_path);
+    lines.push(detail_kv("Memory", &memory_path, Color::White));
 
     let sources = setting_sources(app);
-    kv_line(&mut lines, "Setting sources", &sources);
+    lines.push(detail_kv("Setting sources", &sources, Color::White));
 
     lines
-}
-
-fn section_header(lines: &mut Vec<Line<'static>>, title: &str) {
-    lines.push(Line::from(Span::styled(
-        title.to_owned(),
-        Style::default().fg(theme::RUST_ORANGE).add_modifier(Modifier::BOLD),
-    )));
-}
-
-fn kv_line(lines: &mut Vec<Line<'static>>, key: &str, value: &str) {
-    lines.push(Line::from(vec![
-        Span::styled(format!("  {key}: "), Style::default().fg(theme::DIM)),
-        Span::styled(value.to_owned(), Style::default().fg(Color::White)),
-    ]));
 }
 
 fn derive_session_name(app: &App) -> String {
