@@ -2,7 +2,7 @@
 use super::theme;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Paragraph, Wrap},
@@ -62,26 +62,6 @@ pub(super) fn position_counter(selected: usize, total: usize) -> Span<'static> {
         format!("{}/{}", if total == 0 { 0 } else { selected.min(total - 1) + 1 }, total),
         Style::default().fg(theme::DIM),
     )
-}
-
-pub(super) const fn details_height(height: u16) -> u16 {
-    if height >= 18 {
-        4
-    } else if height >= 12 {
-        3
-    } else {
-        0
-    }
-}
-
-pub(super) fn list_and_details(area: Rect) -> [Rect; 3] {
-    let height = details_height(area.height);
-    Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(u16::from(height > 0)),
-        Constraint::Length(height),
-    ])
-    .areas(area)
 }
 
 pub(super) fn render_details(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {

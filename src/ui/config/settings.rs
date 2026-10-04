@@ -7,8 +7,9 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row, Table, Wrap},
 };
+use std::fmt::Write as _;
 
 pub(super) fn help_text(app: &App, width: u16) -> String {
     use crate::app::config::SettingsFocus;
@@ -68,8 +69,6 @@ pub(super) fn help_text(app: &App, width: u16) -> String {
     }
     super::common::hint_text_with_escape(hints, width, escape)
 }
-use std::fmt::Write as _;
-
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     let [scope_area, body] = render_navigation(frame, area, app);
     let Some(snapshot) = &app.config.snapshot else {
@@ -97,7 +96,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         Span::styled("Save in: ", Style::default().fg(theme::DIM)),
         Span::styled(
             if scope_area.width < 35 {
-                app.config.selected_scope.label()
+                source_label(app.config.selected_scope.label())
             } else {
                 scope_label(app.config.selected_scope)
             },
@@ -108,7 +107,15 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     ]);
     scope.alignment = Some(ratatui::layout::Alignment::Right);
     frame.render_widget(Paragraph::new(scope), scope_area);
-    let [list_area, _, details_area] = super::common::list_and_details(body);
+    let details = details_lines(app);
+    let details_height = super::common::wrapped_height(details.clone(), body.width)
+        .min(body.height.saturating_sub(4));
+    let [list_area, _, details_area] = Layout::vertical([
+        Constraint::Min(3),
+        Constraint::Length(u16::from(details_height > 0)),
+        Constraint::Length(details_height),
+    ])
+    .areas(body);
     if items.is_empty() {
         super::common::render_message(
             frame,
@@ -119,7 +126,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     render_table(frame, list_area, app, area.height >= 22);
-    render_details(frame, details_area, app);
+    render_details(frame, details_area, details);
 }
 
 fn render_navigation(frame: &mut Frame, area: Rect, app: &App) -> [Rect; 2] {
@@ -256,58 +263,57 @@ fn table_rows<'a>(
     rows
 }
 
-fn render_details(frame: &mut Frame, area: Rect, app: &App) {
+fn details_lines(app: &App) -> Vec<Line<'static>> {
     let Some(snapshot) = &app.config.snapshot else {
-        return;
+        return vec![];
     };
     let Some(setting) = app.config.selected_setting() else {
-        return;
+        return vec![];
     };
     let saved = snapshot
         .scoped(&setting.id, app.config.selected_scope)
         .and_then(|value| value.value.as_ref());
-    let mut context = format!(
-        "Saved in {}: {}",
-        app.config.selected_scope.label(),
-        saved.map_or_else(|| "not set".to_owned(), display)
-    );
-    if snapshot.values.iter().any(|value| value.id == setting.id && value.policy_restricted) {
-        context.push_str("  ·  Controlled by your organization");
-    } else if let Some(reason) = &setting.unavailable {
-        context.push_str("  ·  ");
-        context.push_str(reason);
-    } else if !setting.writable_at(app.config.selected_scope) {
-        context.push_str("  ·  Save in: ");
-        context.push_str(
-            &setting
-                .writable_scopes
-                .iter()
-                .map(|scope| scope.label())
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-    } else if saved.is_some()
-        && snapshot.value(&setting.id).is_some()
-        && saved != snapshot.value(&setting.id)
+    let configured = snapshot.value(&setting.id);
+    let resolved = snapshot.values.iter().find(|value| value.id == setting.id);
+    let scope = source_label(app.config.selected_scope.label());
+    let other_sources = resolved
+        .into_iter()
+        .flat_map(|value| &value.contributors)
+        .filter(|source| source.as_str() != app.config.selected_scope.label())
+        .map(|source| source_label(source))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut context = match (saved, configured) {
+        (Some(value), Some(effective)) if !setting.kind.is_structured() && value != effective => {
+            format!(
+                "{scope} value: {} · Overridden by {}",
+                display(value),
+                if other_sources.is_empty() { "another scope" } else { &other_sources }
+            )
+        }
+        (Some(_), None) if !setting.kind.is_structured() => {
+            format!("Saved in {scope} · Not loaded")
+        }
+        (Some(_), _) => format!("Saved in {scope}"),
+        (None, Some(_)) => format!(
+            "From {} · Not set in {scope}",
+            if other_sources.is_empty() { "another scope" } else { &other_sources }
+        ),
+        (None, None) if setting.kind.is_structured() => format!("Not set in {scope}"),
+        (None, None) => "Using Default".to_owned(),
+    };
+    if saved.is_some()
+        && !other_sources.is_empty()
+        && (setting.kind.is_structured() || saved == configured)
     {
-        context.push_str(if setting.kind.is_structured() {
-            "  ·  Other scopes also supply values"
-        } else {
-            "  ·  Another scope overrides this value"
-        });
-    } else if saved.is_none() && snapshot.value(&setting.id).is_some() {
-        context.push_str("  ·  Using another scope's value");
+        let _ = write!(context, " · Also supplied by {other_sources}");
     }
-    if setting.application == SettingsApplication::Host {
-        context.push_str("  ·  Applies immediately");
+    match setting.application {
+        SettingsApplication::Host => context.push_str(" · Applies immediately"),
+        SettingsApplication::NextSession => context.push_str(" · Applies to new sessions"),
+        SettingsApplication::Blocked => {}
     }
-    let mut lines = vec![
-        Line::from(setting.description.clone()),
-        Line::styled(context, Style::default().fg(theme::DIM)),
-    ];
-    if let Some(line) = configured_line(app, setting) {
-        lines.push(line);
-    }
+    let mut lines = vec![description_line(&setting.description)];
     if let Some(error) = snapshot
         .sources
         .iter()
@@ -316,45 +322,114 @@ fn render_details(frame: &mut Frame, area: Rect, app: &App) {
     {
         lines.push(Line::styled(error.clone(), Style::default().fg(theme::STATUS_WARNING)));
     }
+    if let Some(restriction) = restriction_text(
+        setting,
+        app.config.selected_scope,
+        resolved.is_some_and(|value| value.policy_restricted),
+    ) {
+        lines.push(Line::styled(restriction, Style::default().fg(theme::STATUS_WARNING)));
+    }
     lines.push(Line::styled(
-        "Saved changes apply to new sessions unless marked immediate.",
-        Style::default().fg(theme::DIM),
+        context,
+        Style::default().fg(
+            if saved.is_some() && saved != configured && !setting.kind.is_structured() {
+                theme::STATUS_WARNING
+            } else {
+                theme::DIM
+            },
+        ),
     ));
-    super::common::render_details(frame, area, lines);
+    if let Some(line) = session_difference(app, setting) {
+        lines.push(line);
+    }
+    lines
 }
 
-fn configured_line(
+fn restriction_text(
+    setting: &crate::agent::settings::SettingDescriptor,
+    scope: SettingsScope,
+    policy_restricted: bool,
+) -> Option<String> {
+    if policy_restricted {
+        Some("Controlled by your organization".to_owned())
+    } else if let Some(reason) = &setting.unavailable {
+        Some(reason.clone())
+    } else if !setting.writable_at(scope) {
+        Some(if setting.writable_scopes.is_empty() {
+            "Read-only".to_owned()
+        } else {
+            let scopes = setting
+                .writable_scopes
+                .iter()
+                .map(|scope| source_label(scope.label()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Can be saved in: {scopes}")
+        })
+    } else {
+        None
+    }
+}
+
+pub(super) fn description_line(description: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("Description: ", super::common::title_style()),
+        Span::raw(description.to_owned()),
+    ])
+}
+
+fn render_details(frame: &mut Frame, area: Rect, mut lines: Vec<Line<'static>>) {
+    if area.height == 0 || lines.is_empty() {
+        return;
+    }
+    let description = lines.remove(0);
+    let metadata_height = super::common::wrapped_height(lines.clone(), area.width);
+    let description_height = super::common::wrapped_height(description.clone(), area.width)
+        .min(area.height.saturating_sub(metadata_height));
+    let [description_area, metadata_area] =
+        Layout::vertical([Constraint::Length(description_height), Constraint::Min(0)]).areas(area);
+    frame.render_widget(Paragraph::new(description).wrap(Wrap { trim: false }), description_area);
+    super::common::render_details(frame, metadata_area, lines);
+}
+
+fn session_difference(
     app: &App,
     setting: &crate::agent::settings::SettingDescriptor,
 ) -> Option<Line<'static>> {
     let snapshot = app.config.snapshot.as_ref()?;
-    if let Some(value) = snapshot.values.iter().find(|value| value.id == setting.id) {
-        let mut configured = format!(
-            "Configured: {}",
-            value.value.as_ref().map_or_else(|| "Default".into(), display)
-        );
-        if !value.contributors.is_empty() {
-            let _ = write!(configured, "  ·  Sources: {}", value.contributors.join(", "));
-        }
-        let running = match setting.id.as_str() {
-            "model" => app
-                .session_runtime
-                .current_model
-                .as_ref()
-                .filter(|model| model.is_authoritative)
-                .map(|model| model.display_name_short.clone()),
-            "defaultEffort" => app.session_runtime.config_options.get("effortLevel").map(display),
-            "alwaysThinkingEnabled" | "agent" => {
-                app.session_runtime.config_options.get(&setting.id).map(display)
+    let configured = snapshot.value(&setting.id)?;
+    let running = match setting.id.as_str() {
+        "model" => {
+            let model =
+                app.session_runtime.current_model.as_ref().filter(|m| m.is_authoritative)?;
+            let id = configured.as_str()?;
+            if model.catalog_id.as_deref() == Some(id)
+                || model.resolved_id == id
+                || model.display_name_short == id
+            {
+                return None;
             }
-            _ => None,
-        };
-        if let Some(running) = running {
-            let _ = write!(configured, "  ·  Current session: {running}");
+            model.display_name_short.clone()
         }
-        return Some(Line::styled(configured, Style::default().fg(theme::DIM)));
+        "defaultEffort" => display(app.session_runtime.config_options.get("effortLevel")?),
+        "alwaysThinkingEnabled" | "agent" => {
+            display(app.session_runtime.config_options.get(&setting.id)?)
+        }
+        _ => return None,
+    };
+    (running != display(configured)).then(|| {
+        Line::styled(format!("Current session: {running}"), Style::default().fg(theme::DIM))
+    })
+}
+
+fn source_label(source: &str) -> &str {
+    match source {
+        "user" => "User",
+        "project" => "Project",
+        "local" => "Local",
+        "managed" => "Organization",
+        _ => source,
     }
-    None
 }
 
 pub(super) fn display(value: &serde_json::Value) -> String {

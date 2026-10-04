@@ -526,7 +526,7 @@ fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_sav
             test.send(b"\x1b[B\x1b[B"); // Language -> Reduce motion -> Show tips.
         }
         test.send(b" "); // Reopening settings retains the selected control.
-        test.wait_screen("Saved and applied.");
+        test.wait_screen("Saved.");
         test.send(b"\x1b");
         test.wait_until("only tips follow the acknowledged setting", |test| {
             let screen = test.screen();
@@ -907,7 +907,8 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
 
     for (rows, cols) in [(55, 120), (25, 61), (38, 87)] {
         test.submit("/config", "/config");
-        test.wait_screen("Saved in user: German");
+        test.wait_screen("Saved in User");
+        test.wait_screen("Description:");
         assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
         test.send(b" ");
         test.wait_screen("Enter save");
@@ -916,7 +917,7 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
         test.resize(rows, cols);
         test.wait_screen("German draft");
         test.send(b"\x1b");
-        test.wait_screen("Saved in user: German");
+        test.wait_screen("Saved in User");
         test.send(b"\x1b");
         test.wait_screen("streamed line 8");
         assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());
@@ -1013,7 +1014,7 @@ fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_
     test.wait_until("hook settings mutation", |test| test.commands("mutate_setting").len() == 1);
     let expected = serde_json::json!({"PreToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"npm run lint"}]}],"Stop":[{"hooks":[{"type":"command","command":"keep-original","future":"keep"}]}]});
     assert_eq!(test.commands("mutate_setting")[0]["mutation"]["value"], expected);
-    test.wait_screen("Saved in user");
+    test.wait_screen("Saved in User");
     let saved: Value = serde_json::from_slice(
         &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved file"),
     )
@@ -1153,7 +1154,7 @@ fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
     test.submit("/config", "/config");
     test.wait_screen("Auto-scroll");
     test.send(b"\x1b[C"); // On -> Off at the selected user scope.
-    test.wait_screen("Saved and applied.");
+    test.wait_screen("Saved.");
     test.send(b"\x1b");
     test.wait_screen("Reading output");
     let pinned = test
@@ -1224,7 +1225,7 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     test.wait_screen("Notification method");
     test.send(b"\x1b[B\x1b[B"); // Pass turn completion and select proactive alerts.
     test.send(b" "); // On -> Off, immediate acknowledged save.
-    test.wait_screen("Saved and applied.");
+    test.wait_screen("Saved.");
     test.send(b"\x1b");
     test.wait_screen("Type a message");
     test.send(b"\x1b[O");

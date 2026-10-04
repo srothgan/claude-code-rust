@@ -89,7 +89,7 @@ fn setting_details(
         .and_then(|snapshot| snapshot.scoped(&overlay.setting.id, overlay.scope))
         .and_then(|value| value.value.as_ref())
         .map_or_else(|| "not set".to_owned(), super::settings::display);
-    let mut lines = vec![Line::from(setting.description.clone()), Line::from("")];
+    let mut lines = vec![super::settings::description_line(&setting.description), Line::from("")];
     if stale_context(app, overlay) {
         lines.push(Line::styled(
             "Settings location changed. Cancel and reopen to save.",

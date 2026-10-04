@@ -501,7 +501,9 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                     .iter()
                     .map(ratatui::buffer::Cell::symbol)
                     .collect();
-                assert!(text.contains(&format!("Saved in user: {expected}")));
+                assert!(text.contains(expected));
+                assert!(text.contains("Saved in User · Applies to new sessions"));
+                assert!(text.contains("Saved."));
             }
             app.config.snapshot.as_mut().expect("snapshot").catalog[0].writable_scopes.clear();
             crate::app::config::handle_key(
@@ -594,7 +596,8 @@ async fn settings_load_automatically_after_startup_without_a_manual_refresh() {
                 .iter()
                 .map(ratatui::buffer::Cell::symbol)
                 .collect();
-            assert!(text.contains("Saved in user: German"));
+            assert!(text.contains("German"));
+            assert!(text.contains("Saved in User · Applies to new sessions"));
             assert!(app.config.last_error.is_none());
         })
         .await;
@@ -650,7 +653,7 @@ async fn language_save_and_editor_reset_show_the_remaining_value_or_default() {
                 terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).expect("reset render");
             let lines: Vec<String> = terminal.backend().buffer().content.chunks(100).map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect()).collect();
             assert!(lines.iter().any(|line| line.contains("Language") && line.contains(inherited.unwrap_or("Default"))));
-            assert!(lines.iter().any(|line| line.contains("Saved in local: not set")));
+            assert!(lines.iter().any(|line| line.contains(if inherited.is_some() { "From User · Not set in Local" } else { "Using Default" })));
             crate::app::config::handle_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
             assert_eq!(app.config.setting_overlay().expect("reset editor").draft, inherited.unwrap_or(""));
         }

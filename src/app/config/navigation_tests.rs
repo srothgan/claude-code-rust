@@ -62,6 +62,102 @@ fn render(app: &mut App, width: u16, height: u16) -> String {
     terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, app)).expect("draw");
     terminal.backend().buffer().content.iter().map(ratatui::buffer::Cell::symbol).collect()
 }
+
+#[test]
+fn settings_metadata_follows_the_selected_scope_without_repeating_the_list_value() {
+    let mut app = app();
+    set_saved(&mut app, "language", json!("German"));
+    let text = render(&mut app, 100, 32);
+    assert!(text.contains("Description:"), "{text}");
+    assert!(text.contains("Saved in User · Applies to new sessions"), "{text}");
+    assert_eq!(text.matches("German").count(), 1, "{text}");
+
+    key(&mut app, KeyCode::Char('s'));
+    let text = render(&mut app, 100, 32);
+    assert!(text.contains("From User · Not set in Project"), "{text}");
+    assert!(text.contains("German"), "{text}");
+
+    let snapshot = app.config.snapshot.as_mut().expect("snapshot");
+    snapshot.sources[1]
+        .values
+        .iter_mut()
+        .find(|value| value.id == "language")
+        .expect("project value")
+        .value = Some(json!("English"));
+    let resolved = snapshot.values.iter_mut().find(|value| value.id == "language").expect("value");
+    resolved.value = Some(json!("English"));
+    resolved.contributors.push("project".into());
+    key(&mut app, KeyCode::Char('s'));
+    key(&mut app, KeyCode::Char('s'));
+    let text = render(&mut app, 100, 32);
+    assert!(text.contains("User value: German · Overridden by Project"), "{text}");
+    assert_eq!(text.matches("English").count(), 1, "{text}");
+}
+
+#[test]
+fn settings_metadata_shows_defaults_immediate_timing_and_actual_session_differences() {
+    let mut app = app();
+    let text = render(&mut app, 100, 32);
+    assert!(text.contains("Using Default · Applies to new sessions"), "{text}");
+    set_saved(&mut app, "spinnerTipsEnabled", json!(true));
+    app.config.settings.select("spinnerTipsEnabled".into());
+    let text = render(&mut app, 100, 32);
+    assert!(text.contains("Saved in User · Applies immediately"), "{text}");
+
+    set_saved(&mut app, "model", json!("sonnet"));
+    app.config.settings.select("model".into());
+    app.session_runtime.current_model = Some(
+        crate::agent::model::CurrentModel::new("claude-sonnet", "Sonnet", "Claude Sonnet")
+            .catalog_id("sonnet")
+            .authoritative(true),
+    );
+    let text = render(&mut app, 100, 32);
+    assert!(
+        !text.contains("Current session:"),
+        "matching session values need no extra line: {text}"
+    );
+    app.session_runtime.current_model = Some(
+        crate::agent::model::CurrentModel::new("claude-opus", "Opus", "Claude Opus")
+            .catalog_id("opus")
+            .requested_id("sonnet")
+            .authoritative(true),
+    );
+    let text = render(&mut app, 100, 32);
+    assert!(text.contains("Current session: Opus"), "{text}");
+}
+
+#[test]
+fn settings_metadata_distinguishes_collection_contributions_and_retains_wrapped_warnings() {
+    let mut app = app();
+    set_saved(&mut app, "permissions.allow", json!(["Read(./src/**)"]));
+    app.config.settings.open_category("permissions");
+    app.config.settings.select("permissions.allow".into());
+    let snapshot = app.config.snapshot.as_mut().expect("snapshot");
+    let value = &mut snapshot.values[0];
+    value.value = Some(json!(["Read(./src/**)", "Read(./docs/**)"]));
+    value.contributors.push("project".into());
+    let text = render(&mut app, 100, 32);
+    assert!(text.contains("Saved in User · Also supplied by Project"), "{text}");
+    assert!(text.contains("1 item"), "{text}");
+
+    let snapshot = app.config.snapshot.as_mut().expect("snapshot");
+    snapshot.values[0].policy_restricted = true;
+    snapshot
+        .catalog
+        .iter_mut()
+        .find(|setting| setting.id == "permissions.allow")
+        .expect("setting")
+        .writable_scopes
+        .clear();
+    snapshot.sources[0].error =
+        Some("This settings file could not be loaded. Check its JSON syntax.".into());
+    let text = render(&mut app, 40, 24);
+    let words = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(words.contains("Check its JSON syntax."), "{text}");
+    assert!(words.contains("Controlled by your organization"), "{text}");
+    assert!(text.contains("Esc close"), "{text}");
+}
+
 fn field(app: &mut App, label: &str) {
     let overlay = app.config.setting_overlay().expect("editor");
     let form = overlay.structured.as_ref().expect("form");

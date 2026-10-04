@@ -49,6 +49,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let (message, is_error) = if let Some(error) = app.config.last_error.clone() {
         (error, true)
     } else if let Some(status) = app.config.status_message.clone() {
+        let status = if app.config.active_tab == ConfigTab::Settings {
+            match status.as_str() {
+                "Saved and applied." | "Saved. Changes apply to the next session." => {
+                    "Saved.".to_owned()
+                }
+                _ => status,
+            }
+        } else {
+            status
+        };
         (status, false)
     } else {
         (String::new(), false)
@@ -407,7 +417,8 @@ mod tests {
             terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
             let text = buffer_text(terminal.backend().buffer());
             assert!(text.lines().any(|line| line.contains("Language") && line.contains("German")));
-            assert!(text.contains("Saved in user: German"));
+            assert!(text.contains("Saved in User · Applies to new sessions"));
+            assert!(text.contains("Description: Preferred response language"));
             assert!(text.contains("Save in: User (all projects)"));
             crate::app::config::handle_key(
                 &mut app,
@@ -542,8 +553,7 @@ mod tests {
         terminal.draw(|frame| super::render(frame, &mut app)).expect("override");
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.lines().any(|line| line.contains("Language") && line.contains("English")));
-        assert!(text.contains("Saved in user: German"));
-        assert!(text.contains("Another scope overrides this value"));
+        assert!(text.contains("User value: German · Overridden by Local"));
         let setting = &mut app.config.snapshot.as_mut().expect("snapshot").catalog[1];
         setting.writable_scopes.clear();
         setting.unavailable = Some("Controlled by your organization".to_owned());
