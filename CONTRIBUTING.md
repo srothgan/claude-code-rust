@@ -98,6 +98,8 @@ runtime layout, and manual bridge overrides.
 
 These match the core checks in `.github/workflows/pr.yml`:
 
+The repository's `.cargo/config.toml` limits compilation to one job to reduce peak compiler and linker memory. Test execution remains parallel by default. Run checks sequentially; override compilation concurrency explicitly with `-j N` when needed.
+
 ```bash
 # Formatting
 cargo fmt --all -- --check

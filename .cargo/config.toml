@@ -1,0 +1,3 @@
+[build]
+# Keep compiler and linker memory from multiplying across CPU-count build jobs.
+jobs = 1
