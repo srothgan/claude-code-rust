@@ -34,9 +34,12 @@ fn config_commands_inspect_only_the_selected_profile() {
     assert_eq!(settings["document"]["model"], "isolated-model");
     assert_eq!(preferences["path"], profile.join(".claude.json").to_string_lossy().as_ref());
     assert_eq!(preferences["document"]["theme"], "isolated-theme");
+    // The local path follows the resolved working directory, which differs from
+    // the temporary path where that is a symlink (macOS /var).
     assert_eq!(
-        local["path"],
-        project.join(".claude").join("settings.local.json").to_string_lossy().as_ref()
+        std::fs::canonicalize(local["path"].as_str().expect("local path")).expect("reported file"),
+        std::fs::canonicalize(project.join(".claude").join("settings.local.json"))
+            .expect("local file")
     );
     assert_eq!(local["document"]["fastMode"], false);
     assert!(profile.join("settings.json").is_file());

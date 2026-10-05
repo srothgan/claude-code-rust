@@ -365,6 +365,23 @@ impl TerminalTest {
         self.wait_until(needle, |test| test.screen().contains(needle));
     }
 
+    /// Opening settings starts a refresh, and settings ignore edits until it completes.
+    fn wait_settings_ready(&mut self, needle: &str) {
+        self.wait_until(&format!("refreshed settings showing {needle}"), |test| {
+            let screen = test.screen();
+            screen.contains(needle) && !screen.contains("Refreshing settings")
+        });
+    }
+
+    /// An editor ignores keys until its save is acknowledged, which closes it
+    /// and takes its `draft` off the screen.
+    fn wait_settings_saved(&mut self, saved: &str, draft: &str) {
+        self.wait_until(&format!("saved settings showing {saved}"), |test| {
+            let screen = test.screen();
+            screen.contains(saved) && !screen.contains(draft)
+        });
+    }
+
     fn wait_setting(&mut self, file: &str, pointer: &str, expected: Option<&Value>) {
         self.wait_until(&format!("persisted {pointer}"), |test| {
             std::fs::read(test.temp.path().join(file))
@@ -610,7 +627,7 @@ fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_sav
         .to_owned();
     for (index, enabled) in [true, false, true].into_iter().enumerate() {
         test.submit("/config", "/config");
-        test.wait_screen("Show tips");
+        test.wait_settings_ready("Show tips");
         if index == 0 {
             test.send(b"\x1b[B\x1b[B"); // Language -> Reduce motion -> Show tips.
         }
@@ -1003,7 +1020,7 @@ fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
     for (rows, cols) in [(55, 120), (25, 61), (38, 87)] {
         test.submit("/config", "/config");
         test.wait_screen("Saved in User");
-        test.wait_screen("Description:");
+        test.wait_settings_ready("Description:");
         assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
         test.send(b" ");
         test.wait_screen("Enter save");
@@ -1038,7 +1055,7 @@ fn structured_settings_editor_adds_individual_rules_and_preserves_them_on_resize
     test.submit("go", "go");
     test.wait_journal("reply-held");
     test.submit("/permissions", "/permissions");
-    test.wait_screen("Permissions: deny rules");
+    test.wait_settings_ready("Permissions: deny rules");
     test.send(b" ");
     test.wait_screen("Ctrl+S save");
     test.send(b"a");
@@ -1054,7 +1071,7 @@ fn structured_settings_editor_adds_individual_rules_and_preserves_them_on_resize
         test.commands("mutate_setting")[0]["mutation"]["value"],
         serde_json::json!(["Read(./.env)", "Bash(git push *)"])
     );
-    test.wait_screen("2 items");
+    test.wait_settings_saved("2 items", "Bash(git push *)");
     let document: Value = serde_json::from_str(
         &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
             .expect("saved file"),
@@ -1084,11 +1101,7 @@ fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_
     test.submit("go", "go");
     test.wait_journal("reply-held");
     test.submit("/hooks", "/hooks");
-    // Opening settings starts a refresh, and settings ignore keys until it completes.
-    test.wait_until("refreshed hook settings", |test| {
-        let screen = test.screen();
-        screen.contains("Definitions") && !screen.contains("Refreshing settings")
-    });
+    test.wait_settings_ready("Definitions");
     test.send(b"\r");
     test.wait_screen("Stop");
     test.send(b"a");
@@ -1121,6 +1134,7 @@ fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_
     assert_eq!(saved["hooks"], expected);
     assert_eq!(saved["unrelated"], "keep");
     assert_eq!(saved["permissions"]["defaultMode"], "default");
+    test.wait_settings_saved("2 entries", "npm run lint");
     test.send(b"\x1b");
     test.wait_screen("streamed line 8");
     test.assert_prompts(&["go"]);
@@ -1416,7 +1430,7 @@ fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
     test.submit("Saved scroll test", "Saved scroll test");
     test.wait_journal("reading-barrier");
     test.submit("/config", "/config");
-    test.wait_screen("Auto-scroll");
+    test.wait_settings_ready("Auto-scroll");
     test.send(b"\x1b[C"); // On -> Off at the selected user scope.
     test.wait_setting("profile/settings.json", "/autoScrollEnabled", Some(&Value::Bool(false)));
     test.send(b"\x1b");
@@ -1486,7 +1500,7 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     });
     assert_eq!(notification_bells(&test), 1);
     test.submit("/config", "/config");
-    test.wait_screen("Notification method");
+    test.wait_settings_ready("Notification method");
     test.send(b"\x1b[B\x1b[B"); // Pass turn completion and select proactive alerts.
     test.send(b" "); // On -> Off, immediate acknowledged save.
     test.wait_setting(
