@@ -1084,7 +1084,11 @@ fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_
     test.submit("go", "go");
     test.wait_journal("reply-held");
     test.submit("/hooks", "/hooks");
-    test.wait_screen("Definitions");
+    // Opening settings starts a refresh, and settings ignore keys until it completes.
+    test.wait_until("refreshed hook settings", |test| {
+        let screen = test.screen();
+        screen.contains("Definitions") && !screen.contains("Refreshing settings")
+    });
     test.send(b"\r");
     test.wait_screen("Stop");
     test.send(b"a");
@@ -1136,14 +1140,19 @@ fn unicode_pastes_cross_the_placeholder_boundary_without_payload_loss() {
             "{prefix}{}{suffix}",
             "x".repeat(chars - prefix.chars().count() - suffix.chars().count())
         );
-        let framed_input = format!("\x1b[200~{payload}\x1b[201~");
+        let start_marker = "\x1b[200~";
+        let framed_input = format!("{start_marker}{payload}\x1b[201~");
         // Exercise transport fragmentation on native Unix PTYs. ConPTY
         // converts fragmented escape sequences into console key records, so
         // Windows receives the complete terminal paste action in one write.
         if cfg!(windows) {
             test.send(framed_input.as_bytes());
         } else {
-            for byte in framed_input.as_bytes() {
+            // The start marker stays whole: a read that ends on its ESC byte
+            // is an Esc key press, not the beginning of a paste.
+            let (start, rest) = framed_input.as_bytes().split_at(start_marker.len());
+            test.send(start);
+            for byte in rest {
                 test.send(&[*byte]);
             }
         }
