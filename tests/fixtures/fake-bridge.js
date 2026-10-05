@@ -10,9 +10,10 @@ let cwd = process.cwd();
 const LINES = Number(process.env.FAKE_BRIDGE_LINES ?? 1500);
 const FOLLOW_UP_LINES = Number(process.env.FAKE_BRIDGE_FOLLOW_UP_LINES ?? 3);
 const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
-// Only the first turn is gated. Tests release it after exercising the composer
-// or a fullscreen surface, rather than racing a fixed reply duration.
+// Held turns are released after tests exercise input or rendering, rather than
+// racing a fixed reply duration. The resize-code scenario holds the second turn.
 const SCENARIO = process.env.FAKE_BRIDGE_SCENARIO ?? 'stream';
+const resizeCodeScenario = SCENARIO === 'resize-code';
 const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
@@ -132,9 +133,16 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
+  if (SCENARIO === 'resize-replay') {
+    const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   // Follow-up replies stay short so their start marker remains on screen.
-  const lines = replyNumber === 1 ? LINES : FOLLOW_UP_LINES;
-  const gated = replyNumber === 1 && SCENARIO.startsWith('hold-') && SCENARIO !== 'hold-presentation';
+  const lines = replyNumber === 1 || resizeCodeScenario ? LINES : FOLLOW_UP_LINES;
+  const gated = (replyNumber === 1 && SCENARIO.startsWith('hold-') && SCENARIO !== 'hold-presentation') || (resizeCodeScenario && replyNumber === 2);
+  if (resizeCodeScenario && replyNumber === 2) send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '\n```rust\n' }, source_message_uuid: null } });
   // Hold the first activity turn before any assistant content arrives.
   let line = activityScenario && replyNumber === 1 ? lines : 0;
   if (activityScenario && replyNumber === 1) record({ type: 'barrier', name: 'reply-held' });
@@ -162,6 +170,7 @@ function streamReply(messageUuid) {
         process.stdout.write('{broken event\n');
         return;
       }
+      if (resizeCodeScenario && replyNumber === 2) send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '```\n' }, source_message_uuid: null } });
       finish(SCENARIO === 'hold-error'
         ? { event: 'turn_error', session_id: SESSION, message: 'Fixture service unavailable', error_kind: 'transient_service' }
         : { event: 'turn_complete', session_id: SESSION });
@@ -173,7 +182,7 @@ function streamReply(messageUuid) {
       session_id: SESSION,
       update: {
         type: 'agent_message_chunk',
-        content: { type: 'text', text: `${line}. streamed line ${line}\n` },
+        content: { type: 'text', text: resizeCodeScenario && replyNumber === 2 ? `code line ${line}\n` : `${line}. streamed line ${line}\n` },
         source_message_uuid: null,
       },
     });
@@ -257,6 +266,7 @@ readline
           history_updates: null,
           restored_input: null,
         });
+        if (SCENARIO.startsWith('resize-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {

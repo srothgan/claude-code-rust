@@ -145,7 +145,7 @@ impl ChatTerminalSession {
             );
         }
         app.chat_render.invalidate_live_anchor();
-        self.history.reset_for_purge_replay(options.max_replay_rows);
+        self.history.reset_for_purge_replay();
     }
 
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
@@ -196,13 +196,14 @@ impl ChatTerminalSession {
         if !app.config.auto_scroll_effective() {
             app.chat_render.viewport.pause();
         }
-        let base_excluded_ids = if app.chat_render.viewport.is_reading() {
+        let base_excluded_ids = self.base_history_excluded_ids();
+        let serialization_excluded_ids = if app.chat_render.viewport.is_reading() {
             BTreeSet::new()
         } else {
-            self.base_history_excluded_ids()
+            base_excluded_ids.clone()
         };
         let serialized_rows =
-            serialize_live_rows_with_boundaries_excluding(app, width, &base_excluded_ids);
+            serialize_live_rows_with_boundaries_excluding(app, width, &serialization_excluded_ids);
         self.draw_incremental(
             app,
             screen_size,
@@ -225,14 +226,14 @@ impl ChatTerminalSession {
     ) -> anyhow::Result<()> {
         app.surface_dirty.chat.take_repaint();
         let composer = Self::build_composer_surface(app, width);
-        let mut history_plan = self.prepare_viewport_history(
-            app,
-            serialized_rows,
-            &composer,
-            width,
-            terminal_height,
-            base_excluded_ids,
-        );
+        let mut history_plan =
+            self.prepare_history_flush(serialized_rows, width, base_excluded_ids);
+        // Reading chooses the visible source window independently of restoring
+        // terminal history. Confirmed and queued IDs still prevent duplicate inserts.
+        if app.chat_render.viewport.is_reading() {
+            history_plan.live_rows = serialized_rows.rows().to_vec();
+            history_plan.excluded_rows = 0;
+        }
         let live_rows = history_plan.live_rows.as_slice();
         let (requested_layout_plan, layout_plan) =
             viewport_layout(app, serialized_rows, live_rows, &composer, terminal_height);
@@ -302,7 +303,7 @@ impl ChatTerminalSession {
             layout_plan.live_window.start,
             visible_live_row_count,
         );
-        self.complete_history_flush(app, width, &outcome);
+        self.complete_history_flush(app, &outcome);
         let viewport_area = outcome.viewport_area;
         let (live_area, activity_area, hint_area, btw_area, editor_area, footer_area) =
             layout_plan.areas(viewport_area);
@@ -333,22 +334,6 @@ impl ChatTerminalSession {
         Ok(())
     }
 
-    fn prepare_viewport_history(
-        &mut self,
-        app: &App,
-        rows: &SerializedLiveRows,
-        composer: &ComposerSurface,
-        width: u16,
-        height: u16,
-        excluded: BTreeSet<HistoryOutputId>,
-    ) -> HistoryFlushPlan {
-        if app.chat_render.viewport.is_reading() {
-            history_flush_without_action(rows, BTreeSet::new(), false)
-        } else {
-            self.prepare_history_flush(rows, composer, width, height, excluded)
-        }
-    }
-
     fn resolve_chat_draw_outcome(
         &mut self,
         app: &mut App,
@@ -371,9 +356,7 @@ impl ChatTerminalSession {
     fn prepare_history_flush(
         &mut self,
         serialized_rows: &SerializedLiveRows,
-        composer: &ComposerSurface,
         width: u16,
-        terminal_height: u16,
         base_excluded_ids: BTreeSet<HistoryOutputId>,
     ) -> HistoryFlushPlan {
         let width = width.max(1);
@@ -381,13 +364,7 @@ impl ChatTerminalSession {
             return self.prepare_replay_history_flush(serialized_rows, width, base_excluded_ids);
         }
 
-        self.prepare_static_history_flush(
-            serialized_rows,
-            composer,
-            width,
-            terminal_height,
-            base_excluded_ids,
-        )
+        Self::prepare_static_history_flush(serialized_rows, width, base_excluded_ids)
     }
 
     fn base_history_excluded_ids(&self) -> BTreeSet<HistoryOutputId> {
@@ -412,10 +389,9 @@ impl ChatTerminalSession {
             self.terminal.cancel_replay();
         }
 
-        let replay =
-            build_replay_history_batches(serialized_rows, width, self.history.cap_replay_rows());
+        let replay = build_replay_history_batches(serialized_rows, width);
         if replay.confirm_ids.is_empty() {
-            self.history.mark_terminal_history_synced(width, Vec::new());
+            self.history.confirm(Vec::new());
             return history_flush_without_action(serialized_rows, base_excluded_ids, true);
         }
 
@@ -438,11 +414,8 @@ impl ChatTerminalSession {
     }
 
     fn prepare_static_history_flush(
-        &self,
         serialized_rows: &SerializedLiveRows,
-        composer: &ComposerSurface,
         width: u16,
-        terminal_height: u16,
         base_excluded_ids: BTreeSet<HistoryOutputId>,
     ) -> HistoryFlushPlan {
         let candidate_batches =
@@ -458,38 +431,15 @@ impl ChatTerminalSession {
         let mut candidate_excluded_ids = base_excluded_ids.clone();
         candidate_excluded_ids.extend(candidate_ids);
         let candidate_live_rows = serialized_rows.rows_excluding_ids(&candidate_excluded_ids);
-        let candidate_layout =
-            MutableLayoutPlan::new(&candidate_live_rows, composer, terminal_height);
-        let candidate_frame = ChatDrawRequest {
-            requested_inline_height: candidate_layout.viewport_height,
-            terminal: TerminalSnapshot::new(width, terminal_height),
-        };
         let candidate_rows = candidate_batches.iter().map(|batch| batch.rows.len()).sum();
-        if self.terminal.can_insert_scrollback_rows(candidate_frame, candidate_rows) {
-            return HistoryFlushPlan::new(
-                candidate_live_rows,
-                excluded_row_count(serialized_rows, &candidate_excluded_ids),
-                candidate_excluded_ids,
-                HistoryFlushAction::QueueStatic(candidate_batches),
-                candidate_rows,
-                false,
-            );
-        }
-
-        tracing::debug!(
-            target: crate::logging::targets::APP_RENDER,
-            event_name = "inline_chat_scrollback_insert_deferred",
-            message = "stable chat rows kept in source-backed live window because inline insertion is unsafe for current viewport",
-            outcome = "deferred",
-            rows = candidate_rows,
-            confirmed_ids = self.history.confirmed_len(),
-            history_width = self.history.width,
-            requested_inline_height = candidate_frame.requested_inline_height,
-            terminal_width = width,
-            terminal_height,
-        );
-
-        history_flush_without_action(serialized_rows, base_excluded_ids, false)
+        HistoryFlushPlan::new(
+            candidate_live_rows,
+            excluded_row_count(serialized_rows, &candidate_excluded_ids),
+            candidate_excluded_ids,
+            HistoryFlushAction::QueueStatic(candidate_batches),
+            candidate_rows,
+            false,
+        )
     }
 
     fn queue_history_plan(&mut self, action: HistoryFlushAction) {
@@ -509,14 +459,12 @@ impl ChatTerminalSession {
     fn complete_history_flush(
         &mut self,
         app: &mut App,
-        width: u16,
         outcome: &super::chat_terminal::ChatDrawOutcome,
     ) {
-        if outcome.flushed_history.replay_complete {
-            self.history
-                .mark_terminal_history_synced(width, outcome.flushed_history.confirmed_ids.clone());
-        } else if !outcome.flushed_history.confirmed_ids.is_empty() {
-            self.history.confirm(width, outcome.flushed_history.confirmed_ids.clone());
+        if outcome.flushed_history.replay_complete
+            || !outcome.flushed_history.confirmed_ids.is_empty()
+        {
+            self.history.confirm(outcome.flushed_history.confirmed_ids.clone());
         }
 
         if outcome.flushed_history.replay_incomplete
@@ -729,15 +677,13 @@ struct DrawCompletion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HistoryCommitState {
-    width: u16,
     confirmed: BTreeSet<HistoryOutputId>,
     history_in_sync: bool,
-    replay_row_cap: Option<usize>,
 }
 
 impl Default for HistoryCommitState {
     fn default() -> Self {
-        Self { width: 0, confirmed: BTreeSet::new(), history_in_sync: true, replay_row_cap: None }
+        Self { confirmed: BTreeSet::new(), history_in_sync: true }
     }
 }
 
@@ -746,8 +692,8 @@ impl HistoryCommitState {
         *self = Self::default();
     }
 
-    fn reset_for_purge_replay(&mut self, max_replay_rows: Option<usize>) {
-        *self = Self { history_in_sync: false, replay_row_cap: max_replay_rows, ..Self::default() };
+    fn reset_for_purge_replay(&mut self) {
+        *self = Self { history_in_sync: false, ..Self::default() };
     }
 
     fn confirmed_ids(&self) -> &BTreeSet<HistoryOutputId> {
@@ -762,22 +708,9 @@ impl HistoryCommitState {
         self.history_in_sync
     }
 
-    fn cap_replay_rows(&self) -> Option<usize> {
-        self.replay_row_cap
-    }
-
-    fn confirm(&mut self, width: u16, ids: Vec<HistoryOutputId>) {
-        self.width = width.max(1);
+    fn confirm(&mut self, ids: Vec<HistoryOutputId>) {
         self.confirmed.extend(ids);
         self.history_in_sync = true;
-        self.replay_row_cap = None;
-    }
-
-    fn mark_terminal_history_synced(&mut self, width: u16, ids: Vec<HistoryOutputId>) {
-        self.width = width.max(1);
-        self.confirmed.extend(ids);
-        self.history_in_sync = true;
-        self.replay_row_cap = None;
     }
 
     fn mark_out_of_sync(&mut self) {
@@ -882,7 +815,6 @@ fn build_static_history_batches(
 fn build_replay_history_batches(
     serialized_rows: &SerializedLiveRows,
     width: u16,
-    row_cap: Option<usize>,
 ) -> ReplayHistoryPlan {
     let stable_row_count = serialized_rows.stable_row_count();
     let stable_segments = serialized_rows
@@ -893,23 +825,6 @@ fn build_replay_history_batches(
         .collect::<Vec<_>>();
     let confirm_ids = unique_ids(stable_segments.iter().flat_map(|segment| segment.ids.iter()));
 
-    let start_idx = row_cap.map_or(0, |cap| {
-        let mut rows = 0usize;
-        let mut start = stable_segments.len();
-        for (idx, segment) in stable_segments.iter().enumerate().rev() {
-            let segment_rows = match serialized_rows.segment_rows(segment) {
-                Some(segment_rows) => segment_rows.len(),
-                None => 0,
-            };
-            if rows > 0 && rows.saturating_add(segment_rows) > cap {
-                break;
-            }
-            rows = rows.saturating_add(segment_rows);
-            start = idx;
-        }
-        start
-    });
-
     let mut batches = Vec::new();
     let mut rows = Vec::new();
     let mut ids = Vec::new();
@@ -917,7 +832,7 @@ fn build_replay_history_batches(
     let mut expected_start = None;
     let empty = BTreeSet::new();
 
-    for segment in stable_segments.into_iter().skip(start_idx) {
+    for segment in stable_segments {
         let segment_ids = unexcluded_ids(&segment.ids, &empty);
         if segment_ids.is_empty() {
             continue;
@@ -1573,8 +1488,8 @@ mod tests {
         let first = output_id();
         let second = output_id();
 
-        state.confirm(80, vec![first.clone()]);
-        state.confirm(80, vec![first.clone(), second.clone()]);
+        state.confirm(vec![first.clone()]);
+        state.confirm(vec![first.clone(), second.clone()]);
 
         assert_eq!(state.confirmed_len(), 2);
         assert!(state.confirmed_ids().contains(&first));
@@ -1583,39 +1498,25 @@ mod tests {
     }
 
     #[test]
-    fn resize_purge_replay_marks_history_unsynced_and_caps_replay_rows() {
+    fn purge_replay_marks_history_unsynced_and_clears_confirmed_ids() {
         let mut state = HistoryCommitState::default();
-        state.confirm(80, vec![output_id()]);
+        state.confirm(vec![output_id()]);
 
-        state.reset_for_purge_replay(Some(crate::app::RESIZE_PURGE_REPLAY_MAX_ROWS));
+        state.reset_for_purge_replay();
 
         assert!(!state.is_synced());
         assert_eq!(state.confirmed_len(), 0);
-        assert_eq!(state.cap_replay_rows(), Some(crate::app::RESIZE_PURGE_REPLAY_MAX_ROWS));
     }
 
     #[test]
-    fn session_replacement_purge_replay_marks_history_unsynced_without_cap() {
-        let mut state = HistoryCommitState::default();
-        state.confirm(80, vec![output_id()]);
-
-        state.reset_for_purge_replay(None);
-
-        assert!(!state.is_synced());
-        assert_eq!(state.confirmed_len(), 0);
-        assert_eq!(state.cap_replay_rows(), None);
-    }
-
-    #[test]
-    fn replay_completion_marks_history_synced_and_clears_cap() {
+    fn replay_completion_marks_history_synced_and_confirms_output() {
         let mut state = HistoryCommitState::default();
         let id = output_id();
 
-        state.reset_for_purge_replay(Some(crate::app::RESIZE_PURGE_REPLAY_MAX_ROWS));
-        state.mark_terminal_history_synced(80, vec![id.clone()]);
+        state.reset_for_purge_replay();
+        state.confirm(vec![id.clone()]);
 
         assert!(state.is_synced());
-        assert_eq!(state.cap_replay_rows(), None);
         assert!(state.confirmed_ids().contains(&id));
     }
 
@@ -1627,7 +1528,6 @@ mod tests {
         app.surface_dirty.chat.take_repaint();
         session.complete_history_flush(
             &mut app,
-            120,
             &super::super::chat_terminal::ChatDrawOutcome {
                 viewport_area: Rect::new(0, 27, 120, 3),
                 flushed_history: super::super::chat_terminal::FlushedHistory {
@@ -1639,6 +1539,28 @@ mod tests {
         );
 
         assert!(app.surface_dirty.chat.repaint);
+    }
+
+    #[test]
+    fn replay_preserves_all_retained_segments_in_transcripts_over_nine_thousand_rows() {
+        let first = output_id();
+        let second = output_id();
+        let serialized = SerializedLiveRows::from_parts_for_test(
+            rows(9_100),
+            vec![live_segment(0, 4_550, first.clone()), live_segment(4_550, 9_100, second.clone())],
+        );
+
+        let replay = super::build_replay_history_batches(&serialized, 80);
+        let text: Vec<_> = replay
+            .batches
+            .iter()
+            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
+            .map(line_text)
+            .collect();
+
+        assert_eq!(text, (0..9_100).map(|index| format!("row {index}")).collect::<Vec<_>>());
+        assert_eq!(replay.rows, 9_100);
+        assert_eq!(replay.confirm_ids, vec![first, second]);
     }
 
     #[test]
@@ -1661,7 +1583,7 @@ mod tests {
             assert!(serialized.rows().iter().any(|row| line_text(row).contains("Thinking…")));
             let inserted =
                 super::build_static_history_batches(&serialized, width, &BTreeSet::new());
-            let replay = super::build_replay_history_batches(&serialized, width, None);
+            let replay = super::build_replay_history_batches(&serialized, width);
             for batches in [&inserted, &replay.batches] {
                 let text: Vec<_> = batches
                     .iter()
@@ -1743,7 +1665,7 @@ mod tests {
             .collect();
         let mut history = HistoryCommitState::default();
         for batch in batches {
-            history.confirm(80, batch.confirm_ids);
+            history.confirm(batch.confirm_ids);
         }
         assert!(
             history.confirmed_ids().contains(&exchange_id),
@@ -1775,10 +1697,10 @@ mod tests {
             committed_rows.into_iter().chain(live.rows().iter().cloned()).collect();
         assert_eq!(combined, serialized.rows());
 
-        history.reset_for_purge_replay(None);
+        history.reset_for_purge_replay();
         let resized =
             serialize_live_rows_with_boundaries_excluding(&mut app, 24, history.confirmed_ids());
-        let replay = super::build_replay_history_batches(&resized, 24, history.cap_replay_rows());
+        let replay = super::build_replay_history_batches(&resized, 24);
         assert!(replay.confirm_ids.contains(&exchange_id));
         let replay_text: Vec<_> = replay
             .batches
@@ -1788,7 +1710,7 @@ mod tests {
             .collect();
         assert_eq!(replay_text.iter().filter(|line| line.contains("Claude · BTW")).count(), 1);
         assert!(!replay_text.iter().any(|line| line == "After the card."));
-        history.mark_terminal_history_synced(24, replay.confirm_ids);
+        history.confirm(replay.confirm_ids);
 
         crate::app::events::handle_client_event(
             &mut app,
@@ -1860,7 +1782,7 @@ mod tests {
 
         let static_batches =
             super::build_static_history_batches(&serialized, 120, &BTreeSet::new());
-        let replay = super::build_replay_history_batches(&serialized, 120, None);
+        let replay = super::build_replay_history_batches(&serialized, 120);
         let excluded_rows = super::excluded_row_count(&serialized, &BTreeSet::from([invalid_id]));
 
         assert!(static_batches.is_empty());
@@ -1881,7 +1803,7 @@ mod tests {
     #[test]
     fn fullscreen_reattach_preserves_history_commit_state() {
         let mut state = HistoryCommitState::default();
-        state.confirm(80, vec![output_id()]);
+        state.confirm(vec![output_id()]);
         let mut session = session_with_history(state.clone());
         let mut app = App::test_default();
         app.chat_render.live_region.anchor_valid = true;
@@ -1895,7 +1817,7 @@ mod tests {
     #[test]
     fn mutable_viewport_clear_preserves_history_commit_state() {
         let mut state = HistoryCommitState::default();
-        state.confirm(80, vec![output_id()]);
+        state.confirm(vec![output_id()]);
         let mut session = session_with_history(state.clone());
         let mut app = App::test_default();
         app.chat_render.live_region.anchor_valid = true;

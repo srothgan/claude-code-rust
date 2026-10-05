@@ -89,6 +89,13 @@ impl<B: Backend> Backend for TrackedCursorBackend<B> {
         region: core::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
+        let size = self.inner.size()?;
+        if line_count > 0 && region.start == 0 && region.end == size.height {
+            // A whole-screen scroll must append lines to native history.
+            // ConPTY's region-scroll command erases rows in a one-row terminal.
+            self.set_cursor_position(Position { x: 0, y: size.height.saturating_sub(1) })?;
+            return self.append_lines(line_count);
+        }
         self.inner.scroll_region_up(region, line_count)
     }
 
@@ -120,6 +127,7 @@ mod tests {
         cursor_queries: Rc<CounterCell<usize>>,
         clears: Rc<CounterCell<usize>>,
         scrolls: Rc<CounterCell<usize>>,
+        appended_lines: Rc<CounterCell<u16>>,
     }
 
     struct FakeBackend {
@@ -157,6 +165,7 @@ mod tests {
         }
 
         fn append_lines(&mut self, n: u16) -> Result<(), Self::Error> {
+            self.counters.appended_lines.set(self.counters.appended_lines.get() + n);
             self.cursor.y = self.cursor.y.saturating_add(n).min(self.size.height.saturating_sub(1));
             Ok(())
         }
@@ -292,6 +301,19 @@ mod tests {
         assert_eq!(counters.scrolls.get(), 2);
         assert_eq!(counters.cursor_queries.get(), 0);
         assert_eq!(backend.get_cursor_position().unwrap(), Position { x: 6, y: 7 });
+    }
+
+    #[test]
+    fn whole_screen_scroll_appends_native_history_from_the_bottom_row() {
+        let counters = BackendCounters::default();
+        let inner = FakeBackend::with_counters(80, 24, Position::ORIGIN, counters.clone());
+        let mut backend = TrackedCursorBackend::new(inner, Position { x: 6, y: 7 });
+
+        backend.scroll_region_up(0..24, 2).unwrap();
+
+        assert_eq!(counters.appended_lines.get(), 2);
+        assert_eq!(counters.scrolls.get(), 0);
+        assert_eq!(backend.get_cursor_position().unwrap(), Position { x: 0, y: 23 });
     }
 
     #[test]

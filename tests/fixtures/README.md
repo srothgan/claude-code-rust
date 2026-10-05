@@ -16,12 +16,17 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `permission` | Starts a tool, requests an allow/deny decision, then completes after the correlated response. |
 | `question` | Starts a tool, requests a destination selection, then completes after the correlated answer or cancellation. |
 | `disconnect-during-auth` | Connects normally, then exits when the release file appears while the auth child owns stdin. |
+| `resize-ready` | Streams a completed transcript for scrollback checks across zoom and reading-mode resizes. |
+| `resize-replay` | Emits a large completed reply in one chunk for interruption and replay-budget checks. |
+| `resize-code` | Completes the first reply, then holds a second reply inside an unfinished code block. |
 
 `FAKE_BRIDGE_JOURNAL` records commands, events, and the `reply-held` coordination point as JSONL. `FAKE_BRIDGE_RELEASE_FILE` lets a test release a held turn after exercising the UI. Reply length and interval remain configurable with `FAKE_BRIDGE_LINES`, `FAKE_BRIDGE_FOLLOW_UP_LINES`, and `FAKE_BRIDGE_INTERVAL_MS`.
 
 The fixture serializes overlapping prompts and correlates queued/start events by message UUID. Completion includes the remaining queue count. Cancellation emits an interrupt receipt and an `aborted_streaming` completion, stops the active timer, and keeps queued work. Permission and question requests follow an existing tool-call event; responses are correlated by session and tool-call ID. A new-session command emits `session_replaced` with a different session ID. These sequences follow the checked-in Rust wire types and TypeScript bridge handlers, but the fixture is not an independent SDK conformance oracle.
 
 The tests cover queued/start ordering, cancellation followed by another turn, permission acceptance and denial, question selection with notes and cancellation, simultaneous resizing and input, and fatal EOF/malformed-output shutdown. Journals verify exact prompts and exactly one interaction response. EOF and malformed NDJSON are deliberately injected protocol faults, not claims that the SDK normally emits them. Protocol failures currently terminate the real app; these tests do not claim draft persistence after that exit.
+
+Resize tests inspect native terminal scrollback as well as the visible screen, including one-row terminals, reading mode, unfinished code blocks, and a new resize interrupting an active transcript replay. They wait for draws at the requested dimensions and require every completed reply row to remain accessible.
 
 `fake-claude.rs` is a native stand-in for `claude auth login`, placed first on the child app's `PATH`. It reads one line from inherited stdin, records it inside the isolated profile, and waits for a release file. It can succeed using a clearly invalid fixture token or fail with exit code 7. The spawn-failure case uses an invalid executable on Windows and an executable script with a missing interpreter on Unix; plain executable text can run through a shell on macOS and does not reliably trigger a spawn error. The tests verify that the real TUI stays silent during child ownership, sends all input to the child, restores usable typing and paste after resizing, and stops an owned child during fatal shutdown. They do not exercise browser OAuth, real credential renewal, or the installed Claude CLI.
 

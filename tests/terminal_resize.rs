@@ -13,13 +13,40 @@ const COLS: u16 = 87;
 const SHORT_ROWS: u16 = 38;
 const TALL_ROWS: u16 = 55;
 const RESIZES: u32 = 200;
+const SCROLLBACK_ROWS: usize = 10_000;
 const OWNED_REGION_ERROR: &str = "refusing to clear outside inline chat owned region";
 type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
 struct CapturedTerminal {
-    parser: vt100::Parser,
+    parser: vt100::Parser<ScrollbackCallbacks>,
     raw: Vec<u8>,
     ended: bool,
+}
+
+struct ScrollbackCallbacks;
+
+impl vt100::Callbacks for ScrollbackCallbacks {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        first_intermediate: Option<u8>,
+        second_intermediate: Option<u8>,
+        params: &[&[u16]],
+        command: char,
+    ) {
+        // vt100 handles ED 0/1/2 but not ED 3 (erase saved lines). Preserve the
+        // visible screen and modes while discarding scrollback, as a terminal does.
+        if command == 'J'
+            && first_intermediate.is_none()
+            && second_intermediate.is_none()
+            && params == [&[3][..]]
+        {
+            let (rows, cols) = screen.size();
+            let mut cleared = vt100::Parser::new(rows, cols, SCROLLBACK_ROWS);
+            cleared.process(&screen.state_formatted());
+            *screen = cleared.screen().clone();
+        }
+    }
 }
 
 struct TestChild {
@@ -78,7 +105,12 @@ fn capture_output(
     writer: PtyWriter,
 ) -> Arc<Mutex<CapturedTerminal>> {
     let output = Arc::new(Mutex::new(CapturedTerminal {
-        parser: vt100::Parser::new(SHORT_ROWS, COLS, 0),
+        parser: vt100::Parser::new_with_callbacks(
+            SHORT_ROWS,
+            COLS,
+            SCROLLBACK_ROWS,
+            ScrollbackCallbacks,
+        ),
         raw: Vec::new(),
         ended: false,
     }));
@@ -243,6 +275,54 @@ impl TerminalTest {
 
     fn screen(&self) -> String {
         self.output.lock().expect("output lock").parser.screen().contents()
+    }
+
+    fn transcript_rows(&self) -> Vec<String> {
+        let mut screen = self.output.lock().expect("output lock").parser.screen().clone();
+        screen.set_scrollback(usize::MAX);
+        let mut rows = Vec::new();
+        for offset in (1..=screen.scrollback()).rev() {
+            screen.set_scrollback(offset);
+            rows.push(screen.contents().lines().next().unwrap_or_default().to_owned());
+        }
+        screen.set_scrollback(0);
+        rows.extend(screen.contents().lines().map(str::to_owned));
+        rows
+    }
+
+    fn assert_completed_reply_in_scrollback(&self, lines: u16) {
+        let rows = self.transcript_rows();
+        for line in 1..=lines {
+            let suffix = format!("streamed line {line}");
+            assert!(
+                rows.iter().any(|row| row.trim_end().ends_with(&suffix)),
+                "completed reply row {line} disappeared from scrollback:\n{}\nTranscript:\n{}",
+                self.diagnostics(),
+                rows.join("\n"),
+            );
+        }
+    }
+
+    fn resize_and_wait_for_draw(&mut self, rows: u16, cols: u16) {
+        let log_path = self.temp.path().join("runtime.log");
+        let previous_length = std::fs::read(&log_path).expect("runtime log").len();
+        self.resize(rows, cols);
+        self.wait_until("draw at the new terminal dimensions", |test| {
+            test.runtime_records_since(previous_length).iter().any(|record| {
+                record["event_name"] == "inline_chat_viewport_draw"
+                    && record["terminal_height"] == rows
+                    && record["terminal_width"] == cols
+            })
+        });
+    }
+
+    fn runtime_records_since(&self, offset: usize) -> Vec<Value> {
+        let log = std::fs::read_to_string(self.temp.path().join("runtime.log")).unwrap_or_default();
+        log.get(offset..)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect()
     }
 
     fn diagnostics(&self) -> String {
@@ -1126,6 +1206,166 @@ fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
     test.submit("Follow up", "Follow up");
     test.wait_screen("reply 2 started");
     test.assert_prompts(&["Clock test", "Follow up"]);
+    test.shutdown();
+}
+
+#[test]
+fn scrollback_capture_honors_split_saved_lines_erasure_without_changing_visible_rows() {
+    let mut parser = vt100::Parser::new_with_callbacks(4, 20, SCROLLBACK_ROWS, ScrollbackCallbacks);
+    parser.process(b"old row\r\nvisible 1\r\nvisible 2\r\nvisible 3\r\nvisible 4");
+    let visible = parser.screen().contents();
+    let cursor = parser.screen().cursor_position();
+    parser.screen_mut().set_scrollback(usize::MAX);
+    assert!(parser.screen().scrollback() > 0);
+    assert!(parser.screen().contents().contains("old row"));
+    parser.screen_mut().set_scrollback(0);
+    parser.process(b"\x1b[");
+    parser.process(b"3J");
+    parser.screen_mut().set_scrollback(usize::MAX);
+    assert_eq!(parser.screen().scrollback(), 0);
+    assert_eq!(parser.screen().contents(), visible);
+    assert_eq!(parser.screen().cursor_position(), cursor);
+}
+
+#[test]
+fn completed_transcript_remains_scrollable_after_zoom_in_and_out() {
+    let mut test = TerminalTest::start_with_options(
+        "resize-ready",
+        80,
+        None,
+        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
+        false,
+    );
+    test.submit("SCROLLBACK_CONTROL", "SCROLLBACK_CONTROL");
+    test.wait_journal("turn_complete");
+    test.wait_screen("[READY]");
+    test.wait_until("completed transcript in terminal history", |test| {
+        test.transcript_rows().iter().any(|row| row.trim_end().ends_with("streamed line 1"))
+    });
+    test.assert_completed_reply_in_scrollback(80);
+    for (rows, cols) in [(30, 64), (2, 64), (1, 64), (55, 120), (38, 87)] {
+        test.resize_and_wait_for_draw(rows, cols);
+        test.wait_until("replayed transcript has reached its final row", |test| {
+            test.transcript_rows().iter().any(|row| row.trim_end().ends_with("streamed line 80"))
+        });
+        test.assert_completed_reply_in_scrollback(80);
+    }
+    test.shutdown();
+}
+
+#[test]
+fn a_new_resize_supersedes_active_replay_and_restores_history_at_the_latest_size() {
+    let mut test = TerminalTest::start_with_options(
+        "resize-replay",
+        2_000,
+        None,
+        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
+        false,
+    );
+    test.submit("LARGE_REPLAY", "LARGE_REPLAY");
+    test.wait_journal("turn_complete");
+    test.wait_screen("[READY]");
+    test.wait_until("large completed transcript is in scrollback", |test| {
+        test.transcript_rows().iter().any(|row| row.trim_end().ends_with("streamed line 1"))
+    });
+    test.assert_completed_reply_in_scrollback(2_000);
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.resize(12, 64);
+    test.wait_until("replay has started inserting history", |test| {
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_history_insert_request"
+                && record["batch_kind"] == "Replay"
+        })
+    });
+    test.resize_and_wait_for_draw(55, 120);
+    test.wait_until("latest replay has reached its final row", |test| {
+        test.transcript_rows().iter().any(|row| row.trim_end().ends_with("streamed line 2000"))
+    });
+    test.assert_completed_reply_in_scrollback(2_000);
+    let replay_frames: Vec<_> = test
+        .runtime_records_since(offset)
+        .into_iter()
+        .filter(|record| {
+            record["event_name"] == "inline_chat_terminal_draw_transaction"
+                && (record["replay_incomplete"] == true || record["replay_complete"] == true)
+        })
+        .collect();
+    test.shutdown();
+    assert!(
+        replay_frames.iter().any(|record| record["replay_incomplete"] == true),
+        "a large replay must yield before completing: {replay_frames:?}",
+    );
+    assert!(
+        replay_frames
+            .iter()
+            .all(|record| record["flushed_rows"].as_u64().is_some_and(|rows| rows <= 160)),
+        "a single large message must respect the replay row budget: {replay_frames:?}",
+    );
+    assert!(
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_purge_replay_cleared"
+                && record["terminal_height"] == 55
+                && record["terminal_width"] == 120
+        }),
+        "the latest resize must clear stale replay output before restoring history",
+    );
+}
+
+#[test]
+fn completed_transcript_remains_scrollable_when_zooming_during_an_unfinished_code_block() {
+    let mut test = TerminalTest::start_with_options(
+        "resize-code",
+        80,
+        None,
+        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
+        false,
+    );
+    test.submit("COMPLETED_PREFIX", "COMPLETED_PREFIX");
+    test.wait_journal("turn_complete");
+    test.wait_screen("[READY]");
+    test.assert_completed_reply_in_scrollback(80);
+    test.submit("UNFINISHED_CODE_BLOCK", "UNFINISHED_CODE_BLOCK");
+    test.wait_journal("reply-held");
+    test.wait_screen("code line 80");
+    test.resize_and_wait_for_draw(30, 64);
+    test.wait_screen("code line 80");
+    let prefix_survived_zoom_in =
+        test.transcript_rows().iter().any(|row| row.trim_end().ends_with("streamed line 1"));
+    let zoom_in_diagnostics = test.diagnostics();
+    test.resize_and_wait_for_draw(120, 120);
+    test.wait_until("completed prefix returns when the terminal grows", |test| {
+        test.transcript_rows().iter().any(|row| row.trim_end().ends_with("streamed line 1"))
+    });
+    test.assert_completed_reply_in_scrollback(80);
+    test.release();
+    test.wait_screen("[READY]");
+    test.shutdown();
+    assert!(
+        prefix_survived_zoom_in,
+        "zooming in lost the completed transcript; zooming out restored it:\n{zoom_in_diagnostics}",
+    );
+}
+
+#[test]
+fn completed_transcript_remains_scrollable_when_resizing_in_reading_mode() {
+    let mut test = TerminalTest::start_with_options(
+        "resize-ready",
+        80,
+        None,
+        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
+        false,
+    );
+    test.submit("READING_PREFIX", "READING_PREFIX");
+    test.wait_journal("turn_complete");
+    test.wait_screen("[READY]");
+    test.assert_completed_reply_in_scrollback(80);
+    test.send(b"\x1b[5~");
+    test.wait_screen("Reading output");
+    // Establish actual terminal history before the resize clears it.
+    test.assert_completed_reply_in_scrollback(80);
+    test.resize_and_wait_for_draw(30, 64);
+    test.wait_screen("Reading output");
+    test.assert_completed_reply_in_scrollback(80);
     test.shutdown();
 }
 

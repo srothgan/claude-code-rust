@@ -9,7 +9,6 @@ mod input;
 mod modes;
 mod panic_hook;
 mod release_guard;
-#[cfg(any(unix, test))]
 mod tracked_cursor_backend;
 pub(crate) mod viewport;
 

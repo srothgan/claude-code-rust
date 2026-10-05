@@ -65,8 +65,7 @@ pub use focus::{FocusManager, FocusOwner, FocusTarget};
 pub use input::InputState;
 pub use lifecycle::{
     ChatPurgeReplayOptions, ChatPurgeReplayReason, ChatRebuildKind, ChatSurfaceDirtyState,
-    FullscreenSurfaceDirtyState, RESIZE_PURGE_REPLAY_MAX_ROWS, ReleaseReason, SurfaceDirtyState,
-    TerminalLifecycleState,
+    FullscreenSurfaceDirtyState, ReleaseReason, SurfaceDirtyState, TerminalLifecycleState,
 };
 pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};

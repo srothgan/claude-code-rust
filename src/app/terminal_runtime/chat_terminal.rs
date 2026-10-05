@@ -19,10 +19,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::{Stdout, Write};
 
-#[cfg(unix)]
 type StdoutBackend = super::tracked_cursor_backend::TrackedCursorBackend<CrosstermBackend<Stdout>>;
-#[cfg(not(unix))]
-type StdoutBackend = CrosstermBackend<Stdout>;
 type StdoutTerminal = Terminal<StdoutBackend>;
 pub(super) const PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 const MIN_REPLAY_BATCH_ROWS: usize = 32;
@@ -365,22 +362,13 @@ impl ChatTerminal {
             .sync_update(|_| -> anyhow::Result<ChatDrawOutcome> {
                 let snapshot = chat_frame.terminal;
                 ensure_terminal_snapshot(snapshot, "draw_start")?;
-                let geometry_plan = plan_inline_geometry(
-                    self.state.area,
-                    chat_frame.requested_inline_height,
-                    snapshot.width,
-                    snapshot.height,
-                );
-                log_inline_geometry_plan(&geometry_plan);
-
-                self.state.area = geometry_plan.old_area;
-                self.apply_inline_geometry_scroll(&geometry_plan, snapshot)?;
-                self.ensure_inline_terminal_height(
-                    geometry_plan.height,
-                    geometry_plan.target_area,
-                    snapshot,
-                )?;
+                // Insert history before allocating the live viewport. A full-height
+                // live window must not consume the capacity needed to restore scrollback.
+                if self.replay.is_some() || !self.pending_history.is_empty() {
+                    self.ensure_chat_geometry(1, snapshot)?;
+                }
                 let flushed_history = self.flush_queued_history(snapshot)?;
+                self.ensure_chat_geometry(chat_frame.requested_inline_height, snapshot)?;
                 let viewport_area = self.draw_mutable_viewport(snapshot, render_mutable)?;
 
                 self.state.area = Some(viewport_area);
@@ -406,45 +394,21 @@ impl ChatTerminal {
             .context("failed synchronized inline chat terminal update")?
     }
 
-    pub(super) fn can_insert_scrollback_rows(
-        &self,
-        chat_frame: ChatDrawRequest,
-        row_count: usize,
-    ) -> bool {
-        if row_count == 0 {
-            return true;
-        }
-
-        let Some(viewport_area) = self.predicted_viewport_after_ensure(chat_frame) else {
-            return false;
-        };
-        let inserted_rows = u16::try_from(row_count).unwrap_or(u16::MAX);
-        let plan = plan_owned_insert(
-            viewport_area,
-            self.state.owned_top,
-            inserted_rows,
-            chat_frame.terminal.height,
-        );
-
-        !matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows)
-    }
-
-    fn predicted_viewport_after_ensure(&self, chat_frame: ChatDrawRequest) -> Option<Rect> {
-        let geometry_plan = plan_inline_geometry(
-            self.state.area,
-            chat_frame.requested_inline_height,
-            chat_frame.terminal.width,
-            chat_frame.terminal.height,
-        );
-        let anchor = geometry_plan.target_area.or(self.state.area)?;
-        let screen_height = chat_frame.terminal.height;
-
-        Some(Rect::new(
-            0,
-            inline_viewport_top_after_create(anchor.y, geometry_plan.height, screen_height),
-            chat_frame.terminal.width,
+    fn ensure_chat_geometry(
+        &mut self,
+        height: u16,
+        snapshot: TerminalSnapshot,
+    ) -> anyhow::Result<()> {
+        let geometry_plan =
+            plan_inline_geometry(self.state.area, height, snapshot.width, snapshot.height);
+        log_inline_geometry_plan(&geometry_plan);
+        self.state.area = geometry_plan.old_area;
+        self.apply_inline_geometry_scroll(&geometry_plan, snapshot)?;
+        self.ensure_inline_terminal_height(
             geometry_plan.height,
-        ))
+            geometry_plan.target_area,
+            snapshot,
+        )
     }
 
     fn ensure_inline_terminal_height(
@@ -678,9 +642,11 @@ impl ChatTerminal {
 
         let mut flushed = FlushedHistory::default();
         while let Some(mut batch) = self.pending_history.pop_front() {
-            flushed.flushed_rows = flushed
-                .flushed_rows
-                .saturating_add(self.insert_history_batch(&mut batch, snapshot)?);
+            flushed.flushed_rows = flushed.flushed_rows.saturating_add(self.insert_history_batch(
+                &mut batch,
+                snapshot,
+                usize::MAX,
+            )?);
 
             if batch.is_complete() {
                 flushed.confirmed_ids.extend(batch.confirm_ids);
@@ -702,15 +668,14 @@ impl ChatTerminal {
 
         let budget = replay_batch_row_budget(snapshot.height);
         let mut flushed_rows = 0usize;
-        let mut drained_rows = 0usize;
         while let Some(mut batch) =
             self.replay.as_mut().and_then(|replay| replay.pending_batches.pop_front())
         {
-            let target_rows = batch.remaining_len();
-            flushed_rows =
-                flushed_rows.saturating_add(self.insert_history_batch(&mut batch, snapshot)?);
-            drained_rows =
-                drained_rows.saturating_add(target_rows.saturating_sub(batch.remaining_len()));
+            flushed_rows = flushed_rows.saturating_add(self.insert_history_batch(
+                &mut batch,
+                snapshot,
+                budget.saturating_sub(flushed_rows),
+            )?);
 
             if !batch.is_complete() {
                 if let Some(replay) = self.replay.as_mut() {
@@ -719,7 +684,7 @@ impl ChatTerminal {
                 break;
             }
 
-            if drained_rows >= budget {
+            if flushed_rows >= budget {
                 break;
             }
         }
@@ -746,6 +711,7 @@ impl ChatTerminal {
         &mut self,
         batch: &mut PendingHistoryBatch,
         snapshot: TerminalSnapshot,
+        row_budget: usize,
     ) -> anyhow::Result<usize> {
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -773,8 +739,10 @@ impl ChatTerminal {
         }
 
         let mut inserted_rows = 0usize;
-        while !batch.is_complete() {
-            let remaining_rows = u16::try_from(batch.remaining_len()).unwrap_or(u16::MAX);
+        while !batch.is_complete() && inserted_rows < row_budget {
+            let remaining_rows =
+                u16::try_from(batch.remaining_len().min(row_budget.saturating_sub(inserted_rows)))
+                    .unwrap_or(u16::MAX);
             let plan = self.prepare_scrollback_insert_plan(remaining_rows, snapshot)?;
             if matches!(plan.action, ScrollbackInsertAction::RebuildVisibleRows) {
                 tracing::debug!(
@@ -1094,16 +1062,10 @@ impl ChatTerminal {
 }
 
 fn create_inline_terminal(height: u16, seed_cursor: Position) -> anyhow::Result<StdoutTerminal> {
-    #[cfg(unix)]
     let backend = super::tracked_cursor_backend::TrackedCursorBackend::new(
         CrosstermBackend::new(std::io::stdout()),
         seed_cursor,
     );
-    #[cfg(not(unix))]
-    let backend = {
-        let _ = seed_cursor;
-        CrosstermBackend::new(std::io::stdout())
-    };
 
     Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(height.max(1)) })
         .context("failed to construct ratatui inline chat terminal")
@@ -1277,7 +1239,14 @@ fn plan_owned_insert(
     }
 
     let available_below = screen_height.saturating_sub(viewport_area.bottom());
-    let max_insert_rows_for_viewport = screen_height.saturating_sub(viewport_area.height);
+    // With one terminal row ratatui streams the batch through that row into
+    // scrollback and leaves the viewport in place. Bound the batch so a resize
+    // can still interrupt between native insertion calls.
+    let max_insert_rows_for_viewport = if screen_height == 1 {
+        u16::try_from(MIN_REPLAY_BATCH_ROWS).unwrap_or(u16::MAX)
+    } else {
+        screen_height.saturating_sub(viewport_area.height)
+    };
     let planned_rows = inserted_rows.min(max_insert_rows_for_viewport);
     if planned_rows == 0 {
         return ScrollbackInsertPlan {
@@ -1292,7 +1261,8 @@ fn plan_owned_insert(
         };
     }
 
-    let scroll_rows_before_insert = planned_rows.saturating_sub(available_below);
+    let scroll_rows_before_insert =
+        if screen_height == 1 { 0 } else { planned_rows.saturating_sub(available_below) };
     if scroll_rows_before_insert > viewport_area.top() {
         return ScrollbackInsertPlan {
             inserted_rows: 0,
@@ -1349,6 +1319,9 @@ fn viewport_area_after_insert_exact(
     if area.is_empty() || area.bottom() > screen_height {
         return None;
     }
+    if screen_height == 1 {
+        return Some(area);
+    }
     if inserted_rows > screen_height.saturating_sub(area.bottom()) {
         return None;
     }
@@ -1378,7 +1351,7 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChatDrawRequest, ChatTerminal, HistoryBatchKind, InlineViewportState, PendingHistoryBatch,
+        ChatTerminal, HistoryBatchKind, InlineViewportState, PendingHistoryBatch,
         RenderedHistoryRows, ScrollbackInsertAction, TerminalSnapshot,
         inline_viewport_reconfigure_clear_area, inline_viewport_scroll_rows_after_create,
         inline_viewport_top_after_create, plan_inline_geometry, plan_owned_insert, shift_area_up,
@@ -1697,22 +1670,6 @@ mod tests {
     }
 
     #[test]
-    fn scrollback_preflight_rejects_full_height_resize_replay_insert() {
-        let mut terminal = ChatTerminal::new(0);
-        terminal.reset_after_purge_replay_clear(124, 32);
-
-        let can_insert = terminal.can_insert_scrollback_rows(
-            ChatDrawRequest {
-                requested_inline_height: 32,
-                terminal: TerminalSnapshot::new(124, 32),
-            },
-            19,
-        );
-
-        assert!(!can_insert);
-    }
-
-    #[test]
     fn unsafe_pending_history_insert_is_deferred_without_error() {
         let mut terminal = ChatTerminal::new(0);
         terminal.state.owned_bottom = 32;
@@ -1725,8 +1682,9 @@ mod tests {
             Vec::new(),
         );
 
-        let inserted =
-            terminal.insert_history_batch(&mut batch, TerminalSnapshot::new(124, 32)).unwrap();
+        let inserted = terminal
+            .insert_history_batch(&mut batch, TerminalSnapshot::new(124, 32), usize::MAX)
+            .unwrap();
 
         assert_eq!(inserted, 0);
         assert_eq!(batch.next_row, 0);
