@@ -18,6 +18,10 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::fmt::FmtContext;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::util::SubscriberInitExt as _;
+
+#[cfg(test)]
+pub(crate) mod test_capture;
 
 pub mod targets {
     pub const APP_AUTH: &str = "app.auth";
@@ -104,15 +108,7 @@ impl LoggingRuntime {
         let (non_blocking, guard) = tracing_appender::non_blocking(writer);
 
         if detailed_diagnostics {
-            tracing_subscriber::fmt()
-                .json()
-                .flatten_event(true)
-                .with_env_filter(filter)
-                .with_writer(non_blocking)
-                .with_ansi(false)
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(true)
+            detailed_subscriber(filter, non_blocking)
                 .try_init()
                 .map_err(|e| anyhow::anyhow!("failed to initialize tracing subscriber: {e}"))?;
         } else {
@@ -173,6 +169,26 @@ impl LoggingRuntime {
 
         Ok(Self { _guard: Some(guard) })
     }
+}
+
+/// The detailed diagnostics format, shared by the runtime log and the unit-test capture.
+fn detailed_subscriber<W>(
+    filter: tracing_subscriber::EnvFilter,
+    writer: W,
+) -> impl Subscriber + Send + Sync + 'static
+where
+    W: for<'writer> tracing_subscriber::fmt::MakeWriter<'writer> + Send + Sync + 'static,
+{
+    tracing_subscriber::fmt()
+        .json()
+        .flatten_event(true)
+        .with_env_filter(filter)
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_file(true)
+        .with_line_number(true)
+        .with_target(true)
+        .finish()
 }
 
 #[must_use]

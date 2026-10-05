@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import test from "node:test";
+import { runTerminalSession } from "./terminal-session.mjs";
 
 const installerSource = fs.readFileSync(new URL("./install.sh", import.meta.url), "utf8").replace(/\r\n/gu, "\n");
 const helpers = [
@@ -13,6 +14,9 @@ const helpers = [
   "managed_path_lines", "manual_path_line",
   "remove_launcher_if_owned",
 ].map(installerFunction).join("\n");
+
+// Everything the installer defines before its first command: state defaults, output, and prompts.
+const installerPreamble = installerSource.slice(0, installerSource.indexOf("\nneed_cmd() {"));
 
 function installerFunction(name) {
   const start = installerSource.indexOf(`\n${name}() `) + 1;
@@ -220,13 +224,12 @@ if grep -q '# claude-rs PATH start' "$HOME/.profile"; then exit 1; fi
 });
 
 test("Unix cleanup prompt restores terminal state when cancelled", { skip: process.platform !== "linux" }, async () => {
-  const prefix = installerSource.slice(0, installerSource.indexOf("\nneed_cmd() {"));
   const promptHelpers = [
     "canonical_path", "path_entries", "commands_on_path", "launcher_contents",
     "is_script_install_dir", "script_install_directory_for_command", "install_directory_overlaps",
     "warn_other_claude_rs_commands", "stop_download_process", "cleanup", "on_signal",
   ].map(installerFunction).join("\n");
-  const harness = `${prefix}\n${promptHelpers}\n` + String.raw`
+  const harness = `${installerPreamble}\n${promptHelpers}\n` + String.raw`
 non_interactive=0
 progress_enabled=1
 yes=0
@@ -246,33 +249,63 @@ for app_dir in "$install_dir" "$other_dir"; do
 done
 PATH="$other_dir:$PATH"
 before=$(stty -g < /dev/tty)
-trap 'status=$?; cleanup "$status"; after=$(stty -g < /dev/tty); [ "$before" != "$after" ] || echo TTY_RESTORED; exit "$status"' EXIT
+finish() {
+  cleanup "$1"
+  after=$(stty -g < /dev/tty)
+  [ "$before" != "$after" ] || echo TTY_RESTORED
+  [ -e "$tmpdir" ] || echo TMPDIR_REMOVED
+}
+trap 'finish "$?"' EXIT
 trap 'on_signal 130' INT
 warn_other_claude_rs_commands
 echo UNEXPECTED_COMPLETION
 `;
-  const encoded = Buffer.from(harness).toString("base64");
-  const env = { ...process.env, TERM: "xterm", LC_ALL: "C", NO_COLOR: "1" };
-  delete env.CI;
-  // GNU timeout must preserve the foreground process group for Ctrl-C delivery.
-  const child = spawn("script", ["-q", "-e", "-c", `printf '%s' '${encoded}' | base64 -d | timeout --foreground 5 sh`, "/dev/null"], { env });
-  let output = "";
-  let cancelled = false;
-  const status = await new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.stdin.on("error", reject);
-    child.stderr.on("data", (chunk) => { output += chunk; });
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      if (!cancelled && output.includes("Uninstall this other script installation at")) {
-        cancelled = true;
-        child.stdin.write("\u0003");
-      }
-    });
-    child.on("close", resolve);
+  const { status, output } = await runTerminalSession(harness, (shown, terminal) => {
+    if (shown.includes("y Yes / N No")) terminal.interrupt();
   });
   assert.equal(status, 130, output);
   assert.match(output, /TTY_RESTORED/);
+  assert.match(output, /TMPDIR_REMOVED/);
   assert.match(output, /Installation cancelled/);
   assert.doesNotMatch(output, /UNEXPECTED_COMPLETION/);
+});
+
+test("Unix cleanup completes when a signal arrives after the installer started exiting", { skip: process.platform === "win32" }, () => {
+  const signalHandlers = ["stop_download_process", "cleanup", "on_signal"].map(installerFunction).join("\n");
+  const scenarios = [
+    {
+      // A failing installer is interrupted in cleanup's first step, before anything is restored or removed.
+      script: String.raw`
+stop_download_process() { kill -INT "$$"; }
+trap 'cleanup "$?"' EXIT
+trap 'on_signal 130' INT
+exit 3
+`,
+      status: 3,
+      message: /Installation failed/,
+    },
+    {
+      // The interrupt repeats after the first one started the exit, before cleanup runs.
+      script: String.raw`
+trap 'exit_status=$?; kill -INT "$$"; cleanup "$exit_status"' EXIT
+trap 'on_signal 130' INT
+kill -INT "$$"
+`,
+      status: 130,
+      message: /Installation cancelled/,
+    },
+  ];
+  for (const { script, status, message } of scenarios) {
+    const harness = `${installerPreamble}\n${signalHandlers}\n` + String.raw`
+frame_open=1
+tmpdir=$(mktemp -d)
+echo "TMPDIR=$tmpdir"
+` + script;
+    const result = spawnSync("sh", ["-c", harness], { encoding: "utf8", timeout: 20000 });
+    assert.equal(result.status, status, result.stderr);
+    assert.match(result.stderr, message);
+    const tmpdir = result.stdout.match(/^TMPDIR=(.+)$/m)?.[1];
+    assert.ok(tmpdir, result.stdout);
+    assert.equal(fs.existsSync(tmpdir), false, "cleanup left its temporary directory behind");
+  }
 });

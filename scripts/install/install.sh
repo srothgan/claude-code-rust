@@ -1558,6 +1558,8 @@ EOF
 }
 
 cleanup() {
+  # A signal arriving now must not end cleanup before the terminal and lock are restored.
+  trap '' HUP INT TERM
   exit_status="$1"
   stop_download_process
   progress_stop
@@ -1580,6 +1582,8 @@ cleanup() {
 # Exiting from the signal traps runs cleanup once and stops the installer, so
 # Ctrl-C at a prompt is never read as an answer.
 on_signal() {
+  # A repeated signal must not interrupt the exit before cleanup starts.
+  trap '' HUP INT TERM
   interrupted=1
   exit "$1"
 }

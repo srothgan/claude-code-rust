@@ -44,16 +44,16 @@ pub fn run(
         return write_bundle(cli, args, stdout, stderr, &paths);
     }
 
-    write_summary(stdout, &paths)
+    write_summary(stdout, &paths, HumanStyle::detect())
 }
 
 fn write_summary(
     stdout: &mut impl Write,
     paths: &crate::logging::DiagnosticsPaths,
+    style: HumanStyle,
 ) -> anyhow::Result<i32> {
     let runtime_logs = crate::logging::list_managed_runtime_logs_in(&paths.runtime_dir)?;
     let latest = crate::logging::latest_log_path_in(&paths.runtime_dir, &paths.legacy_log_path)?;
-    let style = HumanStyle::detect();
 
     writeln!(stdout, "{}", style.title("claude-rs logs"))?;
     writeln!(
@@ -594,7 +594,8 @@ mod tests {
         };
         let mut stdout = Vec::new();
 
-        let code = write_summary(&mut stdout, &paths).expect("summary");
+        let code =
+            write_summary(&mut stdout, &paths, super::HumanStyle::new(false)).expect("summary");
 
         assert_eq!(code, 0);
         let output = String::from_utf8(stdout).expect("utf8");

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { resolveRepoRoot } from "../shared/repo-root.mjs";
+import { runTerminalSession } from "./terminal-session.mjs";
 import {
   PLATFORM_PACKAGES,
   installArchiveName,
@@ -48,9 +49,8 @@ test("Unix y/n confirmations ignore trailing input without a timed drain", { ski
     ["y", "yes", "es\n"],
     ["n", "no", "o\n"],
   ]) {
-    const result = await runConfirmationScenario(input, { suffix, suffixDelay: 300, secondAnswerDelay: suffix ? 500 : 75 });
+    const result = await runConfirmationScenario(input, { suffix });
     assertConfirmationResult(result, expected);
-    assert.equal(result.prematureSecondAnswer, false, `${JSON.stringify(input)} answered the next prompt\n${result.output}`);
     assert.match(result.output, /y Yes \/ N No/);
   }
 });
@@ -180,7 +180,7 @@ test("Unix installer links manuals correctly with relative install directories",
   assert.equal(result.manualExistsAfterUninstall, false);
 });
 
-async function runConfirmationScenario(input, { suffix, suffixDelay = 75, secondAnswerDelay = 75, typed = false } = {}) {
+async function runConfirmationScenario(input, { suffix = "", typed = false } = {}) {
   // Run the real prompt functions in a controlling terminal, without installing anything.
   const source = fs.readFileSync(installerPath, "utf8").replace(/\r\n/gu, "\n");
   const functionsEnd = source.indexOf("\nneed_cmd() {");
@@ -195,44 +195,18 @@ if confirm_default_no "SECOND_QUESTION"; then echo SECOND_ANSWER=yes; else echo 
 after=$(stty -g < /dev/tty)
 [ "$before" != "$after" ] || echo TTY_RESTORED
 `;
-  const encoded = Buffer.from(harness).toString("base64");
-  const env = { ...process.env, TERM: "xterm", LC_ALL: "C", NO_COLOR: "1" };
-  delete env.CI;
-  // GNU timeout must preserve the foreground process group for terminal input.
-  const child = spawn("script", ["-q", "-e", "-c", `printf '%s' '${encoded}' | base64 -d | timeout --foreground 5 sh`, "/dev/null"], { env });
-  let output = "";
   let firstSent = false;
   let secondSent = false;
-  let prematureSecondAnswer = false;
-  const timers = [];
-
-  return await new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.stdin.on("error", reject);
-    child.stderr.on("data", (chunk) => { output += chunk; });
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      if (!firstSent && output.includes("FIRST_QUESTION")) {
-        firstSent = true;
-        child.stdin.write(input);
-        if (suffix) {
-          timers.push(setTimeout(() => child.stdin.write(suffix), suffixDelay));
-        }
-      }
-      if (!secondSent && output.includes("SECOND_QUESTION")) {
-        secondSent = true;
-        // Leave the second prompt unanswered long enough to detect a leaked Enter.
-        timers.push(setTimeout(() => {
-          prematureSecondAnswer = output.includes("SECOND_ANSWER=");
-          child.stdin.write(typed ? "yes\n" : "y");
-        }, secondAnswerDelay));
-      }
-    });
-    child.on("close", (status) => {
-      for (const timer of timers) clearTimeout(timer);
-      child.stdin.end();
-      resolve({ status, output, prematureSecondAnswer });
-    });
+  return await runTerminalSession(harness, (output, terminal) => {
+    if (!firstSent && output.includes("FIRST_QUESTION")) {
+      firstSent = true;
+      terminal.type(input);
+    }
+    if (!secondSent && output.includes("SECOND_QUESTION")) {
+      secondSent = true;
+      // The suffix reaches the second prompt ahead of its answer, so a prompt that accepts stray keys answers no.
+      terminal.type(`${suffix}${typed ? "yes\n" : "y"}`);
+    }
   });
 }
 

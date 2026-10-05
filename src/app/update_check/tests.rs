@@ -38,6 +38,8 @@ fn release_server(status: &str) -> (String, std::thread::JoinHandle<String>) {
                 Err(error) => panic!("release request failed: {error}"),
             }
         };
+        // macOS and Windows hand the listener's non-blocking mode to accepted sockets.
+        socket.set_nonblocking(false).expect("blocking request read");
         socket.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
         let mut request = Vec::new();
         let mut buffer = [0; 2048];

@@ -9,8 +9,12 @@ pub(super) struct HumanStyle {
 }
 
 impl HumanStyle {
+    pub(super) const fn new(color: bool) -> Self {
+        Self { color }
+    }
+
     pub(super) fn detect() -> Self {
-        Self { color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() }
+        Self::new(std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none())
     }
 
     pub(super) fn title(self, text: &str) -> String {

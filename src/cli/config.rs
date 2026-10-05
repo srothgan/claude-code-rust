@@ -37,7 +37,7 @@ pub fn run(
 }
 
 fn write_path(cli: &Cli, args: &ConfigPathArgs, stdout: &mut impl Write) -> anyhow::Result<i32> {
-    write_path_with_home_override(cli, args, None, stdout)
+    write_path_with_home_override(cli, args, None, stdout, HumanStyle::detect())
 }
 
 fn write_path_with_home_override(
@@ -45,6 +45,7 @@ fn write_path_with_home_override(
     args: &ConfigPathArgs,
     home_override: Option<&Path>,
     stdout: &mut impl Write,
+    style: HumanStyle,
 ) -> anyhow::Result<i32> {
     let project_root = project_root(cli)?;
     let inspection = inspect_config(cli, &project_root, home_override)?;
@@ -60,14 +61,14 @@ fn write_path_with_home_override(
     if args.json {
         write_json(stdout, &PathReport::from_inspection(&inspection, &project_root))?;
     } else {
-        write_path_human(stdout, &inspection)?;
+        write_path_human(stdout, &inspection, style)?;
     }
 
     Ok(0)
 }
 
 fn write_show(cli: &Cli, args: &ConfigShowArgs, stdout: &mut impl Write) -> anyhow::Result<i32> {
-    write_show_with_home_override(cli, args, None, stdout)
+    write_show_with_home_override(cli, args, None, stdout, HumanStyle::detect())
 }
 
 fn write_show_with_home_override(
@@ -75,6 +76,7 @@ fn write_show_with_home_override(
     args: &ConfigShowArgs,
     home_override: Option<&Path>,
     stdout: &mut impl Write,
+    style: HumanStyle,
 ) -> anyhow::Result<i32> {
     let project_root = project_root(cli)?;
     let inspection = inspect_config(cli, &project_root, home_override)?;
@@ -83,7 +85,7 @@ fn write_show_with_home_override(
     if args.json {
         write_json(stdout, &report)?;
     } else {
-        write_show_human(stdout, &report)?;
+        write_show_human(stdout, &report, style)?;
     }
 
     Ok(i32::from(report.has_failures()))
@@ -151,8 +153,8 @@ fn project_root(cli: &Cli) -> anyhow::Result<PathBuf> {
 fn write_path_human(
     stdout: &mut impl Write,
     inspection: &InspectedConfigDocuments,
+    style: HumanStyle,
 ) -> anyhow::Result<()> {
-    let style = HumanStyle::detect();
     writeln!(stdout, "{}", style.title("claude-rs config"))?;
     writeln!(stdout, "{} {}", style.detail_label("Summary:"), summary_counts(inspection))?;
     writeln!(stdout)?;
@@ -183,8 +185,11 @@ fn write_path_human(
     Ok(())
 }
 
-fn write_show_human(stdout: &mut impl Write, report: &ShowReport) -> anyhow::Result<()> {
-    let style = HumanStyle::detect();
+fn write_show_human(
+    stdout: &mut impl Write,
+    report: &ShowReport,
+    style: HumanStyle,
+) -> anyhow::Result<()> {
     writeln!(stdout, "{}", style.title("claude-rs config"))?;
     writeln!(stdout, "{} {}", style.detail_label("Summary:"), report.summary.as_human())?;
     writeln!(stdout)?;
@@ -792,7 +797,13 @@ mod tests {
         stdout: &mut impl Write,
     ) -> anyhow::Result<i32> {
         let cli = test_cli(project_root);
-        write_path_with_home_override(&cli, args, Some(project_root), stdout)
+        write_path_with_home_override(
+            &cli,
+            args,
+            Some(project_root),
+            stdout,
+            super::HumanStyle::new(false),
+        )
     }
 
     fn write_test_show(
@@ -801,7 +812,13 @@ mod tests {
         stdout: &mut impl Write,
     ) -> anyhow::Result<i32> {
         let cli = test_cli(project_root);
-        write_show_with_home_override(&cli, args, Some(project_root), stdout)
+        write_show_with_home_override(
+            &cli,
+            args,
+            Some(project_root),
+            stdout,
+            super::HumanStyle::new(false),
+        )
     }
 
     fn write_test_export(

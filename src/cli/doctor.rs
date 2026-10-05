@@ -55,7 +55,7 @@ pub fn run(cli: &Cli, args: &DoctorArgs, writer: &mut impl Write) -> anyhow::Res
         serde_json::to_writer_pretty(&mut *writer, &report)?;
         writeln!(writer)?;
     } else {
-        write_human_report(writer, &report)?;
+        write_human_report(writer, &report, HumanStyle::detect())?;
     }
 
     Ok(i32::from(args.strict && report.has_hard_failures()))
@@ -99,8 +99,11 @@ impl DoctorReport {
     }
 }
 
-fn write_human_report(writer: &mut impl Write, report: &DoctorReport) -> std::io::Result<()> {
-    let style = HumanStyle::detect();
+fn write_human_report(
+    writer: &mut impl Write,
+    report: &DoctorReport,
+    style: HumanStyle,
+) -> std::io::Result<()> {
     writeln!(writer, "{}", style.title("claude-rs doctor"))?;
     writeln!(writer, "{} {}", style.detail_label("Version:"), report.version)?;
     writeln!(
@@ -964,7 +967,8 @@ mod tests {
         };
         let mut output = Vec::new();
 
-        write_human_report(&mut output, &report).expect("write report");
+        write_human_report(&mut output, &report, super::HumanStyle::new(false))
+            .expect("write report");
 
         let output = String::from_utf8(output).expect("utf8");
         assert!(output.contains("claude-rs doctor"));

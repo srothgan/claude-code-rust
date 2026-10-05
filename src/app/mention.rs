@@ -1562,20 +1562,23 @@ mod tests {
 
         activate(&mut app);
         run_search(&mut app);
-        let initial_generation = app.file_index.generation;
         assert!(app.mention.as_ref().is_some_and(|mention| {
             mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs")
         }));
 
         app.input.set_text("@needle");
         let _ = app.input.set_cursor(0, "@needle".chars().count());
+        // Compare around the query change alone: draining events may also apply a rebuild
+        // requested by the watcher, which restarts the index for unrelated reasons.
+        let generation = app.file_index.generation;
         update_query(&mut app);
+        assert_eq!(app.file_index.generation, generation);
         run_search(&mut app);
 
         let mention = app.mention.as_ref().expect("mention should remain active");
-        assert_eq!(app.file_index.generation, initial_generation);
-        assert_eq!(mention.candidates.len(), 1);
-        assert_eq!(mention.candidates[0].rel_path, "src/nested/needle.rs");
+        let paths: Vec<&str> =
+            mention.candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect();
+        assert_eq!(paths, ["src/nested/needle.rs"]);
     }
 
     #[test]

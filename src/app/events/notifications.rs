@@ -48,20 +48,9 @@ mod tests {
     }
 
     fn notification_logs(action: impl FnOnce()) -> Vec<Value> {
-        let log = tempfile::NamedTempFile::new().expect("diagnostic file");
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .flatten_event(true)
-            .with_env_filter(crate::DiagnosticsPreset::Full.filter_directives())
-            .with_writer(std::sync::Mutex::new(log.reopen().expect("diagnostic writer")))
-            .finish();
-        tracing::subscriber::with_default(subscriber, action);
-        std::fs::read_to_string(log.path())
-            .expect("diagnostics")
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).expect("diagnostic JSON"))
-            .filter(|record| record["target"] == crate::logging::targets::APP_NOTIFY)
-            .collect()
+        let mut records = crate::logging::test_capture::capture(action);
+        records.retain(|record| record["target"] == crate::logging::targets::APP_NOTIFY);
+        records
     }
 
     fn app() -> App {

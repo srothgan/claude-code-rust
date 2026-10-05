@@ -1152,30 +1152,6 @@ mod tests {
         tool.pending_permission.as_ref().and_then(|permission| permission.subagent_context.clone())
     }
 
-    #[derive(Clone)]
-    struct SharedLogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    struct LogWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedLogWriter {
-        type Writer = LogWriter;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            LogWriter(std::sync::Arc::clone(&self.0))
-        }
-    }
-
-    impl std::io::Write for LogWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("log buffer lock").extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     #[test]
     fn turn_complete_removes_empty_tail_assistant() {
         let mut app = App::test_default();
@@ -1546,11 +1522,6 @@ mod tests {
 
     #[test]
     fn permission_request_applied_log_includes_subagent_and_display_fields() {
-        let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .with_writer(SharedLogWriter(std::sync::Arc::clone(&buffer)))
-            .finish();
         let context = SubagentPermissionContext {
             subagent_label: "reviewer".to_owned(),
             child_tool_name: "Bash".to_owned(),
@@ -1561,7 +1532,7 @@ mod tests {
             parent_raw_input: None,
         };
 
-        tracing::subscriber::with_default(subscriber, || {
+        let records = crate::logging::test_capture::capture(|| {
             log_permission_request_applied(
                 "session-1",
                 "bash-1",
@@ -1576,15 +1547,17 @@ mod tests {
             );
         });
 
-        let output =
-            String::from_utf8(buffer.lock().expect("log buffer lock").clone()).expect("utf8 log");
-        assert!(output.contains(r#""subagent_label":"reviewer""#));
-        assert!(output.contains(r#""subagent_parent_tool_call_id":"agent-1""#));
-        assert!(output.contains(r#""subagent_parent_model":"claude-opus-4-8""#));
-        assert!(output.contains(r#""subagent_child_tool_name":"Bash""#));
-        assert!(output.contains(r#""permission_display_title":"Allow command?""#));
-        assert!(output.contains(r#""permission_display_name":"Bash""#));
-        assert!(output.contains(r#""permission_display_description":"Runs a command""#));
+        let [record] = records.as_slice() else {
+            panic!("expected one diagnostics record, got {records:?}");
+        };
+        assert_eq!(record["event_name"], "permission_request_applied");
+        assert_eq!(record["subagent_label"], "reviewer");
+        assert_eq!(record["subagent_parent_tool_call_id"], "agent-1");
+        assert_eq!(record["subagent_parent_model"], "claude-opus-4-8");
+        assert_eq!(record["subagent_child_tool_name"], "Bash");
+        assert_eq!(record["permission_display_title"], "Allow command?");
+        assert_eq!(record["permission_display_name"], "Bash");
+        assert_eq!(record["permission_display_description"], "Runs a command");
     }
 
     #[test]

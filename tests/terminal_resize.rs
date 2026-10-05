@@ -668,7 +668,13 @@ fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_sav
 
 #[test]
 fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_completion() {
-    let mut test = TerminalTest::start("hold-activity", 3);
+    let mut test = TerminalTest::start_with_options(
+        "hold-activity",
+        3,
+        None,
+        &["--log-filter", "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug"],
+        false,
+    );
     test.submit("START_ACTIVITY", "START_ACTIVITY");
     test.wait_journal("reply-held");
     test.wait_screen("│ ◆ ");
@@ -712,22 +718,18 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
     assert!(
         screen.find("│ Tip:").expect("tip") < screen.find("QUEUED_ACTIVITY").expect("queued field")
     );
-    test.resize(25, 61);
-    test.wait_screen("◆ Thinking…");
-    {
+    test.resize_and_wait_for_draw(25, 61);
+    test.wait_until("cursor remains in editor after resize", |test| {
         let output = test.output.lock().expect("output");
-        let (row, _) = output.parser.screen().cursor_position();
-        assert!(
-            output
-                .parser
-                .screen()
-                .contents()
+        let screen = output.parser.screen();
+        let (row, _) = screen.cursor_position();
+        let contents = screen.contents();
+        contents.contains("◆ Thinking…")
+            && contents
                 .lines()
                 .nth(usize::from(row))
-                .is_some_and(|line| line.contains("DRAFT_ACTIVITY")),
-            "cursor remains in editor"
-        );
-    }
+                .is_some_and(|line| line.contains("DRAFT_ACTIVITY"))
+    });
     std::fs::write(&test.release_file, "requires_action").expect("wait boundary");
     test.wait_until("hidden activity while input is required", |test| {
         !test.screen().contains("Thinking…") && !test.screen().contains("Tip:")

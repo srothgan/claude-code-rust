@@ -21,6 +21,10 @@ pub struct BridgeClient {
     writer_task: Option<JoinHandle<anyhow::Result<()>>>,
 }
 
+/// How long the operating system gets to tear down a force-killed bridge process. This is
+/// independent of how long the caller waits for a graceful exit.
+const FORCED_EXIT_REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug)]
 pub enum BridgeShutdownOutcome {
     Graceful(std::process::ExitStatus),
@@ -255,7 +259,7 @@ impl BridgeClient {
                     error = %err,
                 );
             }
-            let status = tokio::time::timeout(graceful_timeout, self.child.wait())
+            let status = tokio::time::timeout(FORCED_EXIT_REAP_TIMEOUT, self.child.wait())
                 .await
                 .context("timed out while reaping bridge process after kill")?
                 .context("failed to reap bridge process after kill")?;
