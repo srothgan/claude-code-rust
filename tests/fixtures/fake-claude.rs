@@ -14,7 +14,7 @@ fn main() -> io::Result<()> {
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     std::fs::write(profile.join("auth-input"), input)?;
-    println!("AUTH_CHILD_READ");
+    println!("AUTH_INPUT_RECORDED");
     io::stdout().flush()?;
     while !profile.join("auth-release").exists() {
         std::thread::sleep(Duration::from_millis(20));

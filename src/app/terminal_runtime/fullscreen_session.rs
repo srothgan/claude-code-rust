@@ -33,9 +33,17 @@ pub(super) fn draw_fullscreen_surface_frame<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> anyhow::Result<()> {
-    terminal
+    let area = terminal
         .draw(|frame| crate::ui::render_fullscreen_surface(frame, app))
-        .map(|_| ())
+        .map(|frame| frame.area)
         .map_err(|err| anyhow!("failed to draw fullscreen surface: {err}"))?;
+    tracing::debug!(
+        target: crate::logging::targets::APP_RENDER,
+        event_name = "fullscreen_surface_draw",
+        message = "fullscreen surface repainted",
+        outcome = "success",
+        terminal_width = area.width,
+        terminal_height = area.height,
+    );
     Ok(())
 }
