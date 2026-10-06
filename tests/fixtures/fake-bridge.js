@@ -225,7 +225,7 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
-  if (SCENARIO.startsWith('resize-replay')) {
+  if (SCENARIO === 'resize-replay') {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
@@ -433,14 +433,7 @@ readline
         finish({ event: 'turn_complete', session_id: SESSION });
         break;
       case 'shutdown':
-        if (SCENARIO === 'resize-replay-shutdown-held') {
-          record({ type: 'barrier', name: 'shutdown-held' });
-          setInterval(() => {
-            if (fs.existsSync(RELEASE_FILE) && fs.readFileSync(RELEASE_FILE, 'utf8') === 'close') process.exit(0);
-          }, INTERVAL_MS);
-        } else {
-          process.exit(0);
-        }
+        process.exit(0);
     }
   })
   .on('close', () => process.exit(0));

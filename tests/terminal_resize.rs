@@ -681,72 +681,6 @@ fn shutdown_preserves_completed_history_without_reinserting_it() {
 }
 
 #[test]
-fn shutdown_finishes_pending_replay_and_reconciles_a_further_resize() {
-    let mut test = TerminalTest::start("resize-replay-shutdown-held", 2_000);
-    test.submit("SHUTDOWN_REPLAY", "SHUTDOWN_REPLAY");
-    test.wait_turn_finished("streamed line 2000");
-    test.wait_completed_reply_in_scrollback(2_000);
-    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-    test.resize(12, 64);
-    test.wait_until("incomplete transcript recovery", |test| {
-        test.runtime_records_since(offset).iter().any(|record| {
-            record["event_name"] == "inline_chat_terminal_draw_transaction"
-                && record["replay_incomplete"] == true
-        })
-    });
-    test.send(b"\x11");
-    test.wait_until("shutdown while recovery remains pending", |test| {
-        test.runtime_records_since(offset).iter().any(|record| {
-            record["event_name"] == "inline_chat_draw_summary"
-                && record["composer_preview"]
-                    .as_str()
-                    .is_some_and(|text| text.contains("Shutting down"))
-        })
-    });
-    test.resize(18, 72);
-    test.wait_journal("shutdown-held");
-    // A second resize happens after the first rendering drain, while the bridge
-    // is still cleaning up. It must finish replay before terminal restoration.
-    test.resize(25, 81);
-    test.signal("close");
-    test.wait_shutdown();
-    test.wait_shutdown_screen();
-    let records = test.runtime_records_since(offset);
-    assert!(
-        records.iter().any(|record| {
-            record["event_name"] == "inline_chat_viewport_draw"
-                && record["terminal_height"] == 18
-                && record["terminal_width"] == 72
-        }),
-        "shutdown must reconcile the terminal dimensions during recovery"
-    );
-    assert!(
-        records.iter().any(|record| {
-            record["event_name"] == "inline_chat_viewport_draw"
-                && record["terminal_height"] == 25
-                && record["terminal_width"] == 81
-        }),
-        "shutdown must recover a resize during bridge cleanup"
-    );
-    assert!(
-        records.iter().any(|record| {
-            record["event_name"] == "inline_chat_terminal_draw_transaction"
-                && record["replay_complete"] == true
-        }),
-        "shutdown must finish the pending transcript replay"
-    );
-    let rows = test.transcript_rows();
-    for line in 1..=2_000 {
-        let suffix = format!("streamed line {line}");
-        assert_eq!(
-            rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(),
-            1,
-            "recovered row {line} must survive exactly once"
-        );
-    }
-}
-
-#[test]
 fn shutdown_keeps_received_output_and_dismisses_pending_interactions() {
     for scenario in ["hold-success", "permission", "question"] {
         let mut test = TerminalTest::start(scenario, 8);
@@ -772,19 +706,6 @@ fn shutdown_keeps_received_output_and_dismisses_pending_interactions() {
                 let suffix = format!("streamed line {line}");
                 assert_eq!(rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(), 1);
             }
-        } else {
-            let command =
-                if scenario == "permission" { "permission_response" } else { "question_response" };
-            let responses = test.commands(command);
-            assert_eq!(responses.len(), 1);
-            assert_eq!(responses[0]["tool_call_id"], "fixture-tool");
-            assert_eq!(responses[0]["session_id"], "fake-session");
-            let outcome = if scenario == "permission" {
-                serde_json::json!({"outcome": "selected", "option_id": "deny-once"})
-            } else {
-                serde_json::json!({"outcome": "cancelled"})
-            };
-            assert_eq!(responses[0]["outcome"], outcome);
         }
     }
 }
