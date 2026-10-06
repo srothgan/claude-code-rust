@@ -89,6 +89,8 @@ Presentation preferences are projections of the acknowledged config snapshot; Ru
 
 Chat reading owns a stable transcript-segment anchor and a rendered-text position; the saved Auto-scroll setting controls only the following policy. Reading suspends scrollback insertion, survives reflow of retained content, and returns to ordinary incremental history commits through an explicit keymap action.
 
+Shutdown redraws the live viewport without resetting committed history. Reading returns to live output so its viewport copy does not remain beside native scrollback. The terminal owner finishes pending resize recovery and transcript replay before restoration; an explicit force interrupt can stop that recovery.
+
 `/copy` derives its material from the canonical response text and the text-joining rule shared with rendering, then writes through the clipboard boundary shared with MCP authorization. Its picker owns only the current selection and retry state.
 
 ### Turn activity and thinking

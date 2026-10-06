@@ -225,7 +225,7 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
-  if (SCENARIO === 'resize-replay') {
+  if (SCENARIO.startsWith('resize-replay')) {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
@@ -421,7 +421,9 @@ readline
           record({ type: 'barrier', name: 'background-permission-answered' });
           break;
         }
-        if (!active || message.tool_call_id !== 'fixture-tool') throw new Error('Unexpected interaction response');
+        if (message.tool_call_id !== 'fixture-tool') throw new Error('Unexpected interaction response');
+        // Like the real bridge, tolerate a resolver disappearing on cancellation.
+        if (!active) break;
         send({ event: 'session_update', session_id: SESSION, update: {
           type: 'tool_call_update', tool_call_update: {
             tool_call_id: 'fixture-tool', source_message_uuid: null,
@@ -431,7 +433,14 @@ readline
         finish({ event: 'turn_complete', session_id: SESSION });
         break;
       case 'shutdown':
-        process.exit(0);
+        if (SCENARIO === 'resize-replay-shutdown-held') {
+          record({ type: 'barrier', name: 'shutdown-held' });
+          setInterval(() => {
+            if (fs.existsSync(RELEASE_FILE) && fs.readFileSync(RELEASE_FILE, 'utf8') === 'close') process.exit(0);
+          }, INTERVAL_MS);
+        } else {
+          process.exit(0);
+        }
     }
   })
   .on('close', () => process.exit(0));

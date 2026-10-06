@@ -600,6 +600,10 @@ impl TerminalTest {
 
     fn shutdown(&mut self) {
         self.send(b"\x11"); // Normal Ctrl+Q shutdown, not a forced kill.
+        self.wait_shutdown();
+    }
+
+    fn wait_shutdown(&mut self) {
         let status = self.child.wait_for_exit(Duration::from_secs(15));
         assert!(
             status.as_ref().is_some_and(ExitStatus::success),
@@ -614,6 +618,206 @@ impl TerminalTest {
         let text = String::from_utf8_lossy(&output.raw);
         assert!(!text.contains(OWNED_REGION_ERROR), "{}", tail(&text, 2000));
     }
+
+    fn wait_shutdown_screen(&self) {
+        // ConPTY consumes focus-reporting and line-wrap mode changes. The
+        // shutdown composer hides its cursor; terminal restoration shows it.
+        let started = Instant::now();
+        loop {
+            let screen = self.output.lock().expect("output lock").parser.screen().clone();
+            if screen.contents().contains("Shutting down") && !screen.hide_cursor() {
+                return;
+            }
+            assert!(
+                started.elapsed() < WAIT_LIMIT,
+                "final shutdown screen: {}",
+                self.diagnostics()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+#[test]
+fn shutdown_preserves_completed_history_without_reinserting_it() {
+    for mode in ["live", "reading", "fullscreen"] {
+        let mut test = TerminalTest::start("resize-replay", 240);
+        test.submit("SHUTDOWN_HISTORY", "SHUTDOWN_HISTORY");
+        test.wait_turn_finished("streamed line 240");
+        test.wait_completed_reply_in_scrollback(240);
+        if mode == "reading" {
+            test.send(b"\x1b[5~");
+            test.wait_screen("Reading output");
+        } else if mode == "fullscreen" {
+            test.submit("/config", "/config");
+            test.wait_settings_ready("Description:");
+            assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
+        }
+        let offset =
+            std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+        test.shutdown();
+        test.wait_shutdown_screen();
+        let rows = test.transcript_rows();
+        for line in 1..=240 {
+            let suffix = format!("streamed line {line}");
+            assert_eq!(
+                rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(),
+                1,
+                "{mode}: completed row {line} must survive exactly once"
+            );
+        }
+        let records = test.runtime_records_since(offset);
+        assert!(
+            !records
+                .iter()
+                .any(|record| record["event_name"] == "inline_chat_scrollback_insert_applied"),
+            "{mode}: closing must preserve committed history without writing it again"
+        );
+        let screen = test.output.lock().expect("output lock").parser.screen().clone();
+        assert!(!screen.alternate_screen(), "shutdown must return to the main screen");
+        assert!(!screen.hide_cursor(), "shutdown must restore the cursor");
+        assert!(screen.contents().contains("Shutting down"));
+    }
+}
+
+#[test]
+fn shutdown_finishes_pending_replay_and_reconciles_a_further_resize() {
+    let mut test = TerminalTest::start("resize-replay-shutdown-held", 2_000);
+    test.submit("SHUTDOWN_REPLAY", "SHUTDOWN_REPLAY");
+    test.wait_turn_finished("streamed line 2000");
+    test.wait_completed_reply_in_scrollback(2_000);
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.resize(12, 64);
+    test.wait_until("incomplete transcript recovery", |test| {
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_terminal_draw_transaction"
+                && record["replay_incomplete"] == true
+        })
+    });
+    test.send(b"\x11");
+    test.wait_until("shutdown while recovery remains pending", |test| {
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_draw_summary"
+                && record["composer_preview"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Shutting down"))
+        })
+    });
+    test.resize(18, 72);
+    test.wait_journal("shutdown-held");
+    // A second resize happens after the first rendering drain, while the bridge
+    // is still cleaning up. It must finish replay before terminal restoration.
+    test.resize(25, 81);
+    test.signal("close");
+    test.wait_shutdown();
+    test.wait_shutdown_screen();
+    let records = test.runtime_records_since(offset);
+    assert!(
+        records.iter().any(|record| {
+            record["event_name"] == "inline_chat_viewport_draw"
+                && record["terminal_height"] == 18
+                && record["terminal_width"] == 72
+        }),
+        "shutdown must reconcile the terminal dimensions during recovery"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["event_name"] == "inline_chat_viewport_draw"
+                && record["terminal_height"] == 25
+                && record["terminal_width"] == 81
+        }),
+        "shutdown must recover a resize during bridge cleanup"
+    );
+    assert!(
+        records.iter().any(|record| {
+            record["event_name"] == "inline_chat_terminal_draw_transaction"
+                && record["replay_complete"] == true
+        }),
+        "shutdown must finish the pending transcript replay"
+    );
+    let rows = test.transcript_rows();
+    for line in 1..=2_000 {
+        let suffix = format!("streamed line {line}");
+        assert_eq!(
+            rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(),
+            1,
+            "recovered row {line} must survive exactly once"
+        );
+    }
+}
+
+#[test]
+fn shutdown_keeps_received_output_and_dismisses_pending_interactions() {
+    for scenario in ["hold-success", "permission", "question"] {
+        let mut test = TerminalTest::start(scenario, 8);
+        test.submit("SHUTDOWN_ACTIVE", "SHUTDOWN_ACTIVE");
+        let marker = match scenario {
+            "permission" => "Allow once",
+            "question" => "Choose fixture destination",
+            _ => "streamed line 8",
+        };
+        test.wait_screen(marker);
+        if scenario == "hold-success" {
+            test.wait_journal("reply-held");
+        }
+        test.shutdown();
+        test.wait_shutdown_screen();
+        let screen = test.screen();
+        assert!(screen.contains("Shutting down"));
+        assert!(!screen.contains("Allow once") && !screen.contains("Choose fixture destination"));
+        assert_eq!(test.commands("cancel_turn").len(), 1);
+        if scenario == "hold-success" {
+            let rows = test.transcript_rows();
+            for line in 1..=8 {
+                let suffix = format!("streamed line {line}");
+                assert_eq!(rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(), 1);
+            }
+        } else {
+            let command =
+                if scenario == "permission" { "permission_response" } else { "question_response" };
+            let responses = test.commands(command);
+            assert_eq!(responses.len(), 1);
+            assert_eq!(responses[0]["tool_call_id"], "fixture-tool");
+            assert_eq!(responses[0]["session_id"], "fake-session");
+            let outcome = if scenario == "permission" {
+                serde_json::json!({"outcome": "selected", "option_id": "deny-once"})
+            } else {
+                serde_json::json!({"outcome": "cancelled"})
+            };
+            assert_eq!(responses[0]["outcome"], outcome);
+        }
+    }
+}
+
+#[test]
+fn shutdown_force_interrupt_can_stop_pending_transcript_recovery() {
+    let mut test = TerminalTest::start("resize-replay", 2_000);
+    test.submit("FORCE_SHUTDOWN_REPLAY", "FORCE_SHUTDOWN_REPLAY");
+    test.wait_turn_finished("streamed line 2000");
+    test.wait_completed_reply_in_scrollback(2_000);
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.resize(12, 64);
+    test.wait_until("incomplete transcript recovery", |test| {
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_terminal_draw_transaction"
+                && record["replay_incomplete"] == true
+        })
+    });
+    test.send(b"\x11\x03"); // Request shutdown, then explicitly force it.
+    let status = test.child.wait_for_exit(Duration::from_secs(15));
+    assert!(status.as_ref().is_some_and(ExitStatus::success), "force exit: {}", test.diagnostics());
+    test.wait_shutdown_screen();
+    assert!(
+        !test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_terminal_draw_transaction"
+                && record["replay_complete"] == true
+        }),
+        "force exit must not wait for the remaining transcript replay"
+    );
+    assert!(
+        test.missing_reply_row(2_000).is_some(),
+        "the fixture must still have pending recovery"
+    );
 }
 
 #[test]

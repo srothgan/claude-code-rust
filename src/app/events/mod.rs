@@ -83,12 +83,18 @@ impl TerminalEventOutcome {
 
 pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcome {
     if app.shutdown_requested() {
-        if let Event::Key(key) = event
-            && should_dispatch_key_event(key)
-            && super::keys::is_ctrl_char_shortcut(key, 'c')
-        {
-            app.force_shutdown();
-            return TerminalEventOutcome::handled(true);
+        match event {
+            Event::Key(key)
+                if should_dispatch_key_event(key)
+                    && super::keys::is_ctrl_char_shortcut(key, 'c') =>
+            {
+                app.force_shutdown();
+                return TerminalEventOutcome::handled(true);
+            }
+            Event::Resize(width, height) => {
+                return TerminalEventOutcome::handled(handle_resize(app, width, height));
+            }
+            _ => {}
         }
         return TerminalEventOutcome::ignored();
     }

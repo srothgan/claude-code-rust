@@ -307,24 +307,72 @@ async fn run_tui_loop(
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             tab_title::update_tab_title(app);
         }
-        let (width, height) =
-            crossterm::terminal::size().context("failed to read terminal size before draw")?;
-        events::reconcile_terminal_size(app, width, height);
-        terminal_runtime.apply_surface_rebuilds(app)?;
-        if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
-            terminal_runtime.draw_active_surface(app)?;
-        }
+        draw_pending_surface(app, terminal_runtime)?;
 
         if app.shutdown_requested() {
+            finish_shutdown_render(app, terminal_runtime, &mut events).await?;
             if let Some(events) = events.as_mut() {
                 shutdown_connection_with_interrupts(app, events).await;
             } else {
                 connect::shutdown_connection(app).await;
             }
+            // Cleanup still accepts terminal resizes. Reconcile any final size
+            // change and finish its recovery before restoring terminal modes.
+            finish_shutdown_render(app, terminal_runtime, &mut events).await?;
             break;
         }
     }
 
+    Ok(())
+}
+
+fn draw_pending_surface(
+    app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+) -> anyhow::Result<()> {
+    let (width, height) =
+        crossterm::terminal::size().context("failed to read terminal size before draw")?;
+    events::reconcile_terminal_size(app, width, height);
+    terminal_runtime.apply_surface_rebuilds(app)?;
+    if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
+        terminal_runtime.draw_active_surface(app)?;
+    }
+    Ok(())
+}
+
+async fn finish_shutdown_render(
+    app: &mut App,
+    terminal_runtime: &mut terminal_runtime::TerminalRuntime,
+    events: &mut Option<TerminalInput>,
+) -> anyhow::Result<()> {
+    let mut interval = event_loop_interval();
+    let mut os_shutdown = Box::pin(wait_for_shutdown_signal().fuse());
+    // The terminal owner requests another draw when replay is incomplete or a
+    // resize interrupts a transaction. Keep its progress instead of resetting it.
+    while !app.shutdown_forced() {
+        draw_pending_surface(app, terminal_runtime)?;
+        if !app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
+            break;
+        }
+        tokio::select! {
+            Some(Ok(event)) = next_terminal_event(events) => {
+                let _ = events::handle_terminal_event(app, event);
+            }
+            signal = &mut os_shutdown => {
+                match signal {
+                    Ok(()) => app.force_shutdown(),
+                    Err(err) => tracing::warn!(
+                        target: crate::logging::targets::APP_LIFECYCLE,
+                        event_name = "shutdown_force_listener_failed",
+                        message = "OS shutdown listener failed during final rendering",
+                        outcome = "degraded",
+                        error_message = %err,
+                    ),
+                }
+            }
+            _ = interval.tick() => {}
+        }
+    }
     Ok(())
 }
 
@@ -439,7 +487,7 @@ fn prepare_app_shutdown(app: &mut App) {
     app.mention = None;
     app.slash.clear();
     app.subagent = None;
-    app.request_chat_visible_rebuild();
+    app.request_chat_repaint();
 
     // Dismiss all pending inline permissions (reject via last option)
     for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
