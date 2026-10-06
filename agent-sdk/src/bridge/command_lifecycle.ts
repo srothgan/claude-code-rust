@@ -12,7 +12,7 @@ import {
   slashError,
   writeEvent,
 } from "./events.js";
-import { mapSessionMessagesToUpdates } from "./history.js";
+import { getSessionTranscriptMessages, mapSessionMessagesToUpdates } from "./history.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import {
   awaitSessionInitialization,
@@ -286,11 +286,11 @@ async function resume(
       return;
     }
     setSessionListingDir(matched.cwd ?? process.cwd());
-    const historyMessages = await getSessionMessages(
+    const historyMessages = await getSessionTranscriptMessages(
       command.session_id,
       matched.cwd
-        ? { dir: matched.cwd, includeSystemMessages: true }
-        : { includeSystemMessages: true },
+        ? { dir: matched.cwd }
+        : {},
     );
     const resumeUpdates = mapSessionMessagesToUpdates(historyMessages);
     const staleSessions = Array.from(sessions.values());
@@ -303,6 +303,7 @@ async function resume(
       ...(requestId ? { requestId } : {}),
       sessionId: command.session_id,
       fields: {
+        history_message_count: historyMessages.length,
         history_update_count: resumeUpdates.length,
         stale_session_count: staleSessions.length,
       },

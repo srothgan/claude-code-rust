@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { SettingsMutation, SettingsResult, SettingsSnapshot } from "./types.js";
+import type { SessionUpdate } from "./types.js";
 
 type BridgeEnvelope = Record<string, unknown>;
 
@@ -378,6 +379,7 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
     export * from ${JSON.stringify(sdkPath)};
     import { appendFileSync } from "node:fs";
     import { resolveSettings as sdkResolveSettings } from ${JSON.stringify(sdkPath)};
+    import { getSessionMessages as sdkGetSessionMessages, importSessionToStore as sdkImportSessionToStore } from ${JSON.stringify(sdkPath)};
     export async function resolveSettings(options) {
       const managedSettings = process.env.SETTINGS_POLICY_FIXTURE;
       return sdkResolveSettings({ ...options, ...(managedSettings ? { serverManagedSettings: JSON.parse(managedSettings) } : {}) });
@@ -388,7 +390,8 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       const seeded = JSON.parse(process.env.STARTUP_SESSIONS_FIXTURE ?? "[]");
       return [...seeded, ...[...saved.keys()].map((sessionId, index) => ({ sessionId, cwd: saved.get(sessionId).cwd, lastModified: index + 1 }))].filter(entry => !options?.dir || entry.cwd === options.dir);
     }
-    export async function getSessionMessages() { return []; }
+    export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
+    export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
     const saved = new Map();
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
@@ -505,6 +508,87 @@ async function nextUltracode(bridge: SpawnedBridge): Promise<unknown> {
   const event = await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "ultracode_update");
   return (event.update as BridgeEnvelope).ultracode;
 }
+
+test("resume command restores the screenshot conversation without internal task XML", async () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-resume-")));
+  const cwd = process.cwd();
+  const configDir = join(directory, "config");
+  const projectDir = join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  mkdirSync(projectDir, { recursive: true });
+  const sessionId = "f96f66ae-b5d4-4bc2-b5a3-08336cf4e850";
+  const completed = `<task-notification>
+<task-id>bbwikd6z7</task-id>
+<tool-use-id>toolu_01DExEGoUHANdvdafPRrG1ks</tool-use-id>
+<output-file>/fixture/tasks/bbwikd6z7.output</output-file>
+<status>completed</status>
+
+<summary>Background command "Check docs references to render events and read the fake auth CLI" completed (exit code 0)</summary>
+</task-notification>`;
+  const stopped = `<task-notification>
+<task-id>bdxdmq200</task-id>
+<tool-use-id>toolu_01CeX92NEHVLshRmsFsVRMX5</tool-use-id>
+<status>stopped</status>
+<summary>Background shell command didn't finish before the previous session ended</summary>
+<note>No completion record was found for it in the previous session. It may have been stopped (via the UI, Monitor timeout, or agent teardown — these leave no transcript marker), or it may have been running when the previous Claude Code process exited. Check the output file for partial results before assuming it completed.</note>
+</task-notification>`;
+  const records: Record<string, unknown>[] = [];
+  const add = (uuid: string, parentUuid: string | null, type: string, message: unknown, extra = {}) => {
+    records.push({ uuid, parentUuid, type, message, sessionId, cwd, timestamp: `2026-10-06T11:07:${String(records.length).padStart(2, "0")}.000Z`, ...extra });
+  };
+  add("earlier-user", null, "user", { role: "user", content: [{ type: "text", text: "Earlier conversation" }] });
+  add("earlier-answer", "earlier-user", "assistant", { id: "earlier", role: "assistant", content: [{ type: "text", text: "Earlier response" }] });
+  add("boundary", null, "system", undefined, { subtype: "compact_boundary", logicalParentUuid: "earlier-answer" });
+  add("compact-summary", "boundary", "user", { role: "user", content: "Internal compaction summary" }, { isCompactSummary: true });
+  add("check", "compact-summary", "user", { role: "user", content: "any other places/test that had this place useless sloppy issue?" }, { origin: { kind: "human" } });
+  add("tool", "check", "assistant", { id: "read", role: "assistant", content: [{ type: "tool_use", id: "read-source", name: "Read", input: { file_path: "fixture.xml" } }] });
+  add("tool-result", "tool", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "read-source", content: "<source>legitimate XML tool output</source>" }] });
+  add("completed", "tool-result", "user", { role: "user", content: completed }, { origin: { kind: "task-notification", producer: "session-task" } });
+  add("interrupted", "completed", "user", { role: "user", content: [{ type: "text", text: "[Request interrupted by user]" }] });
+  add("no-response", "interrupted", "assistant", { id: "interrupted-response", role: "assistant", content: [{ type: "text", text: "No response requested." }] });
+  add("stopped", "no-response", "user", { role: "user", content: stopped }, { origin: { kind: "task-notification" } });
+  add("hello", "stopped", "user", { role: "user", content: [{ type: "text", text: "hello? does this session onyl hold two messages?" }] }, { origin: { kind: "human" } });
+  add("answer", "hello", "assistant", { id: "answer", role: "assistant", content: [{ type: "text", text: "No, the session holds everything." }] });
+  add("user-xml", "answer", "user", { role: "user", content: [{ type: "text", text: "<task-notification>user-provided XML</task-notification>" }] }, { origin: { kind: "human" } });
+  const transcriptPath = join(projectDir, `${sessionId}.jsonl`);
+  const transcript = `${records.map(record => JSON.stringify(record)).join("\n")}\n`;
+  writeFileSync(transcriptPath, transcript);
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    CLAUDE_CONFIG_DIR: configDir,
+    CLAUDE_CODE_PROJECT_DIR_NAME: undefined,
+    RESUME_TRANSCRIPT_FIXTURE: "1",
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId, cwd, lastModified: 1 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "resume_session", session_id: sessionId, request_id: "resume-screenshot", launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected" || event.event === "slash_command_error");
+    assertProtocolEvent(connected, "connected");
+    assert.equal(connected.session_id, sessionId);
+    assert.equal(connected.request_id, "resume-screenshot");
+    const updates = connected.history_updates as SessionUpdate[];
+    const text = updates.filter(update => update.type === "user_message_chunk" || update.type === "agent_message_chunk");
+    assert.deepEqual(text.map(update => [update.type, update.source_message_uuid, update.content]), [
+      ["user_message_chunk", "earlier-user", { type: "text", text: "Earlier conversation" }],
+      ["agent_message_chunk", "earlier-answer", { type: "text", text: "Earlier response" }],
+      ["user_message_chunk", "check", { type: "text", text: "any other places/test that had this place useless sloppy issue?" }],
+      ["user_message_chunk", "interrupted", { type: "text", text: "[Request interrupted by user]" }],
+      ["agent_message_chunk", "no-response", { type: "text", text: "No response requested." }],
+      ["user_message_chunk", "hello", { type: "text", text: "hello? does this session onyl hold two messages?" }],
+      ["agent_message_chunk", "answer", { type: "text", text: "No, the session holds everything." }],
+      ["user_message_chunk", "user-xml", { type: "text", text: "<task-notification>user-provided XML</task-notification>" }],
+    ]);
+    assert.deepEqual(updates.filter(update => update.type === "message_metadata").map(update => update.source_message_uuid), ["earlier-user", "earlier-answer", "check", "tool", "tool-result", "interrupted", "no-response", "hello", "answer", "user-xml"]);
+    const tools = updates.filter(update => update.type === "tool_call");
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].tool_call.tool_call_id, "read-source");
+    assert.equal(tools[0].tool_call.status, "completed");
+    assert.equal(tools[0].tool_call.raw_output, "<source>legitimate XML tool output</source>");
+    assert.equal(readFileSync(transcriptPath, "utf8"), transcript);
+  } finally {
+    await cleanup();
+    assert.equal(dirname(directory), realpathSync(tmpdir()));
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("spawned bridge restores normalized command inventory after repeated clear and a new session", async () => {
   const { bridge, cleanup } = ultracodeFixtureBridge({ SLASH_COMMANDS_FIXTURE: "1" });

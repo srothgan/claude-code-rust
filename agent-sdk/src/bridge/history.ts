@@ -1,8 +1,11 @@
 import { messageMetadata } from "./presentation_metadata.js";
 import { nativeNotification } from "./notifications.js";
+import { getSessionMessages, importSessionToStore } from "@anthropic-ai/claude-agent-sdk";
 import type {
   SDKSessionInfo,
   SessionMessage,
+  SessionStore,
+  SessionStoreEntry,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Json,
@@ -23,6 +26,37 @@ import {
   isToolUseBlockType,
   parseToolNonExecutionMetadata,
 } from "./tooling.js";
+
+/** Load display history across compactions without changing the model's saved context. */
+export async function getSessionTranscriptMessages(
+  sessionId: string,
+  options: { dir?: string } = {},
+): Promise<SessionMessage[]> {
+  const entries: SessionStoreEntry[] = [];
+  const store: SessionStore = {
+    append: async (_key, batch) => { entries.push(...batch); },
+    load: async () => {
+      const uuids = new Set(entries.map(entry => entry.uuid));
+      return entries.map(entry => {
+        if (
+          entry.type !== "system" || entry.subtype !== "compact_boundary" ||
+          typeof entry.logicalParentUuid !== "string" || !uuids.has(entry.logicalParentUuid)
+        ) {
+          return entry;
+        }
+        // Preserved messages already occur in the original transcript chain.
+        // Reparenting them after the summary would create a cycle across this link.
+        const compactMetadata = { ...asRecordOrNull(entry.compactMetadata) };
+        delete compactMetadata.preservedMessages;
+        delete compactMetadata.preservedSegment;
+        return { ...entry, parentUuid: entry.logicalParentUuid, compactMetadata };
+      });
+    },
+  };
+  // Import streams the complete file, including history before the SDK's large-file cutoff.
+  await importSessionToStore(sessionId, store, { ...options, includeSubagents: false });
+  return getSessionMessages(sessionId, { ...options, includeSystemMessages: true, sessionStore: store });
+}
 
 function nonEmptyTrimmed(value: unknown): string | undefined {
   if (typeof value !== "string") {
@@ -397,6 +431,15 @@ export function mapSessionMessagesToUpdates(
   const taskToolUseIds = new Map<string, string>();
 
   for (const entry of messages) {
+    const record = asRecordOrNull(entry);
+    const origin = asRecordOrNull(record?.origin);
+    // Background-task inputs belong to Claude's context, not the visible user transcript.
+    // Peer and scheduled messages carry a subkind and remain eligible for display.
+    if (record?.isCompactSummary === true || (
+      entry.type === "user" && origin?.kind === "task-notification" &&
+      origin.subkind === undefined &&
+      (origin.producer === undefined || origin.producer === "session-task")
+    )) continue;
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
     const entrySourceMessageUuid =
       typeof entry.uuid === "string" ? entry.uuid : undefined;
@@ -438,7 +481,9 @@ export function mapSessionMessagesToUpdates(
             ? message.parent_tool_use_id
             : null;
 
-      const content = Array.isArray(message.content) ? message.content : [];
+      const content = typeof message.content === "string"
+        ? [{ type: "text", text: message.content }]
+        : Array.isArray(message.content) ? message.content : [];
       const nonExecutionByToolUseId = parseToolNonExecutionMetadata(
         Object.hasOwn(entry, "tool_result_meta")
           ? (entry as unknown as Record<string, unknown>).tool_result_meta
