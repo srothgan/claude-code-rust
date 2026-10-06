@@ -80,8 +80,8 @@ pub fn status_icon(
 
 /// Render a tool call with caching. Only re-renders when cache is stale.
 ///
-/// The title is rendered live and the body is cached independently. Tool content
-/// is capped by policy, while pending permission/question controls remain visible.
+/// Title content and body are cached independently; title chrome stays live.
+/// Tool content is capped by policy, while pending permission/question controls remain visible.
 pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
     render_context: ToolCallRenderContext<'_>,

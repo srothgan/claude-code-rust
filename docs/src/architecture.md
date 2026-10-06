@@ -75,6 +75,8 @@ Automatic updates uses the same catalog and writer for the User-only `updates.au
 
 ### Presentation and timing
 
+Tool titles share a one-line display projection and a source-keyed inline cache in the existing block cache. Shell command titles render literally; other tool titles retain Markdown styling. Full titles and command inputs remain canonical data. Spinner/status chrome, metadata badges and width clipping stay live, while unchanged title content survives body updates and resize. Inline cache bytes participate in the existing render budget and eviction workflow.
+
 | Concern | Owner | Location |
 | --- | --- | --- |
 | Normalizing SDK wall timestamps, result elapsed and API timing, tool and task elapsed metadata | Bridge | `agent-sdk/src/bridge/presentation_metadata.ts` |

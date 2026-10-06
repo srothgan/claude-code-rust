@@ -74,7 +74,13 @@ pub(super) fn render_tool_call_title(
     }
 
     let display_title = tool_display_title(tc, render_context);
-    title_spans.extend(markdown_inline_spans(display_title.as_ref()));
+    // Titles have one source line. Shell text is literal command syntax, not Markdown.
+    // Keep the full title/command in the model; only this display projection is narrowed.
+    let title_line = display_title.lines().next().unwrap_or_default();
+    let literal = tc.is_execute_tool();
+    title_spans.extend(tc.cache.inline_spans(title_line, literal, |source| {
+        if literal { vec![Span::raw(source.to_owned())] } else { markdown_inline_spans(source) }
+    }));
     title_spans.extend(tool_output_badge_spans(tc));
 
     Line::from(truncate_spans_to_width(title_spans, usize::from(width)))

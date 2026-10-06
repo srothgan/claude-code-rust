@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static CACHE_ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
@@ -10,8 +10,8 @@ pub(crate) fn next_cache_access_tick() -> u64 {
     CACHE_ACCESS_TICK.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Cached rendered lines for a block. Stores a version counter so the cache
-/// is only recomputed when the block content actually changes.
+/// Cached body lines and source-keyed inline content for a block. The version
+/// tracks body changes; unchanged inline content survives body invalidation.
 ///
 /// Fields are private - use `invalidate()` to mark stale, `is_stale()` to check,
 /// `get()` to read cached lines, and `store()` to populate.
@@ -31,6 +31,14 @@ pub struct BlockCache {
     wrapped_width: u16,
     wrapped_height_valid: bool,
     last_access_tick: Cell<u64>,
+    /// Source-keyed inline content survives body invalidation and width changes.
+    inline: RefCell<Option<InlineCache>>,
+}
+
+struct InlineCache {
+    source: String,
+    literal: bool,
+    spans: Vec<ratatui::text::Span<'static>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +57,27 @@ impl CacheLineSegment {
 impl BlockCache {
     fn touch(&self) {
         self.last_access_tick.set(next_cache_access_tick());
+    }
+
+    /// Memoize inline content independently of animated chrome and body versions.
+    pub(crate) fn inline_spans(
+        &self,
+        source: &str,
+        literal: bool,
+        render: impl FnOnce(&str) -> Vec<ratatui::text::Span<'static>>,
+    ) -> Vec<ratatui::text::Span<'static>> {
+        if let Some(cached) = self.inline.borrow().as_ref()
+            && cached.source == source
+            && cached.literal == literal
+        {
+            self.touch();
+            return cached.spans.clone();
+        }
+        let spans = render(source);
+        *self.inline.borrow_mut() =
+            Some(InlineCache { source: source.to_owned(), literal, spans: spans.clone() });
+        self.touch();
+        spans
     }
 
     /// Bump the version to invalidate cached lines and height.
@@ -150,7 +179,12 @@ impl BlockCache {
 
     #[must_use]
     pub fn cached_bytes(&self) -> usize {
-        self.cached_bytes
+        let inline_bytes = self.inline.borrow().as_ref().map_or(0, |cached| {
+            cached.spans.iter().fold(cached.source.len().saturating_add(1), |bytes, span| {
+                bytes.saturating_add(span.content.len())
+            })
+        });
+        self.cached_bytes.saturating_add(inline_bytes)
     }
 
     #[must_use]
@@ -159,7 +193,7 @@ impl BlockCache {
     }
 
     pub fn evict_cached_render(&mut self) -> usize {
-        let removed = self.cached_bytes;
+        let removed = self.cached_bytes();
         if removed == 0 {
             return 0;
         }
@@ -167,6 +201,7 @@ impl BlockCache {
         self.render_width = None;
         self.segments.clear();
         self.cached_bytes = 0;
+        *self.inline.get_mut() = None;
         self.wrapped_height = 0;
         self.wrapped_width = 0;
         self.wrapped_height_valid = false;

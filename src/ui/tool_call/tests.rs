@@ -184,6 +184,207 @@ fn markdown_inline_spans_removes_markdown_syntax() {
 }
 
 #[test]
+fn tool_titles_project_one_source_line_and_preserve_literal_shell_commands() {
+    for tool_name in ["Bash", "PowerShell", "Read", "Agent", "mcp__docs__search"] {
+        let first = if matches!(tool_name, "Bash" | "PowerShell") {
+            "echo '**literal** _name_ [arg](value)'"
+        } else {
+            "**Visible title**"
+        };
+        let title =
+            format!("{first}\r\n```unsupported-title-language\n    discarded title body\n```\n");
+        let mut tc =
+            test_tool_call("title-projection", tool_name, model::ToolCallStatus::InProgress);
+        tc.title = title.clone();
+        let input = if tc.is_execute_tool() {
+            tc.terminal_command = Some(title.clone());
+            serde_json::json!({ "command": title })
+        } else if tool_name == "Read" {
+            serde_json::json!({ "file_path": "report.md" })
+        } else if tool_name == "Agent" {
+            serde_json::json!({ "prompt": "Inspect the report", "subagent_type": "general-purpose" })
+        } else {
+            serde_json::json!({ "query": "Find report references" })
+        };
+        tc.set_raw_input(Some(input.clone()));
+        if tool_name == "mcp__docs__search" {
+            tc.content = vec![model::ToolCallContent::from("Independent MCP result output")];
+        }
+
+        let mut rows = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            100,
+            crate::ui::SpinnerState::Animated(0),
+            &mut rows,
+        );
+        assert!(!rows.is_empty());
+        let spans = &rows[0].spans;
+        let title_span = spans
+            .iter()
+            .find(|span| span.content.contains("literal") || span.content.contains("Visible"))
+            .expect("title content in the tool's title row");
+        if matches!(tool_name, "Bash" | "PowerShell") {
+            assert_eq!(title_span.content.as_ref(), first);
+        } else {
+            assert_eq!(title_span.content.as_ref(), "Visible title");
+            assert!(title_span.style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        }
+        assert_eq!(tc.title, title);
+        if tc.is_execute_tool() {
+            assert_eq!(tc.terminal_command.as_deref(), Some(title.as_str()));
+        }
+        assert_eq!(tc.raw_input, Some(input));
+        if tool_name == "mcp__docs__search" {
+            assert!(
+                rendered_line_texts(&rows[1..])
+                    .iter()
+                    .any(|line| line.contains("Independent MCP result output"))
+            );
+        }
+    }
+}
+
+#[test]
+fn tool_title_cache_reuses_markdown_through_animation_resize_and_body_updates() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    struct SyntaxWarnings(Arc<AtomicUsize>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SyntaxWarnings {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() == "tui_markdown::renderer::code" {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    let warnings = Arc::new(AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::registry().with(SyntaxWarnings(Arc::clone(&warnings)));
+    tracing::subscriber::with_default(subscriber, || {
+        let mut tc = test_tool_call("title-cache", "Read", model::ToolCallStatus::InProgress);
+        // An indented code title exercises the actual Markdown renderer's syntax lookup.
+        tc.title = "    cached code title\n```unrecognized\nignored tail\n```".to_owned();
+        let mut first = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            100,
+            crate::ui::SpinnerState::Animated(0),
+            &mut first,
+        );
+        assert_eq!(warnings.load(Ordering::Relaxed), 1);
+        let cached_bytes = tc.cache.cached_bytes();
+        assert!(cached_bytes > 0, "title-only tools must participate in cache accounting");
+
+        for frame in 1..100 {
+            let width = [20, 60, 100][frame % 3];
+            let mut rows = Vec::new();
+            render_tool_call_cached(
+                &mut tc,
+                ToolCallRenderContext::default(),
+                width,
+                crate::ui::SpinnerState::Animated(frame),
+                &mut rows,
+            );
+            assert_eq!(rows.len(), 1);
+            assert!(spans_width(&rows[0].spans) <= usize::from(width));
+            assert_eq!(
+                rows[0].spans[0].content,
+                format!("  {} ", crate::ui::SpinnerState::Animated(frame).icon())
+            );
+        }
+        assert_eq!(warnings.load(Ordering::Relaxed), 1, "unchanged titles must not be reparsed");
+
+        tc.content = vec![model::ToolCallContent::from("new output")];
+        tc.invalidate_render_cache();
+        tc.status = model::ToolCallStatus::Completed;
+        let mut completed = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            100,
+            crate::ui::SpinnerState::Animated(0),
+            &mut completed,
+        );
+        assert_eq!(completed[0].spans[0].content, format!("  {} ", theme::ICON_COMPLETED));
+        assert_eq!(
+            warnings.load(Ordering::Relaxed),
+            1,
+            "body invalidation must preserve unchanged title work"
+        );
+
+        tc.title = "    updated code title".to_owned();
+        let mut updated = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            100,
+            crate::ui::SpinnerState::Animated(0),
+            &mut updated,
+        );
+        assert_eq!(warnings.load(Ordering::Relaxed), 2);
+        let total_bytes = tc.cache.cached_bytes();
+        assert_eq!(tc.cache.evict_cached_render(), total_bytes);
+        assert_eq!(tc.cache.cached_bytes(), 0);
+        let mut restored = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            100,
+            crate::ui::SpinnerState::Animated(0),
+            &mut restored,
+        );
+        assert_eq!(restored, updated);
+        assert_eq!(
+            warnings.load(Ordering::Relaxed),
+            3,
+            "evicted title content must be reconstructed once"
+        );
+    });
+}
+
+#[test]
+fn tool_title_cache_tracks_literal_rendering_and_display_context() {
+    let mut tc = test_tool_call("context-title", "Read", model::ToolCallStatus::InProgress);
+    tc.title = "**Visible title**".to_owned();
+    for (tool_name, context, expected) in [
+        ("Read", ToolCallRenderContext::default(), "Visible title"),
+        ("Bash", ToolCallRenderContext::default(), "**Visible title**"),
+        ("Read", ToolCallRenderContext::default(), "Visible title"),
+        ("Write", ToolCallRenderContext { current_mode_id: Some("plan") }, "Create Plan"),
+        ("Write", ToolCallRenderContext::default(), "Visible title"),
+    ] {
+        tc.sdk_tool_name = tool_name.to_owned();
+        let mut rows = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            context,
+            100,
+            crate::ui::SpinnerState::Animated(0),
+            &mut rows,
+        );
+        assert_eq!(rows[0].spans.last().unwrap().content.as_ref(), expected);
+    }
+    tc.title = "**Updated title**".to_owned();
+    let mut rows = Vec::new();
+    render_tool_call_cached(
+        &mut tc,
+        ToolCallRenderContext::default(),
+        100,
+        crate::ui::SpinnerState::Animated(0),
+        &mut rows,
+    );
+    assert_eq!(rows[0].spans.last().unwrap().content.as_ref(), "Updated title");
+}
+
+#[test]
 fn render_tool_call_title_shows_backgrounded_badge() {
     let mut tc = test_tool_call("tc-bg", "Agent", model::ToolCallStatus::InProgress);
     tc.task_metadata = Some(model::TaskMetadata::new().backgrounded(Some(true)));
