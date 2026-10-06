@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1] - 2026-10-06 [Changes][v0.15.1]
+
+### Fixes
+
+- **Resumed session history** (#426, @srothgan): Restore the full conversation when resuming a compacted session, and hide internal task notifications and compact summaries in resumed history.
+- **Background tools** (#426, @srothgan): Keep background tool cards in launch order with one linked result per finished task, keep their controls usable across turns, resize, and resume, and stream the reply that follows a finished task under one Claude label.
+- **Scrollback across resizes** (#422, @srothgan): Stop losing transcript rows from terminal scrollback after resizing, zooming, or resizing in reading mode.
+- **Exit redraw** (#426, @srothgan): Stop replaying the transcript into scrollback on exit.
+- **Tool titles** (#426, @srothgan): Show shell command titles literally instead of as Markdown, and stop re-rendering unchanged tool titles during animation and resize.
+- **Installer interruption** (#422, @srothgan): Stop a repeated Ctrl-C from cutting off installer cleanup.
+
+### CI and Dependencies
+
+- **Terminal and installer test stability** (#422, #424, #426, @srothgan): Stop intermittent failures in the PTY, settings, installer prompt, update-check, and unit diagnostics tests.
+- **Resume and background task coverage** (#426, @srothgan): Add bridge resume-history tests and PTY tests for background tools, shutdown, and scrollback.
+- **Cargo build jobs** (#422, @srothgan): Limit Cargo to one compilation job through `.cargo/config.toml`.
+
 ## [0.15.0] - 2026-10-04 [Changes][v0.15.0]
 
 ### Features
@@ -920,6 +937,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.15.1]: https://github.com/srothgan/claude-code-rust/compare/v0.15.0...v0.15.1
 [v0.15.0]: https://github.com/srothgan/claude-code-rust/compare/v0.14.9...v0.15.0
 [v0.14.9]: https://github.com/srothgan/claude-code-rust/compare/v0.14.8...v0.14.9
 [v0.14.8]: https://github.com/srothgan/claude-code-rust/compare/v0.14.7...v0.14.8
