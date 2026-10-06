@@ -551,7 +551,7 @@ fn handle_submit(app: &mut App) -> bool {
 }
 
 fn handle_focus_toggle(app: &mut App) -> bool {
-    if app.turn.pending_interaction_ids.is_empty() {
+    if app.pending_interaction_ids.is_empty() {
         false
     } else {
         match app.focus_owner() {

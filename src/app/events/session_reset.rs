@@ -60,6 +60,7 @@ pub(super) fn reset_for_conversation(
     app.session_runtime.last_rate_limit_update = None;
     app.files_accessed = 0;
     app.turn.reset_for_new_session();
+    app.pending_interaction_ids.clear();
     app.clear_tool_scope_tracking();
     app.clear_tool_call_index();
     app.sdk_inventory.tasks.clear();
@@ -154,6 +155,7 @@ fn reset_input_state_for_new_session(app: &mut App, reset_kind: ChatResetKind) {
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
     app.turn.reset_for_new_session();
+    app.pending_interaction_ids.clear();
     app.clear_tool_scope_tracking();
     app.clear_tool_call_index();
     app.sdk_inventory.tasks.clear();
@@ -257,7 +259,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
     for message in &mut app.transcript.messages {
         message.timing.discard_replay_observations();
     }
-    app.finalize_session_runtime_artifacts(model::ToolCallStatus::Failed);
+    app.finalize_turn_runtime_artifacts(model::ToolCallStatus::Failed);
     app.clear_active_turn_assistant();
     super::compaction::reset(app);
     app.status = super::super::AppStatus::Ready;

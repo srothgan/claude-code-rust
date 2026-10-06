@@ -215,7 +215,7 @@ mod tests {
             None,
         ));
         app.index_tool_call(request_id.to_owned(), msg_idx, 0);
-        app.turn.pending_interaction_ids.push(request_id.to_owned());
+        app.pending_interaction_ids.push(request_id.to_owned());
         rx
     }
 
@@ -248,7 +248,7 @@ mod tests {
             },
         );
         assert!(matches!(expired.try_recv(), Err(oneshot::error::TryRecvError::Closed)));
-        assert_eq!(app.turn.pending_interaction_ids, vec!["next"]);
+        assert_eq!(app.pending_interaction_ids, vec!["next"]);
         assert_eq!(app.input.text(), "keep this draft");
         let MessageBlock::UserDialog(dialog) = &app.transcript.messages[0].blocks[0] else {
             panic!("expired dialog");
@@ -262,7 +262,7 @@ mod tests {
             next.try_recv().expect("next dialog answered").outcome,
             model::RequestUserDialogOutcome::Selected(_)
         ));
-        assert!(app.turn.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
     }
 
     #[test]
@@ -282,7 +282,7 @@ mod tests {
         };
         assert_eq!(selected.option_id, "retry_fallback");
         assert_eq!(app.measure_history_bytes(), pending_bytes + selected.option_id.capacity());
-        assert!(!app.turn.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
+        assert!(!app.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
     }
 
     #[test]
@@ -325,7 +325,7 @@ mod tests {
         let response = rx.try_recv().expect("dialog should receive a response");
         assert!(matches!(response.outcome, model::RequestUserDialogOutcome::Cancelled));
         assert!(app.input.text().is_empty());
-        assert!(!app.turn.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
+        assert!(!app.pending_interaction_ids.iter().any(|id| id == "dialog-1"));
     }
 
     #[test]

@@ -652,6 +652,7 @@ pub enum SessionUpdate {
         source_message_uuid: Option<String>,
         origin: MessageOrigin,
     },
+    AgentResponseStarted,
     AgentActivityUpdate {
         phase: super::model::AgentActivityPhase,
     },

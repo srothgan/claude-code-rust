@@ -63,8 +63,8 @@ async fn permission_request_attaches_to_tool_call() {
     let mut app = test_app();
     let _rx = setup_permission(&mut app, "tc-perm-1", allow_deny_options());
 
-    assert_eq!(app.turn.pending_interaction_ids.len(), 1);
-    assert_eq!(app.turn.pending_interaction_ids[0], "tc-perm-1");
+    assert_eq!(app.pending_interaction_ids.len(), 1);
+    assert_eq!(app.pending_interaction_ids[0], "tc-perm-1");
 
     // The tool call should have a pending_permission
     let (mi, bi) = app.lookup_tool_call("tc-perm-1").expect("tc-perm-1 indexed");
@@ -94,7 +94,7 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     send_client_event(&mut app, permission_request(request, response_tx));
 
     // Should NOT be in pending queue
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
 
     // The response should have been sent (auto-reject with last option = "deny")
     let response = response_rx.try_recv();
@@ -115,9 +115,9 @@ async fn multiple_permissions_queue_in_order() {
     let _rx1 = setup_permission(&mut app, "tc-q1", allow_deny_options());
     let _rx2 = setup_permission(&mut app, "tc-q2", allow_deny_options());
 
-    assert_eq!(app.turn.pending_interaction_ids.len(), 2);
-    assert_eq!(app.turn.pending_interaction_ids[0], "tc-q1");
-    assert_eq!(app.turn.pending_interaction_ids[1], "tc-q2");
+    assert_eq!(app.pending_interaction_ids.len(), 2);
+    assert_eq!(app.pending_interaction_ids[0], "tc-q1");
+    assert_eq!(app.pending_interaction_ids[1], "tc-q2");
 
     // First should be focused, second should not
     let (mi1, bi1) = app.lookup_tool_call("tc-q1").expect("tc-q1 indexed");
@@ -145,7 +145,7 @@ async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry(
     );
     send_client_event(&mut app, permission_request(request, response_tx));
 
-    assert_eq!(app.turn.pending_interaction_ids, vec!["tc-dup"]);
+    assert_eq!(app.pending_interaction_ids, vec!["tc-dup"]);
     assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
 
     let resp = duplicate_rx.try_recv().expect("duplicate permission should be auto-rejected");
@@ -170,7 +170,7 @@ async fn turn_complete_resets_transient_state() {
     assert_eq!(app.files_accessed, 0, "files_accessed should reset");
     // spinner_frame is a UI detail, not reset by TurnComplete (it's driven by tick)
     // pending_interaction_ids should be empty (no permissions were pending)
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
 }
 
 #[tokio::test]

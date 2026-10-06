@@ -350,8 +350,7 @@ fn fit_footer_suffix_text(text: &str, max_width: usize) -> Option<String> {
 }
 
 fn pending_permission_request_count(app: &App) -> usize {
-    app.turn
-        .pending_interaction_ids
+    app.pending_interaction_ids
         .iter()
         .filter(|tool_id| {
             let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
@@ -656,11 +655,12 @@ mod tests {
                     focused: true,
                 }),
                 pending_question: None,
+                history: crate::app::ToolCallHistory::Live,
             }))],
             None,
         ));
         app.index_tool_call("perm-1".into(), 0, 0);
-        app.turn.pending_interaction_ids.push("perm-1".into());
+        app.pending_interaction_ids.push("perm-1".into());
 
         let serialized = serialize_footer_rows(&app, 80);
         let text = line_text(&serialized.rows[0]);

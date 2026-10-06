@@ -62,7 +62,8 @@ pub fn status_icon(
 ) -> (&'static str, Color) {
     match status {
         model::ToolCallStatus::Pending => ("\u{25CB}", theme::RUST_ORANGE),
-        model::ToolCallStatus::InProgress | model::ToolCallStatus::Detached => {
+        model::ToolCallStatus::Detached => (theme::ICON_DETACHED, Color::LightBlue),
+        model::ToolCallStatus::InProgress => {
             let s = spinner.icon();
             (s, theme::RUST_ORANGE)
         }
@@ -394,6 +395,7 @@ pub(super) mod test_support {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            history: crate::app::ToolCallHistory::Live,
         };
         if let Some(content) = content {
             tc.content = vec![model::ToolCallContent::from(content)];

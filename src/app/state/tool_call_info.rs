@@ -2,6 +2,7 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::block_cache::BlockCache;
+use super::messages::MessageBlockId;
 use crate::agent::model;
 
 pub struct ToolCallInfo {
@@ -34,6 +35,18 @@ pub struct ToolCallInfo {
     pub pending_permission: Option<InlinePermission>,
     /// Inline question prompt from `AskUserQuestion`.
     pub pending_question: Option<InlineQuestion>,
+    /// Immutable transcript projections; execution fields above remain authoritative.
+    pub(crate) history: ToolCallHistory,
+}
+
+#[derive(Default)]
+pub(crate) enum ToolCallHistory {
+    #[default]
+    Live,
+    Detached {
+        launch: Box<ToolCallInfo>,
+        result_id: Option<MessageBlockId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +61,73 @@ pub struct SubagentPermissionContext {
 }
 
 impl ToolCallInfo {
+    pub(crate) fn has_frozen_launch(&self) -> bool {
+        matches!(self.history, ToolCallHistory::Detached { .. })
+    }
+    pub(crate) fn display(&self) -> &Self {
+        match &self.history {
+            ToolCallHistory::Live => self,
+            ToolCallHistory::Detached { launch, .. } => launch,
+        }
+    }
+
+    pub(crate) fn display_mut(&mut self) -> &mut Self {
+        if matches!(self.history, ToolCallHistory::Live) {
+            return self;
+        }
+        match self {
+            Self { history: ToolCallHistory::Detached { launch, .. }, .. } => launch,
+            tool => tool,
+        }
+    }
+
+    fn snapshot(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            source_message_uuids: self.source_message_uuids.clone(),
+            title: self.title.clone(),
+            sdk_tool_name: self.sdk_tool_name.clone(),
+            raw_input: self.raw_input.clone(),
+            raw_input_bytes: self.raw_input_bytes,
+            locations: self.locations.clone(),
+            output_metadata: self.output_metadata.clone(),
+            task_metadata: self.task_metadata.clone(),
+            status: self.status,
+            content: self.content.clone(),
+            hidden: self.hidden,
+            terminal_id: None,
+            terminal_command: self.terminal_command.clone(),
+            terminal_output: self.terminal_output.clone(),
+            terminal_output_len: self.terminal_output_len,
+            cache: BlockCache::default(),
+            pending_permission: None,
+            pending_question: None,
+            history: ToolCallHistory::Live,
+        }
+    }
+
+    /// Freeze the handoff once; progress can subsequently change execution only.
+    pub(crate) fn sync_history(&mut self) -> Option<(MessageBlockId, Box<Self>)> {
+        if self.status == model::ToolCallStatus::Detached
+            && matches!(self.history, ToolCallHistory::Live)
+        {
+            self.history =
+                ToolCallHistory::Detached { launch: Box::new(self.snapshot()), result_id: None };
+            self.cache = BlockCache::default();
+        }
+        if self.status.is_terminal()
+            && matches!(self.history, ToolCallHistory::Detached { result_id: None, .. })
+        {
+            let result = Box::new(self.snapshot());
+            let id = MessageBlockId::new();
+            if let ToolCallHistory::Detached { result_id, .. } = &mut self.history {
+                *result_id = Some(id);
+            }
+            return Some((id, result));
+        }
+        None
+    }
+
     pub fn add_source_message_uuid(&mut self, source_message_uuid: Option<&str>) -> bool {
         let Some(source_message_uuid) =
             source_message_uuid.map(str::trim).filter(|uuid| !uuid.is_empty())

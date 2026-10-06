@@ -91,7 +91,7 @@ impl App {
                     self.session_runtime.runtime_session_state,
                     Some(RuntimeSessionState::Idle | RuntimeSessionState::RequiresAction)
                 )
-                || !self.turn.pending_interaction_ids.is_empty()
+                || !self.pending_interaction_ids.is_empty()
                 || self.mcp.pending_elicitation.is_some()
             {
                 return None;
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(working.verb, verb);
         assert_eq!(working.tip, second);
 
-        app.turn.pending_interaction_ids.push("tool".into());
+        app.pending_interaction_ids.push("tool".into());
         assert!(
             app.activity_presentation(start).is_none(),
             "locally delivered interaction hides immediately"
@@ -255,7 +255,7 @@ mod tests {
             &mut app,
             model::SessionUpdate::RuntimeSessionStateUpdate(RuntimeSessionState::RequiresAction),
         );
-        app.turn.pending_interaction_ids.clear();
+        app.pending_interaction_ids.clear();
         assert!(app.activity_presentation(start).is_none(), "wait for SDK work to resume");
         update(
             &mut app,
@@ -286,10 +286,9 @@ mod tests {
                 model::ContentBlock::Text(model::TextContent::new("Late output")),
             )),
         );
-        update(
-            &mut app,
-            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Thinking),
-        );
+        for phase in [model::AgentActivityPhase::Thinking, model::AgentActivityPhase::Working] {
+            update(&mut app, model::SessionUpdate::AgentActivityUpdate(phase));
+        }
         update(
             &mut app,
             model::SessionUpdate::ToolCall(

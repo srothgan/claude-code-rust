@@ -695,6 +695,275 @@ fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
 }
 
 #[test]
+fn background_permission_remains_interactive_after_launch_enters_history() {
+    for (keys, option, outcome) in
+        [(b"\r".as_slice(), "allow-once", "completed"), (b"\x1b".as_slice(), "deny-once", "killed")]
+    {
+        let mut test = TerminalTest::start("background-initial", 45);
+        test.submit("BACKGROUND_PERMISSION", "BACKGROUND_PERMISSION");
+        test.wait_journal("background-turn-1-held");
+        test.wait_screen("PRIMARY_TASK");
+        test.signal("followers");
+        test.wait_until("background launch and followers enter history", |test| {
+            let rows = test.transcript_rows();
+            rows.iter().any(|row| row.contains("FOLLOWUP_045"))
+                && rows.iter().filter(|row| row.contains("FOLLOWUP_")).count() == 45
+        });
+        test.signal("permission");
+        test.wait_screen_with("Allow once", &["Deny once"]);
+        test.resize_keeping(25, 61, &["Allow once", "Deny once"]);
+        let screen = test.screen();
+        let rows: Vec<_> = screen.lines().collect();
+        let tool =
+            rows.iter().rposition(|row| row.contains("PRIMARY_TASK")).expect("permission tool row");
+        assert!(
+            rows.iter()
+                .skip(tool)
+                .take(9)
+                .any(|row| row.contains("Allow once") && row.contains("Deny once"))
+        );
+        assert!(test.commands("permission_response").is_empty());
+        test.signal("turn-end");
+        test.wait_screen_with("[READY]", &["Allow once", "Deny once"]);
+        test.resize_keeping(TALL_ROWS, 120, &["Allow once", "Deny once"]);
+        test.send(keys);
+        test.wait_journal("background-permission-answered");
+        test.wait_until(
+            "permission controls disappear without completing the background task",
+            |test| {
+                !test.screen().contains("Allow once")
+                    && !test.transcript_rows().iter().any(|row| row.contains("PRIMARY_RESULT_TASK"))
+            },
+        );
+        let responses = test.commands("permission_response");
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0]["tool_call_id"], "background-primary");
+        assert_eq!(responses[0]["outcome"]["option_id"], option);
+        test.submit("continue after background permission", "continue after background permission");
+        test.wait_journal("background-turn-2-held");
+        test.signal(outcome);
+        test.wait_screen("RESULT_FENCE");
+        test.resize_and_wait_for_draw(TALL_ROWS, COLS);
+        let rows = test.transcript_rows();
+        assert_eq!(rows.iter().filter(|row| row.contains("PRIMARY_TASK")).count(), 1);
+        assert_eq!(rows.iter().filter(|row| row.contains("PRIMARY_RESULT_TASK")).count(), 1);
+        test.signal("turn-end");
+        test.wait_screen("[READY]");
+        test.shutdown();
+    }
+}
+
+#[test]
+fn background_result_labels_follow_the_visible_speaker_through_replay_and_cancellation() {
+    let mut test = TerminalTest::start("background-replies", 3);
+    test.submit("BACKGROUND_LABELS", "BACKGROUND_LABELS");
+    test.wait_turn_finished("Foreground reply is complete.");
+    for number in 1..=2 {
+        test.signal(&format!("result-{number}"));
+        test.wait_journal(&format!("result-{number}"));
+        test.wait_screen(&format!("OUTPUT_{number}"));
+    }
+    let assert_group = |test: &TerminalTest| {
+        let rows = test.transcript_rows();
+        let first = rows.iter().position(|row| row.trim() == "Claude").expect("speaker label");
+        let last = rows.iter().position(|row| row.contains("OUTPUT_2")).expect("second result");
+        assert_eq!(rows[first..=last].iter().filter(|row| row.trim() == "Claude").count(), 1);
+        let positions: Vec<_> =
+            ["LAUNCH_1", "LAUNCH_2", "LAUNCH_3", "Foreground reply", "RESULT_1", "RESULT_2"]
+                .into_iter()
+                .map(|needle| {
+                    rows.iter().position(|row| row.contains(needle)).expect("ordered content")
+                })
+                .collect();
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        for number in 1..=2 {
+            assert_eq!(
+                rows.iter().filter(|row| row.contains(&format!("RESULT_{number}"))).count(),
+                1
+            );
+        }
+    };
+    assert_group(&test);
+    test.resize_and_wait_for_draw(TALL_ROWS, COLS);
+    assert_group(&test);
+    test.submit("NORMAL_FOLLOWUP", "NORMAL_FOLLOWUP");
+    test.wait_turn_finished("Normal conversation continues completely.");
+    test.submit("CANCEL_EMPTY_REPLY", "CANCEL_EMPTY_REPLY");
+    test.wait_journal("cancellable-turn-started");
+    test.wait_screen("Thinking…");
+    test.send(b"\x1b");
+    test.wait_until("cancelled turn settles", |test| {
+        test.commands("cancel_turn").len() == 1 && test.screen().contains("[READY]")
+    });
+    test.signal("result-3");
+    test.wait_screen("OUTPUT_3");
+    test.resize_and_wait_for_draw(SHORT_ROWS, COLS);
+    let rows = test.transcript_rows();
+    let normal =
+        rows.iter().position(|row| row.contains("NORMAL_FOLLOWUP")).expect("normal user message");
+    let cancelled = rows
+        .iter()
+        .position(|row| row.contains("CANCEL_EMPTY_REPLY"))
+        .expect("cancelled user message");
+    let result = rows.iter().position(|row| row.contains("RESULT_3")).expect("later result");
+    assert_eq!(rows[normal..cancelled].iter().filter(|row| row.trim() == "Claude").count(), 1);
+    assert_eq!(rows[cancelled..=result].iter().filter(|row| row.trim() == "Claude").count(), 1);
+    test.assert_prompts(&["BACKGROUND_LABELS", "NORMAL_FOLLOWUP", "CANCEL_EMPTY_REPLY"]);
+    test.shutdown();
+}
+
+#[test]
+fn background_completion_replies_keep_streamed_tails_mutable_and_preserve_normal_turns() {
+    let mut test = TerminalTest::start("background-replies", 3);
+    test.submit("BACKGROUND_STREAM", "BACKGROUND_STREAM");
+    test.wait_turn_finished("Foreground reply is complete.");
+    test.paste("NORMAL_AFTER_COMPLETIONS");
+    test.wait_screen("NORMAL_AFTER_COMPLETIONS");
+    for (number, prefix, full) in [
+        (1, "The", "The first background task finished completely."),
+        (2, "Short task 2 (`", "Short task 2 (task-two) finished with exit code 0."),
+    ] {
+        test.signal(&format!("result-{number}"));
+        test.wait_screen(&format!("OUTPUT_{number}"));
+        let log_offset =
+            std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+        test.signal(&format!("prefix-{number}"));
+        test.wait_journal(&format!("prefix-{number}"));
+        test.wait_screen(prefix);
+        test.wait_until("unfinished reply remains in the mutable region", |test| {
+            test.runtime_records_since(log_offset).iter().any(|record| {
+                record["event_name"] == "inline_chat_draw_summary"
+                    && record["status"] == "Running"
+                    && record["first_mutable_boundary_kind"] == "Some(AssistantText)"
+            })
+        });
+        test.resize_keeping(
+            if number == 1 { TALL_ROWS } else { SHORT_ROWS },
+            COLS,
+            &[prefix, "NORMAL_AFTER_COMPLETIONS"],
+        );
+        test.signal(&format!("finish-{number}"));
+        test.wait_journal(&format!("finish-{number}"));
+        test.wait_turn_finished(full);
+        let rows = test.transcript_rows();
+        assert_eq!(rows.iter().filter(|row| row.trim() == full).count(), 1);
+        assert!(!rows.iter().any(|row| row.trim() == prefix));
+    }
+    test.submit_draft();
+    test.wait_turn_finished("Normal conversation continues completely.");
+    test.resize_and_wait_for_draw(TALL_ROWS, COLS);
+    let rows = test.transcript_rows();
+    for full in [
+        "Foreground reply is complete.",
+        "The first background task finished completely.",
+        "Short task 2 (task-two) finished with exit code 0.",
+        "Normal conversation continues completely.",
+    ] {
+        assert_eq!(rows.iter().filter(|row| row.trim() == full).count(), 1);
+    }
+    test.assert_prompts(&["BACKGROUND_STREAM", "NORMAL_AFTER_COMPLETIONS"]);
+    test.shutdown();
+}
+
+#[test]
+fn background_tasks_flush_in_creation_order_and_append_results_once() {
+    for (scenario, outcome) in [
+        ("background-initial", "completed"),
+        ("background-later", "failed"),
+        ("background-later", "killed"),
+        ("background-agent-initial", "completed"),
+        ("background-agent-later", "failed"),
+        ("background-resume", "completed"),
+    ] {
+        let mut test = if scenario == "background-resume" {
+            let mut test = TerminalTest::start_with_options(
+                scenario,
+                45,
+                None,
+                &["--resume", "f96f66ae-b5d4-4bc2-b5a3-08336cf4e850"],
+                false,
+            );
+            test.wait_screen("PRIMARY_TASK");
+            assert_eq!(test.commands("resume_session").len(), 1);
+            test
+        } else {
+            TerminalTest::start(scenario, 45)
+        };
+        test.submit("start background workflow", "start background workflow");
+        test.wait_journal("background-turn-1-held");
+        if scenario != "background-resume" {
+            test.wait_screen("PRIMARY_TASK");
+        }
+        if scenario.ends_with("-later") {
+            test.signal("detach");
+            test.wait_until("primary tool becomes detached", |test| {
+                test.transcript_rows()
+                    .iter()
+                    .any(|row| row.contains("PRIMARY_TASK") && row.contains('↗'))
+            });
+        }
+        test.signal("followers");
+        test.wait_journal("followers-created");
+        test.wait_until("completed followers reach history while primary is running", |test| {
+            let rows = test.transcript_rows();
+            rows.iter().any(|row| row.contains("FOLLOWUP_045"))
+                && rows.iter().any(|row| row.contains("PRIMARY_TASK") && row.contains('↗'))
+                && (1..=45)
+                    .all(|i| rows.iter().any(|row| row.contains(&format!("FOLLOWUP_{i:03}"))))
+        });
+        let rows = test.transcript_rows();
+        let position = |needle: &str| {
+            rows.iter().position(|row| row.contains(needle)).expect("ordered history entry")
+        };
+        assert!(position("PRIMARY_TASK") < position("FOLLOWUP_001"));
+        let follower_positions: Vec<_> =
+            (1..=45).map(|i| position(&format!("FOLLOWUP_{i:03}"))).collect();
+        assert!(follower_positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(!rows.iter().any(|row| row.contains("PRIMARY_FINAL_OUTPUT")));
+
+        test.signal("progress");
+        test.wait_until("background progress applied without rewriting launch", |test| {
+            test.transcript_rows().iter().any(|row| row.contains("PROGRESS_FENCE"))
+        });
+        assert!(
+            !test
+                .transcript_rows()
+                .iter()
+                .any(|row| row.contains("MUTATED_LAUNCH")
+                    || row.contains("BACKGROUND_PROGRESS_ONLY"))
+        );
+        test.signal("turn-end");
+        test.wait_until("foreground turn completes independently", |test| {
+            test.screen().contains("[READY]")
+        });
+        test.submit("another foreground turn", "another foreground turn");
+        test.wait_journal("background-turn-2-held");
+        test.signal(outcome);
+        test.wait_until("linked background result is rendered", |test| {
+            test.transcript_rows().iter().any(|row| row.contains("RESULT_FENCE"))
+        });
+        let rows = test.transcript_rows();
+        let result =
+            rows.iter().position(|row| row.contains("PRIMARY_RESULT_TASK")).expect("result card");
+        assert!(
+            result
+                > rows.iter().position(|row| row.contains("FOLLOWUP_045")).expect("last follower")
+        );
+        assert_eq!(rows.iter().filter(|row| row.contains("PRIMARY_TASK")).count(), 1);
+        assert_eq!(rows.iter().filter(|row| row.contains("PRIMARY_RESULT_TASK")).count(), 1);
+        assert!(rows[result + 1..].iter().take(4).any(|row| row.contains("PRIMARY_FINAL_OUTPUT")));
+        assert!(rows[result].contains(if outcome == "completed" { '✓' } else { '✗' }));
+        test.resize_and_wait_for_draw(TALL_ROWS, COLS);
+        let replayed = test.transcript_rows();
+        assert_eq!(replayed.iter().filter(|row| row.contains("PRIMARY_TASK")).count(), 1);
+        assert_eq!(replayed.iter().filter(|row| row.contains("PRIMARY_RESULT_TASK")).count(), 1);
+        test.signal("turn-end");
+        test.wait_until("second turn finishes", |test| test.screen().contains("[READY]"));
+        test.shutdown();
+    }
+}
+
+#[test]
 fn auth_spawn_failure_restores_terminal_ownership_and_input() {
     let mut test = TerminalTest::start_with_auth("stream", 3, Some("spawn-error"));
     test.submit("/login", "/login");

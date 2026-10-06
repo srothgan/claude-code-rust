@@ -115,6 +115,7 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
                 rows.push_blank();
             }
             MessageBlock::ToolCall(_)
+            | MessageBlock::ToolResult { .. }
             | MessageBlock::Welcome(_)
             | MessageBlock::ImageAttachment(_) => {}
         }

@@ -83,10 +83,6 @@ pub struct TurnState {
     pub pending_command_ack: Option<PendingCommandAck>,
     /// The single live lifecycle state for manual and automatic context compaction.
     pub compaction: CompactionState,
-    /// Tool call IDs with pending inline interactions, ordered by arrival.
-    /// The first entry is the focused interaction that receives keyboard input.
-    /// Up / Down arrow keys cycle focus through the list.
-    pub pending_interaction_ids: Vec<String>,
     /// Whether an explicit cancellation request is awaiting turn exit.
     pub cancel_requested: bool,
     /// Message index that owns the current main-assistant turn output.
@@ -112,7 +108,6 @@ impl TurnState {
         self.pending_command_label = None;
         self.pending_command_ack = None;
         self.compaction.reset();
-        self.pending_interaction_ids.clear();
         self.cancel_requested = false;
         self.assistant_message_idx = None;
         self.active_task_ids.clear();

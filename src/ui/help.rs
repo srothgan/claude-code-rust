@@ -89,7 +89,7 @@ fn keymap_help_rows(app: &App, context: KeyContext) -> Vec<(String, String)> {
 fn should_show_help_binding(app: &App, context: KeyContext, binding: &ResolvedHelpBinding) -> bool {
     if context == KeyContext::ChatInput
         && matches!(binding.action, KeyAction::App(AppAction::FocusPromptOrAcceptSuggestion))
-        && app.turn.pending_interaction_ids.is_empty()
+        && app.pending_interaction_ids.is_empty()
     {
         return false;
     }
@@ -105,7 +105,7 @@ fn help_action_label(app: &App, action: KeyAction) -> &'static str {
         }
         KeyAction::App(AppAction::CancelTurn) => "Clear pending input state",
         KeyAction::App(AppAction::FocusPromptOrAcceptSuggestion)
-            if !app.turn.pending_interaction_ids.is_empty() =>
+            if !app.pending_interaction_ids.is_empty() =>
         {
             "Focus pending prompt"
         }
@@ -128,7 +128,7 @@ fn active_key_help_context(app: &App) -> KeyContext {
 }
 
 fn focused_question_prompt(app: &App) -> bool {
-    let Some(tool_id) = app.turn.pending_interaction_ids.first() else {
+    let Some(tool_id) = app.pending_interaction_ids.first() else {
         return false;
     };
     let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {

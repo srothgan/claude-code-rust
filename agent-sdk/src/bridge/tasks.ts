@@ -465,7 +465,7 @@ function taskOutputResultText(
   return lines.join("\n") || rawText.trim() || extractText(rawResult).trim();
 }
 
-function upsertTask(session: SessionState, patch: TaskPatch): TaskItem {
+export function upsertTask(session: Pick<SessionState, "tasksById" | "taskOrder">, patch: TaskPatch): TaskItem {
   const existing = session.tasksById.get(patch.task_id);
   const task: TaskItem = {
     task_id: patch.task_id,
@@ -1101,13 +1101,24 @@ export function applyTaskLifecycleState(
   if (!taskId) {
     return;
   }
-  const patch = asRecordOrNull(msg.patch);
   const explicitToolUseId = nonEmptyString(msg.tool_use_id);
   if (explicitToolUseId) {
     linkTaskToolUse(session, taskId, explicitToolUseId);
   }
 
-  const existing = session.tasksById.get(taskId);
+  const task = taskLifecyclePatch(session.tasksById.get(taskId), subtype, msg, session.taskToolUseIds.get(taskId));
+  if (task) emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, task)]);
+}
+
+export function taskLifecyclePatch(
+  existing: TaskItem | undefined,
+  subtype: string,
+  msg: Record<string, unknown>,
+  sourceToolCallId?: string,
+): TaskPatch | undefined {
+  const taskId = nonEmptyString(msg.task_id);
+  if (!taskId) return undefined;
+  const patch = asRecordOrNull(msg.patch);
   const status = lifecycleTaskStatus(subtype, msg);
   const description =
     nonEmptyString(patch?.description) ??
@@ -1123,7 +1134,6 @@ export function applyTaskLifecycleState(
     description ??
     taskId;
   const metadata = mergeMetadata(existing?.metadata, lifecycleMetadata(msg));
-  const sourceToolCallId = session.taskToolUseIds.get(taskId);
 
   if (
     !status &&
@@ -1135,8 +1145,7 @@ export function applyTaskLifecycleState(
     return;
   }
 
-  emitTaskStateUpdate(session, "task_lifecycle", [
-    upsertTask(session, {
+  return {
       task_id: taskId,
       subject,
       description,
@@ -1144,8 +1153,7 @@ export function applyTaskLifecycleState(
       status,
       metadata,
       source_tool_call_id: sourceToolCallId,
-    }),
-  ]);
+    };
 }
 
 export function applyBackgroundTasksChanged(

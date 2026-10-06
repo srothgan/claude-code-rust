@@ -20,6 +20,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
     upsert_tool_call_into_assistant_message(app, tool_info);
+    app.sync_tool_call_history(&id_str);
     crate::app::tasks::refresh_task_tool_displays(app);
 
     app.files_accessed += 1;
@@ -80,18 +81,7 @@ pub(super) fn update_subagent_scope_state(
 ) {
     match scope {
         ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent => {}
-        ToolCallScope::SubagentRoot => match status {
-            model::ToolCallStatus::InProgress
-            | model::ToolCallStatus::Pending
-            | model::ToolCallStatus::Detached => {
-                app.insert_active_task(id.to_owned());
-            }
-            model::ToolCallStatus::Completed
-            | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed => {
-                app.remove_active_task(id);
-            }
-        },
+        ToolCallScope::SubagentRoot => app.sync_active_task_status(id, status),
     }
 }
 
@@ -136,6 +126,7 @@ fn build_tool_info_from_tool_call(
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::default(),
     };
     tool_info.raw_input_bytes =
         tool_info.raw_input.as_ref().map_or(0, ToolCallInfo::estimate_json_value_bytes);

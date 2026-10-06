@@ -467,7 +467,7 @@ fn session_replaced_resets_chat_and_transient_state() {
         .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
     app.status = AppStatus::Running;
     app.files_accessed = 9;
-    app.turn.pending_interaction_ids.push("perm-1".into());
+    app.pending_interaction_ids.push("perm-1".into());
     app.sdk_inventory.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
     app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
     app.mcp.servers.push(crate::agent::model::McpServerStatus {
@@ -513,7 +513,7 @@ fn session_replaced_resets_chat_and_transient_state() {
     assert_eq!(app.transcript.messages.len(), 1);
     assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
     assert_eq!(app.files_accessed, 0);
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
     assert!(app.sdk_inventory.tasks.is_empty());
     assert!(app.mention.is_none());
     assert!(app.mcp.servers.is_empty());

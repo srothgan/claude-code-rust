@@ -1398,7 +1398,7 @@ mod tests {
         let mut app = App::test_default();
         app.input.set_text("hello");
         let _ = app.input.set_cursor(0, 5);
-        app.turn.pending_interaction_ids.push("perm-1".to_owned());
+        app.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
 
         let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));

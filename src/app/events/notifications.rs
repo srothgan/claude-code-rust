@@ -268,7 +268,7 @@ mod tests {
                         interaction_id: id.into(),
                     },
                 );
-                assert!(app.turn.pending_interaction_ids.is_empty());
+                assert!(app.pending_interaction_ids.is_empty());
             }
         });
         let decisions: Vec<_> = logs
@@ -329,7 +329,7 @@ mod tests {
                 interaction_id: "permission-1".into(),
             },
         );
-        assert!(app.turn.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
         set(&mut app, "notifications.actionsRequired", json!(false));
         let (tx, _rx) = tokio::sync::oneshot::channel();
         crate::app::events::handle_client_event(

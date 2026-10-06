@@ -26,6 +26,7 @@ export function observeMainAgentStream(
     if (session.mainAgentResponse?.messageId === message.id) return;
     resetMainAgentActivity(session);
     session.mainAgentResponse = { messageId: message.id };
+    emitSessionUpdate(session.sessionId, { type: "agent_response_started" });
     return;
   }
   const response = session.mainAgentResponse;

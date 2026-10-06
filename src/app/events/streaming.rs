@@ -7,6 +7,18 @@ use super::super::{
 };
 use crate::agent::model;
 
+/// A live SDK response can start after a background notification without a user prompt.
+/// Give it a fresh mutable owner instead of extending already committed text.
+pub(super) fn begin_live_assistant_response(app: &mut App) {
+    if !matches!(app.status, super::AppStatus::Ready | super::AppStatus::Error) {
+        return;
+    }
+    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+    app.bind_active_turn_assistant_to_tail();
+    app.status = super::AppStatus::Running;
+    app.begin_turn_activity(std::time::Instant::now());
+}
+
 pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChunk) {
     let model::ContentBlock::Text(text) = chunk.content else {
         return;

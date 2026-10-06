@@ -428,7 +428,7 @@ mod tests {
     fn prompt_suggestion_hint_requires_input_focus() {
         let mut app = App::test_default();
         app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
-        app.turn.pending_interaction_ids.push("perm-1".to_owned());
+        app.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
 
         let rows = build_composer_hint_rows(&app);

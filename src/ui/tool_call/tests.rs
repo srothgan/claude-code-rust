@@ -24,6 +24,7 @@ fn test_tool_call(id: &str, sdk_tool_name: &str, status: model::ToolCallStatus) 
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::Live,
     }
 }
 
@@ -929,6 +930,7 @@ fn bash_title_does_not_wrap_for_long_title() {
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::Live,
     };
 
     let top = standard::render_tool_call_title(
@@ -1628,6 +1630,7 @@ fn content_summary_only_extracts_tool_use_error_for_failed_execute() {
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::Live,
     };
     assert_eq!(content_summary(&tc), "done");
 }
@@ -1654,6 +1657,7 @@ fn content_summary_extracts_tool_use_error_for_failed_execute() {
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::Live,
     };
     assert_eq!(content_summary(&tc), "bad");
 }
@@ -1692,6 +1696,7 @@ fn content_summary_uses_first_terminal_line_for_failed_execute() {
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::Live,
     };
     assert_eq!(content_summary(&tc), "Exit code 1");
 }
@@ -1740,6 +1745,7 @@ fn render_execute_content_keeps_tail_output() {
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::Live,
     };
 
     let lines = execute::render_execute_content(&tc);

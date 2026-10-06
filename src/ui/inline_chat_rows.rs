@@ -59,6 +59,7 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
                 current_mode_id: current_mode_id.as_deref(),
                 width,
                 excluded_ids,
+                previous_block_kind,
             },
         );
 
@@ -71,6 +72,13 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
         );
     }
 
+    append_detached_tool_interactions(
+        app,
+        width,
+        current_mode_id.as_deref(),
+        &mut rows,
+        &mut row_boundaries,
+    );
     let segments = live_boundaries_to_segments(row_boundaries, rows.len());
     SerializedLiveRows::new(rows, segments)
 }
@@ -80,6 +88,7 @@ struct LiveRowsRenderContext<'a> {
     current_mode_id: Option<&'a str>,
     width: u16,
     excluded_ids: &'a BTreeSet<HistoryOutputId>,
+    previous_block_kind: Option<TopLevelInlineBlockKind>,
 }
 
 fn render_live_message_rows(
@@ -105,6 +114,7 @@ fn render_live_message_rows(
             context.current_mode_id,
             context.width,
             context.excluded_ids,
+            context.previous_block_kind,
         ),
     }
 }
@@ -194,6 +204,7 @@ fn render_assistant_live_rows(
     current_mode_id: Option<&str>,
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
+    previous_block_kind: Option<TopLevelInlineBlockKind>,
 ) -> RenderedMessageRows {
     let active_mutable = active_assistant_message_is_mutable(app, msg_idx);
     let message_id = app.transcript.messages[msg_idx].id;
@@ -201,7 +212,11 @@ fn render_assistant_live_rows(
     let owns_activity = presentation.as_ref().is_some_and(|presentation| {
         presentation.heading == crate::app::activity::ActivityHeading::Assistant(msg_idx)
     });
-    let label_visibility = if excluded_ids.contains(&HistoryOutputId::AssistantLabel(message_id)) {
+    // The traversal also remembers excluded static content and skips invisible messages.
+    // Message ownership and output IDs remain independent of visual speaker grouping.
+    let label_visibility = if previous_block_kind == Some(TopLevelInlineBlockKind::Assistant)
+        || excluded_ids.contains(&HistoryOutputId::AssistantLabel(message_id))
+    {
         AssistantLabelVisibility::Hidden
     } else if owns_activity {
         AssistantLabelVisibility::WithActivity
@@ -358,6 +373,7 @@ fn welcome_output_ids(message: &ChatMessage) -> Vec<HistoryOutputId> {
             | MessageBlock::BtwExchange(_)
             | MessageBlock::Notice(_)
             | MessageBlock::ToolCall(_)
+            | MessageBlock::ToolResult { .. }
             | MessageBlock::ImageAttachment(_)
             | MessageBlock::UserDialog(_) => None,
         })
@@ -406,6 +422,7 @@ fn welcome_message_commit_ready(message: &ChatMessage) -> bool {
             | MessageBlock::BtwExchange(_)
             | MessageBlock::Notice(_)
             | MessageBlock::ToolCall(_)
+            | MessageBlock::ToolResult { .. }
             | MessageBlock::ImageAttachment(_)
             | MessageBlock::UserDialog(_) => None,
         })
@@ -627,46 +644,43 @@ fn assistant_render_items_from_message(
                 flush_pending_text_run(&mut pending_text, &mut items);
                 let current_kind = AssistantInlineItemKind::TextLike;
                 let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
-                items.push(AssistantRenderItemSpec {
-                    ids: vec![HistoryOutputId::Block(notice.id)],
+                items.push(notice_render_item(
+                    notice,
                     msg_idx,
+                    block_idx,
                     leading_blank_lines,
-                    block_idx: Some(block_idx),
-                    boundary_kind: LiveRowBoundaryKind::AssistantNotice,
-                    commit_ready: active_tail_block_idx != Some(block_idx),
-                    item: AssistantRenderItem::Notice(NoticeBlock {
-                        id: notice.id,
-                        severity: notice.severity,
-                        text: TextBlock::from_complete(&notice.text.text)
-                            .with_trailing_spacing(notice.text.trailing_spacing),
-                        dedup_key: notice.dedup_key.clone(),
-                    }),
-                });
+                    active_tail_block_idx != Some(block_idx),
+                ));
                 previous_kind = Some(current_kind);
             }
             MessageBlock::BtwExchange(exchange) => {
                 flush_pending_text_run(&mut pending_text, &mut items);
-                let current_kind = AssistantInlineItemKind::TextLike;
-                let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
-                items.push(btw_render_item(exchange, msg_idx, block_idx, leading_blank_lines));
-                previous_kind = Some(current_kind);
+                items.push(btw_render_item(
+                    exchange,
+                    msg_idx,
+                    block_idx,
+                    leading_blank_lines_between(previous_kind, AssistantInlineItemKind::TextLike),
+                ));
+                previous_kind = Some(AssistantInlineItemKind::TextLike);
             }
-            MessageBlock::ToolCall(tool) => {
-                if tool.hidden_unless_focused_interaction() {
+            MessageBlock::ToolCall(tool) | MessageBlock::ToolResult { tool, .. } => {
+                if tool.display().hidden_unless_focused_interaction() {
                     continue;
                 }
                 flush_pending_text_run(&mut pending_text, &mut items);
                 let current_kind = AssistantInlineItemKind::Tool;
-                let leading_blank_lines = leading_blank_lines_between(previous_kind, current_kind);
-                items.push(AssistantRenderItemSpec {
-                    ids: vec![HistoryOutputId::ToolCall(tool.id.clone())],
+                let (id, commit_ready) = if let MessageBlock::ToolResult { id, .. } = block {
+                    (HistoryOutputId::Block(*id), true)
+                } else {
+                    (HistoryOutputId::ToolCall(tool.id.clone()), tool_call_commit_ready(tool))
+                };
+                items.push(canonical_tool_render_item(
+                    id,
                     msg_idx,
-                    leading_blank_lines,
-                    block_idx: Some(block_idx),
-                    boundary_kind: LiveRowBoundaryKind::AssistantTool,
-                    commit_ready: tool_call_commit_ready(tool),
-                    item: AssistantRenderItem::CanonicalTool { msg_idx, block_idx },
-                });
+                    block_idx,
+                    leading_blank_lines_between(previous_kind, current_kind),
+                    commit_ready,
+                ));
                 previous_kind = Some(current_kind);
             }
             MessageBlock::Welcome(_)
@@ -677,6 +691,91 @@ fn assistant_render_items_from_message(
 
     flush_pending_text_run(&mut pending_text, &mut items);
     items
+}
+
+fn notice_render_item(
+    notice: &NoticeBlock,
+    msg_idx: usize,
+    block_idx: usize,
+    leading_blank_lines: usize,
+    commit_ready: bool,
+) -> AssistantRenderItemSpec {
+    AssistantRenderItemSpec {
+        ids: vec![HistoryOutputId::Block(notice.id)],
+        msg_idx,
+        leading_blank_lines,
+        block_idx: Some(block_idx),
+        boundary_kind: LiveRowBoundaryKind::AssistantNotice,
+        commit_ready,
+        item: AssistantRenderItem::Notice(NoticeBlock {
+            id: notice.id,
+            severity: notice.severity,
+            text: TextBlock::from_complete(&notice.text.text)
+                .with_trailing_spacing(notice.text.trailing_spacing),
+            dedup_key: notice.dedup_key.clone(),
+        }),
+    }
+}
+
+fn canonical_tool_render_item(
+    id: HistoryOutputId,
+    msg_idx: usize,
+    block_idx: usize,
+    leading_blank_lines: usize,
+    commit_ready: bool,
+) -> AssistantRenderItemSpec {
+    AssistantRenderItemSpec {
+        ids: vec![id],
+        msg_idx,
+        leading_blank_lines,
+        block_idx: Some(block_idx),
+        boundary_kind: LiveRowBoundaryKind::AssistantTool,
+        commit_ready,
+        item: AssistantRenderItem::CanonicalTool { msg_idx, block_idx },
+    }
+}
+
+/// A frozen launch keeps its creation position; live controls follow current output.
+fn append_detached_tool_interactions(
+    app: &mut App,
+    width: u16,
+    current_mode_id: Option<&str>,
+    rows: &mut Vec<Line<'static>>,
+    boundaries: &mut Vec<LiveRowBoundary>,
+) {
+    let interactions: Vec<_> = app
+        .pending_interaction_ids
+        .iter()
+        .filter_map(|id| {
+            let (mi, bi) = app.lookup_tool_call(id)?;
+            match &app.transcript.messages[mi].blocks[bi] {
+                MessageBlock::ToolCall(tool) if tool.has_frozen_launch() => {
+                    Some((id.clone(), mi, bi))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    let spinner = SpinnerState::for_app(app);
+    for (id, msg_idx, block_idx) in interactions {
+        boundaries.push(LiveRowBoundary {
+            ids: vec![HistoryOutputId::ToolInteraction(id)],
+            msg_idx,
+            block_idx: Some(block_idx),
+            kind: LiveRowBoundaryKind::AssistantTool,
+            start_row: rows.len(),
+            commit_ready: false,
+        });
+        rows.push(Line::default());
+        rows.extend(render_canonical_tool_rows(
+            app,
+            msg_idx,
+            block_idx,
+            message_render_context(current_mode_id, width),
+            spinner,
+            true,
+        ));
+    }
 }
 
 fn btw_render_item(
@@ -794,11 +893,15 @@ fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Optio
         match block {
             MessageBlock::Text(text) if text.text.is_empty() => {}
             MessageBlock::Text(text) => return Some(text),
-            MessageBlock::ToolCall(tool) if tool.hidden_unless_focused_interaction() => {}
+            MessageBlock::ToolCall(tool) | MessageBlock::ToolResult { tool, .. }
+                if tool.hidden_unless_focused_interaction() => {}
             MessageBlock::Welcome(_)
             | MessageBlock::ImageAttachment(_)
             | MessageBlock::UserDialog(_) => {}
-            MessageBlock::Notice(_) | MessageBlock::BtwExchange(_) | MessageBlock::ToolCall(_) => {
+            MessageBlock::Notice(_)
+            | MessageBlock::BtwExchange(_)
+            | MessageBlock::ToolCall(_)
+            | MessageBlock::ToolResult { .. } => {
                 return None;
             }
         }
@@ -810,11 +913,14 @@ fn last_visible_assistant_block_idx(message: &ChatMessage) -> Option<usize> {
     message.blocks.iter().enumerate().rev().find_map(|(block_idx, block)| match block {
         MessageBlock::Text(text) if !text.text.is_empty() => Some(block_idx),
         MessageBlock::Notice(_) | MessageBlock::BtwExchange(_) => Some(block_idx),
-        MessageBlock::ToolCall(tool) if !tool.hidden_unless_focused_interaction() => {
+        MessageBlock::ToolCall(tool) | MessageBlock::ToolResult { tool, .. }
+            if !tool.hidden_unless_focused_interaction() =>
+        {
             Some(block_idx)
         }
         MessageBlock::Text(_)
         | MessageBlock::ToolCall(_)
+        | MessageBlock::ToolResult { .. }
         | MessageBlock::Welcome(_)
         | MessageBlock::ImageAttachment(_)
         | MessageBlock::UserDialog(_) => None,
@@ -822,10 +928,11 @@ fn last_visible_assistant_block_idx(message: &ChatMessage) -> Option<usize> {
 }
 
 fn tool_call_commit_ready(tool: &ToolCallInfo) -> bool {
-    tool.status.is_terminal()
-        && tool.pending_permission.is_none()
-        && tool.pending_question.is_none()
-        && tool.terminal_id.is_none()
+    let display = tool.display();
+    (tool.status.is_terminal() || tool.has_frozen_launch())
+        && display.pending_permission.is_none()
+        && display.pending_question.is_none()
+        && display.terminal_id.is_none()
 }
 
 fn flush_pending_text_run(
@@ -976,6 +1083,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
                         block_idx,
                         message_render_context(request.current_mode_id, request.width),
                         request.spinner,
+                        false,
                     ),
                 );
             }
@@ -1294,9 +1402,10 @@ fn render_canonical_tool_rows(
     block_idx: usize,
     render_context: MessageRenderContext<'_>,
     spinner: SpinnerState,
+    interaction: bool,
 ) -> Vec<Line<'static>> {
     let show_duration = app.config.show_turn_duration_effective();
-    let Some(MessageBlock::ToolCall(tc)) = app
+    let Some(block) = app
         .transcript
         .messages
         .get_mut(msg_idx)
@@ -1304,13 +1413,19 @@ fn render_canonical_tool_rows(
     else {
         return Vec::new();
     };
+    let tc = match block {
+        MessageBlock::ToolCall(tc) if interaction => tc.as_mut(),
+        MessageBlock::ToolCall(tc) => tc.display_mut(),
+        MessageBlock::ToolResult { tool, .. } => tool.as_mut(),
+        _ => return Vec::new(),
+    };
     if tc.hidden_unless_focused_interaction() {
         return Vec::new();
     }
 
     let mut rows = Vec::new();
     tool_call::render_tool_call_cached(
-        tc.as_mut(),
+        tc,
         render_context.tool_render_context,
         render_context.width,
         spinner,
@@ -1334,6 +1449,9 @@ fn render_canonical_tool_rows(
             ),
             Style::default().fg(theme::DIM),
         )));
+    }
+    if interaction {
+        tc.cache.evict_cached_render();
     }
     wrap_lines_to_physical_rows(&rows, render_context.width)
 }
@@ -1580,6 +1698,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            history: crate::app::ToolCallHistory::Live,
         };
 
         if focused_permission {
@@ -1835,7 +1954,7 @@ mod tests {
     }
 
     #[test]
-    fn detached_web_rows_remain_mutable_between_turns_until_the_result_arrives() {
+    fn detached_web_launch_is_stable_and_final_output_gets_its_own_rows() {
         let mut app = App::test_default();
         let mut block = tool_call_block_with_status_interaction(
             "web-1",
@@ -1850,11 +1969,15 @@ mod tests {
         tool.title = "Deferred web fetch".to_owned();
         tool.sdk_tool_name = "WebFetch".to_owned();
         app.transcript.messages.push(assistant_blocks_message(vec![block]));
+        app.index_tool_call("web-1".to_owned(), 0, 0);
+        app.sync_tool_call_history("web-1");
         app.status = AppStatus::Ready;
 
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-        let mutable = line_texts(&serialized.rows()[serialized.stable_row_count()..]);
-        assert!(mutable.iter().any(|line| line.contains("Deferred web fetch")));
+        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
+        let launch = line_texts(serialized.rows());
+        assert!(launch.iter().any(|line| line.contains("Deferred web fetch")
+            && line.contains(crate::ui::theme::ICON_DETACHED)));
 
         let MessageBlock::ToolCall(tool) = &mut app.transcript.messages[0].blocks[0] else {
             unreachable!("original web call")
@@ -1862,11 +1985,16 @@ mod tests {
         tool.status = model::ToolCallStatus::Completed;
         tool.content = vec![model::ToolCallContent::from("Actual web output")];
         tool.invalidate_render_cache();
+        app.sync_tool_call_history("web-1");
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
         assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-        assert!(
-            line_texts(serialized.rows()).iter().any(|line| line.contains("Actual web output"))
-        );
+        let rows = line_texts(serialized.rows());
+        let cards: Vec<_> =
+            rows.iter().filter(|line| line.contains("Deferred web fetch")).collect();
+        assert_eq!(cards.len(), 2);
+        assert!(cards[0].contains(crate::ui::theme::ICON_DETACHED));
+        assert!(cards[1].contains(crate::ui::theme::ICON_COMPLETED));
+        assert!(rows.iter().any(|line| line.contains("Actual web output")));
     }
 
     #[test]
@@ -2239,9 +2367,9 @@ mod tests {
             Some(model::RuntimeSessionState::RequiresAction);
         assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request"]);
         app.session_runtime.runtime_session_state = Some(model::RuntimeSessionState::Running);
-        app.turn.pending_interaction_ids.push("permission".into());
+        app.pending_interaction_ids.push("permission".into());
         assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request"]);
-        app.turn.pending_interaction_ids.clear();
+        app.pending_interaction_ids.clear();
         assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), ["User", "request", "Claude"]);
         let label_id = HistoryOutputId::AssistantLabel(app.transcript.messages[1].id);
         let excluded = BTreeSet::from([label_id]);
@@ -2326,9 +2454,9 @@ mod tests {
         assert_eq!(activity.len(), 1);
         assert!(line_text(&activity[0]).contains(&verb));
         assert_eq!(line_texts(&serialize_live_rows(&mut app, 120)), ["Claude", "◆ Thinking…"]);
-        app.turn.pending_interaction_ids.push("permission".into());
+        app.pending_interaction_ids.push("permission".into());
         assert!(serialize_live_rows(&mut app, 120).is_empty());
-        app.turn.pending_interaction_ids.clear();
+        app.pending_interaction_ids.clear();
         app.turn.cancel_requested = true;
         assert_eq!(line_texts(&serialize_live_rows(&mut app, 120)), ["Claude"]);
         app.turn.cancel_requested = false;

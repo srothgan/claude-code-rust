@@ -4,7 +4,7 @@ import { emitSessionUpdate } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
-import { applyTaskToolResult } from "./tasks.js";
+import { applyTaskLifecycleState, applyTaskToolResult } from "./tasks.js";
 import {
   activeTaskIdForToolUse,
   linkTaskToolUse,
@@ -15,6 +15,7 @@ import {
   backgroundToolLaunchTaskIdFromResult,
   buildToolResultFields,
   createToolCall,
+  isShellToolName,
 } from "./tooling.js";
 import { appendResourceLinks } from "./resource_links.js";
 
@@ -63,7 +64,7 @@ function jsonSize(value: unknown): number | undefined {
   }
 }
 
-function toolNameFromMeta(
+export function toolNameFromMeta(
   meta: ToolCall["meta"] | undefined,
 ): string | undefined {
   if (!meta || typeof meta !== "object") {
@@ -105,25 +106,15 @@ export function toolUsesSummaryOutput(base: ToolCall | undefined): boolean {
 
 export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
   const baseToolName = toolName(base);
-  return Boolean(baseToolName && TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName));
-}
-
-export function toolAcceptsTerminalTaskNotification(
-  base: ToolCall | undefined,
-): boolean {
-  const baseToolName = toolName(base);
-  return Boolean(
-    baseToolName &&
-      (TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName) ||
-        baseToolName === "Bash" ||
-        baseToolName.startsWith("mcp__")),
-  );
+  return Boolean(baseToolName && (
+    TASK_LIFECYCLE_TOOL_NAMES.has(baseToolName) || isShellToolName(baseToolName) || baseToolName.startsWith("mcp__")
+  ));
 }
 
 export function toolPreservesTaskNotificationOutput(
   base: ToolCall | undefined,
 ): boolean {
-  return toolName(base) === "Bash";
+  return isShellToolName(toolName(base) ?? "");
 }
 
 export function defersTaskNotificationCompletion(
@@ -244,7 +235,7 @@ function mergeTaskMetadata(
   return merged;
 }
 
-function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields): void {
+export function applyFieldsToBase(base: ToolCall, fields: ToolCallUpdateFields): void {
   if (fields.title !== undefined) {
     base.title = fields.title;
   }
@@ -401,14 +392,19 @@ function taskTitleContext(
   };
 }
 
-export function emitToolCallUpdate(
-  session: SessionState,
-  toolUseId: string,
+export function normalizeToolCallUpdateFields(
+  base: ToolCall | undefined,
   fields: ToolCallUpdateFields,
   updateKind: ToolUpdateKind,
-  sourceMessageUuid?: string,
-): void {
-  const base = session.toolCalls.get(toolUseId);
+): boolean {
+  const baseTerminal = base?.status === "completed" || base?.status === "failed" || base?.status === "killed";
+  if (baseTerminal && (fields.status === "pending" || fields.status === "in_progress" || fields.status === "detached" || updateKind.startsWith("task_"))) return false;
+  // All SDK launch and lifecycle adapters converge here. A running task keeps
+  // its independent execution state across acknowledgements and progress.
+  if ((fields.status === "pending" || fields.status === "in_progress" || fields.status === undefined) &&
+      (fields.task_metadata?.is_backgrounded === true || base?.status === "detached")) {
+    fields.status = "detached";
+  }
   const nextStatus = fields.status ?? base?.status;
   const terminal =
     nextStatus === "completed" ||
@@ -423,6 +419,18 @@ export function emitToolCallUpdate(
       subagent_retry: { state: "clear" },
     };
   }
+  return true;
+}
+
+export function emitToolCallUpdate(
+  session: SessionState,
+  toolUseId: string,
+  fields: ToolCallUpdateFields,
+  updateKind: ToolUpdateKind,
+  sourceMessageUuid?: string,
+): void {
+  const base = session.toolCalls.get(toolUseId);
+  if (!normalizeToolCallUpdateFields(base, fields, updateKind)) return;
   logToolCallUpdateEmitted(
     session.sessionId,
     toolUseId,
@@ -563,6 +571,7 @@ export function emitToolResultUpdate(
     fields.content = contentWithResourceLinks;
   }
   applyToolNonExecutionMetadata(fields, nonExecutionMetadata);
+  if (!normalizeToolCallUpdateFields(base, fields, "result")) return;
   if (!isError && !nonExecutionMetadata) {
     const taskId = backgroundToolLaunchTaskIdFromResult(
       baseToolName,
@@ -571,6 +580,10 @@ export function emitToolResultUpdate(
     );
     if (taskId) {
       linkTaskToolUse(session, taskId, toolUseId);
+      applyTaskLifecycleState(session, "task_started", {
+        task_id: taskId, tool_use_id: toolUseId,
+        description: base?.title, is_backgrounded: true,
+      });
     }
   }
   emitToolCallUpdate(session, toolUseId, fields, "result", sourceMessageUuid);
@@ -585,12 +598,23 @@ export function emitToolResultUpdate(
     rawContent,
     rawResult,
   );
-  if (baseToolName === "Agent" || baseToolName === "Task") {
+  if ((baseToolName === "Agent" || baseToolName === "Task") &&
+      (base?.status === "completed" || base?.status === "failed" || base?.status === "killed")) {
     const taskId = activeTaskIdForToolUse(session, toolUseId);
     if (taskId) {
       unlinkTaskToolUse(session, taskId);
     }
   }
+}
+
+function toolBelongsToBackgroundExecution(session: SessionState, toolUseId: string): boolean {
+  let current: string | null = toolUseId;
+  for (let depth = 0; current && depth <= session.toolCalls.size; depth++) {
+    const tool = session.toolCalls.get(current);
+    if (tool?.status === "detached") return true;
+    current = parentToolUseIdFromMeta(tool?.meta);
+  }
+  return false;
 }
 
 export function finalizeOpenToolCalls(
@@ -602,8 +626,8 @@ export function finalizeOpenToolCalls(
       continue;
     }
     if (
-      toolAcceptsTerminalTaskNotification(toolCall) &&
-      activeTaskIdForToolUse(session, toolUseId)
+      toolBelongsToBackgroundExecution(session, toolUseId) ||
+      (toolAcceptsTaskLifecycle(toolCall) && activeTaskIdForToolUse(session, toolUseId))
     ) {
       continue;
     }
@@ -722,7 +746,7 @@ export function resolveTaskToolUseId(
   if (!taskId) {
     return "";
   }
-  return session.taskToolUseIds.get(taskId) ?? "";
+  return session.taskToolUseIds.get(taskId) ?? session.tasksById.get(taskId)?.source_tool_call_id ?? "";
 }
 
 export function taskProgressText(msg: Record<string, unknown>): string {

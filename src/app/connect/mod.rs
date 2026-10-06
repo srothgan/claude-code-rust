@@ -146,6 +146,7 @@ pub fn create_app(cli: &Cli) -> App {
         spinner_frame: 0,
         spinner_last_advance_at: None,
         tool_call_scopes: HashMap::new(),
+        pending_interaction_ids: Vec::new(),
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),
         plugins: PluginsState::default(),

@@ -1671,6 +1671,20 @@ mod tests {
     }
 
     #[test]
+    fn live_response_start_roundtrips_without_fabricating_a_user_message() {
+        let raw = serde_json::json!({
+            "event": "session_update", "session_id": "background-session",
+            "update": {"type": "agent_response_started"}
+        });
+        let decoded: BridgeEvent =
+            serde_json::from_value(raw.clone()).expect("live response start");
+        assert!(matches!(decoded, BridgeEvent::SessionUpdate {
+            ref session_id, update: types::SessionUpdate::AgentResponseStarted,
+        } if session_id == "background-session"));
+        assert_eq!(serde_json::to_value(decoded).expect("encode response start"), raw);
+    }
+
+    #[test]
     fn observed_activity_phase_roundtrips_without_thinking_content() {
         for (name, expected) in [
             ("working", super::super::model::AgentActivityPhase::Working),

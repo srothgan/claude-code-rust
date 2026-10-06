@@ -2498,7 +2498,7 @@ test("buildToolResultFields renders Monitor launch output as structured text", (
     base,
   );
 
-  assert.equal(fields.status, "in_progress");
+  assert.equal(fields.status, "detached");
   assert.equal(
     fields.raw_output,
     "Task ID: monitor-1\nPersistent: no\nTimeout: 30s",
@@ -2536,7 +2536,7 @@ test("buildToolResultFields renders Workflow launch output as structured text", 
     base,
   );
 
-  assert.equal(fields.status, "in_progress");
+  assert.equal(fields.status, "detached");
   assert.equal(
     fields.raw_output,
     "Status: async launched\nTask ID: workflow-1\nTask type: local_workflow\nWorkflow name: spec\nRun ID: run-1\nSummary: Workflow started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nWarning: branch diverged",

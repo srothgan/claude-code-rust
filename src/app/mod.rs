@@ -69,7 +69,6 @@ pub use lifecycle::{
 };
 pub use service_status_check::start_service_status_check;
 pub use settings::{AppSettings, UpdatePrompt};
-pub(crate) use state::ComposerBlockReason;
 pub use state::{
     ActiveCompaction, App, AppStatus, AutocompleteKind, BlockCache, BtwExchangeBlock, CacheMetrics,
     ChatMessage, ChatMessageId, ChatRenderState, CompactionState, ComposerRenderState, ExtraUsage,
@@ -88,6 +87,7 @@ pub use state::{
 pub(crate) use state::{
     BtwRequestState, BtwRequests, PendingUserMessage, PendingUserMessageInsertError,
 };
+pub(crate) use state::{ComposerBlockReason, tool_call_info::ToolCallHistory};
 pub use trust::TrustSelection;
 pub use update_check::{automatic_update_action, start_update_check};
 pub(crate) use update_prompt::actions_for as update_prompt_actions;
@@ -442,7 +442,7 @@ fn prepare_app_shutdown(app: &mut App) {
     app.request_chat_visible_rebuild();
 
     // Dismiss all pending inline permissions (reject via last option)
-    for tool_id in std::mem::take(&mut app.turn.pending_interaction_ids) {
+    for tool_id in std::mem::take(&mut app.pending_interaction_ids) {
         if let Some((mi, bi)) = app.lookup_tool_call(&tool_id)
             && let Some(MessageBlock::ToolCall(tc)) =
                 app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))

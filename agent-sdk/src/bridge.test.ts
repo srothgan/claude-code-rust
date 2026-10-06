@@ -292,6 +292,33 @@ function activityPhases(events: ReturnType<typeof captureBridgeEvents>): string[
   });
 }
 
+test("background completion replies announce live response ownership before their first text", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "completion-tool", "Bash", { command: "long command" });
+    emitToolResultUpdate(session, "completion-tool", false, "Launch acknowledgement", { backgroundTaskId: "completion-task" });
+    handleResultMessage(session, { type: "result", subtype: "success", result: "Foreground reply", is_error: false });
+    handleSdkMessage(session, { type: "system", subtype: "task_notification", task_id: "completion-task", tool_use_id: "completion-tool", status: "completed", summary: "Background command completed" } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    activityStream(session, { type: "message_start", message: { id: "child-response" } }, "detached-agent");
+    activityStream(session, { type: "message_stop" }, "detached-agent");
+    activityStream(session, { type: "message_start", message: { id: "completion-response" } });
+    activityStream(session, { type: "message_start", message: { id: "completion-response" } });
+    activityStream(session, { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    activityStream(session, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "The" } });
+    activityStream(session, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: " background task finished completely." } });
+    activityStream(session, { type: "message_stop" });
+    handleResultMessage(session, { type: "result", subtype: "success", result: "The background task finished completely.", is_error: false, origin: { kind: "task-notification" } });
+  });
+  const updates = events.flatMap(event => event.update ? [event.update as Record<string, unknown>] : []);
+  const start = updates.findIndex(update => update.type === "agent_response_started");
+  const text = updates.findIndex(update => update.type === "agent_message_chunk");
+  assert.ok(start >= 0 && start < text, "live response ownership must precede text insertion eligibility");
+  assert.deepEqual(activityPhases(events), []);
+  assert.equal(updates.filter(update => update.type === "agent_response_started").length, 1);
+  assert.deepEqual(updates.filter(update => update.type === "agent_message_chunk").map(update => (update.content as Record<string, unknown>).text), ["The", " background task finished completely."]);
+  assert.equal(session.mainAgentResponse, undefined);
+});
+
 test("live thinking starts at the block boundary with text, omitted text, or redacted content", () => {
   for (const block of [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "summary" }, { type: "redacted_thinking", data: "redacted" }]) {
     const session = makeSessionState();
@@ -3834,7 +3861,7 @@ test("background Bash remains open across turn interruption until its final task
 
   assert.equal(
     session.toolCalls.get("tool-bash-background")?.status,
-    "in_progress",
+    "detached",
   );
   assert.equal(
     session.taskToolUseIds.get("bash-task-1"),
@@ -4324,7 +4351,7 @@ test("handleTaskSystemMessage applies task_updated description patches to the li
     tool_call_update: {
       tool_call_id: "tool-1",
       fields: {
-        status: "in_progress",
+        status: "detached",
         raw_output: "Refining the migration plan",
         content: [
           {
@@ -4438,7 +4465,7 @@ test("Monitor launch links task id and accepts task lifecycle updates", () => {
 
   assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
   assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
-  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "detached");
 
   captureBridgeEvents(() => {
     handleTaskSystemMessage(session, "task_updated", {
@@ -4452,14 +4479,14 @@ test("Monitor launch links task id and accepts task lifecycle updates", () => {
   });
 
   const toolCall = session.toolCalls.get("tool-monitor");
-  assert.equal(toolCall?.status, "in_progress");
+  assert.equal(toolCall?.status, "detached");
   assert.equal(toolCall?.raw_output, "Monitor observed deploy log output");
   assert.equal(toolCall?.task_metadata?.is_backgrounded, true);
   assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
   assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
 });
 
-test("Monitor launch stays in progress after successful assistant turn until final lifecycle notification", () => {
+test("Monitor launch stays detached after successful assistant turn until final lifecycle notification", () => {
   const session = makeSessionState();
 
   captureBridgeEvents(() => {
@@ -4481,7 +4508,7 @@ test("Monitor launch stays in progress after successful assistant turn until fin
     });
   });
 
-  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "detached");
   assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
   assert.equal(session.taskIdsByToolUseId.get("tool-monitor"), "monitor-1");
 
@@ -9491,7 +9518,7 @@ test("handleResultMessage emits repeated turn_complete while background work rem
       },
     ],
   );
-  assert.equal(session.toolCalls.get("tool-monitor")?.status, "in_progress");
+  assert.equal(session.toolCalls.get("tool-monitor")?.status, "detached");
   assert.equal(session.taskToolUseIds.get("monitor-1"), "tool-monitor");
 });
 

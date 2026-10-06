@@ -886,14 +886,14 @@ fn enforce_history_retention_preserves_and_rebuilds_pending_user_dialog() {
         pending_user_dialog_message("dialog-1"),
     ];
     app.index_tool_call("dialog-1".to_owned(), 99, 99);
-    app.turn.pending_interaction_ids = vec!["stale-dialog".to_owned(), "dialog-1".to_owned()];
+    app.pending_interaction_ids = vec!["stale-dialog".to_owned(), "dialog-1".to_owned()];
     app.history_retention.max_bytes = 1;
 
     let stats = app.enforce_history_retention();
 
     assert_eq!(stats.dropped_messages, 1);
     assert_eq!(app.lookup_tool_call("dialog-1"), Some((2, 0)));
-    assert_eq!(app.turn.pending_interaction_ids, vec!["dialog-1".to_owned()]);
+    assert_eq!(app.pending_interaction_ids, vec!["dialog-1".to_owned()]);
     let Some((msg_idx, block_idx)) = app.lookup_tool_call("dialog-1") else {
         panic!("expected rebuilt dialog index");
     };
@@ -1135,6 +1135,8 @@ fn detached_calls_survive_turn_exits_but_finish_when_the_session_ends() {
         vec![MessageBlock::ToolCall(Box::new(tool))],
         None,
     ));
+    app.index_tool_call("web-1".to_owned(), 0, 0);
+    app.sync_tool_call_history("web-1");
     for status in [model::ToolCallStatus::Completed, model::ToolCallStatus::Failed] {
         app.finalize_turn_runtime_artifacts(status);
         let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {
@@ -1147,6 +1149,19 @@ fn detached_calls_survive_turn_exits_but_finish_when_the_session_ends() {
         panic!("expected tool call")
     };
     assert_eq!(tool.status, model::ToolCallStatus::Failed);
+    let results: Vec<_> = app
+        .transcript
+        .messages
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .filter_map(|block| match block {
+            MessageBlock::ToolResult { tool, .. } => Some(tool),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "web-1");
+    assert_eq!(results[0].status, model::ToolCallStatus::Failed);
 }
 
 #[test]
@@ -1211,13 +1226,13 @@ fn clear_messages_tracked_clears_tool_tracking() {
         "term-1",
     ));
     app.index_tool_call("bash-1".to_owned(), 0, 0);
-    app.turn.pending_interaction_ids.push("bash-1".into());
+    app.pending_interaction_ids.push("bash-1".into());
 
     app.clear_messages_tracked();
 
     assert!(app.transcript.messages.is_empty());
     assert!(app.transcript.tool_call_index.is_empty());
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
 }
 
 #[test]
@@ -1237,7 +1252,7 @@ fn rebuild_tool_indices_includes_completed_tools() {
 
 fn focus_test_app_with_available_targets() -> App {
     let mut app = make_test_app();
-    app.turn.pending_interaction_ids.push("perm-1".into());
+    app.pending_interaction_ids.push("perm-1".into());
     app.slash.show(SlashState {
         trigger_row: 0,
         trigger_col: 0,

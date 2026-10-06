@@ -13,6 +13,7 @@ import type {
   TerminalReason,
   TranscriptRetractionReason,
   ToolCallUpdateFields,
+  ToolCall,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
 import {
@@ -45,10 +46,10 @@ import {
   resolveTaskToolUseId,
   defersTaskNotificationCompletion,
   toolAcceptsTaskLifecycle,
-  toolAcceptsTerminalTaskNotification,
   toolPreservesTaskNotificationOutput,
   taskProgressText,
   taskUpdatedFields,
+  normalizeToolCallUpdateFields,
   type ToolCorrelationMetadata,
 } from "./tool_calls.js";
 import {
@@ -706,6 +707,98 @@ export function contentFromPrompt(
   return content;
 }
 
+export function taskSystemToolFields(
+  toolCall: ToolCall,
+  subtype: string,
+  msg: Record<string, unknown>,
+): ToolCallUpdateFields | undefined {
+  const messageTaskMetadata = sdkTaskMetadata(msg);
+  if (subtype === "task_started") {
+    const description =
+      typeof msg.description === "string" ? msg.description : "";
+    if (!description) {
+      return undefined;
+    }
+    const fields: ToolCallUpdateFields = {
+      status: "in_progress",
+      ...(!(toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output) ? { raw_output: description,
+      content: [
+        { type: "content", content: { type: "text", text: description } },
+      ] } : {}),
+      ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
+    };
+    return Object.keys(fields).length === 1 && fields.status === toolCall.status ? undefined : fields;
+  }
+
+  if (subtype === "task_progress") {
+    const progress = taskProgressText(msg);
+    if (!progress) {
+      return undefined;
+    }
+    const fields: ToolCallUpdateFields = {
+      status: "in_progress",
+      ...(!(toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output) ? {
+        raw_output: progress,
+        content: [{ type: "content", content: { type: "text", text: progress } }],
+      } : {}),
+      ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
+    };
+    return fields;
+  }
+
+  if (subtype === "task_updated") {
+    const fields = taskUpdatedFields(msg);
+    if (messageTaskMetadata) {
+      fields.task_metadata = {
+        ...(fields.task_metadata ?? {}),
+        ...messageTaskMetadata,
+      };
+    }
+    if (Object.keys(fields).length === 0) {
+      return undefined;
+    }
+    if (toolCall.status === "detached" && isTerminalToolStatus(fields.status)) {
+      // Completion patches precede the payload-bearing notification. Keep the
+      // linkage and independent state until the final result arrives.
+      fields.status = "detached";
+    }
+    return fields;
+  }
+
+  const status = typeof msg.status === "string" ? msg.status : "";
+  const summary = typeof msg.summary === "string" ? msg.summary : "";
+  const finalStatus =
+    status === "completed"
+      ? "completed"
+      : status === "stopped"
+        ? "killed"
+        : "failed";
+  const deferCompletion =
+    finalStatus === "completed" && toolCall.status !== "detached" && defersTaskNotificationCompletion(toolCall);
+  const fields: ToolCallUpdateFields = deferCompletion
+    ? {}
+    : { status: finalStatus };
+  if (messageTaskMetadata) {
+    fields.task_metadata = messageTaskMetadata;
+  }
+  if (summary && (!toolPreservesTaskNotificationOutput(toolCall) || toolCall.status === "detached")) {
+    const output = toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output
+      ? `${toolCall.raw_output}\n${summary}` : summary;
+    fields.raw_output = output;
+    fields.content = [
+      { type: "content", content: { type: "text", text: output } },
+    ];
+  }
+  const contentWithResourceLinks = appendResourceLinks(
+    fields.content,
+    msg.resource_links,
+  );
+  if (contentWithResourceLinks !== undefined) {
+    fields.content = contentWithResourceLinks;
+  }
+  return Object.keys(fields).length > 0 ? fields : undefined;
+}
+
 export function handleTaskSystemMessage(
   session: SessionState,
   subtype: string,
@@ -723,7 +816,6 @@ export function handleTaskSystemMessage(
   const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
   const explicitToolUseId =
     typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
-  const messageTaskMetadata = sdkTaskMetadata(msg);
   if (taskId && explicitToolUseId) {
     linkTaskToolUse(session, taskId, explicitToolUseId);
   }
@@ -783,15 +875,14 @@ export function handleTaskSystemMessage(
 
   const toolCall = ensureToolCallVisible(session, toolUseId, "Agent", {});
   const acceptsLifecycle = toolAcceptsTaskLifecycle(toolCall);
-  const acceptsTerminalNotification =
-    subtype === "task_notification" &&
-    toolAcceptsTerminalTaskNotification(toolCall);
-  if (!acceptsLifecycle && !acceptsTerminalNotification) {
+  if (!acceptsLifecycle) {
     if (taskId) {
       unlinkTaskToolUse(session, taskId);
     }
     return true;
   }
+  const fields = taskSystemToolFields(toolCall, subtype, msg);
+  if (!normalizeToolCallUpdateFields(toolCall, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
   applyTaskLifecycleState(session, subtype, msg);
   const taskDuration = elapsedNumber(asRecordOrNull(msg.usage)?.duration_ms);
   if (taskDuration !== undefined && Number.isSafeInteger(Math.round(taskDuration))) {
@@ -806,107 +897,9 @@ export function handleTaskSystemMessage(
     );
   }
 
-  if (subtype === "task_started") {
-    const description =
-      typeof msg.description === "string" ? msg.description : "";
-    if (!description) {
-      return true;
-    }
-    const fields: ToolCallUpdateFields = {
-      status: "in_progress",
-      raw_output: description,
-      content: [
-        { type: "content", content: { type: "text", text: description } },
-      ],
-      ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
-    };
-    emitToolCallUpdate(session, toolUseId, fields, "task_started");
-    return true;
-  }
-
-  if (subtype === "task_progress") {
-    const progress = taskProgressText(msg);
-    if (!progress) {
-      return true;
-    }
-    const fields: ToolCallUpdateFields = {
-      status: "in_progress",
-      raw_output: progress,
-      content: [{ type: "content", content: { type: "text", text: progress } }],
-      ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
-    };
-    emitToolCallUpdate(session, toolUseId, fields, "task_progress");
-    return true;
-  }
-
-  if (subtype === "task_updated") {
-    const fields = taskUpdatedFields(msg);
-    if (messageTaskMetadata) {
-      fields.task_metadata = {
-        ...(fields.task_metadata ?? {}),
-        ...messageTaskMetadata,
-      };
-    }
-    if (Object.keys(fields).length === 0) {
-      return true;
-    }
-    bridgeLogger.debug({
-      target: LOG_TARGETS.APP_TOOL,
-      eventName: "task_updated_emitted",
-      message: "task update mapped to tool call update",
-      outcome: "success",
-      sessionId: session.sessionId,
-      toolCallId: toolUseId,
-      fields: {
-        task_id: taskId,
-        mapped_status: fields.status,
-        has_description: fields.content !== undefined,
-        has_error: Boolean(fields.task_metadata?.error),
-        is_backgrounded: fields.task_metadata?.is_backgrounded,
-      },
-    });
-    emitToolCallUpdate(session, toolUseId, fields, "task_updated");
-    if (taskId && isTerminalToolStatus(fields.status)) {
-      unlinkTaskToolUse(session, taskId);
-    }
-    return true;
-  }
-
-  const status = typeof msg.status === "string" ? msg.status : "";
-  const summary = typeof msg.summary === "string" ? msg.summary : "";
-  const finalStatus =
-    status === "completed"
-      ? "completed"
-      : status === "stopped"
-        ? "killed"
-        : "failed";
-  const deferCompletion =
-    finalStatus === "completed" && defersTaskNotificationCompletion(toolCall);
-  const fields: ToolCallUpdateFields = deferCompletion
-    ? {}
-    : { status: finalStatus };
-  if (messageTaskMetadata) {
-    fields.task_metadata = messageTaskMetadata;
-  }
-  if (summary && !toolPreservesTaskNotificationOutput(toolCall)) {
-    fields.raw_output = summary;
-    fields.content = [
-      { type: "content", content: { type: "text", text: summary } },
-    ];
-  }
-  const contentWithResourceLinks = appendResourceLinks(
-    fields.content,
-    msg.resource_links,
-  );
-  if (contentWithResourceLinks !== undefined) {
-    fields.content = contentWithResourceLinks;
-  }
-  if (Object.keys(fields).length > 0) {
-    emitToolCallUpdate(session, toolUseId, fields, "task_notification");
-  }
-  if (taskId && !deferCompletion) {
-    unlinkTaskToolUse(session, taskId);
-  }
+  if (!fields) return true;
+  emitToolCallUpdate(session, toolUseId, fields, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification");
+  if (taskId && isTerminalToolStatus(fields.status)) unlinkTaskToolUse(session, taskId);
   return true;
 }
 

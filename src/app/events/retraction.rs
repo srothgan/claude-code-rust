@@ -83,7 +83,7 @@ fn block_matches_retraction(block: &MessageBlock, message_uuids: &HashSet<&str>)
         MessageBlock::Text(block) => {
             block.source_message_uuids.iter().any(|uuid| message_uuids.contains(uuid.as_str()))
         }
-        MessageBlock::ToolCall(tool_call) => {
+        MessageBlock::ToolCall(tool_call) | MessageBlock::ToolResult { tool: tool_call, .. } => {
             tool_call.source_message_uuids.iter().any(|uuid| message_uuids.contains(uuid.as_str()))
         }
         MessageBlock::BtwExchange(_)

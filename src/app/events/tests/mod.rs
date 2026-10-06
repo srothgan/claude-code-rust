@@ -34,6 +34,68 @@ fn turn_complete(terminal_reason: Option<crate::agent::types::TerminalReason>) -
     }
 }
 
+#[test]
+fn autonomous_response_owns_fresh_text_and_preserves_an_existing_live_owner() {
+    let mut app = make_test_app();
+    app.status = AppStatus::Ready;
+    app.push_message_tracked(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete(
+        "Already completed and inserted.",
+    ))]));
+    let finished_id = app.transcript.messages[0].id;
+    handle_client_event(&mut app, session_update(model::SessionUpdate::AgentResponseStarted));
+    assert_eq!(app.status, AppStatus::Running);
+    assert_eq!(app.active_turn_assistant_idx(), Some(1));
+    let active_id = app.transcript.messages[1].id;
+    assert!(app.turn.activity.is_some());
+    for text in ["The", " background task finished completely."] {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new(text)),
+            ))),
+        );
+        // Further main response starts inside a live turn must keep its owner.
+        handle_client_event(&mut app, session_update(model::SessionUpdate::AgentResponseStarted));
+        assert_eq!(app.transcript.messages.len(), 2);
+        assert_eq!(app.transcript.messages[1].id, active_id);
+    }
+    assert_eq!(app.transcript.messages[0].id, finished_id);
+    let MessageBlock::Text(finished) = &app.transcript.messages[0].blocks[0] else {
+        panic!("finished text");
+    };
+    assert_eq!(finished.text, "Already completed and inserted.");
+    let MessageBlock::Text(reply) = &app.transcript.messages[1].blocks[0] else {
+        panic!("completion reply");
+    };
+    assert_eq!(reply.text, "The background task finished completely.");
+    handle_client_event(&mut app, turn_complete(None));
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    for phase in [model::AgentActivityPhase::Working, model::AgentActivityPhase::Thinking] {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AgentActivityUpdate(phase)),
+        );
+    }
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    assert!(app.turn.activity.is_none());
+    handle_client_event(
+        &mut app,
+        ClientEvent::TurnError {
+            session_id: "test-session".to_owned(),
+            message: "Fixture service unavailable".to_owned(),
+            queued_turn_count: None,
+            api_error_status: Some(503),
+            terminal_reason: None,
+        },
+    );
+    assert_eq!(app.status, AppStatus::Error);
+    handle_client_event(&mut app, session_update(model::SessionUpdate::AgentResponseStarted));
+    assert_eq!(app.status, AppStatus::Running);
+    assert_eq!(app.active_turn_assistant_idx(), Some(app.transcript.messages.len() - 1));
+}
+
 fn slash_command_error(message: String) -> ClientEvent {
     ClientEvent::SlashCommandError { session_id: None, message }
 }
@@ -182,12 +244,14 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
         MessageBlock::Notice(block) => {
             BlockSnapshot::Notice { severity: block.severity, text: block.text.text.clone() }
         }
-        MessageBlock::ToolCall(tool_call) => BlockSnapshot::ToolCall {
-            id: tool_call.id.clone(),
-            title: tool_call.title.clone(),
-            status: tool_call.status,
-            hidden: tool_call.hidden,
-        },
+        MessageBlock::ToolCall(tool_call) | MessageBlock::ToolResult { tool: tool_call, .. } => {
+            BlockSnapshot::ToolCall {
+                id: tool_call.id.clone(),
+                title: tool_call.title.clone(),
+                status: tool_call.status,
+                hidden: tool_call.hidden,
+            }
+        }
         MessageBlock::Welcome(block) => BlockSnapshot::Welcome {
             version: block.version.clone(),
             subscription: block.subscription.clone(),
@@ -343,7 +407,9 @@ fn first_block_text(msg: &ChatMessage) -> &str {
         Some(MessageBlock::BtwExchange(_)) => {
             panic!("expected text-like block, found BTW exchange")
         }
-        Some(MessageBlock::ToolCall(_)) => panic!("expected text-like block, found tool call"),
+        Some(MessageBlock::ToolCall(_) | MessageBlock::ToolResult { .. }) => {
+            panic!("expected text-like block, found tool call")
+        }
         Some(MessageBlock::Welcome(_)) => panic!("expected text-like block, found welcome"),
         Some(MessageBlock::ImageAttachment(_)) => {
             panic!("expected text-like block, found image attachment")
@@ -726,6 +792,7 @@ fn canonical_messages_contain_text(app: &App, expected: &str) -> bool {
                 exchange.question == expected || exchange.answer == expected
             }
             MessageBlock::ToolCall(_)
+            | MessageBlock::ToolResult { .. }
             | MessageBlock::Welcome(_)
             | MessageBlock::ImageAttachment(_)
             | MessageBlock::UserDialog(_) => false,
@@ -952,7 +1019,7 @@ fn test_app_defaults() {
     assert!(!app.shutdown_requested());
     assert!(app.session_runtime.session_id.is_none());
     assert_eq!(app.files_accessed, 0);
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
     assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
     assert!(app.sdk_inventory.tasks.is_empty());
     assert!(app.mention.is_none());
@@ -1381,7 +1448,7 @@ fn resume_history_clears_active_turn_owner_after_loading() {
 }
 
 #[test]
-fn resume_history_clears_tool_scope_tracking_after_loading() {
+fn resume_history_clears_foreground_tracking_and_retains_tool_relationships() {
     let mut app = make_test_app();
     let task_tool = model::ToolCall::new("resume-task", "Run subagent")
         .kind(model::ToolKind::Think)
@@ -1405,7 +1472,12 @@ fn resume_history_clears_tool_scope_tracking_after_loading() {
     );
 
     assert!(app.turn.active_task_ids.is_empty());
-    assert_eq!(app.tool_call_scope("resume-task"), None);
+    assert_eq!(app.tool_call_scope("resume-task"), Some(ToolCallScope::SubagentRoot));
+    let (mi, bi) = app.lookup_tool_call("resume-task").expect("resumed foreground tool");
+    let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
+        panic!("resumed tool call");
+    };
+    assert_eq!(tool.status, model::ToolCallStatus::Failed);
 }
 
 #[test]
@@ -1774,14 +1846,16 @@ fn classified_turn_error_transient_service_suggests_retry() {
 }
 
 #[test]
-fn turn_error_clears_tool_scope_tracking() {
+fn turn_error_clears_foreground_tracking_without_misclassifying_the_next_tool() {
     let mut app = make_test_app();
-    app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
-        "task-1",
-        model::ToolCallStatus::InProgress,
-    )))]));
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ToolCall(
+            model::ToolCall::new("task-1", "Run subagent")
+                .status(model::ToolCallStatus::InProgress)
+                .meta(serde_json::json!({"claudeCode": {"toolName": "Agent"}})),
+        )),
+    );
 
     handle_client_event(
         &mut app,
@@ -1795,7 +1869,22 @@ fn turn_error_clears_tool_scope_tracking() {
     );
 
     assert!(app.turn.active_task_ids.is_empty());
-    assert_eq!(app.tool_call_scope("task-1"), None);
+    assert_eq!(app.tool_call_scope("task-1"), Some(ToolCallScope::SubagentRoot));
+    let (mi, bi) = app.lookup_tool_call("task-1").expect("failed foreground tool");
+    let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
+        panic!("foreground tool call");
+    };
+    assert_eq!(tool.status, model::ToolCallStatus::Failed);
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ToolCall(
+            model::ToolCall::new("next-bash", "Foreground command")
+                .status(model::ToolCallStatus::InProgress)
+                .meta(serde_json::json!({"claudeCode": {"toolName": "Bash"}})),
+        )),
+    );
+    assert_eq!(app.tool_call_scope("next-bash"), Some(ToolCallScope::MainAgent));
+    assert!(app.turn.active_task_ids.is_empty());
 }
 
 #[test]
@@ -1817,7 +1906,7 @@ fn auth_required_clears_active_turn_runtime_tracking() {
     app.bind_active_turn_assistant(0);
     app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
     app.insert_active_task("task-1".into());
-    app.turn.pending_interaction_ids.push("task-1".into());
+    app.pending_interaction_ids.push("task-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
     handle_client_event(
@@ -1830,7 +1919,7 @@ fn auth_required_clears_active_turn_runtime_tracking() {
 
     assert_eq!(app.active_turn_assistant_idx(), None);
     assert!(app.turn.active_task_ids.is_empty());
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
     assert_ne!(app.focus_owner(), FocusOwner::Permission);
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
@@ -2616,13 +2705,13 @@ fn permission_owner_handles_up_down_for_pending_interactions() {
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
 
-    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-b", "perm-a"]);
+    assert_eq!(app.pending_interaction_ids, vec!["perm-b", "perm-a"]);
 }
 
 #[test]
 fn permission_focus_allows_typing_for_non_permission_keys() {
     let mut app = make_test_app();
-    app.turn.pending_interaction_ids.push("perm-1".into());
+    app.pending_interaction_ids.push("perm-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
     handle_terminal_event(
@@ -2665,7 +2754,7 @@ fn permission_request_with_existing_draft_does_not_claim_focus() {
     );
 
     assert_eq!(app.focus_owner(), FocusOwner::Input);
-    assert_eq!(app.turn.pending_interaction_ids, vec![tool_id]);
+    assert_eq!(app.pending_interaction_ids, vec![tool_id]);
     assert_eq!(permission_focus_state(&app, tool_id), Some(false));
 }
 
@@ -2698,7 +2787,7 @@ fn question_request_with_existing_draft_does_not_claim_focus() {
     );
 
     assert_eq!(app.focus_owner(), FocusOwner::Input);
-    assert_eq!(app.turn.pending_interaction_ids, vec![tool_id]);
+    assert_eq!(app.pending_interaction_ids, vec![tool_id]);
     assert_eq!(question_focus_state(&app, tool_id), Some(false));
 }
 
@@ -2744,7 +2833,7 @@ fn enter_submits_draft_when_permission_arrives_mid_compose() {
     super::super::finalize_deferred_submit(&mut app);
 
     assert!(app.pending_submit.is_none());
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
     assert!(bridge_rx.try_recv().is_ok());
     assert!(response_rx.try_recv().is_err());
 }
@@ -2900,13 +2989,13 @@ fn stale_inline_interaction_queue_head_is_pruned_before_enter_response() {
         ],
         false,
     );
-    app.turn.pending_interaction_ids.insert(0, "stale-id".into());
+    app.pending_interaction_ids.insert(0, "stale-id".into());
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
 
     let response = response_rx.try_recv().expect("permission response");
     assert!(matches!(response.outcome, model::RequestPermissionOutcome::Selected(_)));
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
 }
 
 #[test]
@@ -3018,7 +3107,7 @@ fn attach_pending_permission(
     app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
     let msg_idx = app.transcript.messages.len().saturating_sub(1);
     app.index_tool_call(tool_id.into(), msg_idx, 0);
-    app.turn.pending_interaction_ids.push(tool_id.into());
+    app.pending_interaction_ids.push(tool_id.into());
     app.claim_focus_target(FocusTarget::Permission);
     response_rx
 }
@@ -3048,7 +3137,7 @@ fn attach_pending_question(
     app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tc))]));
     let msg_idx = app.transcript.messages.len().saturating_sub(1);
     app.index_tool_call(tool_id.into(), msg_idx, 0);
-    app.turn.pending_interaction_ids.push(tool_id.into());
+    app.pending_interaction_ids.push(tool_id.into());
     if focused {
         app.claim_focus_target(FocusTarget::Permission);
     }
@@ -3093,7 +3182,7 @@ fn permission_ctrl_y_does_not_resolve_pending_permission() {
         response_rx.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
-    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -3127,7 +3216,7 @@ fn permission_ctrl_a_does_not_resolve_pending_permission() {
         response_rx.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
-    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -3168,7 +3257,7 @@ fn permission_ctrl_n_does_not_bypass_mention_focus() {
         response_rx.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
-    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -3203,7 +3292,7 @@ fn plan_approval_raw_ctrl_y_does_not_resolve_permission() {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
     assert_eq!(app.input.text(), "seed");
-    assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
+    assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
 }
 
 #[test]
@@ -3228,7 +3317,7 @@ fn second_esc_after_permission_rejection_requests_turn_cancel() {
         panic!("expected selected permission response");
     };
     assert_eq!(selected.option_id.clone(), "deny");
-    assert!(app.turn.pending_interaction_ids.is_empty());
+    assert!(app.pending_interaction_ids.is_empty());
     assert!(!app.turn.cancel_requested);
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));

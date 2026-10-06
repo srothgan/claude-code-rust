@@ -367,7 +367,7 @@ mod tests {
     fn visual_line_count_hides_prompt_suggestion_hint_when_input_lacks_focus() {
         let mut app = App::test_default();
         app.session_runtime.prompt_suggestion = Some("Write tests for the retry flow".to_owned());
-        app.turn.pending_interaction_ids.push("perm-1".to_owned());
+        app.pending_interaction_ids.push("perm-1".to_owned());
         app.claim_focus_target(FocusTarget::Permission);
         assert_eq!(visual_line_count(&mut app, 80), 1 + INPUT_VERTICAL_PAD * 2);
     }

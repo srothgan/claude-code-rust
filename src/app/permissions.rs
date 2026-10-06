@@ -300,6 +300,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            history: crate::app::ToolCallHistory::Live,
         }
     }
 
@@ -346,7 +347,7 @@ mod tests {
                 focused,
             });
         }
-        app.turn.pending_interaction_ids.push(tool_id.to_owned());
+        app.pending_interaction_ids.push(tool_id.to_owned());
         rx
     }
 
@@ -375,7 +376,7 @@ mod tests {
         let mut rx1 = add_permission(&mut app, "perm-1", allow_options(), true);
         let mut rx2 = add_permission(&mut app, "perm-2", allow_options(), false);
 
-        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1", "perm-2"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1", "perm-2"]);
         assert!(permission_focused(&app, "perm-1"));
         assert!(!permission_focused(&app, "perm-2"));
 
@@ -385,7 +386,7 @@ mod tests {
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
         );
         assert_eq!(consumed, KeyOutcome::Handled(true));
-        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-2", "perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-2", "perm-1"]);
         assert!(permission_focused(&app, "perm-2"));
         assert!(!permission_focused(&app, "perm-1"));
 
@@ -402,7 +403,7 @@ mod tests {
         };
         assert_eq!(sel2.option_id.clone(), "allow-once");
         assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
     }
 
     #[test]
@@ -444,7 +445,7 @@ mod tests {
             KeyOutcome::Ignored
         );
 
-        assert_eq!(app.turn.pending_interaction_ids, vec!["perm-1"]);
+        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
@@ -497,6 +498,6 @@ mod tests {
             panic!("expected selected permission response");
         };
         assert_eq!(selected.option_id, "allow-once");
-        assert_eq!(app.turn.pending_interaction_ids, Vec::<String>::new());
+        assert_eq!(app.pending_interaction_ids, Vec::<String>::new());
     }
 }

@@ -60,8 +60,10 @@ test("resume display restores compaction segments once and preserves SDK branch 
     const tools = result.updates.filter((update: { type: string }) => update.type === "tool_call");
     assert.equal(tools.length, 1);
     assert.equal(tools[0].tool_call.tool_call_id, "read-1");
-    assert.equal(tools[0].tool_call.status, "completed");
-    assert.equal(tools[0].tool_call.raw_output, "file contents");
+    assert.equal(tools[0].tool_call.status, "in_progress");
+    const resultUpdate = result.updates.find((update: { type: string; tool_call_update?: { tool_call_id: string } }) => update.type === "tool_call_update" && update.tool_call_update?.tool_call_id === "read-1");
+    assert.equal(resultUpdate.tool_call_update.fields.status, "completed");
+    assert.equal(resultUpdate.tool_call_update.fields.raw_output, "file contents");
     assert.equal(readFileSync(transcript, "utf8"), before);
   } finally {
     assert.equal(dirname(directory), realpathSync(tmpdir()));

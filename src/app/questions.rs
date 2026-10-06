@@ -14,7 +14,7 @@ use std::time::Instant;
 
 /// Question activity and expiry belong to the rendered interaction, not app settings.
 pub(super) fn record_activity(app: &mut App, now: Instant) {
-    let ids = app.turn.pending_interaction_ids.clone();
+    let ids = app.pending_interaction_ids.clone();
     for id in ids {
         let Some((mi, bi)) = app.lookup_tool_call(&id) else {
             continue;
@@ -587,6 +587,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            history: crate::app::ToolCallHistory::Live,
         }
     }
 
@@ -623,7 +624,7 @@ mod tests {
                 total_questions: 1,
             });
         }
-        app.turn.pending_interaction_ids.push(tool_id.to_owned());
+        app.pending_interaction_ids.push(tool_id.to_owned());
         rx
     }
 
@@ -660,7 +661,7 @@ mod tests {
 
         assert_eq!(consumed_right, KeyOutcome::Handled(true));
         assert_eq!(consumed_enter, KeyOutcome::Handled(true));
-        assert!(app.turn.pending_interaction_ids.is_empty());
+        assert!(app.pending_interaction_ids.is_empty());
 
         let resp = rx.try_recv().expect("question should be answered");
         let model::RequestQuestionOutcome::Answered(answered) = resp.outcome else {
@@ -811,7 +812,7 @@ mod tests {
                 answer.selected_option_ids,
                 if selected { vec!["b".to_owned()] } else { Vec::new() }
             );
-            assert!(app.turn.pending_interaction_ids.is_empty());
+            assert!(app.pending_interaction_ids.is_empty());
         }
     }
 

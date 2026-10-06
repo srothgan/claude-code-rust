@@ -191,7 +191,7 @@ pub(super) fn handle_permission_request_event(
         return;
     };
 
-    if app.turn.pending_interaction_ids.iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "permission_request_rejected",
@@ -206,8 +206,7 @@ pub(super) fn handle_permission_request_event(
     }
 
     let mut layout_dirty = false;
-    let auto_focus =
-        app.turn.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
         app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
@@ -222,7 +221,7 @@ pub(super) fn handle_permission_request_event(
         });
         tc.invalidate_render_cache();
         layout_dirty = true;
-        app.turn.pending_interaction_ids.push(tool_id.clone());
+        app.pending_interaction_ids.push(tool_id.clone());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -400,7 +399,7 @@ pub(super) fn handle_question_request_event(
         return;
     };
 
-    if app.turn.pending_interaction_ids.iter().any(|id| id == &tool_id) {
+    if app.pending_interaction_ids.iter().any(|id| id == &tool_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "question_request_rejected",
@@ -416,8 +415,7 @@ pub(super) fn handle_question_request_event(
     }
 
     let mut layout_dirty = false;
-    let auto_focus =
-        app.turn.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     if let Some(MessageBlock::ToolCall(tc)) =
         app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
     {
@@ -438,7 +436,7 @@ pub(super) fn handle_question_request_event(
         });
         tc.invalidate_render_cache();
         layout_dirty = true;
-        app.turn.pending_interaction_ids.push(tool_id.clone());
+        app.pending_interaction_ids.push(tool_id.clone());
         if auto_focus {
             app.claim_focus_target(FocusTarget::Permission);
         }
@@ -492,7 +490,7 @@ pub(super) fn handle_user_dialog_request_event(
     let dialog_kind = request.dialog_kind.clone();
     let option_count = request.options.len();
 
-    if app.turn.pending_interaction_ids.iter().any(|id| id == &request_id) {
+    if app.pending_interaction_ids.iter().any(|id| id == &request_id) {
         tracing::warn!(
             target: crate::logging::targets::APP_PERMISSION,
             event_name = "user_dialog_request_rejected",
@@ -508,8 +506,7 @@ pub(super) fn handle_user_dialog_request_event(
         return;
     }
 
-    let auto_focus =
-        app.turn.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
+    let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
     let mi = app.transcript.messages.len();
     let bi = 0;
     let mut block = UserDialogBlock::new(request, response_tx);
@@ -520,7 +517,7 @@ pub(super) fn handle_user_dialog_request_event(
         None,
     ));
     app.index_tool_call(request_id.clone(), mi, bi);
-    app.turn.pending_interaction_ids.push(request_id.clone());
+    app.pending_interaction_ids.push(request_id.clone());
     if auto_focus {
         app.claim_focus_target(FocusTarget::Permission);
     }
@@ -1112,6 +1109,7 @@ mod tests {
             cache: crate::app::BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            history: crate::app::ToolCallHistory::Live,
         }
     }
 
@@ -1461,6 +1459,7 @@ mod tests {
                 cache: crate::app::BlockCache::default(),
                 pending_permission: None,
                 pending_question: None,
+                history: crate::app::ToolCallHistory::Live,
             }))],
             None,
         ));
@@ -1607,6 +1606,48 @@ mod tests {
         assert_eq!(context.parent_tool_title.as_deref(), Some("Agent: reviewer"));
         assert_eq!(context.parent_model.as_deref(), Some("claude-opus-4-8"));
         assert!(context.parent_raw_input.is_some());
+    }
+
+    #[test]
+    fn nested_background_permission_keeps_its_agent_context_after_foreground_completion() {
+        let mut app = App::test_default();
+        let mut root = tool_call_info("root-agent", "Background reviewer", "Agent", None, false);
+        root.status = model::ToolCallStatus::Detached;
+        push_tool(&mut app, root);
+        let mut nested = tool_call_info(
+            "nested-agent",
+            "Nested reviewer",
+            "Agent",
+            Some(serde_json::json!({"name": "nested-reviewer"})),
+            true,
+        );
+        nested.status = model::ToolCallStatus::Detached;
+        push_tool(&mut app, nested);
+        push_tool(&mut app, tool_call_info("nested-bash", "Nested command", "Bash", None, true));
+        app.register_tool_call_scope("root-agent".to_owned(), ToolCallScope::SubagentRoot);
+        app.register_tool_call_scope(
+            "nested-agent".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "root-agent".to_owned() },
+        );
+        app.register_tool_call_scope(
+            "nested-bash".to_owned(),
+            ToolCallScope::SubagentChild { parent_tool_use_id: "nested-agent".to_owned() },
+        );
+
+        handle_turn_complete_event(&mut app, None, None);
+        let (mi, bi) = app.lookup_tool_call("nested-bash").expect("nested command");
+        let MessageBlock::ToolCall(child) = &app.transcript.messages[mi].blocks[bi] else {
+            panic!("nested command is a tool call");
+        };
+        assert_eq!(child.status, model::ToolCallStatus::InProgress);
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        handle_permission_request_event(&mut app, permission_request("nested-bash"), tx);
+
+        let context =
+            pending_permission_context(&app, "nested-bash").expect("nested context survives");
+        assert_eq!(context.parent_tool_call_id, "nested-agent");
+        assert_eq!(context.subagent_label, "nested-reviewer");
+        assert_eq!(context.child_tool_name, "Bash");
     }
 
     #[test]

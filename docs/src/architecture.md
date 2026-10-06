@@ -102,6 +102,14 @@ Rust consumes the typed phases without interpreting SDK content and never infers
 
 A turn keeps one verb and one shuffled traversal of the shared welcome tips, advanced by monotonic deadlines on the TUI wake loop, including under reduced motion. `spinnerTipsEnabled` from the acknowledged snapshot controls only the tip text; activity, its heading and SDK thinking are independent of it.
 
+### Background tool execution
+
+The bridge normalizes confirmed launch results and SDK task lifecycle events into the existing `Detached` tool status. Requested background flags and host elapsed time do not confirm a handoff. Task-to-tool correlation survives foreground turn completion and resume; stale progress and repeated launch acknowledgements cannot reopen terminal execution. Live and replay use the same task adapters and transition rules.
+
+Rust keeps execution state on the original `ToolCallInfo`. Its history projection freezes the launch at its creation position with the fixed `↗` icon, allowing the transcript prefix to enter terminal history while the task runs independently. Actual completion, failure or stopping appends one separately identified result linked to that tool. The session owns pending interactions; foreground turn reset preserves background controls, which remain mutable at the end of the live region during transcript replay after resize. Cache and retention accounting include the frozen projections without adding them to the execution index or foreground activity set.
+
+The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
+
 ### Notifications
 
 | Concern | Owner | Location |

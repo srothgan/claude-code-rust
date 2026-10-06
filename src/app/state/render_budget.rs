@@ -46,7 +46,8 @@ impl super::App {
             MessageBlock::BtwExchange(block) => &block.cache,
             MessageBlock::Notice(block) => &block.text.cache,
             MessageBlock::Welcome(welcome) => &welcome.cache,
-            MessageBlock::ToolCall(tc) => &tc.cache,
+            MessageBlock::ToolCall(tc) => &tc.display().cache,
+            MessageBlock::ToolResult { tool, .. } => &tool.cache,
             MessageBlock::ImageAttachment(img) => &img.cache,
             MessageBlock::UserDialog(dialog) => &dialog.cache,
         }
@@ -60,12 +61,12 @@ impl super::App {
         else {
             return false;
         };
-        let tool_protected = matches!(
-            block,
-            MessageBlock::ToolCall(tc)
-                if !tc.status.is_terminal()
-        );
-        tail_protected || tool_protected
+        tail_protected || Self::tool_cache_is_protected(block)
+    }
+
+    #[must_use]
+    fn tool_cache_is_protected(block: &MessageBlock) -> bool {
+        matches!(block, MessageBlock::ToolCall(tool) if !tool.status.is_terminal() && !tool.has_frozen_launch())
     }
 
     #[must_use]
@@ -106,12 +107,8 @@ impl super::App {
             for (block_idx, block) in msg.blocks.iter().enumerate() {
                 let cache = Self::block_cache(block);
                 let cached_bytes = cache.cached_bytes();
-                let protected = protected_tail == Some(msg_idx)
-                    || matches!(
-                        block,
-                        MessageBlock::ToolCall(tc)
-                            if !tc.status.is_terminal()
-                    );
+                let protected =
+                    protected_tail == Some(msg_idx) || Self::tool_cache_is_protected(block);
                 let slot = RenderCacheSlotState {
                     cached_bytes,
                     last_access_tick: cache.last_access_tick(),
@@ -319,7 +316,8 @@ impl super::App {
             MessageBlock::BtwExchange(block) => block.cache.evict_cached_render(),
             MessageBlock::Notice(block) => block.text.cache.evict_cached_render(),
             MessageBlock::Welcome(welcome) => welcome.cache.evict_cached_render(),
-            MessageBlock::ToolCall(tc) => tc.cache.evict_cached_render(),
+            MessageBlock::ToolCall(tc) => tc.display_mut().cache.evict_cached_render(),
+            MessageBlock::ToolResult { tool, .. } => tool.cache.evict_cached_render(),
             MessageBlock::ImageAttachment(img) => img.cache.evict_cached_render(),
             MessageBlock::UserDialog(dialog) => dialog.cache.evict_cached_render(),
         };

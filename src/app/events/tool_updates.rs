@@ -45,6 +45,7 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
     apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
     let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
+    app.sync_tool_call_history(&id_str);
     crate::app::tasks::refresh_task_tool_displays(app);
     if let Some(mi) = update_outcome.layout_dirty_idx {
         app.recompute_message_retained_bytes(mi);
@@ -71,18 +72,7 @@ fn apply_tool_scope_status_update(
         return;
     };
     match tool_scope {
-        Some(ToolCallScope::SubagentRoot) => match status {
-            model::ToolCallStatus::Pending
-            | model::ToolCallStatus::InProgress
-            | model::ToolCallStatus::Detached => {
-                app.insert_active_task(id_str.to_owned());
-            }
-            model::ToolCallStatus::Completed
-            | model::ToolCallStatus::Failed
-            | model::ToolCallStatus::Killed => {
-                app.remove_active_task(id_str);
-            }
-        },
+        Some(ToolCallScope::SubagentRoot) => app.sync_active_task_status(id_str, status),
         Some(ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent) | None => {}
     }
 }
@@ -599,7 +589,11 @@ fn log_command_update_applied(
 
     let transitioned_to_final = matches!(
         previous_status,
-        Some(model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress)
+        Some(
+            model::ToolCallStatus::Pending
+                | model::ToolCallStatus::InProgress
+                | model::ToolCallStatus::Detached
+        )
     ) && matches!(
         tc.status,
         model::ToolCallStatus::Completed
@@ -698,6 +692,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            history: crate::app::ToolCallHistory::Live,
         }
     }
 
@@ -726,6 +721,7 @@ mod tests {
             cache: BlockCache::default(),
             pending_permission: None,
             pending_question: None,
+            history: crate::app::ToolCallHistory::Live,
         }
     }
 
@@ -847,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_web_output_updates_the_original_card_after_turn_completion() {
+    fn deferred_web_output_preserves_launch_and_appends_linked_result_after_turn_completion() {
         let mut app = App::test_default();
         let mut tool = make_task_tool_call("web-1", model::ToolCallStatus::InProgress);
         tool.sdk_tool_name = "WebFetch".to_owned();
@@ -883,7 +879,16 @@ mod tests {
         };
         assert_eq!(tool.status, model::ToolCallStatus::Completed);
         assert_eq!(tool.content, vec![model::ToolCallContent::from("Actual web output")]);
-        assert_eq!(app.transcript.messages.len(), 1);
+        assert_eq!(tool.display().status, model::ToolCallStatus::Detached);
+        assert_eq!(app.transcript.messages.len(), 2);
+        let MessageBlock::ToolResult { tool: result, .. } = &app.transcript.messages[1].blocks[0]
+        else {
+            panic!("expected linked result")
+        };
+        assert_eq!(result.id, "web-1");
+        assert_eq!(result.status, model::ToolCallStatus::Completed);
+        assert_eq!(result.content, vec![model::ToolCallContent::from("Actual web output")]);
+        assert_eq!(app.tool_call_index_len(), 1);
     }
 
     #[test]

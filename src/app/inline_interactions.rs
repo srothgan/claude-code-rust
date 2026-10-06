@@ -5,7 +5,7 @@ use super::{App, FocusTarget, InvalidationLevel, MessageBlock, ToolCallInfo};
 use crossterm::event::{KeyCode, KeyEvent};
 
 pub(super) fn focused_interaction_id(app: &App) -> Option<&str> {
-    app.turn.pending_interaction_ids.first().map(String::as_str)
+    app.pending_interaction_ids.first().map(String::as_str)
 }
 
 fn interaction_id_is_valid(app: &App, tool_id: &str) -> bool {
@@ -60,7 +60,7 @@ pub(super) fn invalidate_if_changed(
 }
 
 pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused: bool) {
-    let Some(tool_id) = app.turn.pending_interaction_ids.get(queue_index).cloned() else {
+    let Some(tool_id) = app.pending_interaction_ids.get(queue_index).cloned() else {
         return;
     };
     let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
@@ -144,7 +144,7 @@ pub(crate) fn cancel_pending_interaction(app: &mut App, id: &str) {
         }
         _ => return,
     }
-    app.turn.pending_interaction_ids.retain(|pending| pending != id);
+    app.pending_interaction_ids.retain(|pending| pending != id);
     app.sync_render_cache_slot(mi, bi);
     app.recompute_message_retained_bytes(mi);
     app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
@@ -169,8 +169,8 @@ pub(super) fn has_focused_user_dialog(app: &App) -> bool {
 
 pub(super) fn clear_inline_interaction_focus(app: &mut App) {
     let mut changed = false;
-    for idx in 0..app.turn.pending_interaction_ids.len() {
-        let Some(tool_id) = app.turn.pending_interaction_ids.get(idx).cloned() else {
+    for idx in 0..app.pending_interaction_ids.len() {
+        let Some(tool_id) = app.pending_interaction_ids.get(idx).cloned() else {
             continue;
         };
         let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
@@ -226,7 +226,7 @@ pub(super) fn focus_next_inline_interaction(app: &mut App) {
     normalize_pending_interaction_queue(app);
     clear_inline_interaction_focus(app);
     set_interaction_focused(app, 0, true);
-    if app.turn.pending_interaction_ids.is_empty() {
+    if app.pending_interaction_ids.is_empty() {
         app.release_focus_target(FocusTarget::Permission);
     } else {
         app.claim_focus_target(FocusTarget::Permission);
@@ -234,7 +234,7 @@ pub(super) fn focus_next_inline_interaction(app: &mut App) {
 }
 
 pub(super) fn normalize_pending_interaction_queue(app: &mut App) {
-    let previous = std::mem::take(&mut app.turn.pending_interaction_ids);
+    let previous = std::mem::take(&mut app.pending_interaction_ids);
     let previous_order = previous.clone();
     let mut queue = Vec::with_capacity(previous.len());
     for id in previous {
@@ -243,16 +243,16 @@ pub(super) fn normalize_pending_interaction_queue(app: &mut App) {
         }
     }
     let changed = queue != previous_order;
-    app.turn.pending_interaction_ids = queue;
+    app.pending_interaction_ids = queue;
 
-    if app.turn.pending_interaction_ids.is_empty() {
+    if app.pending_interaction_ids.is_empty() {
         clear_inline_interaction_focus(app);
         return;
     }
 
     if changed {
         let permission_has_focus = matches!(app.focus_owner(), super::FocusOwner::Permission);
-        for idx in 0..app.turn.pending_interaction_ids.len() {
+        for idx in 0..app.pending_interaction_ids.len() {
             set_interaction_focused(app, idx, permission_has_focus && idx == 0);
         }
     }
@@ -264,8 +264,7 @@ pub(super) fn normalize_pending_interaction_queue(app: &mut App) {
 
 pub(super) fn pop_next_valid_interaction_id(app: &mut App) -> Option<String> {
     normalize_pending_interaction_queue(app);
-    (!app.turn.pending_interaction_ids.is_empty())
-        .then(|| app.turn.pending_interaction_ids.remove(0))
+    (!app.pending_interaction_ids.is_empty()).then(|| app.pending_interaction_ids.remove(0))
 }
 
 pub(super) fn handle_interaction_focus_cycle(
@@ -280,7 +279,7 @@ pub(super) fn handle_interaction_focus_cycle(
     if !matches!(key.code, KeyCode::Up | KeyCode::Down) {
         return None;
     }
-    if app.turn.pending_interaction_ids.len() <= 1 {
+    if app.pending_interaction_ids.len() <= 1 {
         if blocks_vertical_navigation {
             return None;
         }
@@ -290,13 +289,13 @@ pub(super) fn handle_interaction_focus_cycle(
     set_interaction_focused(app, 0, false);
 
     if key.code == KeyCode::Down {
-        let first = app.turn.pending_interaction_ids.remove(0);
-        app.turn.pending_interaction_ids.push(first);
+        let first = app.pending_interaction_ids.remove(0);
+        app.pending_interaction_ids.push(first);
     } else {
-        let Some(last) = app.turn.pending_interaction_ids.pop() else {
+        let Some(last) = app.pending_interaction_ids.pop() else {
             return Some(false);
         };
-        app.turn.pending_interaction_ids.insert(0, last);
+        app.pending_interaction_ids.insert(0, last);
     }
 
     set_interaction_focused(app, 0, true);

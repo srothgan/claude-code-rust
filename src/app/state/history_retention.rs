@@ -155,6 +155,9 @@ impl super::App {
             }
         }
 
+        if let super::tool_call_info::ToolCallHistory::Detached { launch, .. } = &tc.history {
+            total = total.saturating_add(Self::measure_tool_call_bytes(launch));
+        }
         total
     }
 
@@ -196,7 +199,7 @@ impl super::App {
                         });
                     }
                 }
-                MessageBlock::ToolCall(tc) => {
+                MessageBlock::ToolCall(tc) | MessageBlock::ToolResult { tool: tc, .. } => {
                     total = total.saturating_add(Self::measure_tool_call_bytes(tc));
                 }
                 MessageBlock::Welcome(welcome) => {
@@ -393,17 +396,15 @@ impl super::App {
 
     fn rebuild_active_task_tracking_from_tool_scopes(&mut self) {
         self.tool_call_scopes.retain(|id, _| self.transcript.tool_call_index.contains_key(id));
+        let mut roots = Vec::new();
         for msg in &self.transcript.messages {
             for block in &msg.blocks {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
                 };
-                if tc.status.is_terminal() {
-                    continue;
-                }
                 match self.tool_call_scopes.get(&tc.id) {
                     Some(super::ToolCallScope::SubagentRoot) => {
-                        self.turn.active_task_ids.insert(tc.id.clone());
+                        roots.push((tc.id.clone(), tc.status));
                     }
                     Some(
                         super::ToolCallScope::SubagentChild { .. }
@@ -413,19 +414,22 @@ impl super::App {
                 }
             }
         }
+        for (id, status) in roots {
+            self.sync_active_task_status(&id, status);
+        }
     }
 
     fn sync_pending_interaction_focus(&mut self, pending_interaction_ids: Vec<String>) {
         let interaction_set: HashSet<&str> =
             pending_interaction_ids.iter().map(String::as_str).collect();
-        self.turn.pending_interaction_ids.retain(|id| interaction_set.contains(id.as_str()));
+        self.pending_interaction_ids.retain(|id| interaction_set.contains(id.as_str()));
         for id in pending_interaction_ids {
-            if !self.turn.pending_interaction_ids.iter().any(|existing| existing == &id) {
-                self.turn.pending_interaction_ids.push(id);
+            if !self.pending_interaction_ids.iter().any(|existing| existing == &id) {
+                self.pending_interaction_ids.push(id);
             }
         }
 
-        if let Some(first_id) = self.turn.pending_interaction_ids.first().cloned() {
+        if let Some(first_id) = self.pending_interaction_ids.first().cloned() {
             self.claim_focus_target(super::super::focus::FocusTarget::Permission);
             if let Some((msg_idx, block_idx)) = self.lookup_tool_call(&first_id)
                 && let Some(block) = self

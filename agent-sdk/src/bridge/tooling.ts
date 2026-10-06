@@ -2677,6 +2677,15 @@ function backgroundLaunchResultFields(
   rawResult: unknown,
   rawContent: unknown,
 ): BackgroundLaunchResult | undefined {
+  if (isAgentLikeToolName(toolName)) {
+    const record = resultRecordCandidates(rawResult, rawContent).find(
+      candidate => candidate.status === "async_launched",
+    );
+    const taskId = nonEmptyString(record?.agentId);
+    if (record && taskId) {
+      return { taskId, keepRunning: true, failed: false, output: nonEmptyString(record.description) };
+    }
+  }
   if (isShellToolName(toolName)) {
     const record = findShellResultRecord(rawResult, rawContent);
     const taskId =
@@ -3067,7 +3076,7 @@ export function buildToolResultFields(
     fields.status = backgroundLaunchOutput.failed
       ? "failed"
       : backgroundLaunchOutput.keepRunning
-        ? "in_progress"
+        ? "detached"
         : "completed";
     if (backgroundLaunchOutput.output) {
       fields.raw_output = backgroundLaunchOutput.output;

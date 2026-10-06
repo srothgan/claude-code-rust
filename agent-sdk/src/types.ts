@@ -392,6 +392,7 @@ export type SessionUpdate =
       source_message_uuid?: string;
       origin: MessageOrigin;
     }
+  | { type: "agent_response_started" }
   | {
       type: "agent_activity_update";
       phase: "working" | "thinking";

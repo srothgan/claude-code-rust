@@ -27,5 +27,6 @@ pub(crate) fn tool_call_info(id: &str, status: model::ToolCallStatus) -> ToolCal
         cache: BlockCache::default(),
         pending_permission: None,
         pending_question: None,
+        history: crate::app::ToolCallHistory::Live,
     }
 }

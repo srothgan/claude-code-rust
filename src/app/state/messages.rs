@@ -56,6 +56,7 @@ pub enum HistoryOutputId {
     AssistantDuration(ChatMessageId),
     Block(MessageBlockId),
     ToolCall(String),
+    ToolInteraction(String),
 }
 
 pub struct ChatMessage {
@@ -296,6 +297,11 @@ pub enum MessageBlock {
     BtwExchange(BtwExchangeBlock),
     Notice(NoticeBlock),
     ToolCall(Box<ToolCallInfo>),
+    /// Immutable result of an independently running tool, linked by tool ID.
+    ToolResult {
+        id: MessageBlockId,
+        tool: Box<ToolCallInfo>,
+    },
     Welcome(WelcomeBlock),
     /// Indicates N images were attached to this user message.
     ImageAttachment(ImageAttachmentBlock),

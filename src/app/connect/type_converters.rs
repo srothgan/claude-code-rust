@@ -426,6 +426,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 model::ContentChunk::new(content).source_message_uuid(source_message_uuid),
             ))
         }
+        types::SessionUpdate::AgentResponseStarted => {
+            Some(model::SessionUpdate::AgentResponseStarted)
+        }
         types::SessionUpdate::AgentActivityUpdate { phase } => {
             Some(model::SessionUpdate::AgentActivityUpdate(phase))
         }

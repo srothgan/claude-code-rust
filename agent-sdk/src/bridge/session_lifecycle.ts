@@ -1,3 +1,4 @@
+import { restoreResumedToolState } from "./history.js";
 import { randomUUID } from "node:crypto";
 import { resetMainAgentActivity, type MainAgentResponse } from "./activity.js";
 import { spawn as spawnChild } from "node:child_process";
@@ -739,6 +740,7 @@ export async function createSession(params: {
       ? { sessionsToCloseAfterConnect: params.sessionsToCloseAfterConnect }
       : {}),
   };
+  if (params.resumeUpdates) restoreResumedToolState(session, params.resumeUpdates);
   refreshCurrentModel(session);
   const { refreshSupportedModesForSession } = await import("./commands.js");
   refreshSupportedModesForSession(session);

@@ -279,6 +279,7 @@ pub enum SessionUpdate {
     AgentMessageChunk(ContentChunk),
     UserMessageChunk(ContentChunk),
     ExternalMessageUpdate(ExternalMessageUpdate),
+    AgentResponseStarted,
     AgentActivityUpdate(AgentActivityPhase),
     ToolCall(ToolCall),
     ToolCallUpdate(ToolCallUpdate),

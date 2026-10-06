@@ -21,6 +21,7 @@ pub const USER_MSG_BG: Color = Color::Rgb(40, 44, 52);
 
 // Tool status icons
 pub const ICON_COMPLETED: &str = "\u{2713}";
+pub const ICON_DETACHED: &str = "\u{2197}";
 pub const ICON_FAILED: &str = "\u{2717}";
 
 // Status colors

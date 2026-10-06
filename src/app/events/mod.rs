@@ -311,6 +311,10 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
 }
 
 fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
+    // Replay uses handle_session_update directly and must never start live activity.
+    if matches!(&update, model::SessionUpdate::AgentResponseStarted) {
+        streaming::begin_live_assistant_response(app);
+    }
     let needs_history_retention = matches!(
         &update,
         model::SessionUpdate::AgentMessageChunk(_)
@@ -363,7 +367,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
             apply_task_state_update(app, update);
         }
-        model::SessionUpdate::UserMessageChunk(_) => {}
+        model::SessionUpdate::UserMessageChunk(_) | model::SessionUpdate::AgentResponseStarted => {}
         model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {
             crate::app::presentation::apply_message_metadata(
                 app,
