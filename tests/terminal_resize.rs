@@ -495,6 +495,23 @@ impl TerminalTest {
         });
     }
 
+    /// Opening settings starts a refresh, and settings ignore edits until it completes.
+    fn wait_settings_ready(&mut self, needle: &str) {
+        self.wait_until(&format!("refreshed settings showing {needle}"), |test| {
+            let screen = test.screen();
+            screen.contains(needle) && !screen.contains("Refreshing settings")
+        });
+    }
+
+    /// An editor ignores keys until its save is acknowledged, which closes it
+    /// and takes its `draft` off the screen.
+    fn wait_settings_saved(&mut self, saved: &str, draft: &str) {
+        self.wait_until(&format!("saved settings showing {saved}"), |test| {
+            let screen = test.screen();
+            screen.contains(saved) && !screen.contains(draft)
+        });
+    }
+
     fn wait_setting(&mut self, file: &str, pointer: &str, expected: Option<&Value>) {
         self.wait_until(&format!("persisted {pointer}"), |test| {
             std::fs::read(test.temp.path().join(file))
