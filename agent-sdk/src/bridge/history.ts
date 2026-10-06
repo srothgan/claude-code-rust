@@ -434,13 +434,23 @@ export function restoreResumedToolState(session: SessionState, updates: SessionU
   }
 }
 
+// Literal searches avoid retrying overlapping suffixes when a closing tag is missing.
+function notificationTagContent(text: string, name: string): string | undefined {
+  const opening = `<${name}>`;
+  const start = text.indexOf(opening);
+  if (start === -1) return undefined;
+  const bodyStart = start + opening.length;
+  const end = text.indexOf(`</${name}>`, bodyStart);
+  return end === -1 ? undefined : text.slice(bodyStart, end);
+}
+
 function resumedTaskNotification(raw: unknown): Record<string, unknown> | undefined {
   for (const message of messageCandidates(raw)) {
     const content = typeof message.content === "string" ? message.content : Array.isArray(message.content)
       ? message.content.map(block => asRecordOrNull(block)?.text ?? "").join("\n") : "";
-    const body = content.match(/<task-notification>([\s\S]*?)<\/task-notification>/)?.[1];
+    const body = notificationTagContent(content, "task-notification");
     if (!body) continue;
-    const field = (name: string) => body.match(new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`))?.[1]?.trim();
+    const field = (name: string) => notificationTagContent(body, name)?.trim();
     const taskId = field("task-id");
     const status = field("status");
     if (taskId && (status === "completed" || status === "failed" || status === "stopped")) {

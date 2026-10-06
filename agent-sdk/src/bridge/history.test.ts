@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import type { SessionUpdate } from "../types.js";
 import { mapSessionMessagesToUpdates } from "./history.js";
 
 test("resume display restores compaction segments once and preserves SDK branch filtering", () => {
@@ -98,6 +99,90 @@ test("resume display excludes internal task notifications while preserving user 
   ]);
   assert.deepEqual(updates.filter(update => update.type === "message_metadata").map(update => update.source_message_uuid), ["before", "after", "user-xml", "assistant-xml", "peer", "scheduled"]);
   assert.deepEqual(messages, before);
+});
+
+test("resume notifications preserve terminal outcomes, linked tools and optional fields", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  for (const [status, expectedStatus] of [["completed", "completed"], ["failed", "failed"], ["stopped", "killed"]] as const) {
+    const outputFile = "C:\\Temp\\claude\\tasks\\monitor.output";
+    const summary = "Background command finished\nSecond line with <example>literal XML</example>";
+    const notification = `<task-notification>\n<task-id> task-${status} </task-id>\n<tool-use-id> monitor </tool-use-id>\n<output-file> ${outputFile} </output-file>\n<status> ${status} </status>\n<summary> ${summary} </summary>\n<note>Extra SDK field</note>\n</task-notification>`;
+    for (const content of [notification, [{ type: "text", text: notification.slice(0, notification.indexOf("<status>")) }, { type: "text", text: notification.slice(notification.indexOf("<status>")) }]]) {
+      const updates = mapSessionMessagesToUpdates([
+        { ...base, type: "assistant", uuid: "launch", message: { role: "assistant", content: [{ type: "tool_use", id: "monitor", name: "Monitor", input: { command: "check" } }] } },
+        { ...base, type: "user", uuid: "result", ...{ origin: { kind: "task-notification", producer: "session-task" } }, message: { role: "user", content } },
+      ]);
+      const results = updates.filter(update => update.type === "tool_call_update");
+      assert.equal(results.length, 1);
+      assert.equal(results[0].tool_call_update.tool_call_id, "monitor");
+      assert.equal(results[0].tool_call_update.fields.status, expectedStatus);
+      assert.equal(results[0].tool_call_update.fields.raw_output, summary);
+      assert.equal(results[0].tool_call_update.fields.task_metadata?.output_file, outputFile);
+      assert.equal(results[0].tool_call_update.fields.task_metadata?.terminal_status, status);
+      const tasks = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks);
+      assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.source_tool_call_id, task.description, task.metadata]), [[`task-${status}`, "completed", "monitor", summary, { output_file: outputFile, summary, terminal_status: status }]]);
+      assert.ok(!updates.some(update => update.type === "user_message_chunk"));
+    }
+  }
+  const minimal = mapSessionMessagesToUpdates([
+    { ...base, type: "user", uuid: "minimal", ...{ origin: { kind: "task-notification" } }, message: { role: "user", content: "</task-notification><task-notification><task-id>minimal</task-id><status>completed</status></task-notification>" } },
+  ]);
+  assert.deepEqual(minimal.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status, task.source_tool_call_id, task.description]), [["minimal", "completed", undefined, undefined]]);
+});
+
+test("resume skips malformed internal notifications and restores later conversation and task outcomes", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const malformed = [
+    "<task-id>bad</task-id><status>completed</status></task-notification>",
+    "<task-notification><task-id>bad</task-id><status>completed</status>",
+    "<task-notification></task-notification>",
+    "<task-notification><task-id> </task-id><status>completed</status></task-notification>",
+    "<task-notification><task-id>bad<status>completed</status></task-notification>",
+    "<task-notification><task-id>bad</task-id></task-notification>",
+    "<task-notification><task-id>bad</task-id><status>running</status></task-notification>",
+    "<task-notification><task-id>bad</task-id><status>completed</task-notification>",
+    "<task-notification><task-id>bad</task-id></status><status>completed</task-notification>",
+  ];
+  const updates = mapSessionMessagesToUpdates([
+    ...malformed.map((content, index) => ({ ...base, type: "user" as const, uuid: `broken-${index}`, origin: { kind: "task-notification" }, message: { role: "user", content } })),
+    { ...base, type: "user", uuid: "after", message: { role: "user", content: "Continue after the damaged record" } },
+    { ...base, type: "assistant", uuid: "reply", message: { role: "assistant", content: "Conversation restored" } },
+    { ...base, type: "user", uuid: "valid", ...{ origin: { kind: "task-notification" } }, message: { role: "user", content: "<task-notification><task-id>valid</task-id><status>completed</status></task-notification>" } },
+  ]);
+  assert.deepEqual(updates.filter(update => update.type === "user_message_chunk" || update.type === "agent_message_chunk").map(update => [update.source_message_uuid, update.content]), [
+    ["after", { type: "text", text: "Continue after the damaged record" }],
+    ["reply", { type: "text", text: "Conversation restored" }],
+  ]);
+  assert.deepEqual(updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status]), [["valid", "completed"]]);
+});
+
+test("resume handles many unclosed notification and field tags without blocking the remaining transcript", () => {
+  // A process timeout bounds the regression even if synchronous parsing stalls.
+  const child = spawnSync(process.execPath, ["--input-type=module", "-"], {
+    input: `
+      import { mapSessionMessagesToUpdates } from ${JSON.stringify(new URL("./history.js", import.meta.url).href)};
+      const broken = [
+        "<task-notification>a".repeat(200_000),
+        "<task-notification>" + "<task-id>a".repeat(200_000) + "<status>completed</status></task-notification>",
+        "<task-notification><task-id>bad</task-id>" + "<status>a".repeat(200_000) + "</task-notification>",
+        "<task-notification><task-id>valid</task-id><status>completed</status>" + "<tool-use-id>a<summary>b<output-file>c".repeat(200_000) + "</task-notification>",
+      ];
+      const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+      const updates = mapSessionMessagesToUpdates([
+        ...broken.map((content, index) => ({ ...base, type: "user", uuid: "broken-" + index, origin: { kind: "task-notification" }, message: { role: "user", content } })),
+        { ...base, type: "user", uuid: "after", message: { role: "user", content: "Still restored" } },
+      ]);
+      process.stdout.write(JSON.stringify(updates));
+    `,
+    encoding: "utf8",
+    timeout: 10_000,
+    windowsHide: true,
+  });
+  assert.equal(child.error, undefined, String(child.error));
+  assert.equal(child.status, 0, child.stderr);
+  const updates = JSON.parse(child.stdout) as SessionUpdate[];
+  assert.deepEqual(updates.filter(update => update.type === "user_message_chunk").map(update => [update.source_message_uuid, update.content]), [["after", { type: "text", text: "Still restored" }]]);
+  assert.deepEqual(updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status, task.source_tool_call_id, task.description]), [["valid", "completed", undefined, undefined]]);
 });
 
 test("resume display maps plain string messages and hides internal compact summaries", () => {
