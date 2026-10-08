@@ -660,12 +660,6 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-/// The key event kind on which Ctrl+V reads an image from the clipboard.
-///
-/// Windows consoles report releases, and Windows Terminal consumes the Ctrl+V
-/// press for its own paste binding, so only the release reliably reaches the
-/// app. Other platforms report presses only, because the app never requests
-/// `REPORT_EVENT_TYPES` (see `terminal_runtime/modes.rs`).
 const CLIPBOARD_PASTE_TRIGGER_KIND: KeyEventKind =
     if cfg!(windows) { KeyEventKind::Release } else { KeyEventKind::Press };
 
@@ -985,8 +979,6 @@ mod tests {
         assert!(is_ctrl_char_shortcut(key, 'v'));
     }
 
-    // Ghostty and kitty send Ctrl+V as `ESC [118;5u`; terminals without the
-    // kitty protocol (tmux, for example) send the raw 0x16 byte.
     fn ctrl_v_encodings(kind: KeyEventKind) -> [KeyEvent; 2] {
         [
             KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, kind),
@@ -997,7 +989,6 @@ mod tests {
     #[test]
     #[cfg(not(windows))]
     fn clipboard_paste_triggers_on_ctrl_v_press_outside_windows() {
-        // macOS and Linux terminals never report the release here (#431, #385).
         for key in ctrl_v_encodings(KeyEventKind::Press) {
             assert!(is_clipboard_paste_trigger(key), "{key:?}");
         }
