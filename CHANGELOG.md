@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **Automatic update failures** (#437, @srothgan): Show a warning at startup when the last automatic update failed, and write installer output to `claude-rs-update.log`.
+
+### Fixes
+
+- **Automatic updates** (#437, @srothgan): Stop automatic updates from occupying the terminal after exit.
+
 ## [0.15.2] - 2026-10-08 [Changes][v0.15.2]
 
 ### Fixes
