@@ -24,16 +24,36 @@ const SESSION_LIST_LIMIT = 50;
 let sessionListingDir: string | undefined;
 type ProtocolEventWriter = (line: string) => void;
 
-function writeProtocolEventToStdout(line: string): void {
+const STDOUT_RETRY_DELAY_MS = 1;
+const stdoutRetrySignal = new Int32Array(new SharedArrayBuffer(4));
+
+function isWouldBlock(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "EAGAIN";
+}
+
+function writeChunkToStdout(payload: Buffer, offset: number): number {
+  for (;;) {
+    try {
+      return writeSync(
+        process.stdout.fd,
+        payload,
+        offset,
+        payload.length - offset,
+      );
+    } catch (error) {
+      if (!isWouldBlock(error)) {
+        throw error;
+      }
+      Atomics.wait(stdoutRetrySignal, 0, 0, STDOUT_RETRY_DELAY_MS);
+    }
+  }
+}
+
+export function writeProtocolEventToStdout(line: string): void {
   const payload = Buffer.from(line);
   let offset = 0;
   while (offset < payload.length) {
-    const written = writeSync(
-      process.stdout.fd,
-      payload,
-      offset,
-      payload.length - offset,
-    );
+    const written = writeChunkToStdout(payload, offset);
     if (written <= 0) {
       throw new Error("bridge stdout write made no progress");
     }
