@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
+use super::clipboard_image::{ClipboardRead, encode_clipboard_image};
 use super::paste_burst::CharAction;
 use super::{App, AppStatus, FocusOwner};
-#[cfg(not(test))]
 use crate::app::SystemSeverity;
 use crate::app::inline_interactions::{
     clear_inline_interaction_focus, focus_next_inline_interaction,
@@ -15,7 +15,7 @@ use crate::app::keymap::{
 use crate::app::state::AutocompleteKind;
 use crate::app::{input_atoms, input_atoms::InputAtomKind};
 use crate::app::{mention, permissions, questions, slash, subagent};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
 use tui_textarea::AtomicDeleteDirection;
 
@@ -603,68 +603,49 @@ fn handle_mode_cycle(app: &mut App) -> bool {
 }
 
 fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
-    if !is_clipboard_paste_trigger(key) {
+    if !is_clipboard_paste_trigger(app, key) {
         return false;
     }
 
-    // Skip system clipboard access in tests to avoid flaky failures / segfaults.
-    #[cfg(test)]
-    {
-        let _ = app;
-        false
-    }
-    #[cfg(not(test))]
-    {
-        let Ok(mut clipboard) = arboard::Clipboard::new() else {
-            super::events::push_system_message_with_severity(
-                app,
-                Some(SystemSeverity::Warning),
-                "Failed to access the system clipboard.",
-            );
-            app.request_chat_repaint();
-            tracing::warn!("clipboard_paste: failed to access system clipboard");
+    let image = match (app.clipboard_paste.read)() {
+        ClipboardRead::Image(image) => image,
+        ClipboardRead::NoImage => return false,
+        ClipboardRead::Unavailable => {
+            warn_clipboard_paste(app, "Failed to access the system clipboard.");
             return true;
-        };
-
-        // Try reading an image from the clipboard first.
-        if let Ok(img_data) = clipboard.get_image() {
-            match super::clipboard_image::encode_clipboard_image(img_data) {
-                Ok(attachment) => {
-                    app.pending_images.push(attachment);
-                    // Insert badge text at the cursor position so the user (and
-                    // the model) can see where images are relative to text.
-                    let idx = app.pending_images.len();
-                    let badge = format!("[Image #{idx}]");
-                    app.input.insert_str(&badge);
-                    app.request_chat_repaint();
-                    tracing::debug!(
-                        count = app.pending_images.len(),
-                        "clipboard_paste: attached image from clipboard"
-                    );
-                    return true;
-                }
-                Err(error) => {
-                    super::events::push_system_message_with_severity(
-                        app,
-                        Some(SystemSeverity::Warning),
-                        error.user_message(),
-                    );
-                    app.request_chat_repaint();
-                    tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
-                    return true;
-                }
-            }
         }
-
-        false
+    };
+    match encode_clipboard_image(image) {
+        Ok(attachment) => {
+            app.pending_images.push(attachment);
+            // Insert badge text at the cursor position so the user (and
+            // the model) can see where images are relative to text.
+            let idx = app.pending_images.len();
+            let badge = format!("[Image #{idx}]");
+            app.input.insert_str(&badge);
+            app.request_chat_repaint();
+            tracing::debug!(
+                count = app.pending_images.len(),
+                "clipboard_paste: attached image from clipboard"
+            );
+        }
+        Err(error) => {
+            warn_clipboard_paste(app, error.user_message());
+            tracing::warn!("clipboard_paste: image attachment failed: {error:?}");
+        }
     }
+    true
 }
 
-const CLIPBOARD_PASTE_TRIGGER_KIND: KeyEventKind =
-    if cfg!(windows) { KeyEventKind::Release } else { KeyEventKind::Press };
+fn warn_clipboard_paste(app: &mut App, message: &str) {
+    super::events::push_system_message_with_severity(app, Some(SystemSeverity::Warning), message);
+    app.request_chat_repaint();
+}
 
-pub(super) fn is_clipboard_paste_trigger(key: KeyEvent) -> bool {
-    key.kind == CLIPBOARD_PASTE_TRIGGER_KIND && is_ctrl_char_shortcut(key, 'v')
+/// The Ctrl+V event that reads an image from the clipboard. The terminal event
+/// filter uses the same rule to let that one release through on Windows.
+pub(super) fn is_clipboard_paste_trigger(app: &App, key: KeyEvent) -> bool {
+    key.kind == app.clipboard_paste.trigger && is_ctrl_char_shortcut(key, 'v')
 }
 
 pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
@@ -977,35 +958,6 @@ mod tests {
     fn ctrl_shortcut_accepts_raw_control_character_encoding() {
         let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
         assert!(is_ctrl_char_shortcut(key, 'v'));
-    }
-
-    fn ctrl_v_encodings(kind: KeyEventKind) -> [KeyEvent; 2] {
-        [
-            KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, kind),
-            KeyEvent::new_with_kind(KeyCode::Char('\u{16}'), KeyModifiers::NONE, kind),
-        ]
-    }
-
-    #[test]
-    #[cfg(not(windows))]
-    fn clipboard_paste_triggers_on_ctrl_v_press_outside_windows() {
-        for key in ctrl_v_encodings(KeyEventKind::Press) {
-            assert!(is_clipboard_paste_trigger(key), "{key:?}");
-        }
-        for key in ctrl_v_encodings(KeyEventKind::Release) {
-            assert!(!is_clipboard_paste_trigger(key), "{key:?}");
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn clipboard_paste_triggers_on_ctrl_v_release_on_windows() {
-        for key in ctrl_v_encodings(KeyEventKind::Release) {
-            assert!(is_clipboard_paste_trigger(key), "{key:?}");
-        }
-        for key in ctrl_v_encodings(KeyEventKind::Press) {
-            assert!(!is_clipboard_paste_trigger(key), "{key:?}");
-        }
     }
 
     #[test]

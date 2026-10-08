@@ -85,7 +85,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
     if app.shutdown_requested() {
         match event {
             Event::Key(key)
-                if should_dispatch_key_event(key)
+                if should_dispatch_key_event(app, key)
                     && super::keys::is_ctrl_char_shortcut(key, 'c') =>
             {
                 app.force_shutdown();
@@ -105,13 +105,13 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
         return TerminalEventOutcome::ignored();
     }
 
-    if matches!(&event, Event::Key(key) if should_dispatch_key_event(*key))
+    if matches!(&event, Event::Key(key) if should_dispatch_key_event(app, *key))
         || matches!(&event, Event::Paste(_) | Event::Mouse(_))
     {
         super::questions::record_activity(app, std::time::Instant::now());
     }
     let outcome = match event {
-        Event::Key(key) if should_dispatch_key_event(key) => dispatch_key_by_view(app, key),
+        Event::Key(key) if should_dispatch_key_event(app, key) => dispatch_key_by_view(app, key),
         Event::Mouse(mouse) => {
             dispatch_mouse_by_view(app, mouse);
             TerminalEventOutcome::handled(true)
@@ -147,7 +147,7 @@ pub fn reconcile_terminal_size(app: &mut App, width: u16, height: u16) {
     let _ = handle_terminal_event(app, Event::Resize(width, height));
 }
 
-fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
+fn should_dispatch_key_event(app: &App, key: crossterm::event::KeyEvent) -> bool {
     // ConPTY delivers zero-width text (for example a combining accent) as a
     // release-only console event. Dropping it changes the user's input payload.
     let zero_width_text_release = cfg!(windows)
@@ -156,7 +156,7 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
         && matches!(key.code, crossterm::event::KeyCode::Char(ch)
             if !ch.is_control() && unicode_width::UnicodeWidthChar::width(ch) == Some(0));
     key.kind == KeyEventKind::Press
-        || super::keys::is_clipboard_paste_trigger(key)
+        || super::keys::is_clipboard_paste_trigger(app, key)
         || zero_width_text_release
 }
 

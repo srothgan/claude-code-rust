@@ -137,6 +137,17 @@ jobs:
         run: node --check tests/fixtures/fake-bridge.js
       - name: Run real PTY regressions
         run: cargo test --locked --all-features --test terminal_resize -- --test-threads=1
+      - name: Run system clipboard paste regression
+        shell: bash
+        run: |
+          # The test is ignored by default because it overwrites the system clipboard.
+          # The Linux runner has no display server, so the clipboard needs Xvfb there.
+          display=()
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            command -v xvfb-run >/dev/null || { sudo apt-get update && sudo apt-get install -y xvfb; }
+            display=(xvfb-run -a)
+          fi
+          "${display[@]}" cargo test --locked --all-features --test terminal_resize -- --ignored system_clipboard --test-threads=1
 
   cargo-deny-policy:
     name: Cargo Deny Policy

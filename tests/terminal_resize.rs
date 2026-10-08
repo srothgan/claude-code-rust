@@ -174,6 +174,18 @@ impl TerminalTest {
         args: &[&str],
         has_initial_prompt: bool,
     ) -> Self {
+        Self::start_without_env(scenario, lines, auth_mode, args, has_initial_prompt, &[])
+    }
+
+    /// Starts the app with `removed_env` absent from its environment.
+    fn start_without_env(
+        scenario: &str,
+        lines: u16,
+        auth_mode: Option<&str>,
+        args: &[&str],
+        has_initial_prompt: bool,
+        removed_env: &[&str],
+    ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
         let project = temp.path().join("project");
@@ -210,45 +222,11 @@ impl TerminalTest {
         command.env("FAKE_BRIDGE_SCENARIO", scenario);
         command.env("FAKE_BRIDGE_JOURNAL", &journal);
         command.env("FAKE_BRIDGE_RELEASE_FILE", &release_file);
+        for name in removed_env {
+            command.env_remove(name);
+        }
         if let Some(mode) = auth_mode {
-            let cli_dir = temp.path().join("bin");
-            std::fs::create_dir(&cli_dir).expect("fake CLI directory");
-            let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
-            if mode == "spawn-error" {
-                let contents = if cfg!(unix) {
-                    // macOS can run executable text without a shebang through
-                    // a shell. A missing interpreter forces a spawn error.
-                    format!("#!{}\nexit 99\n", cli_dir.join("missing-interpreter").display())
-                } else {
-                    "invalid executable fixture".to_owned()
-                };
-                std::fs::write(&cli, contents).expect("invalid executable");
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
-                        .expect("executable permission");
-                }
-            } else {
-                let source =
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude.rs");
-                let output = std::process::Command::new("rustc")
-                    .arg("--edition=2024")
-                    .arg(source)
-                    .arg("-o")
-                    .arg(&cli)
-                    .output()
-                    .expect("compile native fake CLI");
-                assert!(
-                    output.status.success(),
-                    "fake CLI compile failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            let mut paths = vec![cli_dir];
-            paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
-            command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
-            command.env("FAKE_AUTH_MODE", mode);
+            Self::install_fake_cli(&mut command, temp.path(), mode);
         }
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
@@ -277,6 +255,48 @@ impl TerminalTest {
             test.wait_screen("[READY]");
         }
         test
+    }
+
+    /// Puts a fake `claude` CLI that behaves as `mode` first on the app's PATH.
+    fn install_fake_cli(command: &mut CommandBuilder, temp: &Path, mode: &str) {
+        let cli_dir = temp.join("bin");
+        std::fs::create_dir(&cli_dir).expect("fake CLI directory");
+        let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
+        if mode == "spawn-error" {
+            let contents = if cfg!(unix) {
+                // macOS can run executable text without a shebang through
+                // a shell. A missing interpreter forces a spawn error.
+                format!("#!{}\nexit 99\n", cli_dir.join("missing-interpreter").display())
+            } else {
+                "invalid executable fixture".to_owned()
+            };
+            std::fs::write(&cli, contents).expect("invalid executable");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755))
+                    .expect("executable permission");
+            }
+        } else {
+            let source =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-claude.rs");
+            let output = std::process::Command::new("rustc")
+                .arg("--edition=2024")
+                .arg(source)
+                .arg("-o")
+                .arg(&cli)
+                .output()
+                .expect("compile native fake CLI");
+            assert!(
+                output.status.success(),
+                "fake CLI compile failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let mut paths = vec![cli_dir];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
+        command.env("FAKE_AUTH_MODE", mode);
     }
 
     fn mark_action(&mut self) {
@@ -2037,4 +2057,69 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
         .expect("bell result");
     assert_eq!(bell["outcome"], "success");
     assert_eq!(bell["span"]["tool_call_id"], "push-1");
+}
+
+/// A terminal outside Windows sends Ctrl+V as one press byte and no release.
+/// Without a display server the clipboard cannot be opened, and the app has to
+/// say so: silence means the key never reached the clipboard path.
+#[test]
+#[cfg(target_os = "linux")]
+fn ctrl_v_press_reaches_the_clipboard_path_without_a_key_release() {
+    let mut test = TerminalTest::start_without_env(
+        "stream",
+        3,
+        None,
+        &[],
+        false,
+        &["DISPLAY", "WAYLAND_DISPLAY"],
+    );
+    test.send(b"\x16");
+    test.wait_screen("system clipboard");
+    test.assert_prompts(&[]);
+    test.shutdown();
+}
+
+/// Ignored by default because it overwrites the system clipboard. CI runs it; locally:
+/// `cargo test --test terminal_resize -- --ignored system_clipboard`.
+/// Headless Linux needs a display server, for example `xvfb-run -a`.
+#[test]
+#[ignore = "overwrites the system clipboard and needs a display server on Linux"]
+fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
+    use base64::Engine as _;
+
+    // Two colours in a 4x2 layout, so swapped channels or dimensions are visible.
+    let rgba: Vec<u8> = [[255, 0, 0, 255], [0, 0, 255, 255]]
+        .into_iter()
+        .flat_map(|pixel: [u8; 4]| std::iter::repeat_n(pixel, 4))
+        .flatten()
+        .collect();
+    // The clipboard owner has to outlive the read on X11 and Wayland.
+    let mut clipboard = arboard::Clipboard::new().expect("system clipboard");
+    clipboard
+        .set_image(arboard::ImageData { width: 4, height: 2, bytes: rgba.clone().into() })
+        .expect("put the image on the clipboard");
+
+    let mut test = TerminalTest::start("stream", 3);
+    test.send(b"\x16");
+    test.wait_screen("[Image #1]");
+    test.submit_draft();
+    test.wait_until("the prompt reaches the bridge", |test| !test.prompts().is_empty());
+
+    let prompts = test.prompts();
+    assert_eq!(prompts.len(), 1, "one submission");
+    let chunks = prompts[0]["chunks"].as_array().expect("prompt chunks");
+    let images: Vec<_> = chunks.iter().filter(|chunk| chunk["kind"] == "image").collect();
+    assert_eq!(images.len(), 1, "the prompt must carry the clipboard image: {chunks:?}");
+    assert_eq!(images[0]["value"]["mime_type"], "image/png");
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(images[0]["value"]["data"].as_str().expect("image data"))
+        .expect("base64 payload");
+    let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+        .expect("PNG payload")
+        .into_rgba8();
+    assert_eq!((decoded.width(), decoded.height()), (4, 2));
+    assert_eq!(decoded.into_raw(), rgba);
+    test.assert_prompts(&["[Image #1]"]);
+    test.shutdown();
+    drop(clipboard);
 }

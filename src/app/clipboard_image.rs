@@ -4,6 +4,8 @@
 //! Clipboard image reading: extracts image data from the system clipboard
 //! and converts it to a base64-encoded PNG for sending to the agent.
 
+use crossterm::event::KeyEventKind;
+
 /// MIME types supported by the Anthropic Vision API.
 /// NOTE: Keep in sync with `SUPPORTED_IMAGE_MIME_TYPES` in
 /// `agent-sdk/src/bridge/message_handlers.ts`.
@@ -38,6 +40,53 @@ impl ClipboardImageError {
             ClipboardImageError::TooLarge => {
                 "Clipboard image is too large to attach. Keep images under 10 MiB."
             }
+        }
+    }
+}
+
+/// What the system clipboard held when Ctrl+V asked it for an image.
+#[derive(Debug)]
+pub enum ClipboardRead {
+    Image(arboard::ImageData<'static>),
+    NoImage,
+    Unavailable,
+}
+
+/// The two platform edges of Ctrl+V image paste: which key event carries the
+/// shortcut and where the pixels come from. Key handling reads both from here.
+#[derive(Debug, Clone, Copy)]
+pub struct ClipboardImagePaste {
+    pub trigger: KeyEventKind,
+    pub read: fn() -> ClipboardRead,
+}
+
+impl ClipboardImagePaste {
+    /// The system clipboard, read on the Ctrl+V event this platform delivers.
+    /// Windows consoles report both key edges, and Windows Terminal keeps the
+    /// press for its own paste binding, so only the release reliably arrives.
+    /// Other terminals report presses only: the app never requests release
+    /// reporting (`REPORT_EVENT_TYPES`, see `terminal_runtime/modes.rs`), so
+    /// waiting for a release there never attaches.
+    #[must_use]
+    pub fn system() -> Self {
+        let trigger = if cfg!(windows) { KeyEventKind::Release } else { KeyEventKind::Press };
+        Self { trigger, read: read_system_clipboard }
+    }
+}
+
+fn read_system_clipboard() -> ClipboardRead {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(clipboard) => clipboard,
+        Err(error) => {
+            tracing::warn!("clipboard_image: failed to access system clipboard: {error}");
+            return ClipboardRead::Unavailable;
+        }
+    };
+    match clipboard.get_image() {
+        Ok(image) => ClipboardRead::Image(image),
+        Err(error) => {
+            tracing::debug!("clipboard_image: no image on the clipboard: {error}");
+            ClipboardRead::NoImage
         }
     }
 }
@@ -85,11 +134,7 @@ pub fn validate_image(data: &str, mime_type: &str) -> Result<(), String> {
 
 /// Encode already-retrieved clipboard image data to a base64 PNG.
 ///
-/// Accepts the `arboard::ImageData` obtained from a clipboard that the caller
-/// has already opened, avoiding a redundant `Clipboard::new()` call.
-///
 /// Returns an encoded attachment or a typed failure reason for UI/logging.
-#[cfg(not(test))]
 pub fn encode_clipboard_image(
     img_data: arboard::ImageData<'_>,
 ) -> Result<ImageAttachment, ClipboardImageError> {
@@ -194,6 +239,64 @@ mod tests {
         assert!(validate_image("aGVsbG8=", "image/jpeg").is_ok());
         assert!(validate_image("aGVsbG8=", "image/gif").is_ok());
         assert!(validate_image("aGVsbG8=", "image/webp").is_ok());
+    }
+
+    // --- encode_clipboard_image ---
+
+    fn clipboard_pixels(width: usize, height: usize, rgba: Vec<u8>) -> arboard::ImageData<'static> {
+        arboard::ImageData { width, height, bytes: rgba.into() }
+    }
+
+    #[test]
+    fn encoded_attachment_is_a_sendable_png_of_the_clipboard_pixels() {
+        use base64::Engine as _;
+
+        // 3x2 with distinct channels and alpha values, so a swapped channel,
+        // dropped alpha, or transposed dimension changes the decoded result.
+        let rgba: Vec<u8> = vec![
+            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, // row 0
+            9, 8, 7, 255, 1, 2, 3, 4, 250, 251, 252, 253, // row 1
+        ];
+
+        let attachment =
+            encode_clipboard_image(clipboard_pixels(3, 2, rgba.clone())).expect("attachment");
+
+        assert_eq!(validate_image(&attachment.data, &attachment.mime_type), Ok(()));
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(&attachment.data)
+            .expect("base64 payload");
+        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .expect("PNG payload")
+            .into_rgba8();
+        assert_eq!((decoded.width(), decoded.height()), (3, 2));
+        assert_eq!(decoded.into_raw(), rgba);
+    }
+
+    #[test]
+    fn pixel_buffer_that_does_not_fill_the_announced_size_is_rejected() {
+        assert_eq!(
+            encode_clipboard_image(clipboard_pixels(2, 2, vec![0; 15])),
+            Err(ClipboardImageError::InvalidPixelBuffer)
+        );
+    }
+
+    #[test]
+    fn image_whose_png_exceeds_ten_mebibytes_is_rejected() {
+        // Noise does not compress, so 1700x1700 RGBA (11.5 MB raw) stays over the limit.
+        let mut state = 0x9E37_79B9_u32;
+        let noise: Vec<u8> = (0..1700 * 1700 * 4)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_le_bytes()[1]
+            })
+            .collect();
+
+        assert_eq!(
+            encode_clipboard_image(clipboard_pixels(1700, 1700, noise)),
+            Err(ClipboardImageError::TooLarge)
+        );
     }
 
     #[test]

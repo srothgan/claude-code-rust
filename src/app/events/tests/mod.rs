@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
 mod client_events;
+mod clipboard_paste;
 mod slash_input;
 
 fn session_update(update: model::SessionUpdate) -> ClientEvent {
@@ -3584,22 +3585,6 @@ fn settings_view_ignores_paste_events() {
 
 #[test]
 #[cfg(windows)]
-fn clipboard_paste_shortcut_dispatches_on_release() {
-    let key =
-        KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, KeyEventKind::Release);
-    assert!(should_dispatch_key_event(key));
-}
-
-#[test]
-#[cfg(not(windows))]
-fn clipboard_paste_shortcut_release_is_ignored_outside_windows() {
-    let key =
-        KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, KeyEventKind::Release);
-    assert!(!should_dispatch_key_event(key));
-}
-
-#[test]
-#[cfg(windows)]
 fn conpty_release_only_accent_survives_input_and_prompt_dispatch() {
     let mut app = make_test_app();
     let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
@@ -3633,13 +3618,17 @@ fn conpty_release_only_accent_survives_input_and_prompt_dispatch() {
 
 #[test]
 fn non_paste_shortcut_release_is_ignored() {
-    let key = crossterm::event::KeyEvent {
-        code: KeyCode::Char('q'),
-        modifiers: KeyModifiers::CONTROL,
-        kind: KeyEventKind::Release,
-        state: crossterm::event::KeyEventState::NONE,
-    };
-    assert!(!should_dispatch_key_event(key));
+    let mut app = make_test_app();
+    let quit =
+        |kind| Event::Key(KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::CONTROL, kind));
+
+    let release = handle_terminal_event(&mut app, quit(KeyEventKind::Release));
+
+    assert_eq!(release, TerminalEventOutcome::ignored());
+    assert!(!app.shutdown_requested());
+    // The same shortcut acts on its press, so the release above was dropped by kind.
+    handle_terminal_event(&mut app, quit(KeyEventKind::Press));
+    assert!(app.shutdown_requested());
 }
 
 #[test]
