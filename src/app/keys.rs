@@ -603,10 +603,7 @@ fn handle_mode_cycle(app: &mut App) -> bool {
 }
 
 fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
-    if !is_clipboard_paste_shortcut(key) {
-        return false;
-    }
-    if key.kind != KeyEventKind::Release {
+    if !is_clipboard_paste_trigger(key) {
         return false;
     }
 
@@ -663,8 +660,17 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     }
 }
 
-pub(super) fn is_clipboard_paste_shortcut(key: KeyEvent) -> bool {
-    is_ctrl_char_shortcut(key, 'v')
+/// The key event kind on which Ctrl+V reads an image from the clipboard.
+///
+/// Windows consoles report releases, and Windows Terminal consumes the Ctrl+V
+/// press for its own paste binding, so only the release reliably reaches the
+/// app. Other platforms report presses only, because the app never requests
+/// `REPORT_EVENT_TYPES` (see `terminal_runtime/modes.rs`).
+const CLIPBOARD_PASTE_TRIGGER_KIND: KeyEventKind =
+    if cfg!(windows) { KeyEventKind::Release } else { KeyEventKind::Press };
+
+pub(super) fn is_clipboard_paste_trigger(key: KeyEvent) -> bool {
+    key.kind == CLIPBOARD_PASTE_TRIGGER_KIND && is_ctrl_char_shortcut(key, 'v')
 }
 
 pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
@@ -977,6 +983,38 @@ mod tests {
     fn ctrl_shortcut_accepts_raw_control_character_encoding() {
         let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
         assert!(is_ctrl_char_shortcut(key, 'v'));
+    }
+
+    // Ghostty and kitty send Ctrl+V as `ESC [118;5u`; terminals without the
+    // kitty protocol (tmux, for example) send the raw 0x16 byte.
+    fn ctrl_v_encodings(kind: KeyEventKind) -> [KeyEvent; 2] {
+        [
+            KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, kind),
+            KeyEvent::new_with_kind(KeyCode::Char('\u{16}'), KeyModifiers::NONE, kind),
+        ]
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn clipboard_paste_triggers_on_ctrl_v_press_outside_windows() {
+        // macOS and Linux terminals never report the release here (#431, #385).
+        for key in ctrl_v_encodings(KeyEventKind::Press) {
+            assert!(is_clipboard_paste_trigger(key), "{key:?}");
+        }
+        for key in ctrl_v_encodings(KeyEventKind::Release) {
+            assert!(!is_clipboard_paste_trigger(key), "{key:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn clipboard_paste_triggers_on_ctrl_v_release_on_windows() {
+        for key in ctrl_v_encodings(KeyEventKind::Release) {
+            assert!(is_clipboard_paste_trigger(key), "{key:?}");
+        }
+        for key in ctrl_v_encodings(KeyEventKind::Press) {
+            assert!(!is_clipboard_paste_trigger(key), "{key:?}");
+        }
     }
 
     #[test]

@@ -3583,14 +3583,23 @@ fn settings_view_ignores_paste_events() {
 }
 
 #[test]
+#[cfg(windows)]
 fn clipboard_paste_shortcut_dispatches_on_release() {
-    let key = crossterm::event::KeyEvent {
-        code: KeyCode::Char('v'),
-        modifiers: KeyModifiers::CONTROL,
-        kind: KeyEventKind::Release,
-        state: crossterm::event::KeyEventState::NONE,
-    };
+    // Windows Terminal consumes the Ctrl+V press, so the release is the only
+    // event that can attach a clipboard image.
+    let key =
+        KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, KeyEventKind::Release);
     assert!(should_dispatch_key_event(key));
+}
+
+#[test]
+#[cfg(not(windows))]
+fn clipboard_paste_shortcut_release_is_ignored_outside_windows() {
+    // The press already attached the image; dispatching a release that a
+    // terminal still reports would attach it a second time.
+    let key =
+        KeyEvent::new_with_kind(KeyCode::Char('v'), KeyModifiers::CONTROL, KeyEventKind::Release);
+    assert!(!should_dispatch_key_event(key));
 }
 
 #[test]

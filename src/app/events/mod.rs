@@ -156,7 +156,7 @@ fn should_dispatch_key_event(key: crossterm::event::KeyEvent) -> bool {
         && matches!(key.code, crossterm::event::KeyCode::Char(ch)
             if !ch.is_control() && unicode_width::UnicodeWidthChar::width(ch) == Some(0));
     key.kind == KeyEventKind::Press
-        || (key.kind == KeyEventKind::Release && super::keys::is_clipboard_paste_shortcut(key))
+        || super::keys::is_clipboard_paste_trigger(key)
         || zero_width_text_release
 }
 
