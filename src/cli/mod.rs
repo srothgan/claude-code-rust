@@ -23,6 +23,7 @@ pub fn run_support_command(
         Some(Command::Doctor(args)) => doctor::run(cli, args, stdout).map(Some),
         Some(Command::Logs(args)) => logs::run(cli, args, stdout, stderr).map(Some),
         Some(Command::Config(args)) => config::run(cli, args, stdout, stderr).map(Some),
+        Some(Command::UpdateWorker(args)) => Ok(Some(crate::app::run_update_worker(args))),
         Some(Command::Resume { .. }) | None => Ok(None),
     }
 }

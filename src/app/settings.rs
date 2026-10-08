@@ -153,12 +153,27 @@ pub fn record_skip_version(settings: &mut AppSettings, latest_version: &str) {
     settings.updates.skip_until_unix_secs = None;
 }
 
-pub fn record_install_failure(settings: &mut AppSettings, message: String) {
-    settings.updates.last_install_error = Some(message);
+/// Save an install outcome against the file contents, not a session's snapshot:
+/// the detached update worker has no session.
+pub(crate) fn record_install_outcome(path: &Path, failure: Option<String>) -> Result<(), String> {
+    let mut settings = load_from_path(path)?;
+    settings.updates.last_install_error = failure;
+    save_global_settings(path, &settings)
 }
 
-pub fn clear_install_failure(settings: &mut AppSettings) {
-    settings.updates.last_install_error = None;
+/// Automatic installs open no update window, so a failed one is reported at startup instead.
+pub fn automatic_install_failure<'a>(
+    settings: &'a AppSettings,
+    current_version: &str,
+) -> Option<&'a str> {
+    if !settings.updates.auto_install {
+        return None;
+    }
+    let result = settings.updates.last_result.as_ref()?;
+    if !super::update_check::is_newer_version(&result.latest_version, current_version) {
+        return None;
+    }
+    settings.updates.last_install_error.as_deref()
 }
 
 pub fn release_url_for_version(version: &str) -> Option<String> {
@@ -220,6 +235,25 @@ mod tests {
             Some("https://github.com/srothgan/claude-code-rust/releases/tag/v0.14.0")
         );
     }
+
+    #[test]
+    fn automatic_install_failure_requires_opt_in_a_recorded_error_and_a_pending_update() {
+        let mut settings = AppSettings::default();
+        record_update_check_result(&mut settings, "0.13.4", "0.14.0", "url", 10);
+        settings.updates.auto_install = true;
+        assert_eq!(automatic_install_failure(&settings, "0.13.4"), None, "nothing failed");
+
+        settings.updates.last_install_error = Some("npm exited with status 1".to_owned());
+        assert_eq!(
+            automatic_install_failure(&settings, "0.13.4"),
+            Some("npm exited with status 1")
+        );
+        assert_eq!(automatic_install_failure(&settings, "0.14.0"), None, "already updated");
+
+        settings.updates.auto_install = false;
+        assert_eq!(automatic_install_failure(&settings, "0.13.4"), None, "update window owns it");
+    }
+
     #[test]
     fn updater_save_preserves_personal_preferences_and_unknown_update_fields() {
         let fixture = tempfile::tempdir().expect("tempdir");

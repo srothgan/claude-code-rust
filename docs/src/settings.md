@@ -348,11 +348,15 @@ Automatic updates is an app preference saved as `updates.autoInstall`. It defaul
 | Value | Behavior |
 | --- | --- |
 | Off | A newer version opens the update window at startup, with manual installation choices. |
-| On | The window is skipped. A newer version is installed after a normal exit, using the installation method of the running app (script or npm). |
+| On | The window is skipped. A newer version is installed in the background after a normal exit, using the installation method of the running app (script or npm). |
 
 Update checks run in both modes and are cached for 24 hours. `--no-update-check` and `CLAUDE_RUST_NO_UPDATE_CHECK` disable checking and therefore automatic installation.
 
-Automatic installation is skipped for source builds and unrecognized installations, after a forced shutdown, and after an application error. The setting is read again at exit, so switching it Off during a session cancels the pending installation. An installation error is reported without opening another window, and the session remains resumable.
+Automatic installation is skipped for source builds and unrecognized installations, after a forced shutdown, and after an application error. The setting is read again at exit, so switching it Off during a session cancels the pending installation.
+
+The installation runs detached from the terminal and asks no questions. On exit the app prints one line naming the version and returns to the shell; closing the terminal does not stop the installation. Only one background installation runs at a time, and one that takes longer than 10 minutes is stopped.
+
+Installer output is written to `claude-rs-update.log` in the parent of the [runtime log directory](diagnostics.md#logging), replacing the log of the previous installation. A failed installation is shown as a warning at the next start and retried after the next normal exit.
 
 The setting updates only `claude-rs`. It does not update a separately installed Claude CLI.
 

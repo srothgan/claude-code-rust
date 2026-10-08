@@ -160,7 +160,7 @@ After a successful install, an interactive run asks whether to start `claude-rs`
 
 When the startup update screen offers **Install update**, it detects whether the running executable is owned by a script or npm install and uses the same method. Script updates replace the existing app directory while preserving its launcher and PATH configuration. If the executable is not in a recognized install layout, the screen offers separate script and npm choices instead of guessing from PATH order.
 
-The `/config` setting Automatic updates defaults to Off, retaining that manual update screen. Turning it On skips the screen and installs an available newer version after a normal exit. Update checks continue in either mode. Automatic installation uses only a recognized script or npm layout and selects the checked release version; an unrecognized source build is left untouched. See [Settings](settings.md#automatic-updates).
+The `/config` setting Automatic updates defaults to Off, retaining that manual update screen. Turning it On skips the screen and installs an available newer version in the background after a normal exit. Update checks continue in either mode. Automatic installation uses only a recognized script or npm layout and selects the checked release version; an unrecognized source build is left untouched. See [Settings](settings.md#automatic-updates).
 
 ### Supported Script Platforms
 

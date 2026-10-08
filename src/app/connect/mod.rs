@@ -96,16 +96,24 @@ pub fn create_app(cli: &Cli) -> App {
             }
         }
     };
-    let update_prompt = if super::update_check::update_check_disabled(cli.no_update_check) {
-        None
-    } else {
-        settings::update_prompt_candidate(
-            &loaded_settings.settings,
-            env!("CARGO_PKG_VERSION"),
-            super::update_check::unix_now_secs().unwrap_or(0),
-        )
-        .map(super::UpdatePromptState::from)
-    };
+    let (update_prompt, update_install_failure) =
+        if super::update_check::update_check_disabled(cli.no_update_check) {
+            (None, None)
+        } else {
+            (
+                settings::update_prompt_candidate(
+                    &loaded_settings.settings,
+                    env!("CARGO_PKG_VERSION"),
+                    super::update_check::unix_now_secs().unwrap_or(0),
+                )
+                .map(super::UpdatePromptState::from),
+                settings::automatic_install_failure(
+                    &loaded_settings.settings,
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .map(str::to_owned),
+            )
+        };
 
     let cwd_display = shorten_cwd(&cwd);
     let mut app = App {
@@ -167,6 +175,7 @@ pub fn create_app(cli: &Cli) -> App {
         btw: super::state::BtwRequests::default(),
         git_context: super::git_context::GitContextState::default(),
         update_prompt,
+        update_install_failure,
         post_exit_action: None,
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),

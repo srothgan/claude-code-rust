@@ -44,6 +44,7 @@ pub(crate) mod terminal_runtime;
 pub(crate) mod test_support;
 mod trust;
 pub(crate) mod update_check;
+mod update_install;
 mod update_prompt;
 pub(crate) mod usage;
 mod user_dialog;
@@ -90,27 +91,9 @@ pub(crate) use state::{
 pub(crate) use state::{ComposerBlockReason, tool_call_info::ToolCallHistory};
 pub use trust::TrustSelection;
 pub use update_check::{automatic_update_action, start_update_check};
+pub use update_install::{run_update_install, run_update_worker, start_background_update_install};
 pub(crate) use update_prompt::actions_for as update_prompt_actions;
 pub use view::{FullscreenView, SurfaceMode};
-
-pub fn record_update_install_failure(app: &mut App, message: String) {
-    settings::record_install_failure(&mut app.global_settings, message);
-    save_update_install_result(app);
-}
-
-pub fn clear_update_install_failure(app: &mut App) {
-    settings::clear_install_failure(&mut app.global_settings);
-    save_update_install_result(app);
-}
-
-fn save_update_install_result(app: &App) {
-    let Some(path) = app.global_settings_path.as_ref() else {
-        return;
-    };
-    if let Err(error) = settings::save_global_settings(path, &app.global_settings) {
-        eprintln!("Failed to update app settings after install: {error}");
-    }
-}
 
 use crate::agent::events::ClientEvent;
 use crate::agent::model;
@@ -233,6 +216,7 @@ async fn run_tui_loop(
 
         if !app.shutdown_requested() {
             file_index::drain_events(app);
+            update_install::maybe_emit_failure_notice(app);
             input_submit::maybe_submit_initial_prompt(app);
         }
 

@@ -94,6 +94,8 @@ pub struct App {
     pub(crate) git_context: GitContextState,
     /// Update prompt state for the startup fullscreen surface.
     pub(crate) update_prompt: Option<UpdatePromptState>,
+    /// Failed automatic install awaiting its one startup notice.
+    pub(crate) update_install_failure: Option<String>,
     /// Work to run after the TUI has restored the user's terminal.
     pub post_exit_action: Option<super::PostExitAction>,
     /// Config > Usage snapshot and refresh lifecycle.
@@ -274,6 +276,7 @@ impl App {
             btw: BtwRequests::default(),
             git_context: GitContextState::default(),
             update_prompt: None,
+            update_install_failure: None,
             post_exit_action: None,
             usage: UsageState::default(),
             mcp: McpState::default(),

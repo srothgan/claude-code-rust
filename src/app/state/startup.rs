@@ -63,8 +63,13 @@ impl StartupState {
         self.session_options = None;
     }
 
+    #[must_use]
+    pub fn launch_completed(&self) -> bool {
+        self.session_options.is_none()
+    }
+
     pub fn take_initial_prompt(&mut self) -> Option<String> {
-        if self.session_options.is_some() {
+        if !self.launch_completed() {
             return None;
         }
         self.initial_prompt.take()

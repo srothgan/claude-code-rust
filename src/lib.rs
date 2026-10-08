@@ -229,12 +229,35 @@ pub enum Command {
     /// Generate manual pages for the CLI and its subcommands.
     #[command(hide = true)]
     Man { out_dir: std::path::PathBuf },
+    /// Install an update after exit, detached from the terminal.
+    #[command(hide = true)]
+    UpdateWorker(UpdateWorkerArgs),
     /// Run deterministic installation and runtime diagnostics
     Doctor(DoctorArgs),
     /// Find runtime logs or create a redacted debug bundle
     Logs(LogsArgs),
     /// Inspect and export redacted configuration
     Config(ConfigArgs),
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+pub struct UpdateWorkerArgs {
+    /// Version to install.
+    pub version: String,
+
+    /// Installation to update.
+    #[arg(long, value_enum)]
+    pub method: UpdateWorkerMethod,
+
+    /// Script installation directory to update in place.
+    #[arg(long)]
+    pub install_dir: Option<std::path::PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+pub enum UpdateWorkerMethod {
+    Npm,
+    Script,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
