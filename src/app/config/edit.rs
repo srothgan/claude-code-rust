@@ -440,16 +440,10 @@ fn confirm_confirmation_overlay(app: &mut App) {
 }
 
 pub(super) fn open_session_rename_overlay(app: &mut App) {
-    let Some(session_id) = app.session_runtime.session_id.as_ref() else {
+    if app.session_runtime.session_id.is_none() {
         return;
-    };
-    let session_id = session_id.to_string();
-    let draft = app
-        .recent_sessions
-        .iter()
-        .find(|session| session.session_id == session_id)
-        .and_then(|session| session.custom_title.clone())
-        .unwrap_or_default();
+    }
+    let draft = app.session_runtime.session_title.clone().unwrap_or_default();
     app.config.replace_overlay(ConfigOverlayState::SessionRename(text_input_overlay_state(
         draft,
         SessionRenameOverlayState::from_text_input,
@@ -575,11 +569,11 @@ fn char_to_byte_index(text: &str, char_index: usize) -> usize {
 }
 
 fn session_title_generation_description(app: &App, session_id: &str) -> Option<String> {
-    let session = app.recent_sessions.iter().find(|session| session.session_id == session_id)?;
+    let listed = app.recent_sessions.iter().find(|session| session.session_id == session_id);
     [
-        session.custom_title.as_deref(),
-        Some(session.summary.as_str()),
-        session.first_prompt.as_deref(),
+        app.session_runtime.session_title.as_deref(),
+        listed.map(|session| session.summary.as_str()),
+        listed.and_then(|session| session.first_prompt.as_deref()),
     ]
     .into_iter()
     .flatten()

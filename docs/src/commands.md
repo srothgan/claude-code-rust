@@ -66,6 +66,14 @@ Use:
 
 to inspect the current session's full command list. The output includes app-owned commands and SDK-advertised commands, with descriptions when the SDK provides them.
 
+## Session Name
+
+The session name changes through Claude Code's own `/rename <name>`, forwarded to the session, or through the Status tab, where `r` renames the session and `g` asks Claude Code for a generated title. Claude Code generates one only for a session that has no title yet; otherwise `g` keeps the current one.
+
+The name shown is the title the Agent SDK's session API reports for the session. It is read when a session connects or resumes, when the session is replaced, when the conversation resets, after each turn and after a Status-tab rename. After a reset such as `/clear`, the name shown is whatever the API reports for the session at that point, which can be the title it had before. A `/rename` reaches the API with its turn, so the name shows once that turn completes.
+
+The API also reports Claude Code's generated title for a session nobody named, and has no field that tells the two apart. Such a session therefore shows its generated title after its first turn, where Claude Code's own prompt bar shows none. When the session has a title, a rule directly above the composer carries it at its right, `──── name ─`, in the shape of Claude Code's prompt bar for a named session; without one the composer stays plain. The terminal tab title shows the name instead of the folder, and the Status tab lists it as the session name.
+
 ## Session Commands
 
 `/ultracode on` enables session-scoped dynamic-workflow orchestration while retaining the current thinking effort; `/ultracode off` disables it. Both require an idle turn. `/ultracode status` can be used during a turn and reports the latest verified SDK snapshot: on, available and off, requested but unavailable, unavailable and off, or unknown. Availability depends on SDK session capabilities and model support. The footer shows `Ultracode` only when it is verified as effective. Changing effort preserves active Ultracode, and changing models refreshes its state. This command does not persist a preference or control the one-turn `ultracode` keyword trigger.

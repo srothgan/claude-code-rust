@@ -257,6 +257,9 @@ fn connected_resets_session_scoped_view_data() {
             session_id: "old-session".into(),
             kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
         });
+    // The previous session's name; the bridge sends the connected one's.
+    app.session_runtime.session_id = Some(model::SessionId::new("old-session"));
+    app.session_runtime.session_title = Some("Old session name".to_owned());
 
     handle_client_event(&mut app, connected_event("claude-updated"));
 
@@ -269,6 +272,7 @@ fn connected_resets_session_scoped_view_data() {
     assert!(app.plugins.installed.is_empty());
     assert!(app.plugins.last_inventory_refresh_at.is_none());
     assert!(app.config.pending_session_title_change.is_none());
+    assert!(app.session_runtime.session_title.is_none());
 }
 
 #[test]
@@ -1829,4 +1833,25 @@ fn ultracode_lifecycle_preserves_conversation_state_and_rejects_stale_sessions()
     assert_eq!(app.session_runtime.ultracode, on);
     handle_client_event(&mut app, ClientEvent::ConnectionFailed("closed".to_owned().into()));
     assert!(app.session_runtime.ultracode.is_none());
+}
+
+#[test]
+fn session_title_follows_the_child_until_another_session_connects() {
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
+    let update =
+        |update| ClientEvent::SessionUpdate { session_id: "current-session".to_owned(), update };
+
+    handle_client_event(
+        &mut app,
+        update(model::SessionUpdate::SessionTitleUpdate(Some("probe-e2e".to_owned()))),
+    );
+    assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
+
+    // Reconnecting the same session keeps it.
+    app.session_runtime.activate_session(model::SessionId::new("current-session"));
+    assert_eq!(app.session_runtime.session_title.as_deref(), Some("probe-e2e"));
+
+    app.session_runtime.activate_session(model::SessionId::new("other-session"));
+    assert_eq!(app.session_runtime.session_title, None);
 }

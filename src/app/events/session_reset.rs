@@ -86,6 +86,8 @@ pub(super) fn reset_for_conversation(
 }
 
 fn clear_cached_active_session_title(app: &mut App) {
+    // The bridge sends the title the session reports after the reset.
+    app.session_runtime.session_title = None;
     let Some(session_id) = app.session_runtime.session_id.as_ref() else { return };
     let Some(session) =
         app.recent_sessions.iter_mut().find(|session| session.session_id == session_id.as_str())

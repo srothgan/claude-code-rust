@@ -37,7 +37,8 @@ pub fn update_tab_title(app: &super::App) {
 }
 
 fn title(app: &super::App) -> String {
-    let name = folder_name(&app.cwd_raw);
+    // Stock Claude Code names the tab after the session once it has a title.
+    let name = app.session_runtime.session_title.as_deref().unwrap_or(folder_name(&app.cwd_raw));
     if !app.config.status_in_terminal_tab_effective() {
         return name.to_owned();
     }
@@ -101,6 +102,8 @@ mod tests {
         }
         app.status = AppStatus::Ready;
         assert_eq!(title(&app), "○ test");
+        app.session_runtime.session_title = Some("probe-e2e".to_owned());
+        assert_eq!(title(&app), "○ probe-e2e");
     }
 
     #[test]

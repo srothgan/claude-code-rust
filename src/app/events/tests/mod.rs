@@ -3852,6 +3852,7 @@ fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_invento
             session_id: "test-session".to_owned(),
             kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
         });
+    app.session_runtime.session_title = Some("Old conversation name".to_owned());
 
     handle_client_event(
         &mut app,
@@ -3889,6 +3890,9 @@ fn conversation_reset_mounts_a_fresh_transcript_without_dropping_session_invento
     assert_eq!(other_session.summary, "Other conversation title");
     assert_eq!(other_session.first_prompt.as_deref(), Some("prompt Other conversation title"));
     assert!(app.config.pending_session_title_change.is_none());
+    // A reset drops the shown name with the conversation; the bridge sends
+    // the title the session reports after it.
+    assert_eq!(app.session_runtime.session_title, None);
     assert_eq!(app.status, AppStatus::Ready);
 }
 

@@ -31,6 +31,7 @@ import {
   writeEvent,
 } from "./events.js";
 import { bridgeLogger, LOG_TARGETS } from "./logger.js";
+import { emitSessionTitle } from "./session_title.js";
 import {
   refreshCurrentModel,
   sessionById,
@@ -111,6 +112,7 @@ async function generateTitle(
       session.query,
       command.description,
     );
+    await emitSessionTitle(session, "refresh");
     setSessionListingDir(session.cwd);
     await emitSessionsList(requestId);
   } catch (error) {
@@ -138,6 +140,7 @@ async function rename(
       command.title,
       deps.buildSessionMutationOptions(session.cwd),
     );
+    await emitSessionTitle(session, "refresh");
     setSessionListingDir(session.cwd);
     await emitSessionsList(requestId);
   } catch (error) {

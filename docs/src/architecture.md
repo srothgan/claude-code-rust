@@ -114,6 +114,16 @@ Rust keeps execution state on the original `ToolCallInfo`. Its history projectio
 
 The bridge announces each live top-level SDK response through the typed `agent_response_started` update before sending its text. A response triggered by a background completion receives a fresh mutable assistant owner even when no user prompt is pending; history replay does not activate live responses. The renderer groups consecutive visible assistant messages under one speaker label, carrying speaker context across content already inserted into terminal history. Streaming ownership, message identities and tool insertion order remain separate from that visual grouping.
 
+### Session title
+
+| Concern | Owner | Location |
+| --- | --- | --- |
+| Persisting the title (`/rename`, `renameSession()`, generated titles) | Claude Code | the session transcript |
+| Reading the title and sending `session_title_update` | Bridge | `agent-sdk/src/bridge/session_title.ts` |
+| Holding and displaying the active session's title | Rust | `src/app/state/session_runtime.rs`, `src/ui/session_rule.rs` |
+
+The bridge reads `getSessionInfo().customTitle` after a connect, a replacement, a conversation reset, each top-level turn and each rename it performs, and sends it when the app does not already show it. Rust keeps the title as one value, strips control characters once in the converter, and clears it when the session id changes or the conversation resets. Nothing else writes it: the composer rule, the terminal tab title, the Status tab and the Status rename and generate actions all read that value, and neither side derives a title of its own. `customTitle` falls back to Claude Code's generated title, so an unnamed session shows that title after its first turn.
+
 ### Notifications
 
 | Concern | Owner | Location |

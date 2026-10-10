@@ -312,6 +312,20 @@ function streamReply(messageUuid) {
   }
 }
 
+// The bridge's translation of Claude Code's /rename turn: the reply, the
+// result, then the title it reads back once the result is in.
+function sessionNameReply(message) {
+  const text = message.chunks.map(chunk => chunk.value).join('');
+  const update = update => send({ event: 'session_update', session_id: SESSION, update });
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  const [command, ...args] = text.trim().split(/\s+/);
+  if (command === '/rename') {
+    update({ type: 'agent_message_chunk', content: { type: 'text', text: `Session renamed to: ${args.join(' ')}` } });
+  }
+  send({ event: 'turn_complete', session_id: SESSION });
+  if (command === '/rename') update({ type: 'session_title_update', title: args.join(' ') });
+}
+
 readline
   .createInterface({ input: process.stdin })
   .on('line', raw => {
@@ -363,6 +377,14 @@ readline
           restored_input: null,
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO === 'session-name') {
+          // As the real bridge does after connect: Claude Code's commands, and
+          // the title Claude Code persisted for a resumed session.
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
+            { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
+          ] } });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title: 'resumed-name' } });
+        }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
             if (fs.existsSync(RELEASE_FILE)) {
@@ -374,11 +396,25 @@ readline
         }
         break;
       case 'prompt':
+        if (SCENARIO === 'session-name') {
+          sessionNameReply(message);
+          break;
+        }
         if (active) {
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
         break;
+      case 'rename_session': {
+        // As the real bridge does after renameSession(): the title it reads
+        // back, then the session list carrying it.
+        const title = message.title;
+        send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title } });
+        send({ event: 'sessions_listed', request_id: message.request_id, sessions: [
+          { session_id: SESSION, summary: 'Listed summary', last_modified_ms: 0, file_size_bytes: 0, cwd, git_branch: null, custom_title: title, first_prompt: null },
+        ] });
+        break;
+      }
       case 'inspect_settings':
         if (notificationScenario) {
           notificationAppPath = path.join(process.env.CLAUDE_CONFIG_DIR, 'app-settings.json');

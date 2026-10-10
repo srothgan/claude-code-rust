@@ -3,6 +3,7 @@ import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
+import { emitSessionTitle } from "./session_title.js";
 import { observeSessionModel } from "./session_model.js";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -26,6 +27,7 @@ import {
   emitSessionUpdate,
   emitConnectEvent,
   emitSessionReplacedEvent,
+  refreshSessionsList,
 } from "./events.js";
 import {
   TOOL_RESULT_TYPES,
@@ -1560,6 +1562,10 @@ export function handleResultMessage(
     message.parent_tool_use_id === undefined
   ) {
     emitUserMessageStarted(session, message, "result");
+    void emitSessionTitle(session, "refresh").then((sent) => {
+      // The resume picker lists sessions by their title.
+      if (sent) refreshSessionsList();
+    });
   }
   emitFastModeUpdateIfChanged(
     session,
@@ -1732,6 +1738,9 @@ export function handleSdkMessage(
       timestamp: trimmedStringField(msg, "timestamp"),
       user_message_uuid: trimmedStringField(msg, "user_message_uuid"),
     });
+    // The app drops the title with the conversation; send what the API
+    // reports for the session after the reset.
+    void emitSessionTitle(session, "reset");
     return;
   }
 

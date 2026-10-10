@@ -93,14 +93,12 @@ pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn derive_session_name(app: &App) -> String {
+    if let Some(title) = app.session_runtime.session_title.as_ref() {
+        return title.clone();
+    }
     if let Some(ref sid) = app.session_runtime.session_id {
         let sid_str = sid.to_string();
         if let Some(session) = app.recent_sessions.iter().find(|s| s.session_id == sid_str) {
-            if let Some(ref title) = session.custom_title
-                && !title.trim().is_empty()
-            {
-                return title.clone();
-            }
             if !session.summary.trim().is_empty() {
                 let summary = &session.summary;
                 return if summary.len() > 60 {
@@ -201,21 +199,29 @@ mod tests {
     }
 
     #[test]
-    fn status_lines_uses_custom_title() {
+    fn status_lines_name_the_session_by_its_live_title() {
         let mut app = App::test_default();
         app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("test-sess-1"));
         app.recent_sessions = vec![crate::app::RecentSessionInfo {
             session_id: "test-sess-1".to_owned(),
-            summary: String::new(),
+            summary: "Listed summary".to_owned(),
             last_modified_ms: 0,
             file_size_bytes: 0,
             cwd: None,
             git_branch: None,
-            custom_title: Some("My Custom Title".to_owned()),
+            custom_title: Some("Stale listed title".to_owned()),
             first_prompt: None,
         }];
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("My Custom Title"));
+        let name_row = |app: &App| {
+            status_lines(app)
+                .iter()
+                .map(std::string::ToString::to_string)
+                .find(|line| line.contains("Session name"))
+                .expect("session name row")
+        };
+        assert!(name_row(&app).contains("Listed summary"));
+        app.session_runtime.session_title = Some("probe-e2e".to_owned());
+        assert!(name_row(&app).contains("probe-e2e"));
     }
 
     #[test]

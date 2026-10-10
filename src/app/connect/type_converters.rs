@@ -522,6 +522,16 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::PromptSuggestionUpdate { suggestion } => {
             Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
         }
+        types::SessionUpdate::SessionTitleUpdate { title } => {
+            // A title is user text. The tab title, the composer rule and the
+            // Status tab all write it to the terminal, where a BEL or ESC
+            // would end the tab title's OSC, so controls go here, once.
+            let title: String = title.chars().filter(|ch| !ch.is_control()).collect();
+            let title = title.trim();
+            Some(model::SessionUpdate::SessionTitleUpdate(
+                (!title.is_empty()).then(|| title.to_owned()),
+            ))
+        }
         types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
             Some(model::SessionUpdate::RuntimeSessionStateUpdate(match state {
                 types::RuntimeSessionState::Idle => model::RuntimeSessionState::Idle,
@@ -1368,6 +1378,30 @@ mod tests {
                 error_code: Some(model::CompactionFailureCode::TooFewGroups),
                 error: Some("Prompt is too long".to_owned()),
             }))
+        );
+    }
+
+    #[test]
+    fn session_title_updates_decode_from_the_bridge_wire() {
+        let decode = |json: &str| {
+            map_session_update(serde_json::from_str::<types::SessionUpdate>(json).expect("wire"))
+        };
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":" probe-e2e "}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(Some("probe-e2e".to_owned())))
+        );
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":"  "}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(None))
+        );
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":"a\u001b]52;c;eA==\u0007b"}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(Some("a]52;c;eA==b".to_owned())))
+        );
+        // C1 controls such as ST (U+009C) also end an OSC on some terminals.
+        assert_eq!(
+            decode(r#"{"type":"session_title_update","title":"name\u009c\u007f\u001b[2J"}"#),
+            Some(model::SessionUpdate::SessionTitleUpdate(Some("name[2J".to_owned())))
         );
     }
 

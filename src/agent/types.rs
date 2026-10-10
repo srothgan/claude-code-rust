@@ -722,6 +722,9 @@ pub enum SessionUpdate {
     PromptSuggestionUpdate {
         suggestion: String,
     },
+    SessionTitleUpdate {
+        title: String,
+    },
     RuntimeSessionStateUpdate {
         state: RuntimeSessionState,
     },

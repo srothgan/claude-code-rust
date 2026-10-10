@@ -292,7 +292,7 @@ impl ChatTerminalSession {
                 frame.render_widget(Paragraph::new(visible_btw_rows.clone()), btw_area);
             }
             if !editor_area.is_empty() {
-                render_composer_editor(frame, app, &composer.editor, editor_area);
+                render_composer_editor(frame, app, &composer, editor_area);
             }
             if !footer_area.is_empty() {
                 frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
@@ -514,7 +514,11 @@ impl ChatTerminalSession {
                 input::visual_line_count(app, width).saturating_sub(hint_row_count).max(1);
             ComposerEditor::TextArea { desired_height }
         };
-        let editor_row_count = editor.total_len_u16();
+        let rule = crate::ui::session_rule::session_rule_line(
+            app.session_runtime.session_title.as_deref(),
+            width,
+        );
+        let editor_row_count = editor.total_len_u16().saturating_add(u16::from(rule.is_some()));
 
         app.chat_render.composer.width = width;
         app.chat_render.composer.activity_rows = activity_row_count;
@@ -530,7 +534,7 @@ impl ChatTerminalSession {
         app.chat_render.composer.caret_row = 0;
         app.chat_render.composer.caret_col = 0;
 
-        ComposerSurface { activity_rows, hint_rows, btw_rows, editor, footer_rows }
+        ComposerSurface { activity_rows, hint_rows, btw_rows, rule, editor, footer_rows }
     }
 }
 
@@ -915,6 +919,8 @@ struct ComposerSurface {
     activity_rows: Vec<Line<'static>>,
     hint_rows: Vec<Line<'static>>,
     btw_rows: Vec<Line<'static>>,
+    /// The session name rule, drawn as the editor's top row.
+    rule: Option<Line<'static>>,
     editor: ComposerEditor,
     footer_rows: Vec<Line<'static>>,
 }
@@ -925,8 +931,17 @@ impl ComposerSurface {
             .len()
             .saturating_add(self.hint_rows.len())
             .saturating_add(self.btw_rows.len())
-            .saturating_add(self.editor.total_len())
+            .saturating_add(self.editor_len())
             .saturating_add(self.footer_rows.len())
+    }
+
+    /// Rows the editor slot asks for: the editor plus the rule above it.
+    fn editor_len(&self) -> usize {
+        self.editor.total_len().saturating_add(usize::from(self.rule.is_some()))
+    }
+
+    fn editor_len_u16(&self) -> u16 {
+        u16::try_from(self.editor_len()).unwrap_or(u16::MAX)
     }
 
     fn editor_visible_rows(&self, height: u16) -> &[Line<'static>] {
@@ -953,6 +968,7 @@ impl ComposerSurface {
             .iter()
             .chain(hint_rows.iter())
             .chain(btw_rows.iter())
+            .chain(self.rule.iter())
             .chain(editor_preview.iter())
             .chain(footer_rows.iter())
             .cloned()
@@ -1033,7 +1049,7 @@ impl MutableLayoutPlan {
         let screen_height = screen_height.max(1);
         let footer_window = RowWindow::tail(composer.footer_rows.len(), screen_height);
         let editor_budget = screen_height.saturating_sub(footer_window.visible_len_u16());
-        let editor_height = composer.editor.total_len_u16().min(editor_budget);
+        let editor_height = composer.editor_len_u16().min(editor_budget);
         let btw_budget = editor_budget.saturating_sub(editor_height);
         // BTW rows are already ordered by status priority; keep the active row on short screens.
         let btw_window = RowWindow {
@@ -1132,16 +1148,33 @@ impl MutableLayoutPlan {
 fn render_composer_editor(
     frame: &mut ratatui::Frame<'_>,
     app: &mut App,
-    editor: &ComposerEditor,
+    composer: &ComposerSurface,
     area: Rect,
 ) {
-    match editor {
+    let (rule_area, area) = split_rule_row(composer.rule.is_some(), area);
+    if let Some(rule) = composer.rule.as_ref()
+        && !rule_area.is_empty()
+    {
+        frame.render_widget(Paragraph::new(rule.clone()), rule_area);
+    }
+    match &composer.editor {
         ComposerEditor::TextArea { .. } => render_textarea_editor(frame, app, area),
         ComposerEditor::Rows(rows) => {
             let visible_rows = RowWindow::tail(rows.len(), area.height).slice(rows).to_vec();
             frame.render_widget(Paragraph::new(visible_rows), area);
         }
     }
+}
+
+/// The rule takes the editor area's top row, and is the first thing given up
+/// when the screen leaves the editor a single row.
+fn split_rule_row(has_rule: bool, area: Rect) -> (Rect, Rect) {
+    if !has_rule || area.height < 2 {
+        return (Rect::new(area.x, area.y, area.width, 0), area);
+    }
+    let rule = Rect::new(area.x, area.y, area.width, 1);
+    let editor = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    (rule, editor)
 }
 
 fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: Rect) {
@@ -1341,6 +1374,7 @@ mod tests {
             activity_rows: Vec::new(),
             hint_rows: rows(hint_rows),
             btw_rows: Vec::new(),
+            rule: None,
             editor: ComposerEditor::TextArea { desired_height: editor_height },
             footer_rows: rows(footer_rows),
         }
@@ -1383,6 +1417,73 @@ mod tests {
             })
             .expect("test draw should succeed");
         terminal.backend().clone()
+    }
+
+    fn render_composer_editor_to_test_backend(app: &mut App, width: u16) -> TestBackend {
+        let composer = ChatTerminalSession::build_composer_surface(app, width);
+        let height = composer.editor_len_u16();
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| {
+                super::render_composer_editor(
+                    frame,
+                    app,
+                    &composer,
+                    Rect::new(0, 0, width, height),
+                );
+            })
+            .expect("test draw should succeed");
+        terminal.backend().clone()
+    }
+
+    fn buffer_row(backend: &TestBackend, y: u16) -> String {
+        let buffer = backend.buffer();
+        (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn named_session_draws_its_rule_directly_above_the_editor() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+        let _ = app.input.set_cursor(0, 5);
+        app.session_runtime.session_title = Some("probe-e2e".to_owned());
+
+        let backend = render_composer_editor_to_test_backend(&mut app, 30);
+
+        assert_eq!(buffer_row(&backend, 0), format!("{} probe-e2e ─", "─".repeat(18)));
+        let buffer = backend.buffer();
+        assert_eq!(buffer[(0, 0)].style().fg, Some(theme::DIM));
+        // The name is plain text on the terminal's own background.
+        for x in 18..29 {
+            assert_eq!(buffer[(x, 0)].style().bg, Some(ratatui::style::Color::Reset), "cell {x}");
+        }
+        // The editor field (padded top and bottom) follows directly below.
+        assert_eq!(buffer[(0, 1)].style().bg, Some(theme::USER_MSG_BG));
+        assert!(buffer_row(&backend, 2).contains("hello"));
+        assert_eq!(backend.cursor_position().y, 2, "the caret moves below the rule");
+    }
+
+    #[test]
+    fn unnamed_session_keeps_the_editor_on_the_first_row() {
+        let mut app = App::test_default();
+        app.input.set_text("hello");
+
+        let backend = render_composer_editor_to_test_backend(&mut app, 30);
+
+        assert_eq!(backend.buffer()[(0, 0)].style().bg, Some(theme::USER_MSG_BG));
+        assert!(buffer_row(&backend, 1).contains("hello"));
+        assert!((0..backend.buffer().area.height).all(|y| !buffer_row(&backend, y).contains('─')));
+    }
+
+    #[test]
+    fn a_one_row_editor_slot_gives_up_the_rule_before_the_editor() {
+        let full = Rect::new(0, 4, 30, 1);
+        assert_eq!(super::split_rule_row(true, full), (Rect::new(0, 4, 30, 0), full));
+        assert_eq!(
+            super::split_rule_row(true, Rect::new(0, 4, 30, 3)),
+            (Rect::new(0, 4, 30, 1), Rect::new(0, 5, 30, 2))
+        );
     }
 
     #[test]
@@ -1909,6 +2010,7 @@ mod tests {
             activity_rows: Vec::new(),
             hint_rows: rows(2),
             btw_rows: rows(1),
+            rule: None,
             editor: ComposerEditor::TextArea { desired_height: 1 },
             footer_rows: rows(1),
         };
@@ -1935,6 +2037,7 @@ mod tests {
                 Line::from("waiting"),
                 Line::from("overflow"),
             ],
+            rule: None,
             editor: ComposerEditor::TextArea { desired_height: 1 },
             footer_rows: rows(1),
         };
