@@ -170,6 +170,8 @@ export type PendingWorkerShutdown = {
 
 export type SessionState = {
   mainAgentResponse?: MainAgentResponse;
+  /** The API response ID of the last top-level response whose stream began. */
+  lastStreamedResponseId?: string;
   ultracode?: import("../types.js").UltracodeSnapshot;
   sessionId: string;
   cwd: string;

@@ -1,4 +1,4 @@
-import { observeMainAgentStream, resetMainAgentActivity } from "./activity.js";
+import { observeMainAgentStream, resetMainAgentActivity, responseNeverStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
@@ -1274,7 +1274,16 @@ export function handleAssistantMessage(
   const content = Array.isArray(messageObject.content)
     ? messageObject.content
     : [];
-  if (asRecordOrNull(message.context_usage)) {
+  // A streamed reply was already shown from its deltas. SDK-owned context
+  // Markdown, and a complete top-level reply whose response never streamed (a
+  // local command such as /rename, /color or /usage), have no other carrier
+  // of their text. An error frame reports through the turn result instead.
+  if (
+    asRecordOrNull(message.context_usage) ||
+    (!message.parent_tool_use_id &&
+      assistantError.length === 0 &&
+      responseNeverStreamed(session, messageObject.id))
+  ) {
     const markdown = content
       .flatMap((block) => {
         const record = asRecordOrNull(block);
