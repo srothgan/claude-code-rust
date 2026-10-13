@@ -717,12 +717,17 @@ mod tests {
         let file = fs::File::open(output_path).expect("open bundle");
         let mut archive = ZipArchive::new(file).expect("zip archive");
         let names = (0..archive.len())
-            .map(|index| archive.by_index(index).expect("entry").name().to_owned())
+            .map(|index| {
+                archive.by_index(index).expect("entry").name().expect("entry name").into_owned()
+            })
             .collect::<Vec<_>>();
+        assert_eq!(names.len(), 6);
         assert!(names.contains(&"manifest.json".to_owned()));
         assert!(names.contains(&"doctor.json".to_owned()));
         assert!(names.contains(&"paths.json".to_owned()));
         assert!(names.contains(&"logs/bridge-diagnostics.jsonl".to_owned()));
+        assert!(names.contains(&"logs/runtime/claude-rs-20260614T075924Z-p1-rabc.log".to_owned()));
+        assert!(names.contains(&"logs/legacy/claude-rs.log".to_owned()));
 
         for name in ["manifest.json", "paths.json"] {
             let json: serde_json::Value =
@@ -755,6 +760,15 @@ mod tests {
             .expect("read bridge");
         assert!(!bridge.contains("secret"));
         assert!(bridge.contains("[redacted]"));
+
+        for name in
+            ["logs/runtime/claude-rs-20260614T075924Z-p1-rabc.log", "logs/legacy/claude-rs.log"]
+        {
+            let mut log = String::new();
+            archive.by_name(name).expect("log entry").read_to_string(&mut log).expect("read log");
+            assert!(!log.contains("secret"), "{name} contains an unredacted credential");
+            assert!(log.contains("[redacted]"), "{name} is missing its redacted log content");
+        }
     }
 
     #[test]
