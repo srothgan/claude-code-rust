@@ -21,7 +21,21 @@ By participating, you agree to uphold this code.
 - Check existing issues and discussions first
 - Describe the problem being solved, not just the desired solution
 
+### Before Starting Work
+
+Read [AGENTS.md](AGENTS.md) and [the architecture documentation](docs/src/architecture.md) before implementing a change.
+
+- **Issue first:** Find or create an issue and discuss the problem and proposed approach there. Opening an issue does not mean the implementation is approved.
+- **Agree on scope:** Wait for explicit maintainer agreement before implementing the change or opening a PR. This applies to draft PRs too.
+- **Keep scope and parallel work agreed:** Keep each PR focused on the agreed work item. Ask before adding features, splitting a feature across PRs, or opening multiple PRs in parallel. Address outstanding questions and review feedback before starting additional work.
+- **Respect ownership and decisions:** Do not take on maintainer-owned tasks or revisit rejected approaches without explicit maintainer agreement.
+- **Own your contribution:** Understand the code you submit, explain its behavior, and verify the actual workflow. Passing checks alone is insufficient. These requirements apply equally to AI-assisted contributions.
+
+PRs opened without the required agreement may be closed without review.
+
 ### Submitting Code
+
+Once the scope is agreed:
 
 1. Fork the repository
 2. Create a feature branch from `main`: `git checkout -b feat/my-feature`
@@ -44,7 +58,7 @@ By participating, you agree to uphold this code.
    fix: prevent panic on empty terminal output
    ```
 7. Push to your fork and open a Pull Request against `main`
-8. Fill out the PR summary, validation, and any relevant notes
+8. Link the issue and the maintainer comment agreeing to the scope, and fill out the PR summary, validation, and any relevant notes
 
 ### Labels
 
