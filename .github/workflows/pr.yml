@@ -270,6 +270,22 @@ jobs:
             dist-install/*.zip
           if-no-files-found: warn
 
+  issue-triage-checks:
+    name: Issue triage checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+
+      - name: Check triage and duplicate commands
+        run: node --test .github/scripts/issue-triage.test.cjs
+
   duplicate-code:
     name: Duplicate Code
     runs-on: ubuntu-latest
@@ -352,6 +368,7 @@ jobs:
       - cargo-deny-advisories
       - agent-sdk-check
       - npm-package-layout
+      - issue-triage-checks
       - duplicate-code
       - codeql
     steps:
@@ -368,6 +385,7 @@ jobs:
           CARGO_DENY_ADVISORIES: ${{ needs.cargo-deny-advisories.result }}
           AGENT_SDK: ${{ needs.agent-sdk-check.result }}
           NPM_PACKAGE_LAYOUT: ${{ needs.npm-package-layout.result }}
+          ISSUE_TRIAGE_CHECKS: ${{ needs.issue-triage-checks.result }}
           DUPLICATE_CODE: ${{ needs.duplicate-code.result }}
           CODEQL: ${{ needs.codeql.result }}
         run: |
@@ -398,6 +416,7 @@ jobs:
           require_success "terminal-tests" "$TERMINAL_TESTS"
           require_success "lockfile" "$LOCKFILE"
           require_success "cargo-deny-policy" "$CARGO_DENY_POLICY"
+          require_success "issue-triage-checks" "$ISSUE_TRIAGE_CHECKS"
           require_success "duplicate-code" "$DUPLICATE_CODE"
           require_success "codeql" "$CODEQL"
 

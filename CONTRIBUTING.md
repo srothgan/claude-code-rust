@@ -76,11 +76,18 @@ update that also carries a security fix, which takes `type: dependencies` and
 `good first issue` and `help wanted` stay unprefixed because GitHub uses them to
 populate the repository contribution page.
 
-Issue templates apply `type:` and `status: triage` automatically, Dependabot
-applies `type: dependencies` plus the matching `area:` label from
-`.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies
-`type: security` to the advisory issue it opens. Renaming any of those labels
-requires updating that config in the same change.
+`status: triage` means an issue awaits initial maintainer assessment. Remove it after assessing the report and deciding its scope and classification; assignment and other labels do not establish that review is complete.
+
+The `Issue Triage` workflow adds `status: triage` when an issue opens or reopens, including issues created through the CLI or API, and removes it on closure. Repository workflows using `GITHUB_TOKEN` apply that lifecycle themselves because those events do not trigger another workflow. Refreshing an existing issue does not restore triage.
+
+Collaborators with write access can use these standalone issue comments:
+
+- `/triaged`: Remove `status: triage` after assessment. This does not assign the issue or approve an implementation.
+- `/duplicate #123`: Close the current issue as a duplicate of issue #123 in this repository, record GitHub's duplicate relationship, and remove triage. The target must be an existing issue, not a PR or the current issue; it may already be closed.
+
+These commands ignore quoted text, code blocks, bot comments and PR threads. They make no changes for users without write access. Duplicate handling requires an explicit maintainer decision; the bot does not infer similarity or post acknowledgement comments.
+
+Issue templates apply `type:` automatically, Dependabot applies `type: dependencies` plus the matching `area:` label from `.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies `type: security` to the advisory issue it opens. Renaming any of those labels requires updating that config in the same change.
 
 ## Development Setup
 

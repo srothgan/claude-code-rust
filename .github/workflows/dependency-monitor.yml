@@ -71,6 +71,7 @@ jobs:
 
           if [[ "${CLEAN}" == "true" ]]; then
             if [[ -n "${existing_issue}" ]]; then
+              gh issue edit "${existing_issue}" --repo "${REPO}" --remove-label "status: triage"
               gh issue close "${existing_issue}" \
                 --repo "${REPO}" \
                 --reason completed \
@@ -123,6 +124,7 @@ jobs:
               --repo "${REPO}" \
               --title "${issue_title}" \
               --label "type: security" \
+              --label "status: triage" \
               --body-file "${issue_file}"
           fi
 
@@ -238,5 +240,6 @@ jobs:
               --title "${issue_title}" \
               --label "type: dependencies" \
               --label "area: agent-sdk" \
+              --label "status: triage" \
               --body-file "${issue_file}"
           fi
