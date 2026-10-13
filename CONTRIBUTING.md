@@ -87,7 +87,7 @@ Collaborators with write access can use these standalone issue comments:
 
 These commands ignore quoted text, code blocks, bot comments and PR threads. They make no changes for users without write access. Duplicate handling requires an explicit maintainer decision; the bot does not infer similarity or post acknowledgement comments.
 
-Issue templates apply `type:` automatically, Dependabot applies `type: dependencies` plus the matching `area:` label from `.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies `type: security` to the advisory issue it opens. Renaming any of those labels requires updating that config in the same change.
+Issue templates apply `type:` automatically, Dependabot applies `type: dependencies` plus the matching `area:` label from `.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies `type: security` to the advisory issue it opens. `status: triage` is named in `.github/scripts/issue-triage.cjs` and `.github/workflows/dependency-monitor.yml`. Renaming any of those labels requires updating that config in the same change.
 
 ## Development Setup
 

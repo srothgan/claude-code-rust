@@ -11,6 +11,8 @@ permissions: {}
 concurrency:
   group: issue-triage-${{ github.repository }}-${{ github.event.issue.number }}
   cancel-in-progress: false
+  # Keep every pending event; the default drops all but the newest one.
+  queue: max
 
 jobs:
   triage:
