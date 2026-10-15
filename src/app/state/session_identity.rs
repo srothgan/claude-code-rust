@@ -3,7 +3,38 @@
 
 use super::prelude::*;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranscriptUpdateSource {
+    Live,
+    HistoryReplay,
+}
+
 impl App {
+    pub(super) fn reserve_assistant_output_owner(&mut self) -> usize {
+        let index = self.transcript.messages.len();
+        self.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
+        self.bind_active_turn_assistant(index);
+        index
+    }
+
+    /// History chunks can continue the previous message; fresh live output cannot reopen it.
+    pub(crate) fn ensure_assistant_output_owner(
+        &mut self,
+        source: TranscriptUpdateSource,
+    ) -> usize {
+        if let Some(index) = self.active_turn_assistant_idx() {
+            return index;
+        }
+        if source == TranscriptUpdateSource::HistoryReplay
+            && let Some(index) = self.transcript.messages.len().checked_sub(1)
+            && matches!(self.transcript.messages[index].role, MessageRole::Assistant)
+        {
+            self.bind_active_turn_assistant(index);
+            return index;
+        }
+        self.reserve_assistant_output_owner()
+    }
+
     pub(crate) fn active_session_custom_title(&self) -> Option<&str> {
         self.session_runtime.session_title.as_deref().or_else(|| {
             let id = self.session_runtime.session_id.as_ref()?;

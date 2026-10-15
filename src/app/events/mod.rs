@@ -18,7 +18,7 @@ mod turn;
 use super::{
     App, AppStatus, ChatMessage, ChatMessageId, FullscreenView, InvalidationLevel, MessageBlock,
     MessageRole, PendingCommandAck, SurfaceMode, SystemSeverity, TerminalSize, TerminalSizeChange,
-    TextBlock,
+    TextBlock, TranscriptUpdateSource,
 };
 use crate::agent::model;
 #[cfg(all(test, target_os = "macos"))]
@@ -336,14 +336,18 @@ fn handle_session_update_event(app: &mut App, update: model::SessionUpdate) {
             | model::SessionUpdate::ToolCallUpdate(_)
             | model::SessionUpdate::TranscriptRetraction(_)
     );
-    handle_session_update(app, update);
+    handle_session_update(app, update, TranscriptUpdateSource::Live);
     if needs_history_retention {
         app.enforce_history_retention_tracked();
     }
 }
 
 #[allow(clippy::too_many_lines)]
-fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
+fn handle_session_update(
+    app: &mut App,
+    update: model::SessionUpdate,
+    source: TranscriptUpdateSource,
+) {
     match update {
         model::SessionUpdate::ConversationReset {
             new_conversation_id,
@@ -359,9 +363,9 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
         ),
         model::SessionUpdate::AgentMessageChunk(chunk) => {
             compaction::finish_inferred(app, true);
-            streaming::handle_agent_message_chunk(app, chunk);
+            streaming::handle_agent_message_chunk(app, chunk, source);
         }
-        model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc),
+        model::SessionUpdate::ToolCall(tc) => tool_calls::handle_tool_call(app, tc, source),
         model::SessionUpdate::ToolCallUpdate(tcu) => {
             tool_updates::handle_tool_call_update_session(app, &tcu);
         }

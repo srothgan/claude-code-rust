@@ -50,6 +50,7 @@ pub(crate) use pending_messages::{
 pub use repaint::LayoutInvalidation as InvalidationLevel;
 pub use repaint::LayoutInvalidation;
 pub use sdk_inventory::SdkInventoryState;
+pub(crate) use session_identity::TranscriptUpdateSource;
 pub use session_runtime::SessionRuntimeState;
 pub use startup::StartupState;
 pub use tool_call_info::{

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::super::{
-    App, BlockCache, ChatMessage, InvalidationLevel, MessageBlock, MessageRole, ToolCallInfo,
-    ToolCallScope,
-};
+use super::super::{App, BlockCache, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
+use crate::app::TranscriptUpdateSource;
 
-pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
+pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall, source: TranscriptUpdateSource) {
     let id_str = tc.tool_call_id.clone();
     let sdk_tool_name = resolve_sdk_tool_name(tc.kind, tc.meta.as_ref());
     let parent_tool_use_id = parent_tool_use_id_from_meta(tc.meta.as_ref());
@@ -19,7 +17,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall) {
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
-    upsert_tool_call_into_assistant_message(app, tool_info);
+    upsert_tool_call_into_assistant_message(app, tool_info, source);
     app.sync_tool_call_history(&id_str);
     crate::app::tasks::refresh_task_tool_displays(app);
 
@@ -137,7 +135,11 @@ fn build_tool_info_from_tool_call(
     tool_info
 }
 
-pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: ToolCallInfo) {
+fn upsert_tool_call_into_assistant_message(
+    app: &mut App,
+    tool_info: ToolCallInfo,
+    source: TranscriptUpdateSource,
+) {
     let existing_pos = app.lookup_tool_call(&tool_info.id);
 
     if let Some((mi, bi)) = existing_pos {
@@ -145,38 +147,12 @@ pub(super) fn upsert_tool_call_into_assistant_message(app: &mut App, tool_info: 
         return;
     }
 
-    if let Some(msg_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.transcript.messages.get_mut(msg_idx)
-    {
-        let block_idx = owner.blocks.len();
-        let tc_id = tool_info.id.clone();
-        owner.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-        app.sync_after_message_blocks_changed(msg_idx);
-        app.index_tool_call(tc_id, msg_idx, block_idx);
-        return;
-    }
-
-    let msg_idx = app.transcript.messages.len().saturating_sub(1);
-    if app.transcript.messages.last().is_some_and(|m| matches!(m.role, MessageRole::Assistant)) {
-        if let Some(last) = app.transcript.messages.last_mut() {
-            let block_idx = last.blocks.len();
-            let tc_id = tool_info.id.clone();
-            last.blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
-            app.bind_active_turn_assistant(msg_idx);
-            app.sync_after_message_blocks_changed(msg_idx);
-            app.index_tool_call(tc_id, msg_idx, block_idx);
-        }
-    } else {
-        let tc_id = tool_info.id.clone();
-        let new_idx = app.transcript.messages.len();
-        app.push_message_tracked(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool_info))],
-            None,
-        ));
-        app.bind_active_turn_assistant(new_idx);
-        app.index_tool_call(tc_id, new_idx, 0);
-    }
+    let msg_idx = app.ensure_assistant_output_owner(source);
+    let block_idx = app.transcript.messages[msg_idx].blocks.len();
+    let tc_id = tool_info.id.clone();
+    app.transcript.messages[msg_idx].blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
+    app.sync_after_message_blocks_changed(msg_idx);
+    app.index_tool_call(tc_id, msg_idx, block_idx);
 }
 
 fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &ToolCallInfo) {

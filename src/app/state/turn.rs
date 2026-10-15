@@ -121,6 +121,16 @@ impl TurnState {
 }
 
 impl App {
+    /// Reserve one output owner. Queue acknowledgements can continue an existing SDK phase.
+    pub(crate) fn start_assistant_response(&mut self) {
+        self.reserve_assistant_output_owner();
+        if !matches!(self.status, AppStatus::Thinking | AppStatus::Running) {
+            self.status = AppStatus::Running;
+        }
+        self.begin_turn_activity(std::time::Instant::now());
+        self.enforce_history_retention_tracked();
+    }
+
     #[must_use]
     pub(crate) fn is_agent_turn_active(&self) -> bool {
         matches!(self.status, AppStatus::Thinking | AppStatus::Running)

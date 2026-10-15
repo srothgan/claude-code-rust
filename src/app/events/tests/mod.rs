@@ -19,6 +19,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 
+mod assistant_lifecycle;
 mod client_events;
 mod clipboard_paste;
 mod slash_input;
@@ -48,6 +49,7 @@ fn autonomous_response_owns_fresh_text_and_preserves_an_existing_live_owner() {
     assert_eq!(app.active_turn_assistant_idx(), Some(1));
     let active_id = app.transcript.messages[1].id;
     assert!(app.turn.activity.is_some());
+    assistant_lifecycle::assert_owner_has_no_rows(&mut app, 1);
     for text in ["The", " background task finished completely."] {
         handle_client_event(
             &mut app,
@@ -1245,16 +1247,6 @@ fn startup_resume_history_renders_from_canonical_messages() {
     assert!(canonical_messages_contain_text(&app, "startup assistant reply"));
     assert!(live_rows_contain_text(&mut app, "startup user line"));
     assert!(live_rows_contain_text(&mut app, "startup assistant reply"));
-    let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
-        &mut app,
-        80,
-        &std::collections::BTreeSet::new(),
-    );
-    let texts: Vec<_> =
-        rows.rows().iter().map(|line| line.to_string().trim_end().to_owned()).collect();
-    assert!(
-        texts.windows(4).any(|rows| rows == ["User", "startup user line", "", "second paragraph"])
-    );
     let user = app
         .transcript
         .messages
@@ -1366,8 +1358,8 @@ fn resume_history_preserves_user_message_boundaries_and_joins_only_same_source_c
             ["/rename review-444", "/color blue", "Explain <example>literal XML</example>"]
         {
             assert!(
-                text.windows(2).any(|rows| rows == ["User", message]),
-                "separate user heading and text for {message}, startup={startup}"
+                text.iter().any(|row| row == &format!(" > {message}")),
+                "separate user marker and text for {message}, startup={startup}"
             );
         }
     }

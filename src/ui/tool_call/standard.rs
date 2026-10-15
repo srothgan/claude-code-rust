@@ -61,7 +61,7 @@ pub(super) fn render_tool_call_title(
     };
 
     let mut title_spans =
-        vec![Span::styled(format!("  {icon} "), Style::default().fg(icon_color)), kind_icon_span];
+        vec![Span::styled(format!("{icon} "), Style::default().fg(icon_color)), kind_icon_span];
     if tc.is_execute_tool() {
         title_spans.push(Span::styled(
             format!("{} ", kind_label.label.as_ref()),

@@ -750,13 +750,7 @@ pub(super) fn handle_user_message_started_event(
         );
         user.timing.timestamp = message.timestamp;
         app.push_message_tracked(user);
-        app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant_to_tail();
-        if !matches!(app.status, AppStatus::Thinking | AppStatus::Running) {
-            app.status = AppStatus::Running;
-        }
-        app.begin_turn_activity(Instant::now());
-        app.enforce_history_retention_tracked();
+        app.start_assistant_response();
     }
     tracing::info!(
         target: crate::logging::targets::APP_INPUT,

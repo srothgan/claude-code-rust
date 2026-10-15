@@ -11,6 +11,7 @@ use crate::app::{
     App,
     activity::{ActivityHeading, ActivityLabel},
 };
+use crate::ui::message_layout::MessageLayout;
 use crate::ui::{SpinnerState, theme};
 
 /// Composer-only rows: these have no transcript identity or history boundary.
@@ -58,18 +59,12 @@ fn railed_rows(line: Line<'static>, width: u16, wrap: bool) -> Vec<Line<'static>
     if width == 0 {
         return Vec::new();
     }
-    let rail_style = Style::default().fg(theme::RUST_ORANGE);
-    if width <= 2 {
-        return vec![Line::from(Span::styled("│", rail_style))];
-    }
-    let body_rows = crate::ui::wrap::wrap_lines_to_physical_rows(&[line], width - 2);
+    let layout = MessageLayout::new(width);
+    let body_rows = crate::ui::wrap::wrap_lines_to_physical_rows(&[line], layout.content_width);
     body_rows
         .into_iter()
         .take(if wrap { usize::MAX } else { 1 })
-        .map(|mut row| {
-            row.spans.insert(0, Span::styled("│ ", rail_style));
-            row
-        })
+        .map(|row| layout.row(row, Some(("│", theme::RUST_ORANGE)), None))
         .collect()
 }
 
@@ -96,11 +91,9 @@ mod tests {
             let rows = build_activity_rows(&app, width, now);
             assert!(rows.len() >= 2);
             assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
-            assert!(rows.iter().all(|row| row.to_string().starts_with('│')));
-            assert!(rows.iter().all(|row| row.spans[0].style.fg == Some(theme::RUST_ORANGE)));
-            if width > 2 {
-                assert!(rows[0].to_string().starts_with("│ ◆ "));
-                assert!(rows[1].to_string().starts_with("│ Tip: "));
+            if width >= 5 {
+                assert!(rows[0].to_string().starts_with(" │ ◆ "));
+                assert!(rows[1].to_string().starts_with(" │ Tip: "));
                 assert_eq!(rows[0].spans[1].style.fg, Some(theme::RUST_ORANGE));
             }
         }
@@ -111,7 +104,7 @@ mod tests {
         app.turn.cancel_requested = true;
         let rows = build_activity_rows(&app, 80, now);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].to_string().trim_end(), "│ ◆ Cancelling…");
+        assert_eq!(rows[0].to_string().trim_end(), " │ ◆ Cancelling…");
         app.turn.reset_for_turn_exit();
         app.status = AppStatus::Ready;
         assert!(build_activity_rows(&app, 80, now).is_empty());
@@ -133,7 +126,7 @@ mod tests {
             },
         );
         let rows = build_activity_rows(&app, 80, now);
-        assert_eq!(rows[0].to_string().trim_end(), "Claude");
+        assert_eq!(rows[0].to_string().trim_end(), " ●");
         assert!(rows[1].to_string().contains("Compacting"));
         assert!(app.transcript.messages.is_empty());
         app.turn.compaction.finish();

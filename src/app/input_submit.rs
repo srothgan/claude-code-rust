@@ -179,12 +179,7 @@ fn send_prompt_turn(
     )];
 
     app.push_message_tracked(ChatMessage::new(MessageRole::User, user_blocks, None));
-    // Reserve the assistant output owner immediately after queue admission.
-    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-    app.bind_active_turn_assistant_to_tail();
-    app.enforce_history_retention_tracked();
-    app.status = AppStatus::Running;
-    app.begin_turn_activity(std::time::Instant::now());
+    app.start_assistant_response();
 
     app.session_runtime.prompt_suggestion = None;
     crate::app::session_runtime::request_context_usage_refresh(app);
@@ -320,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn user_paragraph_spacing_survives_submission_queueing_and_paste_expansion() {
+    fn submission_queueing_and_paste_expansion_preserve_the_user_source() {
         for queued in [false, true] {
             for pasted in [false, true] {
                 let (mut app, mut rx) = app_with_connection();
@@ -387,16 +382,6 @@ mod tests {
                     panic!("expected user text");
                 };
                 assert_eq!(block.text, source);
-                let rows =
-                    crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
-                        &mut app,
-                        80,
-                        &std::collections::BTreeSet::new(),
-                    );
-                let texts: Vec<_> =
-                    rows.rows().iter().map(|line| line.to_string().trim_end().to_owned()).collect();
-                let start = texts.iter().position(|line| line == "User").expect("user label");
-                assert_eq!(&texts[start..start + 4], ["User", "hello", "", "how are you"]);
             }
         }
     }

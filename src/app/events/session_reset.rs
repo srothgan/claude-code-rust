@@ -263,7 +263,11 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
                 app.clear_active_turn_assistant();
                 append_resume_user_message_chunk(app, chunk);
             }
-            _ => super::handle_session_update(app, update.clone()),
+            _ => super::handle_session_update(
+                app,
+                update.clone(),
+                super::TranscriptUpdateSource::HistoryReplay,
+            ),
         }
     }
     for message in &mut app.transcript.messages {

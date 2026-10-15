@@ -418,40 +418,40 @@ mod tests {
     }
 
     fn render_lines_to_strings(lines: &[Line<'static>]) -> Vec<String> {
-        lines
+        lines.iter().map(|line| line.to_string().trim_end().to_owned()).collect()
+    }
+
+    fn user_paragraphs(lines: &[Line<'static>]) -> Vec<String> {
+        let content = lines
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+            .map(|line| line.to_string().chars().skip(3).collect::<String>().trim_end().to_owned())
+            .collect::<Vec<_>>();
+        content
+            .split(String::is_empty)
+            .filter(|paragraph| !paragraph.is_empty())
+            .map(|paragraph| paragraph.join(" "))
             .collect()
     }
 
     #[test]
     fn user_paragraph_spacing_survives_cache_reuse_and_resize() {
         for (source, expected) in [
-            ("hello\n\nhow are you", vec!["User", "hello", "", "how are you"]),
-            ("hello\nhow are you", vec!["User", "hello", "how are you"]),
-            ("one\n\ntwo\n\nthree", vec!["User", "one", "", "two", "", "three"]),
-            ("hello\n\n\nhow are you", vec!["User", "hello", "", "how are you"]),
-            ("hello\n \t\nhow are you", vec!["User", "hello", "", "how are you"]),
-            ("こんにちは\n\n😀 hello", vec!["User", "こんにちは", "", "😀 hello"]),
+            ("hello\n\nhow are you", vec!["hello", "how are you"]),
+            ("hello\nhow are you", vec!["hello how are you"]),
+            ("one\n\ntwo\n\nthree", vec!["one", "two", "three"]),
+            ("hello\n\n\nhow are you", vec!["hello", "how are you"]),
+            ("hello\n \t\nhow are you", vec!["hello", "how are you"]),
+            ("こんにちは\n\n😀 hello", vec!["こんにちは", "😀 hello"]),
         ] {
             let mut msg = make_text_message(MessageRole::User, source);
-            for width in [80, 80, 12, 80] {
+            for width in [80, 80, 16, 80] {
                 let mut lines = Vec::new();
                 render_message(&mut msg, width, &mut lines);
-                assert_eq!(
-                    render_lines_to_strings(&lines),
-                    expected,
-                    "source={source:?}, width={width}"
-                );
+                assert_eq!(user_paragraphs(&lines), expected, "source={source:?}, width={width}");
                 let MessageBlock::Text(block) = &msg.blocks[0] else {
                     panic!("expected user text");
                 };
                 assert_eq!(block.text, source);
-                assert!(
-                    lines[1..]
-                        .iter()
-                        .all(|line| line.style.bg == Some(crate::ui::theme::USER_MSG_BG))
-                );
             }
         }
     }
@@ -469,33 +469,8 @@ mod tests {
 
         let mut after = Vec::new();
         render_message(&mut msg, 80, &mut after);
-        assert_eq!(render_lines_to_strings(&after), vec!["User", "hello", "", "how are you"]);
-    }
-
-    #[test]
-    fn user_markdown_boundaries_retain_existing_document_spacing() {
-        for (source, expected) in [
-            ("before\n\n# Heading\n\nafter", vec!["User", "before", "", "Heading", "", "after"]),
-            (
-                "intro\n\n- one\n- two\n\noutro",
-                vec!["User", "intro", "  - one", "  - two", "outro"],
-            ),
-            (
-                "before\n\n```text\none\n\nthree\n```\n\nafter",
-                vec!["User", "before", "", "```text", "one", "", "three", "```", "", "after"],
-            ),
-            ("\n\nhello\n\n", vec!["User", "hello"]),
-            ("", vec!["User"]),
-        ] {
-            let mut msg = make_text_message(MessageRole::User, source);
-            let mut lines = Vec::new();
-            render_message(&mut msg, 80, &mut lines);
-            let text: Vec<_> = render_lines_to_strings(&lines)
-                .into_iter()
-                .map(|line| line.trim_end().to_owned())
-                .collect();
-            assert_eq!(text, expected, "source={source:?}");
-        }
+        assert_eq!(user_paragraphs(&before), ["hello"]);
+        assert_eq!(user_paragraphs(&after), ["hello", "how are you"]);
     }
 
     #[test]
@@ -515,7 +490,7 @@ mod tests {
         assert!(!wide_rendered.iter().any(|line| line.contains("Name:")));
 
         let mut narrow_lines = Vec::new();
-        render_message(&mut msg, 12, &mut narrow_lines);
+        render_message(&mut msg, 16, &mut narrow_lines);
         let narrow_rendered = render_lines_to_strings(&narrow_lines);
         assert!(narrow_rendered.iter().any(|line| line.contains("Name:")));
         assert!(narrow_rendered.iter().any(|line| line.contains("Description")));

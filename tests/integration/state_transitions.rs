@@ -176,27 +176,37 @@ async fn error_then_new_turn_recovers() {
 // --- Message accumulation ---
 
 #[tokio::test]
-async fn chunks_across_turns_append_to_last_assistant_message() {
+async fn chunks_join_within_a_response_and_never_modify_a_finished_response() {
     let mut app = test_app();
 
     // First turn
-    let c1 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 1")));
-    send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(c1)));
+    for text in ["Turn ", "1"] {
+        let chunk =
+            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(text)));
+        send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(chunk)));
+    }
+    let first_id = app.transcript.messages[0].id;
     send_client_event(&mut app, turn_complete());
     assert_eq!(app.transcript.messages.len(), 1);
 
-    // Second turn: chunks append to the last assistant message (no user message between turns)
-    let c2 = model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("Turn 2")));
-    send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(c2)));
-
-    // Still one message - consecutive assistant chunks always merge
-    assert_eq!(app.transcript.messages.len(), 1);
-    if let MessageBlock::Text(block) =
-        &app.transcript.messages.last().expect("message").blocks.last().expect("block")
-    {
-        assert!(block.text.contains("Turn 1"), "first turn text present");
-        assert!(block.text.contains("Turn 2"), "second turn text appended");
+    // Complete SDK replies can arrive without a streaming-start event or another user message.
+    for text in ["Turn ", "2"] {
+        let chunk =
+            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(text)));
+        send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(chunk)));
     }
+
+    assert_eq!(app.transcript.messages.len(), 2);
+    assert_eq!(app.transcript.messages[0].id, first_id);
+    assert_ne!(app.transcript.messages[1].id, first_id);
+    let MessageBlock::Text(first) = &app.transcript.messages[0].blocks[0] else {
+        panic!("first response");
+    };
+    let MessageBlock::Text(second) = &app.transcript.messages[1].blocks[0] else {
+        panic!("second response");
+    };
+    assert_eq!(first.text, "Turn 1");
+    assert_eq!(second.text, "Turn 2");
 }
 
 #[tokio::test]

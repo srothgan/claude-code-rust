@@ -12,14 +12,7 @@ use tui_textarea::{CursorRenderMode, TextArea};
 
 use super::autocomplete;
 
-/// Symmetric horizontal padding inside the colored input field.
-const INPUT_HORIZONTAL_PAD: u16 = 1;
-
-/// Vertical padding inside the colored input field when enough rows are available.
-const INPUT_VERTICAL_PAD: u16 = 1;
-
-/// Prompt column width: "❯ " = 2 columns (icon + space)
-const PROMPT_WIDTH: u16 = 2;
+use super::message_layout::{MessageLayout, VERTICAL_PADDING as INPUT_VERTICAL_PAD};
 
 /// Maximum input content height (lines) before the surrounding vertical padding is added.
 const MAX_INPUT_HEIGHT: u16 = 12;
@@ -89,14 +82,16 @@ pub(crate) fn compute_render_geometry(area: Rect, hint_lines: u16) -> InputRende
 
     let vertical_pad =
         if input_main_area.height > INPUT_VERTICAL_PAD * 2 { INPUT_VERTICAL_PAD } else { 0 };
+    let layout = MessageLayout::new(input_main_area.width);
     let content = Rect {
-        x: input_main_area.x.saturating_add(INPUT_HORIZONTAL_PAD),
+        x: input_main_area.x.saturating_add(layout.horizontal_padding),
         y: input_main_area.y.saturating_add(vertical_pad),
-        width: input_main_area.width.saturating_sub(INPUT_HORIZONTAL_PAD * 2),
+        width: input_main_area.width.saturating_sub(layout.horizontal_padding * 2),
         height: input_main_area.height.saturating_sub(vertical_pad * 2),
     };
     let [prompt, text] =
-        Layout::horizontal([Constraint::Length(PROMPT_WIDTH), Constraint::Min(1)]).areas(content);
+        Layout::horizontal([Constraint::Length(layout.marker_width), Constraint::Min(1)])
+            .areas(content);
 
     InputRenderGeometry { field: input_main_area, prompt, text }
 }
@@ -222,8 +217,7 @@ fn slash_command_range(line: &str) -> Option<(usize, usize)> {
 /// Called by the layout to allocate the correct input area height.
 pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     let hint = hint_line_count(app);
-    let content_width =
-        area_width.saturating_sub(INPUT_HORIZONTAL_PAD * 2).saturating_sub(PROMPT_WIDTH);
+    let content_width = MessageLayout::new(area_width).content_width;
     let input_lines = app.input.measure_visual_lines(content_width, MAX_INPUT_HEIGHT);
     hint.saturating_add(input_lines).saturating_add(INPUT_VERTICAL_PAD * 2)
 }

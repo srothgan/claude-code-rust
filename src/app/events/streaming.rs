@@ -2,24 +2,32 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use super::super::{
-    App, ChatMessage, MessageBlock, MessageRole, TextBlock, TextBlockSpacing, TextSplitDecision,
-    TextSplitKind, default_cache_split_policy, find_text_split,
+    App, MessageBlock, TextBlock, TextBlockSpacing, TextSplitDecision, TextSplitKind,
+    TranscriptUpdateSource, default_cache_split_policy, find_text_split,
 };
 use crate::agent::model;
 
 /// A live SDK response can start after a background notification without a user prompt.
 /// Give it a fresh mutable owner instead of extending already committed text.
 pub(super) fn begin_live_assistant_response(app: &mut App) {
-    if !matches!(app.status, super::AppStatus::Ready | super::AppStatus::Error) {
+    let starts_response = match app.status {
+        super::AppStatus::Ready | super::AppStatus::Error => true,
+        super::AppStatus::Running | super::AppStatus::Thinking => {
+            app.active_turn_assistant_idx().is_none()
+        }
+        super::AppStatus::Connecting | super::AppStatus::CommandPending => false,
+    };
+    if !starts_response {
         return;
     }
-    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-    app.bind_active_turn_assistant_to_tail();
-    app.status = super::AppStatus::Running;
-    app.begin_turn_activity(std::time::Instant::now());
+    app.start_assistant_response();
 }
 
-pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChunk) {
+pub(super) fn handle_agent_message_chunk(
+    app: &mut App,
+    chunk: model::ContentChunk,
+    source: TranscriptUpdateSource,
+) {
     let model::ContentBlock::Text(text) = chunk.content else {
         return;
     };
@@ -27,36 +35,13 @@ pub(super) fn handle_agent_message_chunk(app: &mut App, chunk: model::ContentChu
     if text.text.is_empty() {
         return;
     }
-    if let Some(owner_idx) = app.active_turn_assistant_idx()
-        && let Some(owner) = app.transcript.messages.get_mut(owner_idx)
-    {
-        append_agent_stream_text(
-            &mut owner.blocks,
-            &text.text,
-            chunk.source_message_uuid.as_deref(),
-        );
-        app.sync_after_message_blocks_changed(owner_idx);
-        return;
-    }
-
-    if let Some(last) = app.transcript.messages.last_mut()
-        && matches!(last.role, MessageRole::Assistant)
-    {
-        append_agent_stream_text(
-            &mut last.blocks,
-            &text.text,
-            chunk.source_message_uuid.as_deref(),
-        );
-        let last_idx = app.transcript.messages.len().saturating_sub(1);
-        app.bind_active_turn_assistant(last_idx);
-        app.sync_after_message_blocks_changed(last_idx);
-        return;
-    }
-
-    let mut blocks = Vec::new();
-    append_agent_stream_text(&mut blocks, &text.text, chunk.source_message_uuid.as_deref());
-    app.push_message_tracked(ChatMessage::new(MessageRole::Assistant, blocks, None));
-    app.bind_active_turn_assistant_to_tail();
+    let owner_idx = app.ensure_assistant_output_owner(source);
+    append_agent_stream_text(
+        &mut app.transcript.messages[owner_idx].blocks,
+        &text.text,
+        chunk.source_message_uuid.as_deref(),
+    );
+    app.sync_after_message_blocks_changed(owner_idx);
 }
 
 pub(super) fn append_agent_stream_text(
@@ -146,7 +131,7 @@ pub(super) fn find_text_block_split_index(text: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::handle_agent_message_chunk;
+    use super::{TranscriptUpdateSource, handle_agent_message_chunk};
     use crate::agent::model;
     use crate::app::{App, ChatMessage, MessageBlock, MessageRole, TextBlockSpacing};
 
@@ -162,6 +147,7 @@ mod tests {
             model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(
                 "first\n\nsecond",
             ))),
+            TranscriptUpdateSource::Live,
         );
 
         assert_eq!(app.active_turn_assistant_idx(), Some(0));
@@ -192,6 +178,7 @@ mod tests {
                 &mut app,
                 model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(text)))
                     .source_message_uuid(Some(source_message_uuid.to_owned())),
+                TranscriptUpdateSource::Live,
             );
         }
 
@@ -217,6 +204,7 @@ mod tests {
             &mut app,
             model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(markdown)))
                 .source_message_uuid(Some("context-assistant-1".to_owned())),
+            TranscriptUpdateSource::Live,
         );
 
         let text_blocks = app.transcript.messages[0]

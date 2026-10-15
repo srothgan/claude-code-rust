@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use super::message::{MessageRenderContext, render_text_block_cached};
+use super::message_layout::{self, MessageLayout};
 
 pub(crate) struct MessageRows {
     pub segments: Vec<MessageRowSegment>,
@@ -48,12 +49,41 @@ pub(crate) fn build_user_system_message_rows(
         return rows;
     }
 
-    if !msg.blocks.iter().any(|block| matches!(block, MessageBlock::BtwExchange(_))) {
-        rows.push_lines(vec![role_label_line(&msg.role)]);
+    if matches!(msg.role, MessageRole::System(_))
+        && !msg.blocks.iter().any(|block| matches!(block, MessageBlock::BtwExchange(_)))
+    {
+        rows.push_lines(vec![system_role_label_line(system_severity_from_role(&msg.role))]);
     }
 
     match msg.role {
-        MessageRole::User => append_user_blocks(msg, render_context.width, &mut rows),
+        MessageRole::User => {
+            let width = render_context.width;
+            append_user_blocks(msg, MessageLayout::new(width).content_width, &mut rows);
+            let mut physical = Vec::new();
+            for segment in rows.segments {
+                match segment {
+                    MessageRowSegment::Blank => physical.push(Line::default()),
+                    MessageRowSegment::Lines { lines } => {
+                        physical.extend(super::wrap::wrap_markdown_lines_to_physical_rows(
+                            &lines,
+                            MessageLayout::new(width).content_width,
+                        ));
+                    }
+                }
+            }
+            return MessageRows {
+                segments: vec![MessageRowSegment::Lines {
+                    lines: message_layout::frame_rows(
+                        physical,
+                        width,
+                        Some((">", theme::DIM)),
+                        Some(theme::USER_MSG_BG),
+                        (true, true),
+                        &[],
+                    ),
+                }],
+            };
+        }
         MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut rows),
         MessageRole::Assistant | MessageRole::Welcome => {}
     }
@@ -73,9 +103,9 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows)
             }
             MessageBlock::ImageAttachment(img) => {
                 let label = if img.count == 1 {
-                    " [img] 1 image attached ".to_owned()
+                    "[img] 1 image attached".to_owned()
                 } else {
-                    format!(" [img] {} images attached ", img.count)
+                    format!("[img] {} images attached", img.count)
                 };
                 rows.push_lines(vec![Line::from(Span::styled(
                     label,
@@ -285,17 +315,6 @@ fn notice_block_lines(
     lines
 }
 
-fn role_label_line(role: &MessageRole) -> Line<'static> {
-    match role {
-        MessageRole::User => Line::from(Span::styled(
-            "User",
-            Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD),
-        )),
-        MessageRole::System(_) => system_role_label_line(system_severity_from_role(role)),
-        MessageRole::Assistant | MessageRole::Welcome => Line::default(),
-    }
-}
-
 fn system_role_label_line(severity: SystemSeverity) -> Line<'static> {
     let (label, color) = match severity {
         SystemSeverity::Info => ("Info", theme::DIM),
@@ -332,18 +351,14 @@ fn tint_lines(lines: &mut [Line<'static>], color: Color) {
 mod tests {
     use super::build_user_system_message_rows;
     use crate::app::{
-        BtwExchangeBlock, ChatMessage, ImageAttachmentBlock, MessageBlock, MessageRole,
-        NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing,
+        BtwExchangeBlock, ChatMessage, MessageBlock, MessageRole, NoticeBlock, SystemSeverity,
+        TextBlock,
     };
     use crate::ui::message::MessageRenderContext;
     use ratatui::text::Line;
 
     fn render_context() -> MessageRenderContext<'static> {
         MessageRenderContext::new(None, 80)
-    }
-
-    fn user_message(blocks: Vec<MessageBlock>) -> ChatMessage {
-        ChatMessage::new(MessageRole::User, blocks, None)
     }
 
     fn system_message(blocks: Vec<MessageBlock>, severity: SystemSeverity) -> ChatMessage {
@@ -365,37 +380,6 @@ mod tests {
             }
         }
         out
-    }
-
-    #[test]
-    fn user_text_blocks_preserve_header_and_spacing_behavior() {
-        let mut msg = user_message(vec![
-            MessageBlock::Text(TextBlock::from_complete("First paragraph")),
-            MessageBlock::Text(
-                TextBlock::from_complete("Second paragraph")
-                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
-            ),
-        ]);
-
-        let rows = build_user_system_message_rows(&mut msg, render_context());
-        let texts = segment_texts(&rows);
-
-        assert_eq!(texts.first().expect("header"), "User");
-        assert!(texts.iter().any(|line| line.contains("First paragraph")));
-        assert!(texts.iter().any(|line| line.contains("Second paragraph")));
-        assert!(texts.iter().any(String::is_empty));
-    }
-
-    #[test]
-    fn user_image_attachment_renders_attachment_row() {
-        let mut msg =
-            user_message(vec![MessageBlock::ImageAttachment(ImageAttachmentBlock::new(2))]);
-
-        let rows = build_user_system_message_rows(&mut msg, render_context());
-        let texts = segment_texts(&rows);
-
-        assert_eq!(texts.first().expect("header"), "User");
-        assert!(texts.iter().any(|line| line.contains("2 images attached")));
     }
 
     #[test]

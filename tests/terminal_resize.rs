@@ -9,6 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+fn assistant_marker(row: &str) -> bool {
+    row.trim_start().starts_with('\u{25cf}')
+}
+
+fn assistant_body(row: &str) -> &str {
+    let text = row.trim();
+    text.strip_prefix("\u{25cf} ").unwrap_or(text)
+}
+
 const COLS: u16 = 87;
 const SHORT_ROWS: u16 = 38;
 const TALL_ROWS: u16 = 55;
@@ -397,14 +406,18 @@ impl TerminalTest {
 
     fn diagnostics(&self) -> String {
         let output = self.output.lock().expect("output lock");
+        let log = std::fs::read_to_string(self.temp.path().join("runtime.log")).unwrap_or_default();
+        let paste = log
+            .lines()
+            .filter(|line| line.contains("\"target\":\"app.paste\""))
+            .collect::<Vec<_>>()
+            .join("\n");
         format!(
-            "{}\nRaw output tail:\n{}\nRuntime log tail:\n{}",
+            "{}\nRaw output tail:\n{}\nRuntime log tail:\n{}\nPaste events:\n{}",
             output.parser.screen().contents(),
             tail(&String::from_utf8_lossy(&output.raw), 2000),
-            tail(
-                &std::fs::read_to_string(self.temp.path().join("runtime.log")).unwrap_or_default(),
-                6000
-            )
+            tail(&log, 6000),
+            tail(&paste, 6000),
         )
     }
 
@@ -946,9 +959,9 @@ fn background_result_labels_follow_the_visible_speaker_through_replay_and_cancel
     }
     let assert_group = |test: &TerminalTest| {
         let rows = test.transcript_rows();
-        let first = rows.iter().position(|row| row.trim() == "Claude").expect("speaker label");
+        let first = rows.iter().position(|row| assistant_marker(row)).expect("speaker label");
         let last = rows.iter().position(|row| row.contains("OUTPUT_2")).expect("second result");
-        assert_eq!(rows[first..=last].iter().filter(|row| row.trim() == "Claude").count(), 1);
+        assert_eq!(rows[first..=last].iter().filter(|row| assistant_marker(row)).count(), 1);
         let positions: Vec<_> =
             ["LAUNCH_1", "LAUNCH_2", "LAUNCH_3", "Foreground reply", "RESULT_1", "RESULT_2"]
                 .into_iter()
@@ -987,8 +1000,8 @@ fn background_result_labels_follow_the_visible_speaker_through_replay_and_cancel
         .position(|row| row.contains("CANCEL_EMPTY_REPLY"))
         .expect("cancelled user message");
     let result = rows.iter().position(|row| row.contains("RESULT_3")).expect("later result");
-    assert_eq!(rows[normal..cancelled].iter().filter(|row| row.trim() == "Claude").count(), 1);
-    assert_eq!(rows[cancelled..=result].iter().filter(|row| row.trim() == "Claude").count(), 1);
+    assert_eq!(rows[normal..cancelled].iter().filter(|row| assistant_marker(row)).count(), 1);
+    assert_eq!(rows[cancelled..=result].iter().filter(|row| assistant_marker(row)).count(), 1);
     test.assert_prompts(&["BACKGROUND_LABELS", "NORMAL_FOLLOWUP", "CANCEL_EMPTY_REPLY"]);
     test.shutdown();
 }
@@ -1027,8 +1040,8 @@ fn background_completion_replies_keep_streamed_tails_mutable_and_preserve_normal
         test.wait_journal(&format!("finish-{number}"));
         test.wait_turn_finished(full);
         let rows = test.transcript_rows();
-        assert_eq!(rows.iter().filter(|row| row.trim() == full).count(), 1);
-        assert!(!rows.iter().any(|row| row.trim() == prefix));
+        assert_eq!(rows.iter().filter(|row| assistant_body(row) == full).count(), 1);
+        assert!(!rows.iter().any(|row| assistant_body(row) == prefix));
     }
     test.submit_draft();
     test.wait_turn_finished("Normal conversation continues completely.");
@@ -1040,7 +1053,7 @@ fn background_completion_replies_keep_streamed_tails_mutable_and_preserve_normal
         "Short task 2 (task-two) finished with exit code 0.",
         "Normal conversation continues completely.",
     ] {
-        assert_eq!(rows.iter().filter(|row| row.trim() == full).count(), 1);
+        assert_eq!(rows.iter().filter(|row| assistant_body(row) == full).count(), 1);
     }
     test.assert_prompts(&["BACKGROUND_STREAM", "NORMAL_AFTER_COMPLETIONS"]);
     test.shutdown();
@@ -1202,21 +1215,21 @@ fn concurrent_resize_typing_and_paste_deliver_every_prompt_exactly_once() {
 }
 
 #[test]
-fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_saves() {
+fn tips_setting_preserves_activity_without_empty_messages_through_real_config_saves() {
     let mut test = TerminalTest::start("hold-activity-off", 3);
     test.submit("NO_OUTPUT_YET", "NO_OUTPUT_YET");
     test.wait_journal("reply-held");
-    test.wait_until("disabled tips retain immediate activity and assistant heading", |test| {
+    test.wait_until("disabled tips retain activity without an empty assistant frame", |test| {
         let screen = test.screen();
         screen.contains("NO_OUTPUT_YET")
-            && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
-            && screen.lines().any(|line| line.starts_with("│ ◆ "))
+            && !screen.lines().any(assistant_marker)
+            && screen.lines().any(|line| line.trim_start().starts_with("│ ◆ "))
             && !screen.contains("│ Tip:")
     });
     let activity_header = test
         .screen()
         .lines()
-        .find(|line| line.starts_with("│ ◆ "))
+        .find(|line| line.trim_start().starts_with("│ ◆ "))
         .expect("immediate activity header")
         .trim_end()
         .to_owned();
@@ -1235,35 +1248,38 @@ fn tips_setting_preserves_immediate_activity_and_heading_through_real_config_sav
         test.send(b"\x1b");
         test.wait_until("only tips follow the acknowledged setting", |test| {
             let screen = test.screen();
-            screen.lines().any(|line| line.trim() == "NO_OUTPUT_YET")
-                && screen.lines().filter(|line| line.trim() == "Claude").count() == 1
+            screen.lines().any(|line| line.trim().strip_prefix("> ") == Some("NO_OUTPUT_YET"))
+                && !screen.lines().any(assistant_marker)
                 && screen.lines().any(|line| line.trim_end() == activity_header)
                 && screen.contains("│ Tip:") == enabled
         });
         test.resize_and_wait_for_draw(25, 61);
         test.resize_and_wait_for_draw(SHORT_ROWS, COLS);
-        test.wait_until("resize retains activity and heading independently of tips", |test| {
-            let screen = test.screen();
-            screen.lines().filter(|line| line.trim() == "Claude").count() == 1
-                && screen.lines().any(|line| line.trim_end() == activity_header)
-                && screen.contains("│ Tip:") == enabled
-        });
+        test.wait_until(
+            "resize retains activity without an empty response independently of tips",
+            |test| {
+                let screen = test.screen();
+                !screen.lines().any(assistant_marker)
+                    && screen.lines().any(|line| line.trim_end() == activity_header)
+                    && screen.contains("│ Tip:") == enabled
+            },
+        );
     }
     test.signal("requires_action");
-    test.wait_until("waiting hides activity and its empty heading", |test| {
+    test.wait_until("waiting hides activity", |test| {
         let screen = test.screen();
-        !screen.lines().any(|line| line.trim() == "Claude")
+        !screen.lines().any(assistant_marker)
             && !screen.contains(&activity_header)
             && !screen.contains("│ Tip:")
     });
     test.signal("running");
     let resumed = test.wait_screen_with("│ Tip:", &[&activity_header]);
-    assert_eq!(resumed.lines().filter(|line| line.trim() == "Claude").count(), 1);
+    assert!(!resumed.lines().any(assistant_marker));
     test.signal("done");
-    test.wait_until("completion removes the temporary heading", |test| {
+    test.wait_until("completion removes transient activity", |test| {
         let screen = test.screen();
         screen.contains("[READY]")
-            && !screen.lines().any(|line| line.trim() == "Claude")
+            && !screen.lines().any(assistant_marker)
             && !screen.contains(&activity_header)
             && !screen.contains("│ Tip:")
     });
@@ -1290,21 +1306,23 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
     test.wait_journal("reply-held");
     let initial_screen = test.wait_screen_with("│ ◆ ", &["│ Tip:", "START_ACTIVITY"]);
     let initial_rows: Vec<_> = initial_screen.lines().map(str::trim_end).collect();
-    let heading =
-        initial_rows.iter().position(|line| *line == "Claude").expect("assistant heading");
-    let activity = initial_rows.iter().position(|line| line.starts_with("│ ◆ ")).expect("activity");
-    assert_eq!(initial_rows.iter().filter(|line| **line == "Claude").count(), 1);
+    assert!(!initial_rows.iter().any(|line| assistant_marker(line)));
+    let activity = initial_rows
+        .iter()
+        .position(|line| line.trim_start().starts_with("\u{2502} \u{25c6} "))
+        .expect("activity");
     assert!(
         initial_rows.iter().position(|line| line.contains("START_ACTIVITY")).expect("user message")
-            < heading
+            < activity
     );
-    assert!(heading < activity, "tip text mentioning Claude must not count as the heading");
     assert!(!initial_screen.contains("Thinking…"));
     let activity_header = initial_rows[activity].to_owned();
     test.signal("thinking");
     // Thinking retains the activity verb.
     let thinking = test.wait_screen_with("◆ Thinking…", &[&activity_header]);
     assert_eq!(thinking.matches("Thinking…").count(), 1);
+    let thinking_row = thinking.lines().find(|line| line.contains("Thinking\u{2026}")).unwrap();
+    assert!(assistant_marker(thinking_row));
     test.submit("QUEUED_ACTIVITY", "QUEUED_ACTIVITY");
     test.paste("DRAFT_ACTIVITY");
     let screen = test.wait_screen_with(
@@ -1540,8 +1558,13 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
     // whole transcript. Terminal padding can leave spaces on visually blank rows.
     test.wait_until("submitted paragraph gap", |test| {
         let transcript = test.transcript_rows();
-        let rows: Vec<_> = transcript.iter().map(|row| row.trim_end()).collect();
-        rows.windows(3).any(|rows| rows == ["hello", "", "how are you"])
+        let Some(first) = transcript.iter().position(|row| row.trim() == "> hello") else {
+            return false;
+        };
+        let Some(second) = transcript.iter().position(|row| row.trim() == "how are you") else {
+            return false;
+        };
+        second > first + 1 && transcript[first + 1..second].iter().all(|row| row.trim().is_empty())
     });
     test.assert_prompts(&["hello\n\nhow are you"]);
 
@@ -1804,7 +1827,16 @@ fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_
 
 #[test]
 fn unicode_pastes_cross_the_placeholder_boundary_without_payload_loss() {
-    let mut test = TerminalTest::start("stream", 3);
+    let mut test = TerminalTest::start_with_options(
+        "stream",
+        3,
+        None,
+        &[
+            "--log-filter",
+            "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug,app.paste=debug",
+        ],
+        false,
+    );
     let mut expected = Vec::new();
     for chars in [999, 1000, 1001] {
         let prefix = "Unicode 界 🦀\n";

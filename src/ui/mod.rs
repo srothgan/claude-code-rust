@@ -18,6 +18,7 @@ pub(crate) mod input_rows;
 pub(crate) mod live_rows;
 mod markdown;
 mod message;
+pub(crate) mod message_layout;
 mod message_rows;
 mod session_picker;
 pub(crate) mod spinner_verbs;

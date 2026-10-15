@@ -54,6 +54,7 @@ pub enum HistoryOutputId {
     AssistantLabel(ChatMessageId),
     AssistantThinking(ChatMessageId),
     AssistantDuration(ChatMessageId),
+    AssistantPadding(ChatMessageId),
     Block(MessageBlockId),
     ToolCall(String),
     ToolInteraction(String),

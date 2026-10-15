@@ -11,6 +11,7 @@ pub const ULTRACODE_ACCENT: Color = Color::Rgb(180, 140, 255);
 // UI chrome
 pub const DIM: Color = Color::DarkGray;
 pub const PROMPT_CHAR: &str = "\u{276f}";
+pub const ASSISTANT_MESSAGE_MARKER: &str = "\u{25cf}";
 pub const SEPARATOR_CHAR: &str = "\u{2500}";
 
 // Role header colors

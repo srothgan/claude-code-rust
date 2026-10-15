@@ -297,7 +297,7 @@ fn tool_title_cache_reuses_markdown_through_animation_resize_and_body_updates() 
             assert!(spans_width(&rows[0].spans) <= usize::from(width));
             assert_eq!(
                 rows[0].spans[0].content,
-                format!("  {} ", crate::ui::SpinnerState::Animated(frame).icon())
+                format!("{} ", crate::ui::SpinnerState::Animated(frame).icon())
             );
         }
         assert_eq!(warnings.load(Ordering::Relaxed), 1, "unchanged titles must not be reparsed");
@@ -313,7 +313,7 @@ fn tool_title_cache_reuses_markdown_through_animation_resize_and_body_updates() 
             crate::ui::SpinnerState::Animated(0),
             &mut completed,
         );
-        assert_eq!(completed[0].spans[0].content, format!("  {} ", theme::ICON_COMPLETED));
+        assert_eq!(completed[0].spans[0].content, format!("{} ", theme::ICON_COMPLETED));
         assert_eq!(
             warnings.load(Ordering::Relaxed),
             1,
