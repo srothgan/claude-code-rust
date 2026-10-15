@@ -76,7 +76,7 @@ pub(crate) fn build_user_system_message_rows(
                     lines: message_layout::frame_rows(
                         physical,
                         width,
-                        Some((">", theme::DIM)),
+                        Some((theme::PROMPT_CHAR, theme::DIM)),
                         Some(theme::USER_MSG_BG),
                         (true, true),
                         &[],

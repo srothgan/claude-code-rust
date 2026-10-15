@@ -1248,7 +1248,7 @@ fn tips_setting_preserves_activity_without_empty_messages_through_real_config_sa
         test.send(b"\x1b");
         test.wait_until("only tips follow the acknowledged setting", |test| {
             let screen = test.screen();
-            screen.lines().any(|line| line.trim().strip_prefix("> ") == Some("NO_OUTPUT_YET"))
+            screen.lines().any(|line| line.trim().strip_prefix("❯ ") == Some("NO_OUTPUT_YET"))
                 && !screen.lines().any(assistant_marker)
                 && screen.lines().any(|line| line.trim_end() == activity_header)
                 && screen.contains("│ Tip:") == enabled
@@ -1558,7 +1558,7 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
     // whole transcript. Terminal padding can leave spaces on visually blank rows.
     test.wait_until("submitted paragraph gap", |test| {
         let transcript = test.transcript_rows();
-        let Some(first) = transcript.iter().position(|row| row.trim() == "> hello") else {
+        let Some(first) = transcript.iter().position(|row| row.trim() == "❯ hello") else {
             return false;
         };
         let Some(second) = transcript.iter().position(|row| row.trim() == "how are you") else {

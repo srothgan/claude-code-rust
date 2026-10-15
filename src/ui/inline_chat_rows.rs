@@ -1595,7 +1595,7 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(buffer[(1, 1)].symbol(), ">");
+            assert_eq!(buffer[(1, 1)].symbol(), "❯");
             assert_eq!(buffer[(1, 1)].fg, crate::ui::theme::DIM);
             assert_eq!(buffer[(3, 1)].symbol(), "a");
             assert_eq!(buffer[(3, 3)].symbol(), "o");
@@ -2051,9 +2051,9 @@ mod tests {
             "narrow rows should wrap more physical rows; narrow={narrow_text:?}, wide={wide_text:?}"
         );
         assert_eq!(compact_text(&narrow_rows), compact_text(&wide_rows));
-        assert!(narrow_text.contains(" > "));
+        assert!(narrow_text.contains(" ❯ "));
         assert!(narrow_text.contains(" ● "));
-        assert!(wide_text.contains(" > "));
+        assert!(wide_text.contains(" ❯ "));
         assert!(wide_text.contains(" ● "));
     }
 
@@ -2944,7 +2944,7 @@ mod tests {
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
 
         assert!(
-            line_texts(serialized.rows()).iter().any(|line| line == " > queued while connecting")
+            line_texts(serialized.rows()).iter().any(|line| line == " ❯ queued while connecting")
         );
         assert_eq!(serialized.stable_row_count(), 0);
     }

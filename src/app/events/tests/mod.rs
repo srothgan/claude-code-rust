@@ -1358,7 +1358,7 @@ fn resume_history_preserves_user_message_boundaries_and_joins_only_same_source_c
             ["/rename review-444", "/color blue", "Explain <example>literal XML</example>"]
         {
             assert!(
-                text.iter().any(|row| row == &format!(" > {message}")),
+                text.iter().any(|row| row == &format!(" ❯ {message}")),
                 "separate user marker and text for {message}, startup={startup}"
             );
         }
