@@ -20,7 +20,10 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
         return;
     };
     let scope = app.config.selected_scope;
-    if !setting.writable_at(scope) && setting.editor.is_none() {
+    if !setting.writable_at(scope)
+        && setting.editor.is_none()
+        && setting.id != crate::app::footer::SETTING_ID
+    {
         app.config.last_error = Some(
             setting
                 .unavailable
@@ -32,6 +35,19 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
     let Some(value) = snapshot.scoped(&setting.id, scope) else {
         return;
     };
+    if setting.id == crate::app::footer::SETTING_ID {
+        let editor = SettingOverlayState {
+            setting: Box::new(setting.clone()),
+            scope,
+            context: snapshot.context.clone(),
+            revision: value.revision.clone(),
+            draft: String::new(),
+            cursor: 0,
+            structured: None,
+        };
+        super::footer::open(app, editor);
+        return;
+    }
     let initial = value
         .value
         .as_ref()
@@ -136,6 +152,7 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         return;
     }
     match app.config.overlay.clone() {
+        Some(ConfigOverlayState::Footer(_)) => super::footer::handle_key(app, key),
         Some(ConfigOverlayState::Setting(_)) => handle_setting_key(app, key),
         Some(ConfigOverlayState::SessionRename(_)) => handle_session_rename_overlay_key(app, key),
         Some(ConfigOverlayState::InstalledPluginActions(_)) => {

@@ -2020,7 +2020,7 @@ async fn ultracode_composer_wire_events_status_and_footer_workflow() {
         assert_eq!(app.transcript.messages.len(), transcript_before, "successful change must not add permanent messages");
         let footer = crate::ui::footer_rows::serialize_footer_rows(&app, 120);
         let row: String = footer.rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(row.contains("[Opus/High \u{b7} Ultracode]"), "{row}");
+        assert!(row.contains("[Opus]") && row.contains("[High]") && row.contains("[Ultracode]"), "{row}");
 
         app.input.set_text("/effort low");
         crate::app::input_submit::submit_input(&mut app);

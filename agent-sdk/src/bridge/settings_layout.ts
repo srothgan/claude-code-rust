@@ -34,6 +34,7 @@ const CATEGORY_SETTINGS: Record<string, string[]> = {
     "prefersReducedMotion",
     "presentation.showStatusInTerminalTab",
     "presentation.copyFullResponse",
+    "presentation.footer",
     "respectGitignore",
     "preferredNotifChannel",
     "notifications.actionsRequired",
@@ -152,6 +153,6 @@ export function settingsLayout(id: string, kind: SettingDescriptor["kind"], desc
   if (!category) throw new Error(`Setting has no category: ${id}`);
   return {
     category,
-    ...(kind === "string_list" ? { editor: list(id === "permissions.allow" || id === "permissions.ask" || id === "permissions.deny" ? rule : id === "httpHookAllowedEnvVars" ? envName : { ...text, description }) } : kind === "json" ? { editor: OBJECT_EDITORS[id] } : {}),
+    ...(kind === "string_list" ? { editor: list(id === "permissions.allow" || id === "permissions.ask" || id === "permissions.deny" ? rule : id === "httpHookAllowedEnvVars" ? envName : { ...text, description }) } : kind === "json" && OBJECT_EDITORS[id] ? { editor: OBJECT_EDITORS[id] } : {}),
   };
 }

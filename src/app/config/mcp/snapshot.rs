@@ -128,6 +128,7 @@ fn clear_missing_mcp_server_overlays(app: &mut App) {
         }
         Some(
             ConfigOverlayState::Setting(_)
+            | ConfigOverlayState::Footer(_)
             | ConfigOverlayState::SessionRename(_)
             | ConfigOverlayState::Confirmation(_)
             | ConfigOverlayState::InstalledPluginActions(_)

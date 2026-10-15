@@ -118,6 +118,10 @@ pub(crate) fn apply_settings_result(
     };
     let owns_editor =
         app.config.setting_overlay().is_some_and(|editor| pending.owns_editor(editor));
+    let footer_save =
+        owns_editor && matches!(app.config.overlay, Some(super::ConfigOverlayState::Footer(_)));
+    let saved =
+        matches!(result.persistence, SettingsPersistence::Saved | SettingsPersistence::Unchanged);
     let previous_fast_mode = app.config.fast_mode_effective();
     let previous_gitignore = app.config.respect_gitignore_effective();
     let previous_scroll = app.config.auto_scroll_effective();
@@ -132,7 +136,7 @@ pub(crate) fn apply_settings_result(
             .as_ref()
             .map_or(0, |previous| app.config.settings.selected_index(previous));
         app.config.settings.reconcile(&snapshot, previous_index);
-        if result.persistence == SettingsPersistence::Conflict
+        if (result.persistence == SettingsPersistence::Conflict || (footer_save && saved))
             && let Some(editor) = app.config.setting_overlay_mut()
             && let Some(value) = snapshot.scoped(&editor.setting.id, editor.scope)
             && owns_editor
@@ -169,7 +173,7 @@ pub(crate) fn apply_settings_result(
     app.config.last_error = result.error;
     app.config.status_message = match result.persistence {
         SettingsPersistence::Saved | SettingsPersistence::Unchanged => {
-            if owns_editor {
+            if owns_editor && !footer_save {
                 app.config.clear_overlay();
             }
             Some(if result.persistence == SettingsPersistence::Unchanged {
@@ -190,6 +194,9 @@ pub(crate) fn apply_settings_result(
         && owns_editor
     {
         app.config.set_overlay_error(error);
+    }
+    if footer_save {
+        super::footer::complete_save(app, saved);
     }
 }
 

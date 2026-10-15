@@ -216,7 +216,8 @@ fn table_rows<'a>(
     let mut rows = Vec::new();
     for (index, setting) in items.iter().enumerate() {
         let focused = index == selected && app.config.settings.focus == SettingsFocus::Content;
-        let value = if setting.kind.is_structured() {
+        let is_footer = setting.id == crate::app::footer::SETTING_ID;
+        let value = if setting.kind.is_structured() && !is_footer {
             snapshot
                 .scoped(&setting.id, app.config.selected_scope)
                 .and_then(|value| value.value.as_ref())
@@ -224,6 +225,25 @@ fn table_rows<'a>(
             snapshot.value(&setting.id)
         };
         let writable = setting.writable_at(app.config.selected_scope);
+        let summary = if is_footer {
+            match crate::app::footer::FooterLayout::from_saved(value) {
+                Ok(_) if value.is_none() => "Default layout",
+                Ok(_) => "Custom layout",
+                Err(_) => "Invalid layout",
+            }
+            .to_owned()
+        } else {
+            value.map_or_else(
+                || {
+                    if setting.kind.is_structured() {
+                        "Not set here".into()
+                    } else {
+                        "Default".into()
+                    }
+                },
+                display,
+            )
+        };
         rows.push(
             Row::new(vec![
                 Cell::from(super::common::marker_span(focused)),
@@ -232,17 +252,7 @@ fn table_rows<'a>(
                 } else {
                     theme::DIM
                 })),
-                Cell::from(value.map_or_else(
-                    || {
-                        if setting.kind.is_structured() {
-                            "Not set here".into()
-                        } else {
-                            "Default".into()
-                        }
-                    },
-                    display,
-                ))
-                .style(
+                Cell::from(summary).style(
                     Style::default()
                         .fg(if value.is_some() && writable {
                             theme::BTW_ACCENT
@@ -299,6 +309,9 @@ fn details_lines(app: &App) -> Vec<Line<'static>> {
             "From {} · Not set in {scope}",
             if other_sources.is_empty() { "another scope" } else { &other_sources }
         ),
+        (None, None) if setting.id == crate::app::footer::SETTING_ID => {
+            "Using default layout".to_owned()
+        }
         (None, None) if setting.kind.is_structured() => format!("Not set in {scope}"),
         (None, None) => "Using Default".to_owned(),
     };

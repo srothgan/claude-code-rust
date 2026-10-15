@@ -3,6 +3,7 @@
 
 mod action_overlay;
 mod common;
+mod footer;
 mod help;
 mod input;
 mod mcp;
@@ -33,11 +34,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         && (app.config.overlay.is_none() || app.config.setting_overlay().is_some())
     {
         frame.render_widget(
-            Paragraph::new(if app.config.setting_overlay().is_some() {
-                "Window too small. Resize to view config.\nEsc cancel"
-            } else {
-                "Window too small. Resize to view config.\nEsc close"
-            })
+            Paragraph::new(
+                if app.config.setting_overlay().is_some()
+                    && !matches!(
+                        app.config.overlay,
+                        Some(crate::app::config::ConfigOverlayState::Footer(_))
+                    )
+                {
+                    "Window too small. Resize to view config.\nEsc cancel"
+                } else {
+                    "Window too small. Resize to view config.\nEsc close"
+                },
+            )
             .wrap(Wrap { trim: false }),
             frame_area,
         );

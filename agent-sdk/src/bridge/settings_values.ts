@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { HOOK_EVENTS, resolveSettings } from "@anthropic-ai/claude-agent-sdk";
 import type { Json, SettingDescriptor, SettingsEditorSchema } from "../types.js";
+import { isAppSetting } from "./settings_catalog.js";
 
 // Project only fields the editor owns for isolated native validation. Persist the
 // original value: extra object fields must not be stripped from the user's file.
@@ -49,7 +50,7 @@ export async function validateSettingValue(setting: SettingDescriptor, value: Js
       }
       break;
     case "json":
-      if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected a JSON object.");
+      if (value === null || typeof value !== "object" || (!isAppSetting(setting) && Array.isArray(value))) throw new Error("Expected a JSON object or supported app preference array.");
       break;
   }
   if (!setting.allows_custom && !setting.options.includes(value)) throw new Error("Choose one of the available options.");
@@ -65,7 +66,8 @@ export async function validateSettingValue(setting: SettingDescriptor, value: Js
     const fields = value as Record<string, Json>;
     if ((fields.caCertPath === undefined) !== (fields.caKeyPath === undefined)) throw new Error("Supply both certificate and key paths, or neither.");
   }
-  if (!["string_list", "json"].includes(setting.kind)) return;
+  // App preference semantics belong to the host, not the Claude settings schema.
+  if (isAppSetting(setting) || !["string_list", "json"].includes(setting.kind)) return;
 
   // The public SDK exposes resolution, not its schema. Resolve an isolated
   // candidate through that schema, without changing profiles or executing hooks.

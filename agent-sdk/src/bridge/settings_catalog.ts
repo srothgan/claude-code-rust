@@ -13,6 +13,7 @@ const DEFINITIONS: Definition[] = [
   ["timeFormat", "Time format", "Clock format for message times. Custom strftime patterns in settings files are preserved.", "string", ["auto", "12-hour", "24-hour", "24-hour-utc"]],
   ["presentation.showStatusInTerminalTab", "Show activity in tab title", "Show a busy/idle icon beside the folder name in the terminal tab title. Off keeps just the folder name.", "boolean", undefined, ["user"]],
   ["presentation.copyFullResponse", "Skip the /copy picker", "Copy the entire last response directly instead of choosing the response or a code block.", "boolean", undefined, ["user"]],
+  ["presentation.footer", "Footer", "Choose visible footer fields, their left or right alignment, and their order. Permission and authentication notices remain at the far right. Applies immediately.", "json", undefined, ["user"]],
   ["notifications.actionsRequired", "Notify when input is needed", "Alert when a permission, question or dialog is waiting. Only while this terminal is unfocused. Default: On.", "boolean", undefined, ["user"]],
   ["notifications.modelDirected", "Notify when Claude requests it", "Allow local alerts from proactive PushNotification tool results when available. Only while this terminal is unfocused. Default: On. Mobile push is configured separately.", "boolean", undefined, ["user"]],
   ["notifications.turnComplete", "Notify when a turn finishes", "Alert after an active turn finishes successfully. Only while this terminal is unfocused. Default: On.", "boolean", undefined, ["user"]],

@@ -918,8 +918,9 @@ fn background_permission_remains_interactive_after_launch_enters_history() {
         );
         assert!(test.commands("permission_response").is_empty());
         test.signal("turn-end");
-        test.wait_screen_with("[READY]", &["Allow once", "Deny once"]);
-        test.resize_keeping(TALL_ROWS, 120, &["Allow once", "Deny once"]);
+        // The pending-permission notice owns the footer slot after completion.
+        test.wait_journal("turn_complete");
+        test.resize_keeping(TALL_ROWS, 120, &["Allow once", "Deny once", "1 PEND. PERM."]);
         test.send(keys);
         test.wait_journal("background-permission-answered");
         test.wait_until(

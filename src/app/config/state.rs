@@ -155,17 +155,17 @@ impl ConfigState {
         self.settings.selected(self.snapshot.as_ref()?)
     }
     pub fn setting_overlay(&self) -> Option<&SettingOverlayState> {
-        if let Some(ConfigOverlayState::Setting(overlay)) = &self.overlay {
-            Some(overlay)
-        } else {
-            None
+        match &self.overlay {
+            Some(ConfigOverlayState::Setting(overlay)) => Some(overlay),
+            Some(ConfigOverlayState::Footer(overlay)) => Some(&overlay.editor),
+            _ => None,
         }
     }
     pub fn setting_overlay_mut(&mut self) -> Option<&mut SettingOverlayState> {
-        if let Some(ConfigOverlayState::Setting(overlay)) = &mut self.overlay {
-            Some(overlay)
-        } else {
-            None
+        match &mut self.overlay {
+            Some(ConfigOverlayState::Setting(overlay)) => Some(overlay),
+            Some(ConfigOverlayState::Footer(overlay)) => Some(&mut overlay.editor),
+            _ => None,
         }
     }
 
@@ -180,6 +180,21 @@ impl ConfigState {
     }
 
     pub fn invalidate_session(&mut self) {
+        let footer_save_interrupted =
+            if let Some(ConfigOverlayState::Footer(overlay)) = &mut self.overlay {
+                if self
+                    .pending_settings_request
+                    .as_ref()
+                    .is_some_and(|pending| pending.owns_editor(&overlay.editor))
+                {
+                    overlay.queue_save();
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
         self.snapshot = None;
         self.pending_settings_request = None;
         self.pending_session_title_change = None;
@@ -187,6 +202,8 @@ impl ConfigState {
         self.last_error = None;
         if self.setting_overlay().is_none() {
             self.clear_overlay();
+        } else if footer_save_interrupted {
+            self.set_overlay_error("The settings session changed. Unconfirmed footer changes were not saved. Close and reopen the footer editor.");
         }
     }
 

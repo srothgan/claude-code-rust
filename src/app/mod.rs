@@ -16,6 +16,7 @@ pub(crate) mod diff_view;
 mod events;
 pub(crate) mod file_index;
 mod focus;
+pub(crate) mod footer;
 mod git_context;
 mod inline_interactions;
 pub(crate) mod input;

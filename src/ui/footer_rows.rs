@@ -2,190 +2,170 @@
 // Copyright 2025 Simon Peter Rothgang
 
 use crate::agent::model;
+use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide, SETTING_ID};
 use crate::app::{App, MessageBlock, MessageRole};
 use crate::ui::theme;
-use ratatui::buffer::Buffer;
-use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const FOOTER_COLUMN_GAP: u16 = 1;
-const PRIMARY_ROW_LEFT_MIN_WIDTH: u16 = 24;
-const SECONDARY_ROW_LEFT_MIN_WIDTH: u16 = 28;
-const MIN_CONTEXT_LOCATION_WIDTH: usize = 10;
-const MIN_CONTEXT_BRANCH_WIDTH: usize = 4;
 const FOOTER_CONTEXT_VALUE: Color = Color::Gray;
+const FIELD_SEPARATOR: &str = " · ";
 
 type FooterItem = Option<(String, Color)>;
 
 pub(crate) struct SerializedFooterRows {
-    pub rows: [Line<'static>; 2],
+    pub rows: [Line<'static>; 1],
 }
 
 pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFooterRows {
-    let first_row = compose_footer_row(
-        build_primary_line(app),
-        footer_primary_hint(app),
-        total_width,
-        PRIMARY_ROW_LEFT_MIN_WIDTH,
-    );
-
-    let second_hint = footer_secondary_hint(app);
-    let second_left_width = footer_row_widths(
-        total_width,
-        second_hint.as_ref().map(|(text, _)| text.as_str()),
-        SECONDARY_ROW_LEFT_MIN_WIDTH,
-    )
-    .0;
-    let second_row = compose_footer_row(
-        build_context_line(app, usize::from(second_left_width)),
-        second_hint,
-        total_width,
-        SECONDARY_ROW_LEFT_MIN_WIDTH,
-    );
-
-    SerializedFooterRows { rows: [first_row, second_row] }
+    let layout = FooterLayout::from_saved(app.config.saved_value(SETTING_ID)).unwrap_or_default();
+    SerializedFooterRows { rows: [serialize_footer(app, &layout, total_width)] }
 }
 
-fn footer_primary_hint(app: &App) -> FooterItem {
-    let permission_count = pending_permission_request_count(app);
-    if permission_count > 0 {
-        return Some((format!("{permission_count} PEND. PERM."), Color::Yellow));
-    }
-    None
-}
-
-fn footer_mcp_auth_hint(app: &App) -> FooterItem {
-    let needs_auth_count = mcp_needs_auth_count(app);
-    (needs_auth_count > 0 && should_show_startup_mcp_hint(app))
-        .then(|| (format!("{needs_auth_count} MCP NEEDS AUTH"), Color::Yellow))
-}
-
-fn footer_context_usage_hint(app: &App) -> FooterItem {
-    app.session_runtime.session_usage.context_usage_percent.map(|percentage| {
-        let remaining = 100_u8.saturating_sub(percentage);
-        (format!("{remaining}%"), FOOTER_CONTEXT_VALUE)
-    })
-}
-
-fn footer_secondary_hint(app: &App) -> FooterItem {
-    footer_mcp_auth_hint(app).or_else(|| footer_context_usage_hint(app))
-}
-
-fn footer_row_widths(
-    total_width: u16,
-    right_text: Option<&str>,
-    left_min_width: u16,
-) -> (u16, u16) {
-    if total_width == 0 {
-        return (0, 0);
-    }
-
-    let Some(right_text) = right_text else {
-        return (total_width, 0);
-    };
-
-    let left_min_width = left_min_width.min(total_width);
-    let available_right =
-        total_width.saturating_sub(left_min_width).saturating_sub(FOOTER_COLUMN_GAP);
-    if available_right == 0 {
-        return (total_width, 0);
-    }
-
-    let natural_right_width = u16::try_from(UnicodeWidthStr::width(right_text)).unwrap_or(u16::MAX);
-    let right_width = natural_right_width.min(available_right);
-    if right_width == 0 {
-        return (total_width, 0);
-    }
-
-    let left_width = total_width.saturating_sub(right_width).saturating_sub(FOOTER_COLUMN_GAP);
-    (left_width, right_width)
-}
-
-fn compose_footer_row(
-    left: Line<'static>,
-    right: FooterItem,
-    total_width: u16,
-    left_min_width: u16,
-) -> Line<'static> {
-    if total_width == 0 {
-        return Line::default();
-    }
-
-    let (left_width, right_width) = footer_row_widths(
-        total_width,
-        right.as_ref().map(|(text, _)| text.as_str()),
-        left_min_width,
-    );
-
-    let area = Rect::new(0, 0, total_width, 1);
-    let mut buf = Buffer::empty(area);
-    let left_area = Rect::new(0, 0, left_width, 1);
-    Paragraph::new(left).render(left_area, &mut buf);
-
-    if let Some((right_text, right_color)) = right
-        && right_width > 0
-        && let Some(fitted) = fit_footer_right_text(&right_text, usize::from(right_width))
-    {
-        let right_x = left_width.saturating_add(FOOTER_COLUMN_GAP);
-        let right_area = Rect::new(right_x, 0, right_width, 1);
-        let line = Line::from(Span::styled(fitted, Style::default().fg(right_color)));
-        Paragraph::new(line).alignment(Alignment::Right).render(right_area, &mut buf);
-    }
-
-    buffer_row_to_line(&buf, area, 0)
-}
-
-fn build_primary_line(app: &App) -> Line<'static> {
-    if let Some(ref mode) = app.session_runtime.mode {
-        let color = mode_color(&mode.current_mode_id);
-        let (fast_mode_text, fast_mode_color) =
-            fast_mode_badge(app.session_runtime.fast_mode_state);
-        let mut spans = Vec::new();
-        push_badge(&mut spans, mode.current_mode_name.clone(), color);
-        if let Some(model_badge) = footer_model_badge(app) {
-            spans.push(Span::raw("  "));
-            spans.extend(model_badge);
+/// The dialog preview and chat use exactly the same formatter and width policy.
+pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> Line<'static> {
+    let width = usize::from(width);
+    let notice = footer_notice(app)
+        .and_then(|(text, color)| fit_footer_right_text(&text, width).map(|text| (text, color)));
+    let notice_width = notice.as_ref().map(|(text, _)| text.width());
+    let mut fields: Vec<_> = layout
+        .fields()
+        .iter()
+        .filter(|field| field.visible)
+        .filter_map(|field| {
+            format_field(app, field.id).map(|(text, color)| RenderedField {
+                id: field.id,
+                side: field.side,
+                text,
+                color,
+            })
+        })
+        .collect();
+    let mut overflow = fields_width(&fields, notice_width).saturating_sub(width);
+    // Flexible workspace values shrink before any status badge is omitted.
+    for field in fields.iter_mut().rev() {
+        let minimum = match field.id {
+            FooterFieldId::Directory => 10,
+            FooterFieldId::GitBranch => 12,
+            _ => continue,
+        };
+        let reduction = overflow.min(field.text.width().saturating_sub(minimum));
+        let target = field.text.width().saturating_sub(reduction);
+        if reduction > 0 {
+            field.text = if field.id == FooterFieldId::Directory {
+                format!(
+                    "Loc: {}",
+                    fit_location_value(&app.cwd, target.saturating_sub(5)).unwrap_or_default()
+                )
+            } else {
+                fit_footer_right_text(&field.text, target).unwrap_or_default()
+            };
+            overflow = overflow.saturating_sub(reduction);
         }
-        spans.push(Span::raw("  "));
-        push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
-        Line::from(spans)
-    } else {
-        let (fast_mode_text, fast_mode_color) =
-            fast_mode_badge(app.session_runtime.fast_mode_state);
-        let mut spans = Vec::new();
-        if let Some((status_text, status_color)) = startup_status_badge(app) {
-            push_badge(&mut spans, status_text.to_owned(), status_color);
-            spans.push(Span::raw("  "));
+    }
+    // Earlier entries take precedence; groups never overlap or wrap.
+    while fields_width(&fields, notice_width) > width {
+        fields.pop();
+    }
+    let mut left = group_spans(&fields, FooterSide::Left);
+    let mut right = group_spans(&fields, FooterSide::Right);
+    if let Some((text, color)) = notice {
+        if !right.is_empty() {
+            right.push(Span::styled(FIELD_SEPARATOR, Style::default().fg(theme::DIM)));
         }
-        push_badge(&mut spans, fast_mode_text.to_owned(), fast_mode_color);
-        Line::from(spans)
+        right.push(Span::styled(text, Style::default().fg(color)));
+    }
+    let occupied: usize = left.iter().chain(&right).map(Span::width).sum();
+    if !right.is_empty() {
+        left.push(Span::raw(" ".repeat(width.saturating_sub(occupied))));
+        left.extend(right);
+    }
+    Line::from(left)
+}
+
+struct RenderedField {
+    id: FooterFieldId,
+    side: FooterSide,
+    text: String,
+    color: Color,
+}
+
+fn fields_width(fields: &[RenderedField], notice_width: Option<usize>) -> usize {
+    let left_count = fields.iter().filter(|field| field.side == FooterSide::Left).count();
+    let right_count = fields.len() - left_count + usize::from(notice_width.is_some());
+    fields.iter().map(|field| field.text.width()).sum::<usize>()
+        + notice_width.unwrap_or(0)
+        + (left_count.saturating_sub(1) + right_count.saturating_sub(1)) * FIELD_SEPARATOR.width()
+        + usize::from(left_count > 0 && right_count > 0)
+}
+
+fn group_spans(fields: &[RenderedField], side: FooterSide) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for field in fields.iter().filter(|field| field.side == side) {
+        if !spans.is_empty() {
+            spans.push(Span::styled(FIELD_SEPARATOR, Style::default().fg(theme::DIM)));
+        }
+        spans.push(Span::styled(field.text.clone(), Style::default().fg(field.color)));
+    }
+    spans
+}
+
+fn format_field(app: &App, id: FooterFieldId) -> FooterItem {
+    let gray = FOOTER_CONTEXT_VALUE;
+    match id {
+        FooterFieldId::PermissionMode => app.session_runtime.mode.as_ref().map(|mode| {
+            (format!("[{}]", mode.current_mode_name), mode_color(&mode.current_mode_id))
+        }),
+        FooterFieldId::Model => app
+            .session_runtime
+            .current_model
+            .as_ref()
+            .map(|model| (format!("[{}]", model.display_name_short), gray)),
+        FooterFieldId::Effort => app
+            .session_runtime
+            .current_model
+            .as_ref()
+            .filter(|model| model.supports_effort)
+            .and_then(|_| app.session_effort())
+            .map(|effort| (format!("[{}]", footer_effort_label(effort)), gray)),
+        FooterFieldId::Ultracode => app
+            .session_runtime
+            .ultracode
+            .filter(|state| state.effective())
+            .map(|_| ("[Ultracode]".to_owned(), theme::ULTRACODE_ACCENT)),
+        FooterFieldId::FastMode => {
+            let (text, color) = fast_mode_badge(app.session_runtime.fast_mode_state);
+            Some((format!("[{text}]"), color))
+        }
+        FooterFieldId::Directory => Some((format!("Loc: {}", app.cwd), gray)),
+        FooterFieldId::GitBranch => app
+            .git_branch()
+            .filter(|branch| !branch.is_empty())
+            .map(|branch| (format!("Branch: {branch}"), gray)),
+        FooterFieldId::ContextRemaining => app
+            .session_runtime
+            .session_usage
+            .context_usage_percent
+            .map(|used| (format!("Context: {}%", 100_u8.saturating_sub(used)), gray)),
     }
 }
 
-fn push_badge(spans: &mut Vec<Span<'static>>, text: String, color: Color) {
-    spans.push(Span::styled("[", Style::default().fg(color)));
-    spans.push(Span::styled(text, Style::default().fg(color)));
-    spans.push(Span::styled("]", Style::default().fg(color)));
-}
-
-fn footer_model_badge(app: &App) -> Option<Vec<Span<'static>>> {
-    let current_model = app.session_runtime.current_model.as_ref()?;
-    let mut badge = current_model.display_name_short.clone();
-    if let Some(effort) = app.session_effort().filter(|_| current_model.supports_effort) {
-        badge.push('/');
-        badge.push_str(footer_effort_label(effort));
+fn footer_notice(app: &App) -> FooterItem {
+    let permissions = pending_permission_request_count(app);
+    if permissions > 0 {
+        return Some((format!("{permissions} PEND. PERM."), Color::Yellow));
     }
-    let model_style = Style::default().fg(FOOTER_CONTEXT_VALUE);
-    let mut spans = vec![Span::styled("[", model_style), Span::styled(badge, model_style)];
-    if app.session_runtime.ultracode.is_some_and(model::UltracodeState::effective) {
-        spans.push(Span::styled(" \u{b7} ", model_style));
-        spans.push(Span::styled("Ultracode", Style::default().fg(theme::ULTRACODE_ACCENT)));
+    let auth = mcp_needs_auth_count(app);
+    if auth > 0 && should_show_startup_mcp_hint(app) {
+        return Some((format!("{auth} MCP NEEDS AUTH"), Color::Yellow));
     }
-    spans.push(Span::styled("]", model_style));
-    Some(spans)
+    app.session_runtime
+        .mode
+        .is_none()
+        .then(|| startup_status_badge(app))
+        .flatten()
+        .map(|(text, color)| (format!("[{text}]"), color))
 }
 
 const fn footer_effort_label(effort: model::EffortLevel) -> &'static str {
@@ -196,51 +176,6 @@ const fn footer_effort_label(effort: model::EffortLevel) -> &'static str {
         model::EffortLevel::XHigh => "XHigh",
         model::EffortLevel::Max => "Max",
     }
-}
-
-fn build_context_line(app: &App, max_width: usize) -> Line<'static> {
-    let Some((location_value, branch_value)) = context_values(app, max_width) else {
-        return Line::default();
-    };
-
-    let mut spans = vec![
-        Span::styled("Loc: ", Style::default().fg(theme::DIM)),
-        Span::styled(location_value, Style::default().fg(FOOTER_CONTEXT_VALUE)),
-    ];
-
-    if let Some(branch_value) = branch_value {
-        spans.push(Span::styled(" (", Style::default().fg(theme::DIM)));
-        spans.push(Span::styled(branch_value, Style::default().fg(FOOTER_CONTEXT_VALUE)));
-        spans.push(Span::styled(")", Style::default().fg(theme::DIM)));
-    }
-
-    Line::from(spans)
-}
-
-fn context_values(app: &App, max_width: usize) -> Option<(String, Option<String>)> {
-    const LOCATION_LABEL_WIDTH: usize = 5;
-    const BRANCH_WRAP_WIDTH: usize = 3;
-
-    let location_only_width = max_width.saturating_sub(LOCATION_LABEL_WIDTH);
-    let branch = app.git_branch().filter(|branch| !branch.is_empty());
-
-    if let Some(branch) = branch {
-        let fixed_width = LOCATION_LABEL_WIDTH + BRANCH_WRAP_WIDTH;
-        let available_values = max_width.saturating_sub(fixed_width);
-        if available_values >= MIN_CONTEXT_LOCATION_WIDTH + MIN_CONTEXT_BRANCH_WIDTH {
-            let branch_width = UnicodeWidthStr::width(branch)
-                .min(available_values.saturating_sub(MIN_CONTEXT_LOCATION_WIDTH));
-            let branch_value = fit_footer_right_text(branch, branch_width);
-            let branch_display_width =
-                branch_value.as_ref().map_or(0, |value| UnicodeWidthStr::width(value.as_str()));
-            let location_width = available_values.saturating_sub(branch_display_width);
-            if let Some(location_value) = fit_location_value(&app.cwd, location_width) {
-                return Some((location_value, branch_value));
-            }
-        }
-    }
-
-    fit_location_value(&app.cwd, location_only_width).map(|location_value| (location_value, None))
 }
 
 fn fit_location_value(cwd: &str, max_width: usize) -> Option<String> {
@@ -411,53 +346,6 @@ fn startup_status_badge(app: &App) -> Option<(&'static str, Color)> {
     }
 }
 
-fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
-    let y = area.y.saturating_add(row);
-    let mut cells = Vec::with_capacity(usize::from(area.width));
-    for x in 0..area.width {
-        if let Some(cell) = buf.cell((area.x.saturating_add(x), y)) {
-            cells.push((cell.symbol().to_owned(), cell.style()));
-        }
-    }
-
-    let Some(last_non_blank) = cells
-        .iter()
-        .rposition(|(symbol, _)| !symbol.is_empty() && !symbol.chars().all(char::is_whitespace))
-    else {
-        return Line::default();
-    };
-
-    let mut spans = Vec::new();
-    let mut current_style: Option<Style> = None;
-    let mut current_text = String::new();
-
-    for (symbol, style) in cells.into_iter().take(last_non_blank + 1) {
-        if symbol.is_empty() {
-            continue;
-        }
-        match current_style {
-            Some(existing) if existing == style => current_text.push_str(&symbol),
-            Some(existing) => {
-                spans.push(Span::styled(std::mem::take(&mut current_text), existing));
-                current_text.push_str(&symbol);
-                current_style = Some(style);
-            }
-            None => {
-                current_text.push_str(&symbol);
-                current_style = Some(style);
-            }
-        }
-    }
-
-    if let Some(style) = current_style
-        && !current_text.is_empty()
-    {
-        spans.push(Span::styled(current_text, style));
-    }
-
-    Line::from(spans)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,20 +371,6 @@ mod tests {
     }
 
     #[test]
-    fn footer_row_widths_left_gets_minimum() {
-        let (left, right) = footer_row_widths(80, Some("1 PEND. PERM."), 24);
-        assert_eq!(left + FOOTER_COLUMN_GAP + right, 80);
-        assert!(left >= 24);
-    }
-
-    #[test]
-    fn footer_row_widths_drops_right_when_left_min_cannot_be_preserved() {
-        let (left, right) = footer_row_widths(24, Some("1 MCP NEEDS AUTH"), 24);
-        assert_eq!(left, 24);
-        assert_eq!(right, 0);
-    }
-
-    #[test]
     fn fit_footer_right_text_truncates_when_needed() {
         let text = "Update available: v9.9.9 (current v0.2.0)";
         let fitted = fit_footer_right_text(text, 12).expect("fitted text");
@@ -514,11 +388,11 @@ mod tests {
     }
 
     #[test]
-    fn serialize_footer_rows_produces_exactly_two_rows() {
+    fn serialize_footer_rows_produces_exactly_one_row() {
         let app = App::test_default();
         let serialized = serialize_footer_rows(&app, 80);
 
-        assert_eq!(serialized.rows.len(), 2);
+        assert_eq!(serialized.rows.len(), 1);
     }
 
     #[test]
@@ -532,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn reported_session_effort_updates_the_model_badge() {
+    fn reported_session_effort_updates_the_independent_effort_field() {
         let mut app = app_with_mode();
         app.session_runtime.session_id = Some("sess-1".into());
         app.session_runtime.current_model =
@@ -555,7 +429,8 @@ mod tests {
                 },
             );
             let footer = serialize_footer_rows(&app, 120);
-            assert!(line_text(&footer.rows[0]).contains(&format!("[Opus/{label}]")));
+            assert!(line_text(&footer.rows[0]).contains(&format!("[{label}]")));
+            assert!(line_text(&footer.rows[0]).contains("[Opus]"));
         }
         crate::app::handle_client_event(
             &mut app,
@@ -590,7 +465,7 @@ mod tests {
                 let label = footer.rows[0]
                     .spans
                     .iter()
-                    .find(|span| span.content == "Ultracode")
+                    .find(|span| span.content == "[Ultracode]")
                     .expect("Ultracode label");
                 assert_eq!(label.style.fg, Some(theme::ULTRACODE_ACCENT));
                 assert!(
@@ -614,10 +489,10 @@ mod tests {
     }
 
     #[test]
-    fn second_row_preserves_context_line_content() {
+    fn footer_preserves_directory_when_space_allows() {
         let app = App::test_default();
-        let serialized = serialize_footer_rows(&app, 80);
-        let text = line_text(&serialized.rows[1]);
+        let serialized = serialize_footer_rows(&app, 160);
+        let text = line_text(&serialized.rows[0]);
 
         assert!(text.contains("Loc:"));
     }
@@ -664,11 +539,19 @@ mod tests {
 
         let serialized = serialize_footer_rows(&app, 80);
         let text = line_text(&serialized.rows[0]);
-        assert!(text.contains("1 PEND. PERM."));
+        assert!(text.ends_with("1 PEND. PERM."));
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            SETTING_ID,
+            serde_json::json!([]),
+        ));
+        let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
+        assert!(text.ends_with("1 PEND. PERM."));
+        assert!(!text.contains("FAST:"));
+        assert!(!text.contains("Loc:"));
     }
 
     #[test]
-    fn mcp_auth_hint_wins_over_context_usage_on_second_row() {
+    fn mcp_auth_notice_and_context_are_both_visible_when_space_allows() {
         let mut app = App::test_default();
         app.session_runtime.session_usage.context_usage_percent = Some(62);
         app.mcp.servers.push(McpServerStatus {
@@ -682,14 +565,14 @@ mod tests {
             tools: Vec::new(),
         });
 
-        let serialized = serialize_footer_rows(&app, 80);
-        let text = line_text(&serialized.rows[1]);
+        let serialized = serialize_footer_rows(&app, 160);
+        let text = line_text(&serialized.rows[0]);
         assert!(text.contains("1 MCP NEEDS AUTH"));
-        assert!(!text.contains("38%"));
+        assert!(text.contains("Context: 38%"));
     }
 
     #[test]
-    fn narrow_width_truncates_right_hint_but_preserves_left_content() {
+    fn narrow_width_preserves_notice_before_configured_fields() {
         let mut app = App::test_default();
         app.mcp.servers.push(McpServerStatus {
             name: "filesystem".to_owned(),
@@ -703,18 +586,99 @@ mod tests {
         });
 
         let serialized = serialize_footer_rows(&app, 36);
-        let text = line_text(&serialized.rows[1]);
-        assert!(text.contains("Loc:"));
-        assert!(text.contains("..."));
+        let text = line_text(&serialized.rows[0]);
+        assert!(text.ends_with("1 MCP NEEDS AUTH"));
+        assert!(text.width() <= 36);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"fastMode","visible":true,"side":"left"}
+        ])))
+        .expect("layout");
+        let exact_fit = line_text(&serialize_footer(&app, &layout, 27));
+        assert!(exact_fit.starts_with("[FAST:OFF]"));
+        assert!(exact_fit.ends_with("1 MCP NEEDS AUTH"));
+        assert_eq!(exact_fit.width(), 27);
     }
 
     #[test]
-    fn context_location_and_branch_truncation_matches_helpers() {
-        let mut app = App::test_default();
+    fn directory_and_branch_render_without_each_other() {
+        let mut app = app_with_mode();
+        app.cwd = "~/work/claude_rust".into();
         app.set_git_branch_for_test(Some("feature/footer"));
+        for (id, expected, hidden) in [
+            ("directory", "Loc: ~/work/claude_rust", "Branch:"),
+            ("gitBranch", "Branch: feature/footer", "Loc:"),
+        ] {
+            let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+                {"id":id,"visible":true,"side":"left"}
+            ])))
+            .expect("layout");
+            let text = line_text(&serialize_footer(&app, &layout, 80));
+            assert!(text.contains(expected), "{text}");
+            assert!(!text.contains(hidden), "{text}");
+        }
+    }
 
-        let serialized = serialize_footer_rows(&app, 24);
-        let text = line_text(&serialized.rows[1]);
-        assert!(text.contains("Loc:"));
+    #[test]
+    fn effort_and_ultracode_do_not_require_a_visible_model() {
+        let mut app = app_with_mode();
+        app.session_runtime.current_model =
+            Some(model::CurrentModel::new("opus", "Opus", "Opus").supports_effort(true));
+        app.session_runtime.config_options.insert("effortLevel".into(), serde_json::json!("high"));
+        app.session_runtime.ultracode = model::UltracodeState::new(true, true, true);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"effort","visible":true,"side":"left"},
+            {"id":"ultracode","visible":true,"side":"right"}
+        ])))
+        .expect("layout");
+        let text = line_text(&serialize_footer(&app, &layout, 80));
+        assert!(text.starts_with("[High]"));
+        assert!(text.ends_with("[Ultracode]"));
+        assert!(!text.contains("Opus"));
+        app.session_runtime.current_model.as_mut().expect("model").supports_effort = false;
+        assert!(!line_text(&serialize_footer(&app, &layout, 80)).contains("High"));
+    }
+
+    #[test]
+    fn configured_groups_preserve_order_and_anchor_to_opposite_edges() {
+        let mut app = app_with_mode();
+        app.set_git_branch_for_test(Some("main"));
+        app.session_runtime.session_usage.context_usage_percent = Some(28);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"fastMode","visible":true,"side":"left"},
+            {"id":"permissionMode","visible":true,"side":"left"},
+            {"id":"contextRemaining","visible":true,"side":"right"},
+            {"id":"gitBranch","visible":true,"side":"right"}
+        ])))
+        .expect("layout");
+        let text = line_text(&serialize_footer(&app, &layout, 100));
+        assert!(text.starts_with("[FAST:OFF] · [default]"));
+        assert!(text.ends_with("Context: 72% · Branch: main"));
+        assert_eq!(text.width(), 100);
+    }
+
+    #[test]
+    fn unicode_values_never_overlap_or_exceed_the_single_row() {
+        let mut app = app_with_mode();
+        app.cwd = "~/工作/项目/claude_rust".into();
+        app.set_git_branch_for_test(Some("feature/日本語の長いブランチ"));
+        let layout = FooterLayout::default();
+        for width in 0..=160 {
+            let line = serialize_footer(&app, &layout, width);
+            assert!(line.width() <= usize::from(width), "width {width}: {}", line_text(&line));
+        }
+    }
+
+    #[test]
+    fn shortened_branch_retains_part_of_its_name_or_is_omitted() {
+        let mut app = app_with_mode();
+        app.set_git_branch_for_test(Some("feature/configurable-footer"));
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"gitBranch","visible":true,"side":"left"}
+        ])))
+        .expect("layout");
+        assert!(line_text(&serialize_footer(&app, &layout, 11)).is_empty());
+        let shortened = line_text(&serialize_footer(&app, &layout, 12));
+        assert!(shortened.contains("f..."));
+        assert_eq!(shortened.width(), 12);
     }
 }

@@ -169,6 +169,7 @@ pub struct ConfirmationOverlayState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigOverlayState {
     Setting(SettingOverlayState),
+    Footer(super::FooterOverlayState),
     SessionRename(SessionRenameOverlayState),
     InstalledPluginActions(InstalledPluginActionOverlayState),
     PluginInstallActions(PluginInstallOverlayState),

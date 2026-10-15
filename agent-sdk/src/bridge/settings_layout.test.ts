@@ -13,7 +13,8 @@ test("every control has exactly one pane and structured metadata survives the cr
   assert.deepEqual(fixture.categories, SETTINGS_CATEGORIES);
   for (const setting of catalog) {
     assert.equal(SETTINGS_CATEGORIES.filter(category => category.id === setting.category).length, 1, setting.id);
-    if (setting.kind === "json" || setting.kind === "string_list") assert.ok(setting.editor, setting.id);
+    // The footer uses the host's field picker rather than the SDK settings form.
+    if ((setting.kind === "json" || setting.kind === "string_list") && setting.id !== "presentation.footer") assert.ok(setting.editor, setting.id);
   }
   for (const setting of fixture.catalog) assert.deepEqual(setting, catalog.find(candidate => candidate.id === setting.id));
   const hooks = catalog.find(setting => setting.id === "hooks")?.editor;

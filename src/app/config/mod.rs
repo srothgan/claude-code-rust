@@ -4,6 +4,7 @@
 mod browse;
 mod controller;
 mod edit;
+mod footer;
 mod help;
 pub(crate) mod hooks;
 mod mcp;
@@ -33,6 +34,7 @@ pub(crate) use mcp::{
 };
 // Used by the binary UI target, but not by the library target in isolation.
 pub use browse::{SettingsBrowse, SettingsFocus};
+pub use footer::FooterOverlayState;
 #[allow(unused_imports)]
 pub(crate) use mcp::McpCallbackUrlOverlayState;
 pub use overlays::*;

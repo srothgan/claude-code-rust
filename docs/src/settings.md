@@ -80,7 +80,7 @@ Each save goes to one scope. Press `s` in the list to cycle the save scope throu
 | Project | `./.claude/settings.json` | Defaults shared with the repository. |
 | Local | `./.claude/settings.local.json` | Private defaults for this project. |
 | Managed | Organization policy | Shown for information. Settings restricted by policy are read-only. |
-| App preferences | `claude-code-rust/settings.json` in the OS config directory | This app's own preferences: tab-title activity, the `/copy` picker, notification categories and automatic updates. Always saved for the user. |
+| App preferences | `claude-code-rust/settings.json` in the OS config directory | This app's own preferences: footer layout, tab-title activity, the `/copy` picker, notification categories and automatic updates. Always saved for the user. |
 
 Not every setting can be saved at every scope. A setting that the selected scope cannot hold is read-only until you switch scope; [Settings by pane](#settings-by-pane) lists the restrictions.
 
@@ -163,7 +163,7 @@ While typing in a field:
 | `Ctrl+J` | Insert a line break. |
 | `Up`, `Down`, `Left`, `Right` | Choose a value when the field offers fixed choices. |
 
-Rules that apply to every editor:
+Rules for these structured editors:
 
 - Edits stay in a draft until `Ctrl+S`. Accepting a field does not write the file.
 - Many lists merge across scopes. Removing the last entry saves an explicit empty list, and entries from other scopes still apply. Reset removes the setting from this scope instead.
@@ -316,6 +316,27 @@ The first five are Claude settings and can be saved at User, Project or Local sc
 **Time format.** Auto follows the system locale. 12-hour shows AM/PM and 24-hour UTC adds a `Z` suffix. A custom strftime pattern written into a settings file is used and preserved; the picker offers only the four presets. A `timeZone` entry in a settings file, such as `Europe/Berlin`, sets the zone for local presets and custom patterns. An unknown zone name falls back to the system zone.
 
 **Scrolling.** `Page Up` pauses following and reads earlier output; `Page Down` reads later output. `Ctrl+End` jumps to the latest output and resumes following when Auto-scroll is On. With Auto-scroll Off it jumps once and then holds that position. The reading position survives new output and window resizing. The mouse wheel belongs to the terminal's own scrollback unless the terminal forwards mouse events to the app.
+
+## Footer
+
+Open `/config` → General → Footer with `Enter` or `Space`. The chat footer uses one row with independently ordered left- and right-aligned groups. Changes save automatically; the preview updates immediately and the running footer changes after each confirmed save. The field-position counter appears in the dialog's top-right corner. The settings row shows `Default layout` until a layout is saved, then `Custom layout`.
+
+| Key | Action |
+| --- | --- |
+| `Up`, `Down` | Select a field. |
+| `Space` | Toggle visibility, preserving the field's side and position. |
+| `Left`, `Right` | Switch between Left and Right; append the field to the destination group. |
+| `Ctrl+Up`, `Ctrl+Down` | Move the field within its group; selection follows it. |
+| `Ctrl+R` | Remove the saved layout and restore defaults. |
+| `Esc` | Close after any pending changes finish saving. |
+
+You can keep editing while a save is in progress. Later edits are saved next, using the confirmed file revision. A failed save or conflict keeps your edits in the dialog and shows an error; `Enter` retries the save, and `Esc` discards the unsaved edits and closes. An interrupted session reports unconfirmed edits as unsaved and asks you to reopen the editor.
+
+Permission mode, model, effort, Ultracode, fast mode, working directory, Git branch and context remaining are independent fields. Hiding the model does not hide effort or Ultracode; hiding the directory does not hide the branch. Fields appear only when their session data applies: effort requires a model that supports it, Ultracode requires verified effective state, and branch requires a Git branch.
+
+Permission and startup MCP-authentication notices remain at the far right and take priority over configured fields. On narrow terminals, paths and branches shorten first, then later fields are omitted, with the left group preceding the right group for overflow priority. The footer never wraps.
+
+The layout is a user-level app preference saved as the `presentation.footer` array in `claude-code-rust/settings.json` in the OS config directory. Each entry has an `id`, a `visible` boolean and a `side` of `left` or `right`; array order determines reading order within each group. The field IDs are `permissionMode`, `model`, `effort`, `ultracode`, `fastMode`, `directory`, `gitBranch` and `contextRemaining`. Omitted fields remain available in the dialog but are hidden. An empty array hides all optional fields. Removing the setting restores the built-in layout.
 
 ## Notifications
 
