@@ -400,12 +400,13 @@ test("bridge process emits connection_failed for malformed JSON", async () => {
 });
 
 test("bridge process initializes with stable capability envelope", async () => {
-  const bridge = new SpawnedBridge();
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-initialize-"));
+  const bridge = new SpawnedBridge({ CLAUDE_CONFIG_DIR: directory });
   try {
     bridge.writeCommand({
       request_id: "req-init",
       command: "initialize",
-      cwd: process.cwd(),
+      cwd: directory,
     });
 
     const envelope = await bridge.nextEnvelope();
@@ -429,6 +430,9 @@ test("bridge process initializes with stable capability envelope", async () => {
         supports_resume_session: true,
       },
     });
+    const sessions = await nextMatching(bridge, event => event.event === "sessions_listed");
+    assert.equal(sessions.request_id, "req-init");
+    assert.deepEqual(sessions.sessions, []);
     assert.ok(
       bridge.stderrLines.every((line) => {
         const parsed = JSON.parse(line) as { schema?: unknown };
@@ -437,6 +441,7 @@ test("bridge process initializes with stable capability envelope", async () => {
     );
   } finally {
     await bridge.stop();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -495,28 +500,17 @@ test("bridge process exits cleanly on shutdown", async () => {
 });
 
 test("bridge process reports actionable session initialization failure", async () => {
-  const missingClaudeExecutable = join(
-    tmpdir(),
-    `claude-rs-missing-claude-code-${process.pid}`,
-  );
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-missing-executable-"));
+  const missingClaudeExecutable = join(directory, "missing-claude-code");
   const bridge = new SpawnedBridge({
+    CLAUDE_CONFIG_DIR: directory,
     CLAUDE_CODE_EXECUTABLE: missingClaudeExecutable,
   });
   try {
     bridge.writeCommand({
-      request_id: "req-init",
-      command: "initialize",
-      cwd: process.cwd(),
-    });
-    assertProtocolEvent(await bridge.nextEnvelope(), "initialized");
-    const sessions = await bridge.nextEnvelope();
-    assertProtocolEvent(sessions, "sessions_listed");
-    assert.equal(sessions.request_id, "req-init");
-
-    bridge.writeCommand({
       request_id: "req-create",
       command: "create_session",
-      cwd: process.cwd(),
+      cwd: directory,
       launch_settings: {},
     });
 
@@ -534,6 +528,7 @@ test("bridge process reports actionable session initialization failure", async (
     );
   } finally {
     await bridge.stop();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
