@@ -12,6 +12,7 @@ pub(crate) mod config;
 mod connect;
 pub(crate) mod copy;
 mod dialog;
+pub(crate) mod diff_view;
 mod events;
 pub(crate) mod file_index;
 mod focus;
@@ -241,6 +242,7 @@ async fn run_tui_loop(
 
         if !app.shutdown_requested() {
             app.tick_git_context(now);
+            diff_view::poll(app);
             session_runtime::tick_context_usage_refresh(app, now);
             questions::tick_idle_timeout(app, now);
             app.tick_activity(now);

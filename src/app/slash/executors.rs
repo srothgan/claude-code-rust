@@ -53,6 +53,10 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
             crate::app::copy::open(app);
             true
         }
+        AppSlashCommand::Diff => {
+            crate::app::diff_view::open(app);
+            true
+        }
         AppSlashCommand::Docs => handle_docs_submit(app, &args),
         AppSlashCommand::Agent => handle_agent_submit(app, &args),
         AppSlashCommand::Effort => handle_effort_submit(app, &args),

@@ -15,6 +15,7 @@ pub(crate) enum AppSlashCommand {
     Hooks,
 
     Copy,
+    Diff,
     Docs,
     Agent,
     Effort,
@@ -153,6 +154,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         usage: "Usage: /copy",
         short_description: "Copy last response",
         long_description: "Copy the last finished assistant response or choose a code block. Configure Skip the /copy picker to copy the full response directly.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Diff,
+        name: "/diff",
+        usage: "Usage: /diff",
+        short_description: "Review Git changes",
+        long_description: "Open the read-only Git diff and file viewer with HEAD, staged, and unstaged comparisons.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -329,6 +338,7 @@ impl AppSlashCommand {
             Self::Hooks => "/hooks",
 
             Self::Copy => "/copy",
+            Self::Diff => "/diff",
             Self::Docs => "/docs",
             Self::Agent => "/agent",
             Self::Effort => "/effort",
@@ -356,13 +366,8 @@ impl AppSlashCommand {
 
     pub(crate) fn submission_class(self, args: &[&str]) -> SubmissionClass {
         match self {
-            Self::Btw => {
-                if args.is_empty() {
-                    SubmissionClass::Invalid
-                } else {
-                    SubmissionClass::Informational
-                }
-            }
+            Self::Btw if args.is_empty() => SubmissionClass::Invalid,
+            Self::Btw => SubmissionClass::Informational,
             Self::Cancel => {
                 if args.is_empty() {
                     SubmissionClass::TurnControl
@@ -371,6 +376,7 @@ impl AppSlashCommand {
                 }
             }
             Self::Config
+            | Self::Diff
             | Self::Memory
             | Self::Permissions
             | Self::Sandbox

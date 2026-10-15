@@ -134,6 +134,7 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
     assert_eq!(classify("/cancel"), SubmissionClass::TurnControl);
     for input in [
         "/config",
+        "/diff",
         "/memory",
         "/permissions",
         "/sandbox",
@@ -166,6 +167,7 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
     }
     for input in [
         "/cancel extra",
+        "/diff extra",
         "/docs nope",
         "/plugins extra",
         "/resume one two",

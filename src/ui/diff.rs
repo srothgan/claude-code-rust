@@ -140,7 +140,88 @@ fn render_raw_diff_line(line: &str) -> Line<'static> {
     Line::from(Span::styled(line.to_owned(), style))
 }
 
-fn render_diff_count_header(added: usize, removed: usize) -> Option<Line<'static>> {
+/// Wrap Git's own patch while retaining file line numbers and hunk locations.
+pub(crate) fn render_repository_patch(text: &str, width: u16) -> (Vec<Line<'static>>, Vec<usize>) {
+    let mut lines = Vec::new();
+    let mut hunks = Vec::new();
+    let mut position = None;
+    let number_width = text
+        .lines()
+        .filter_map(hunk_position)
+        .map(|(old, new)| old.max(new))
+        .max()
+        .unwrap_or(1)
+        .saturating_add(text.lines().count())
+        .to_string()
+        .len();
+    for raw in text.lines() {
+        if raw.starts_with("diff ") {
+            position = None;
+        }
+        // The viewer's pane title already identifies the file. Keep its small
+        // viewport for changes rather than Git's repeated path/index headers.
+        if position.is_none()
+            && (raw.starts_with("diff --git ")
+                || raw.starts_with("index ")
+                || raw.starts_with("--- ")
+                || raw.starts_with("+++ "))
+        {
+            continue;
+        }
+        if raw.starts_with("@@") {
+            hunks.push(lines.len());
+            position = hunk_position(raw);
+        } else if let Some((old, new)) = &mut position {
+            let row = match raw.chars().next() {
+                Some('+') => {
+                    let row = Some((*new, "+"));
+                    *new += 1;
+                    row
+                }
+                Some('-') => {
+                    let row = Some((*old, "-"));
+                    *old += 1;
+                    row
+                }
+                Some(' ') => {
+                    let row = Some((*new, " "));
+                    *old += 1;
+                    *new += 1;
+                    row
+                }
+                _ => None,
+            };
+            if let Some((number, marker)) = row {
+                let styled = render_raw_diff_line(raw);
+                let style = styled.spans[0].style;
+                lines.extend(render_wrapped_diff_row(
+                    Some(number),
+                    number_width,
+                    marker,
+                    &raw[1..],
+                    style,
+                    usize::from(width).saturating_sub(number_width + 5).max(1),
+                ));
+                continue;
+            }
+        }
+        let styled = render_raw_diff_line(raw);
+        lines.extend(wrap_styled_chunks(
+            &[StyledChunk { text: raw.to_owned(), style: styled.spans[0].style }],
+            usize::from(width).max(1),
+        ));
+    }
+    (lines, hunks)
+}
+
+fn hunk_position(line: &str) -> Option<(usize, usize)> {
+    let mut parts = line.strip_prefix("@@ ")?.split_whitespace();
+    let old = parts.next()?.strip_prefix('-')?.split(',').next()?.parse().ok()?;
+    let new = parts.next()?.strip_prefix('+')?.split(',').next()?.parse().ok()?;
+    Some((old, new))
+}
+
+pub(crate) fn render_diff_count_header(added: usize, removed: usize) -> Option<Line<'static>> {
     if added == 0 && removed == 0 {
         return None;
     }

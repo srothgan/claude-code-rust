@@ -17,6 +17,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/sandbox` | `/sandbox` | Open sandbox settings without toggling sandboxing. |
 | `/hooks` | `/hooks` | Inspect and edit saved hook configuration without executing hooks. |
 | `/copy` | `/copy` | Copy the last completed response, or choose a code block from it. |
+| `/diff` | `/diff` | Review Git changes and full file contents without changing files or the index. |
 | `/docs` | `/docs <mode\|models\|shortcuts\|commands\|agents>` | Render command, shortcut, model, mode, or subagent help into chat. |
 | `/agent` | `/agent <name\|reset>` | Change the main-thread agent for the active session. Applies on the next turn. |
 | `/effort` | `/effort <low\|medium\|high\|xhigh\|max\|reset>` | Change thinking effort for the active session. |
@@ -45,6 +46,28 @@ Completing the name of a command with no arguments or optional arguments closes 
 Space inserts a literal separator without accepting the highlighted suggestion. It ends command-name completion and continues argument assistance only when the app requires arguments, or when you explicitly requested argument help. There is no special Space dismissal state. Escape dismisses the current menu; argument edits, cursor movement within arguments, and metadata refreshes keep it closed. Tab requests completion again, and editing the command name starts a new completion interaction. A command is recognized only at the start of the draft, allowing leading whitespace; slashes on later lines remain literal prompt or argument text.
 
 The command menu includes the full merged inventory and scrolls as you move through it. SDK commands remain available after `/clear` changes the session identifier. In SDK sessions that advertise `/clear [name]`, `/new` and `/reset` are aliases; the optional name labels the conversation you are leaving. `/new-session` is the separate app command that starts a fresh bridge session. App command definitions take precedence when the SDK advertises the same name.
+
+## Reviewing Git changes
+
+`/diff` opens a fullscreen, read-only Git viewer for the repository containing the current directory. The left pane shows changed files in an expanded tree; folders are not selectable. Each file shows its status and line counts, with additions in green and removals in red; zero counts are hidden. Totals appear above the tree. The right pane previews the selected file. Binary files, submodules, unavailable files, clean repositories, and Git read failures are shown explicitly. Repositories without a first commit are supported.
+
+Press `s` to choose a comparison with Up/Down and Enter; Escape cancels. HEAD compares the last commit with current files, Staged compares the last commit with the Git index, and Unstaged compares the index with current files. HEAD and Unstaged also include untracked files that Git does not ignore. This view shows repository changes, not session or turn history.
+
+Refresh keeps the current pane focused and retains the selected change when it remains available. If that change disappears, the next remaining file takes its place, or the previous file when the selection was at the end. If no changes remain, the viewer clears the old preview and stays open with an empty-state message.
+
+| Key | Action |
+| --- | --- |
+| Up/Down | Select files in the left pane or scroll content in the right pane. |
+| Enter or Right | Focus the content pane. |
+| Left or Escape in the content pane | Return focus to the file tree. |
+| Tab / Shift+Tab | Select the next/previous file without changing the focused pane. |
+| `v` | Toggle the diff and full file contents. Staged shows the indexed version; deleted files show their contents before deletion. |
+| `[` | Jump to the previous diff hunk (changed block). |
+| `]` | Jump to the next diff hunk (changed block). |
+| `r` | Refresh, retaining the selected file when it remains in the comparison. |
+| Escape in the file tree | Return to the conversation. |
+| Ctrl+C | Close the viewer and return to the conversation. |
+| Ctrl+Q | Quit the app. |
 
 ## Copying responses
 

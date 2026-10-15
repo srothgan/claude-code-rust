@@ -255,6 +255,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             super::copy::handle_key(app, key);
             TerminalEventOutcome::handled(true)
         }
+        SurfaceMode::Fullscreen(FullscreenView::Diff) => {
+            super::diff_view::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
             super::config::handle_key(app, key);
             TerminalEventOutcome::handled(true)
@@ -311,7 +315,8 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             FullscreenView::Trusted
             | FullscreenView::SessionPicker
             | FullscreenView::Update
-            | FullscreenView::Copy,
+            | FullscreenView::Copy
+            | FullscreenView::Diff,
         ) => false,
     }
 }

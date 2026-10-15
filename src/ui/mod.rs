@@ -8,6 +8,7 @@ mod copy;
 mod diff;
 mod document_table;
 pub(crate) mod footer_rows;
+mod git_diff;
 pub(crate) mod help;
 mod highlight;
 pub(crate) mod host_tips;
@@ -44,6 +45,7 @@ pub fn render_fullscreen_surface(frame: &mut Frame, app: &mut App) {
         }
         SurfaceMode::Fullscreen(FullscreenView::Update) => update::render(frame, app),
         SurfaceMode::Fullscreen(FullscreenView::Copy) => copy::render(frame, app),
+        SurfaceMode::Fullscreen(FullscreenView::Diff) => git_diff::render(frame, app),
         SurfaceMode::Chat => {
             debug_assert!(false, "chat is rendered by the inline terminal session");
         }

@@ -1592,6 +1592,83 @@ fn width_and_height_resizes_preserve_unicode_multiline_draft_and_exact_submissio
 }
 
 #[test]
+fn git_diff_loads_refreshes_and_returns_to_chat_without_submitting_a_prompt() {
+    let mut test = TerminalTest::start("hold-success", 8);
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.wait_screen("streamed line 8");
+    let project = test.temp.path().join("project");
+    let initialized = std::process::Command::new("git")
+        .current_dir(&project)
+        .args(["init", "-q"])
+        .output()
+        .expect("initialize Git fixture");
+    assert!(initialized.status.success());
+    std::fs::create_dir(project.join("src")).expect("source directory");
+    for (name, content) in
+        [("a", "DIFF_A_CONTENT\n"), ("b", "DIFF_B_CONTENT\n"), ("d", "DIFF_D_CONTENT\n")]
+    {
+        std::fs::write(project.join(format!("src/{name}.txt")), content)
+            .expect("untracked fixture");
+    }
+    std::fs::write(
+        project.join("src/c.txt"),
+        format!("DIFF_C_FIRST\n{}DIFF_C_LAST\n", "middle line\n".repeat(80)),
+    )
+    .expect("long fixture");
+    let right_pane = |test: &TerminalTest, first_col: usize, rows: usize| {
+        let output = test.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        let (height, width) = screen.size();
+        (3..height.min(u16::try_from(rows + 3).expect("test rows")))
+            .map(|row| {
+                (u16::try_from(first_col).expect("test column")..width - 1)
+                    .filter_map(|col| screen.cell(row, col))
+                    .map(vt100::Cell::contents)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    test.submit("/diff", "/diff");
+    test.wait_until("selected file A loaded in the diff pane", |test| {
+        right_pane(test, 30, 32).contains("DIFF_A_CONTENT")
+    });
+    assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
+    test.send(b"\x1b[B\x1b[C"); // Select B and focus its content.
+    test.wait_until("selected file B loaded in the diff pane", |test| {
+        right_pane(test, 30, 32).contains("DIFF_B_CONTENT")
+    });
+    std::fs::remove_file(project.join("src/b.txt")).expect("undo file B addition");
+    test.send(b"r");
+    test.wait_until("refresh selects C and removes B's preview", |test| {
+        let content = right_pane(test, 30, 32);
+        content.contains("DIFF_C_FIRST") && !content.contains("DIFF_B_CONTENT")
+    });
+    // Down must scroll C, not select D: content focus must survive the refresh.
+    test.send("\x1b[B".repeat(90).as_bytes());
+    test.wait_until("file C scrolled to its last line", |test| {
+        right_pane(test, 30, 32).contains("DIFF_C_LAST")
+    });
+    test.resize_and_wait_for_draw(25, 120);
+    test.send("\x1b[B".repeat(90).as_bytes());
+    test.wait_until("file C remains navigable after resize", |test| {
+        right_pane(test, 41, 19).contains("DIFF_C_LAST")
+    });
+    assert!(!project.join(".git/index").exists(), "review must not create the Git index");
+    test.send(b"\x03");
+    test.wait_screen("streamed line 8");
+    assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
+    test.submit("after diff", "after diff");
+    test.wait_screen("reply 2 started");
+    test.assert_prompts(&["go", "after diff"]);
+    test.shutdown();
+}
+
+#[test]
 fn fullscreen_resize_and_repeated_return_preserve_chat_and_next_submission() {
     let mut test = TerminalTest::start("hold-success", 8);
     test.submit("go", "❯ go");

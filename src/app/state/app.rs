@@ -12,6 +12,7 @@ pub(crate) struct PendingSessionResume {
 pub struct App {
     pub surface_mode: SurfaceMode,
     pub(crate) copy_picker: Option<crate::app::copy::CopyPicker>,
+    pub(crate) diff_view: Option<Box<crate::app::diff_view::DiffView>>,
     pub(crate) terminal_lifecycle: TerminalLifecycleState,
     pub(crate) terminal_child_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     pub(crate) surface_dirty: SurfaceDirtyState,
@@ -259,6 +260,7 @@ impl App {
             session_picker: SessionPickerState::default(),
             chat_render: ChatRenderState::default(),
             copy_picker: None,
+            diff_view: None,
             mention: None,
             committed_mentions: Vec::new(),
             file_index: file_index::FileIndexState::default(),
