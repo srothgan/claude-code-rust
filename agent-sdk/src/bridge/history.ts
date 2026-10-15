@@ -14,6 +14,7 @@ import type {
   ToolCall,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
+import { messageCandidates, transcriptPresentation } from "./transcript_presentation.js";
 import { applyFieldsToBase, normalizeToolCallUpdateFields, toolAcceptsTaskLifecycle, toolNameFromMeta } from "./tool_calls.js";
 import { taskLifecyclePatch, upsertTask } from "./tasks.js";
 import { linkTaskToolUse } from "./task_links.js";
@@ -74,19 +75,6 @@ function nonEmptyTrimmed(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function messageCandidates(raw: unknown): Record<string, unknown>[] {
-  const candidates: Record<string, unknown>[] = [];
-  const topLevel = asRecordOrNull(raw);
-  if (topLevel) {
-    candidates.push(topLevel);
-    const nested = asRecordOrNull(topLevel.message);
-    if (nested) {
-      candidates.push(nested);
-    }
-  }
-  return candidates;
 }
 
 function pushResumeTaskSystemUpdate(
@@ -302,23 +290,23 @@ export function mapSessionMessagesToUpdates(
 
   for (const entry of messages) {
     const record = asRecordOrNull(entry);
-    const origin = asRecordOrNull(record?.origin);
-    // Background-task inputs belong to Claude's context, not the visible user transcript.
-    // Peer and scheduled messages carry a subkind and remain eligible for display.
-    if (record?.isCompactSummary === true) continue;
-    if (
-      entry.type === "user" && origin?.kind === "task-notification" &&
-      origin.subkind === undefined &&
-      (origin.producer === undefined || origin.producer === "session-task")
-    ) {
-      const notification = resumedTaskNotification(entry.message);
+    const presentation = transcriptPresentation(entry);
+    if (presentation.kind === "hidden") continue;
+    if (presentation.kind === "task_notification") {
+      const notification = presentation.notification;
       if (notification) pushResumeTaskSystemUpdate(updates, tasksById, taskToolUseIds, toolCalls, notification);
+      continue;
+    }
+    if (presentation.kind === "command_output") {
+      if (presentation.text.trim()) updates.push({ type: "system_notice_update", severity: presentation.severity, message: presentation.text });
       continue;
     }
     const fallbackRole = entry.type === "assistant" ? "assistant" : "user";
     const entrySourceMessageUuid =
       typeof entry.uuid === "string" ? entry.uuid : undefined;
-    const candidates = messageCandidates(entry.message);
+    const candidates = presentation.kind === "command"
+      ? [{ role: "user", content: presentation.text }]
+      : messageCandidates(entry.message);
     if (entry.type === "system") {
       for (const message of candidates) {
         if (message.subtype === "notification") {
@@ -432,30 +420,4 @@ export function restoreResumedToolState(session: SessionState, updates: SessionU
     const tool = task.source_tool_call_id ? session.toolCalls.get(task.source_tool_call_id) : undefined;
     if (tool && !["completed", "failed", "killed"].includes(tool.status)) linkTaskToolUse(session, task.task_id, tool.tool_call_id);
   }
-}
-
-// Literal searches avoid retrying overlapping suffixes when a closing tag is missing.
-function notificationTagContent(text: string, name: string): string | undefined {
-  const opening = `<${name}>`;
-  const start = text.indexOf(opening);
-  if (start === -1) return undefined;
-  const bodyStart = start + opening.length;
-  const end = text.indexOf(`</${name}>`, bodyStart);
-  return end === -1 ? undefined : text.slice(bodyStart, end);
-}
-
-function resumedTaskNotification(raw: unknown): Record<string, unknown> | undefined {
-  for (const message of messageCandidates(raw)) {
-    const content = typeof message.content === "string" ? message.content : Array.isArray(message.content)
-      ? message.content.map(block => asRecordOrNull(block)?.text ?? "").join("\n") : "";
-    const body = notificationTagContent(content, "task-notification");
-    if (!body) continue;
-    const field = (name: string) => notificationTagContent(body, name)?.trim();
-    const taskId = field("task-id");
-    const status = field("status");
-    if (taskId && (status === "completed" || status === "failed" || status === "stopped")) {
-      return { subtype: "task_notification", task_id: taskId, status, tool_use_id: field("tool-use-id"), summary: field("summary"), output_file: field("output-file") };
-    }
-  }
-  return undefined;
 }

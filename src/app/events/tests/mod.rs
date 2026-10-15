@@ -1288,6 +1288,92 @@ fn startup_resume_history_renders_from_canonical_messages() {
 }
 
 #[test]
+fn resume_history_preserves_user_message_boundaries_and_joins_only_same_source_chunks() {
+    for startup in [true, false] {
+        let mut app = make_test_app();
+        let history_updates = [
+            ("rename", "/rename "),
+            ("rename", "review-444"),
+            ("color", "/color blue"),
+            ("prompt", "Explain <example>literal XML</example>"),
+        ]
+        .into_iter()
+        .map(|(uuid, text)| {
+            model::SessionUpdate::UserMessageChunk(
+                model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(text)))
+                    .source_message_uuid(Some(uuid.to_owned())),
+            )
+        })
+        .collect();
+        let event = if startup {
+            ClientEvent::Connected {
+                session_id: model::SessionId::new("resumed"),
+                cwd: "/resumed".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
+                ultracode: None,
+                history_updates,
+            }
+        } else {
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("resumed"),
+                cwd: "/resumed".into(),
+                current_model: test_current_model("new-model"),
+                available_models: Vec::new(),
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
+                ultracode: None,
+                history_updates,
+                restored_input: None,
+            }
+        };
+        handle_client_event(&mut app, event);
+        let users = app
+            .transcript
+            .messages
+            .iter()
+            .filter(|message| matches!(message.role, MessageRole::User))
+            .map(|message| match message.blocks.as_slice() {
+                [MessageBlock::Text(text)] => {
+                    (text.source_message_uuids.clone(), text.text.clone())
+                }
+                _ => panic!("expected one complete user text block"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            users,
+            vec![
+                (vec!["rename".to_owned()], "/rename review-444".to_owned()),
+                (vec!["color".to_owned()], "/color blue".to_owned()),
+                (vec!["prompt".to_owned()], "Explain <example>literal XML</example>".to_owned()),
+            ]
+        );
+        let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            80,
+            &std::collections::BTreeSet::new(),
+        );
+        let text = rows
+            .rows()
+            .iter()
+            .map(|line| line.to_string().trim_end().to_owned())
+            .collect::<Vec<_>>();
+        for message in
+            ["/rename review-444", "/color blue", "Explain <example>literal XML</example>"]
+        {
+            assert!(
+                text.windows(2).any(|rows| rows == ["User", message]),
+                "separate user heading and text for {message}, startup={startup}"
+            );
+        }
+    }
+}
+
+#[test]
 fn startup_resume_history_allows_immediate_prompt_submit() {
     let (mut app, mut rx) = app_with_bridge_connection();
     let history_updates = vec![

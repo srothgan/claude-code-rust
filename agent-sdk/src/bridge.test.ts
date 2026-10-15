@@ -2234,7 +2234,7 @@ test("rewindTargetsFromSessionMessages filters user text messages with UUIDs", (
     {
       uuid: "user-1",
       first_text: "first prompt line",
-      input_text: "first prompt\nline",
+      input_text: " first prompt\nline ",
       index: 0,
     },
   ]);

@@ -193,6 +193,14 @@ fn append_resume_user_message_chunk(app: &mut App, chunk: &model::ContentChunk) 
 
     if let Some(last) = app.transcript.messages.last_mut()
         && matches!(last.role, MessageRole::User)
+        && chunk.source_message_uuid.as_deref().is_none_or(|uuid| {
+            last.blocks.iter().all(|block| match block {
+                MessageBlock::Text(text) => {
+                    text.source_message_uuids.is_empty() || text.has_source_message_uuid(uuid)
+                }
+                _ => true,
+            })
+        })
     {
         if let Some(MessageBlock::Text(block)) = last.blocks.last_mut() {
             block.text.push_str(&text.text);

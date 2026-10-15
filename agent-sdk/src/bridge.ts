@@ -39,6 +39,7 @@ import {
   type SessionState,
 } from "./bridge/session_lifecycle.js";
 import { mapSessionMessagesToUpdates } from "./bridge/history.js";
+import { messageText, transcriptPresentation } from "./bridge/transcript_presentation.js";
 import {
   emitAvailableAgentsIfChanged,
   mapAvailableAgents,
@@ -155,37 +156,16 @@ function userTextPartsFromSessionMessage(
   message: SessionMessage,
 ): UserTextParts | undefined {
   const record = message as unknown as Record<string, unknown>;
-  if (record.type !== "user") {
+  if (record.type !== "user" || transcriptPresentation(message).kind !== "conversation") {
     return undefined;
   }
   const payload = record.message;
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return undefined;
   }
-  const content = (payload as Record<string, unknown>).content;
-  if (typeof content === "string") {
-    const firstText = normalizeRewindTargetText(content);
-    return firstText ? { firstText, inputText: content } : undefined;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const textBlocks: string[] = [];
-  for (const block of content) {
-    if (!block || typeof block !== "object" || Array.isArray(block)) {
-      continue;
-    }
-    const blockRecord = block as Record<string, unknown>;
-    if (blockRecord.type === "text" && typeof blockRecord.text === "string") {
-      textBlocks.push(blockRecord.text);
-    }
-  }
-  const firstText = textBlocks
-    .map(normalizeRewindTargetText)
-    .find((text) => text.length > 0);
-  return firstText
-    ? { firstText, inputText: textBlocks.join("\n").trim() }
-    : undefined;
+  const inputText = messageText(payload as Record<string, unknown>);
+  const firstText = normalizeRewindTargetText(inputText);
+  return firstText ? { firstText, inputText } : undefined;
 }
 
 export function rewindTargetsFromSessionMessages(

@@ -55,6 +55,8 @@ Refreshing session metadata keeps the selected session by ID when it still match
 
 Session selection happens inside the picker; `/resume` has no inline session suggestions or chat arguments. Ordinary command-name completion still completes `/resu` to `/resume`. For direct resume by ID from the terminal, use `claude-rs resume <session_id>`.
 
+Resumed history displays saved Claude command records as readable commands, such as `/rename review-444`, and command output as notices. Internal command context, compaction summaries, and background-task notifications are excluded from the fork list. Ordinary conversation XML remains literal, and saved session content is unchanged.
+
 ## Reviewing Git changes
 
 `/diff` opens a fullscreen, read-only Git viewer for the repository containing the current directory. The left pane shows changed files in an expanded tree; folders are not selectable. Each file shows its status and line counts, with additions in green and removals in red; zero counts are hidden. Totals appear above the tree. The right pane previews the selected file. Binary files, submodules, unavailable files, clean repositories, and Git read failures are shown explicitly. Repositories without a first commit are supported.
