@@ -311,9 +311,11 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             false
         }
         SurfaceMode::Fullscreen(FullscreenView::Config) => super::config::handle_paste(app, text),
+        SurfaceMode::Fullscreen(FullscreenView::SessionPicker) => {
+            super::session_picker::paste_search(app, text)
+        }
         SurfaceMode::Fullscreen(
             FullscreenView::Trusted
-            | FullscreenView::SessionPicker
             | FullscreenView::Update
             | FullscreenView::Copy
             | FullscreenView::Diff,
@@ -508,6 +510,8 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
             );
         }
         model::SessionUpdate::SessionTitleUpdate(title) => {
+            let selected = super::session_picker::selected_session(app)
+                .map(|session| session.session_id.clone());
             if let Some(id) = app.session_runtime.session_id.as_ref()
                 && let Some(listed) =
                     app.recent_sessions.iter_mut().find(|session| session.session_id == id.as_str())
@@ -515,6 +519,7 @@ fn handle_session_update(app: &mut App, update: model::SessionUpdate) {
                 listed.custom_title.clone_from(&title);
             }
             app.session_runtime.session_title = title;
+            super::session_picker::reconcile_selection(app, selected.as_deref());
         }
         model::SessionUpdate::PromptSuggestionUpdate(suggestion) => {
             app.session_runtime.prompt_suggestion =

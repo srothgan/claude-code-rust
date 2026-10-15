@@ -34,18 +34,26 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/mode` | `/mode <id>` | Switch to a mode advertised by the active session. |
 | `/model` | `/model <id>` | Switch to a model advertised by the active session. |
 | `/new-session` | `/new-session` | Start a fresh bridge session in the current folder. |
-| `/resume` | `/resume [session_id]` | Open the session picker, or resume a supplied session id. |
+| `/resume` | `/resume` | Search and select a session in the fullscreen picker. |
 | `/rewind` | `/rewind <user_message_uuid> <both\|conversation\|code>` | Restore conversation, code, or both to a previous user message. |
 
 Enter completes the selected slash command or argument and submits it when ready. Tab completes without submitting. Exact command names appear ahead of substring matches; arrow keys can select a different match. App commands that still need required arguments stay in the composer; commands with argument choices show those choices, while `/btw` continues as ordinary question text. An empty suggestion menu allows Enter to submit the typed input for normal validation.
 
 Editing the draft cancels a pending submission. Editing, completion, and submission keys cannot change or send the draft while pasted text is awaiting insertion, including when suggestions are open or keys are remapped. Suggestions refresh after the pasted text is inserted.
 
-Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. Optional arguments remain supported: `/resume` opens the session picker, and `/resume <session_id>` resumes directly. Pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
+Completing the name of a command with no arguments or optional arguments closes the popup and returns focus to the draft. For commands accepting arguments, pressing Tab again requests argument completion explicitly. When the SDK provides only an argument hint, Tab displays that hint without changing or sending the draft; Enter sends the typed command for SDK validation. SDK hints are descriptive text, so their brackets never determine whether the app allows submission. Empty hints and `none` or `[none]` do not produce argument help.
 
 Space inserts a literal separator without accepting the highlighted suggestion. It ends command-name completion and continues argument assistance only when the app requires arguments, or when you explicitly requested argument help. There is no special Space dismissal state. Escape dismisses the current menu; argument edits, cursor movement within arguments, and metadata refreshes keep it closed. Tab requests completion again, and editing the command name starts a new completion interaction. A command is recognized only at the start of the draft, allowing leading whitespace; slashes on later lines remain literal prompt or argument text.
 
 The command menu includes the full merged inventory and scrolls as you move through it. SDK commands remain available after `/clear` changes the session identifier. In SDK sessions that advertise `/clear [name]`, `/new` and `/reset` are aliases; the optional name labels the conversation you are leaving. `/new-session` is the separate app command that starts a fresh bridge session. App command definitions take precedence when the SDK advertises the same name.
+
+## Resuming sessions
+
+`/resume` opens the same fullscreen session picker used by `claude-rs resume` at startup. Type to filter by session name, session ID, or branch name; search matches partial text without case sensitivity, and pasted text also searches. Up/Down selects a matching session, Enter resumes it, and Escape closes the picker without switching sessions. Backspace edits the search. The scrollable list shows the SDK-provided title, last activity, branch when available, session ID, and a marker for the current session. All available sessions for the project directory are searchable.
+
+Refreshing session metadata keeps the selected session by ID when it still matches. If it disappears or stops matching, the next result at that position is selected, or the previous result at the end. An empty result list stays open and cannot resume an unrelated session; edit the search or press Escape. Right activates the `fork` action and opens the message picker; Left/Escape returns to the filtered session list. Message previews wrap to the terminal width, preserve paragraph breaks, and show up to four text lines with a `more` indicator for longer messages. Up/Down selects a message, and Enter forks before it. Right opens the selected message for full-text reading with Up/Down scrolling; Left/Escape returns to the message list.
+
+Session selection happens inside the picker; `/resume` has no inline session suggestions or chat arguments. Ordinary command-name completion still completes `/resu` to `/resume`. For direct resume by ID from the terminal, use `claude-rs resume <session_id>`.
 
 ## Reviewing Git changes
 

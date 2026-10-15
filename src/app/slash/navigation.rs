@@ -182,8 +182,8 @@ pub fn prepare_submit(app: &mut App) -> bool {
         return true;
     }
 
-    // An empty argument token is a suggestion, not user input. In particular,
-    // /resume must open its picker instead of silently selecting a recent ID.
+    // An empty argument token is a suggestion, not user input. Optional
+    // arguments must not silently consume an advertised value on Enter.
     let submission = ResolvedSubmission::resolve(app.input.text());
     if matches!(slash.context, SlashContext::Argument { .. })
         && slash.query.is_empty()

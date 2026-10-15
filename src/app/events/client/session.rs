@@ -138,8 +138,7 @@ fn apply_rewind_targets(
         super::super::notices::emit_system_notice(app, SystemSeverity::Error, message);
     }
     app.sdk_inventory.rewind_targets_error = error;
-    app.session_picker.turn_selected = 0;
-    app.session_picker.turn_scroll_offset = 0;
+    app.session_picker.reset_turn_navigation();
     crate::app::slash::sync_with_cursor(app);
 }
 

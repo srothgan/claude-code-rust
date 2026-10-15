@@ -9,7 +9,6 @@ use super::{
 };
 use crate::app::App;
 use crate::app::dialog::DialogState;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_ARGUMENT_CANDIDATES: usize = 50;
 
@@ -153,7 +152,6 @@ fn is_builtin_variable_input_command(command_name: &str) -> bool {
                     | AppSlashCommand::Effort
                     | AppSlashCommand::Mode
                     | AppSlashCommand::Model
-                    | AppSlashCommand::Resume
                     | AppSlashCommand::Rewind
             )
     })
@@ -318,48 +316,6 @@ fn agent_argument_candidates(app: &App) -> Vec<SlashCandidate> {
     candidates
 }
 
-fn now_epoch_seconds() -> i64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
-        Err(_) => 0,
-    }
-}
-
-fn format_relative_age(epoch_seconds: i64) -> String {
-    let now_seconds = now_epoch_seconds();
-    let delta_seconds = if now_seconds >= epoch_seconds {
-        now_seconds - epoch_seconds
-    } else {
-        epoch_seconds - now_seconds
-    };
-
-    if delta_seconds < 5 * 60 {
-        return "<5m".to_owned();
-    }
-    if delta_seconds < 60 * 60 {
-        return format!("{}m", delta_seconds / 60);
-    }
-    if delta_seconds < 24 * 60 * 60 {
-        return format!("{}h", delta_seconds / (60 * 60));
-    }
-
-    let total_hours = delta_seconds / (60 * 60);
-    let days = total_hours / 24;
-    let hours = total_hours % 24;
-    format!("{days}d {hours}h")
-}
-
-fn session_age_label(last_modified_ms: Option<u64>) -> String {
-    let Some(last_modified_ms) = last_modified_ms else {
-        return "--".to_owned();
-    };
-    let epoch = i64::try_from(last_modified_ms / 1_000).ok();
-    let Some(epoch) = epoch else {
-        return "--".to_owned();
-    };
-    format_relative_age(epoch)
-}
-
 pub(super) fn argument_candidates(
     app: &App,
     command_name: &str,
@@ -373,20 +329,6 @@ pub(super) fn argument_candidates(
         "/docs" | "/ultracode" | "/thinking" | "/fast" => static_argument_candidates(command_name),
         "/agent" => agent_argument_candidates(app),
         "/effort" => effort_argument_candidates(app),
-        "/resume" => app
-            .recent_sessions
-            .iter()
-            .map(|session| {
-                let summary = session.summary.trim();
-                let summary = if summary.is_empty() { "(no summary)" } else { summary };
-                let age = session_age_label(Some(session.last_modified_ms));
-                SlashCandidate {
-                    insert_value: session.session_id.clone(),
-                    primary: format!("{age} - {summary}"),
-                    secondary: Some(session.session_id.clone()),
-                }
-            })
-            .collect(),
         "/rewind" => {
             if arg_index == 1 {
                 return rewind_restore_mode_candidates();

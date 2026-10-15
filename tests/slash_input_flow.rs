@@ -22,6 +22,7 @@ const NO_ARGUMENT_COMMANDS: &[&str] = &[
     "/login",
     "/logout",
     "/new-session",
+    "/resume",
 ];
 
 const REQUIRED_ARGUMENT_COMMANDS: &[(&str, &str)] = &[
@@ -94,7 +95,7 @@ fn exact_names_win_over_competing_plugins_for_every_app_command_and_sdk_alias() 
         .iter()
         .copied()
         .chain(REQUIRED_ARGUMENT_COMMANDS.iter().map(|(command, _)| *command))
-        .chain(["/resume", "/clear", "/new", "/reset", "/ping", "/deploy", "/ship"])
+        .chain(["/clear", "/new", "/reset", "/ping", "/deploy", "/ship"])
     {
         for code in [KeyCode::Tab, KeyCode::Enter] {
             let mut app = app();
@@ -176,18 +177,6 @@ fn complete_argument_commands_submit_on_the_first_enter() {
 
         assert_eq!(submitted_text(&app).trim(), text);
         assert_eq!(app.active_autocomplete_kind(), None, "{text}");
-    }
-}
-
-#[test]
-fn optional_resume_argument_can_be_omitted_or_supplied() {
-    for text in ["/resume", "/resume ", "/resume manually-supplied-id"] {
-        let mut app = app();
-        draft(&mut app, text);
-
-        key(&mut app, KeyCode::Enter);
-
-        assert_eq!(submitted_text(&app).trim(), text.trim());
     }
 }
 

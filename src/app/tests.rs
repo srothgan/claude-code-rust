@@ -523,41 +523,6 @@ fn model_selection_arms_submit_on_the_first_enter() {
 }
 
 #[test]
-fn resume_selection_with_explicit_tab_then_enter_arms_submit() {
-    let mut app = App::test_default();
-    app.recent_sessions = vec![RecentSessionInfo {
-        session_id: "session-1".to_owned(),
-        summary: "Session one".to_owned(),
-        last_modified_ms: 1,
-        file_size_bytes: 1,
-        cwd: None,
-        git_branch: None,
-        custom_title: None,
-        first_prompt: None,
-    }];
-    app.input.set_text("/resume se");
-    let _ = app.input.set_cursor(0, "/resume se".chars().count());
-    crate::app::slash::sync_with_cursor(&mut app);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-    );
-
-    assert!(app.pending_submit.is_none());
-    assert_eq!(app.input.text(), "/resume session-1 ");
-    assert!(app.slash.visible().is_none());
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert!(app.pending_submit.is_some());
-}
-
-#[test]
 fn paste_event_cancels_deferred_submit_snapshot() {
     let mut app = App::test_default();
     app.input.set_text("draft");

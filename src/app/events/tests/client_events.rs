@@ -1874,3 +1874,126 @@ fn title_update_clears_the_matching_listed_title() {
     assert_eq!(app.recent_sessions[0].custom_title, None);
     assert_eq!(app.recent_sessions[0].summary, "Independent summary");
 }
+
+#[test]
+fn filtered_picker_refresh_preserves_identity_and_handles_disappearing_results() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("hidden", "Other"),
+                listed_session("a", "Feature alpha"),
+                listed_session("b", "Feature beta"),
+                listed_session("c", "Feature gamma"),
+            ],
+        },
+    );
+    crate::app::session_picker::open(&mut app);
+    handle_terminal_event(&mut app, Event::Paste("feature".into()));
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    assert_eq!(
+        crate::app::session_picker::selected_session(&app).expect("selected beta").session_id,
+        "b"
+    );
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("c", "Feature gamma"),
+                listed_session("hidden", "Other"),
+                listed_session("a", "Feature alpha"),
+                listed_session("b", "Feature beta renamed"),
+            ],
+        },
+    );
+    assert_eq!(app.session_picker.selected, 2);
+    assert_eq!(
+        crate::app::session_picker::selected_session(&app)
+            .expect("same beta after refresh")
+            .session_id,
+        "b"
+    );
+    assert_eq!(app.session_picker.query, "feature");
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("hidden", "Other"),
+                listed_session("a", "Feature alpha"),
+                listed_session("c", "Feature gamma"),
+            ],
+        },
+    );
+    assert_eq!(
+        crate::app::session_picker::selected_session(&app)
+            .expect("previous result at end")
+            .session_id,
+        "c"
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed { sessions: vec![listed_session("hidden", "Other")] },
+    );
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+    assert_eq!(app.session_picker.selected, 0);
+    assert_eq!(app.session_picker.scroll_offset, 0);
+    assert!(rx.try_recv().is_err(), "no nonmatching session may be resumed");
+
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed { sessions: vec![listed_session("new", "Feature new")] },
+    );
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(matches!(rx.try_recv().expect("resume new match").command,
+        crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "new"));
+}
+
+#[test]
+fn removing_the_inspected_session_returns_to_the_session_list() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed { sessions: vec![listed_session("old", "Old session")] },
+    );
+    crate::app::session_picker::open(&mut app);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)));
+    rx.try_recv().expect("history request");
+    handle_client_event(&mut app, ClientEvent::SessionsListed { sessions: Vec::new() });
+    assert!(app.session_picker.turn_session_id.is_none());
+    assert!(!app.sdk_inventory.rewind_targets_in_flight);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn live_title_update_preserves_filtered_selection_when_an_earlier_result_stops_matching() {
+    let (mut app, mut rx) = app_with_bridge_connection();
+    app.session_runtime.session_id = Some(model::SessionId::new("active"));
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionsListed {
+            sessions: vec![
+                listed_session("active", "Feature active"),
+                listed_session("chosen", "Feature chosen"),
+            ],
+        },
+    );
+    crate::app::session_picker::open(&mut app);
+    handle_terminal_event(&mut app, Event::Paste("feature".into()));
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "active".into(),
+            update: model::SessionUpdate::SessionTitleUpdate(Some("Unrelated title".into())),
+        },
+    );
+    assert_eq!(app.session_picker.selected, 0);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(matches!(rx.try_recv().expect("resume selected match").command,
+        crate::agent::wire::BridgeCommand::ResumeSession { session_id, .. } if session_id == "chosen"));
+}

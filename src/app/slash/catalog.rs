@@ -306,9 +306,9 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
     AppSlashCommandSpec {
         command: AppSlashCommand::Resume,
         name: "/resume",
-        usage: "Usage: /resume [session_id]",
-        short_description: "Resume a session by ID",
-        long_description: "Open the session picker, or resume a manually supplied session ID.",
+        usage: "Usage: /resume",
+        short_description: "Open the session picker",
+        long_description: "Search and select a session in the fullscreen resume picker.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
@@ -406,7 +406,7 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Compact | Self::Login | Self::Logout | Self::NewSession => {
+            Self::Compact | Self::Login | Self::Logout | Self::NewSession | Self::Resume => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
                 } else {
@@ -441,13 +441,6 @@ impl AppSlashCommand {
             },
             Self::Effort => {
                 if matches!(args, ["low" | "medium" | "high" | "xhigh" | "max" | "reset"]) {
-                    SubmissionClass::TurnExclusive
-                } else {
-                    SubmissionClass::Invalid
-                }
-            }
-            Self::Resume => {
-                if args.len() <= 1 {
                     SubmissionClass::TurnExclusive
                 } else {
                     SubmissionClass::Invalid

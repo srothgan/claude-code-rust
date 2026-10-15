@@ -1175,16 +1175,16 @@ fn variable_command_argument_mode_stays_active_without_matches() {
 #[test]
 fn confirm_selection_replaces_only_active_argument_token() {
     let mut app = App::test_default();
-    app.input.set_text("/resume old-id trailing");
-    let _ = app.input.set_cursor(0, "/resume old-id".chars().count());
+    app.input.set_text("/model old-id trailing");
+    let _ = app.input.set_cursor(0, "/model old-id".chars().count());
     app.slash.show(SlashState {
         trigger_row: 0,
-        trigger_col: 8,
+        trigger_col: 7,
         query: "old-id".to_owned(),
         context: SlashContext::Argument {
-            command: "/resume".to_owned(),
+            command: "/model".to_owned(),
             arg_index: 0,
-            token_range: (8, 14),
+            token_range: (7, 13),
         },
         candidates: vec![SlashCandidate {
             insert_value: "new-id".to_owned(),
@@ -1197,7 +1197,7 @@ fn confirm_selection_replaces_only_active_argument_token() {
 
     confirm_selection(&mut app);
 
-    assert_eq!(app.input.text(), "/resume new-id trailing");
+    assert_eq!(app.input.text(), "/model new-id trailing");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1243,6 +1243,7 @@ fn resume_without_id_opens_fullscreen_picker() {
         crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::SessionPicker)
     ));
     let last = app.transcript.messages.last().expect("resume command message");
+    assert!(matches!(last.role, MessageRole::User));
     let MessageBlock::Text(block) = last.blocks.first().expect("text block") else {
         panic!("expected text block");
     };
@@ -1293,7 +1294,7 @@ fn resume_with_extra_args_returns_usage() {
     let Some(MessageBlock::Text(block)) = last.blocks.first() else {
         panic!("expected text block");
     };
-    assert_eq!(block.text, "Usage: /resume [session_id]");
+    assert_eq!(block.text, "Usage: /resume");
 }
 
 #[test]
@@ -1368,42 +1369,6 @@ fn rewind_with_cached_target_sends_bridge_command() {
     assert_eq!(session_id, "session-1");
     assert_eq!(target_user_message_id, "user-1");
     assert_eq!(restore_mode, crate::agent::types::RewindRestoreMode::Conversation);
-}
-
-#[test]
-fn resume_command_is_rendered_as_user_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/resume abc-123");
-    assert!(consumed);
-    assert!(app.transcript.messages.len() >= 2);
-
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("expected user message");
-    };
-    assert!(matches!(first.role, MessageRole::User));
-    let Some(MessageBlock::Text(block)) = first.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "/resume abc-123");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn resume_sets_command_pending_when_connected() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut app = App::test_default();
-            let mut rx = attach_test_connection(&mut app);
-
-            let consumed = try_handle_submit(&mut app, "/resume abc-123");
-            assert!(consumed);
-            assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.pending_session_resume_id(), Some("abc-123"));
-
-            tokio::task::yield_now().await;
-            assert!(rx.try_recv().is_ok());
-        })
-        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

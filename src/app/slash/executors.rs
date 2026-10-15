@@ -9,13 +9,9 @@ use super::{
 };
 use crate::agent::events::ClientEvent;
 use crate::agent::types::RewindRestoreMode;
-use crate::app::connect::{
-    SessionStartReason, begin_resume_session, begin_rewind, start_new_session,
-};
+use crate::app::connect::{SessionStartReason, begin_rewind, start_new_session};
 use crate::app::events::push_submission_feedback;
-use crate::app::{
-    App, AppStatus, FullscreenView, ReleaseReason, SessionPickerState, SystemSeverity, view,
-};
+use crate::app::{App, AppStatus, ReleaseReason, SystemSeverity};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
@@ -73,7 +69,7 @@ pub(crate) fn try_handle_submission(app: &mut App, submission: &ResolvedSubmissi
         AppSlashCommand::Mode => handle_mode_submit(app, &args),
         AppSlashCommand::Model => handle_model_submit(app, &args),
         AppSlashCommand::NewSession => handle_new_session_submit(app),
-        AppSlashCommand::Resume => handle_resume_submit(app, &args),
+        AppSlashCommand::Resume => handle_resume_submit(app),
         AppSlashCommand::Rewind => handle_rewind_submit(app, &args),
     }
 }
@@ -763,44 +759,12 @@ fn handle_new_session_submit(app: &mut App) -> bool {
     true
 }
 
-fn handle_resume_submit(app: &mut App, args: &[&str]) -> bool {
-    if args.is_empty() {
-        push_user_message(app, "/resume");
-        if require_connection(app, "Cannot open resume picker: not connected yet.").is_none() {
-            return true;
-        }
-        let current_session_id =
-            app.session_runtime.session_id.as_ref().map(crate::agent::model::SessionId::as_str);
-        let selected = current_session_id
-            .and_then(|session_id| {
-                app.recent_sessions
-                    .iter()
-                    .take(crate::app::session_picker::MAX_PICKER_SESSIONS)
-                    .position(|session| session.session_id == session_id)
-            })
-            .unwrap_or(0);
-        app.session_picker = SessionPickerState { selected, ..SessionPickerState::default() };
-        view::set_fullscreen_view(app, FullscreenView::SessionPicker);
+fn handle_resume_submit(app: &mut App) -> bool {
+    push_user_message(app, "/resume");
+    if require_connection(app, "Cannot open resume picker: not connected yet.").is_none() {
         return true;
     }
-    let [session_id_arg] = args else {
-        unreachable!("validated /resume arguments must contain at most one value");
-    };
-    let session_id = *session_id_arg;
-
-    push_user_message(app, format!("/resume {session_id}"));
-    let Some(conn) = require_connection(app, "Cannot resume session: not connected yet.") else {
-        return true;
-    };
-
-    set_command_pending(app, &format!("Resuming session {session_id}..."), None);
-    let session_id = session_id.to_owned();
-    if let Err(e) = begin_resume_session(app, &conn, session_id) {
-        crate::app::events::handle_local_slash_command_error(
-            app,
-            &format!("Failed to run /resume: {e}"),
-        );
-    }
+    crate::app::session_picker::open(app);
     true
 }
 

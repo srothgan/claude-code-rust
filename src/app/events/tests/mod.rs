@@ -3669,14 +3669,16 @@ fn trusted_view_ignores_paste_events() {
 }
 
 #[test]
-fn session_picker_ignores_paste_events() {
+fn session_picker_paste_edits_search_without_changing_the_chat_draft() {
     let mut app = make_test_app();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::SessionPicker);
 
-    handle_terminal_event(&mut app, Event::Paste("blocked".into()));
+    app.input.set_text("unfinished question");
+    handle_terminal_event(&mut app, Event::Paste("session-id".into()));
 
     assert!(app.paste.pending_text.is_empty());
-    assert!(app.input.is_empty());
+    assert_eq!(app.input.text(), "unfinished question");
+    assert_eq!(app.session_picker.query, "session-id");
 }
 
 #[test]

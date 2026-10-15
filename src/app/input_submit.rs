@@ -1238,7 +1238,7 @@ mod tests {
         let [MessageBlock::Notice(notice)] = app.transcript.messages[0].blocks.as_slice() else {
             panic!("expected inline usage notice");
         };
-        assert_eq!(notice.text.text, "Usage: /resume [session_id]");
+        assert_eq!(notice.text.text, "Usage: /resume");
         assert!(!notice.text.text.contains("between agent turns"));
         assert!(rx.try_recv().is_err());
     }

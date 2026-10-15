@@ -3,7 +3,6 @@
 use super::super::connect::take_connection_slot;
 use super::super::connect::{SessionStartReason, start_new_session};
 use super::super::state::RecentSessionInfo;
-use super::super::view::{self, FullscreenView};
 use super::super::{App, AppStatus, LoginHint, SystemSeverity};
 use super::push_system_message_with_severity;
 use super::session_reset::{ChatResetKind, load_resume_history, reset_for_new_session};
@@ -103,9 +102,7 @@ pub(super) fn handle_sessions_listed_event(
 ) {
     let session_count = sessions.len();
     let pending_title_change = app.config.pending_session_title_change.take();
-    let selected_session_id = app
-        .recent_sessions
-        .get(app.session_picker.selected)
+    let selected_session_id = super::super::session_picker::selected_session(app)
         .map(|session| session.session_id.clone());
     let had_pending_title_change = pending_title_change.is_some();
     app.recent_sessions = sessions
@@ -144,7 +141,10 @@ pub(super) fn handle_sessions_listed_event(
         }
     }
     app.startup.mark_recent_sessions_loaded();
-    reconcile_session_picker_selection(app, selected_session_id.as_deref());
+    if app.recent_sessions.is_empty() {
+        app.startup.complete_launch();
+    }
+    super::super::session_picker::reconcile_selection(app, selected_session_id.as_deref());
     maybe_open_startup_session_picker(app);
     tracing::info!(
         target: crate::logging::targets::APP_SESSION,
@@ -682,29 +682,6 @@ pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.reconcile_trust_state_from_preferences_and_cwd();
 }
 
-fn reconcile_session_picker_selection(app: &mut App, selected_session_id: Option<&str>) {
-    let session_count = super::super::session_picker::picker_session_count(app);
-    if session_count == 0 {
-        app.startup.complete_launch();
-        app.session_picker.selected = 0;
-        app.session_picker.scroll_offset = 0;
-        return;
-    }
-
-    if let Some(session_id) = selected_session_id
-        && let Some(idx) =
-            app.recent_sessions.iter().position(|session| session.session_id == session_id)
-        && idx < session_count
-    {
-        app.session_picker.selected = idx;
-    } else {
-        app.session_picker.selected =
-            app.session_picker.selected.min(session_count.saturating_sub(1));
-    }
-    app.session_picker.scroll_offset =
-        app.session_picker.scroll_offset.min(app.session_picker.selected);
-}
-
 fn maybe_open_startup_session_picker(app: &mut App) {
     if app.update_prompt.is_some() {
         return;
@@ -724,9 +701,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
         return;
     }
 
-    app.session_picker.selected = app.session_picker.selected.min(session_count - 1);
-    app.session_picker.scroll_offset = 0;
-    view::set_fullscreen_view(app, FullscreenView::SessionPicker);
+    super::super::session_picker::open(app);
 }
 
 #[cfg(test)]

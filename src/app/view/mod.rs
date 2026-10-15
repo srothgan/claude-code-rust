@@ -71,6 +71,7 @@ pub(crate) fn dismiss_fullscreen_on_interrupt(app: &mut App) {
         FullscreenView::SessionPicker => {
             app.startup.resolve_session_picker();
             app.session_picker.turn_session_id = None;
+            app.session_picker.reset_turn_navigation();
         }
         FullscreenView::Update => {
             app.update_prompt = None;
