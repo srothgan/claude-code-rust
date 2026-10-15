@@ -119,7 +119,11 @@ runtime layout, and manual bridge overrides.
 
 These match the core checks in `.github/workflows/pr.yml`:
 
-The repository's `.cargo/config.toml` limits compilation to one job to reduce peak compiler and linker memory. Test execution remains parallel by default. Run checks sequentially; override compilation concurrency explicitly with `-j N` when needed.
+The repository's `.cargo/config.toml` allows up to eight concurrent compilation jobs for builds, Clippy, and test compilation. This is a starting point for balancing speed and peak compiler/linker memory use, not a measured optimum or a universal Cargo recommendation. Without a configured limit, Cargo defaults to the number of logical CPUs. See [Cargo's build job settings](https://doc.rust-lang.org/cargo/reference/config.html#buildjobs).
+
+Override the default per command with `-j N`, for example `cargo clippy -j 4 --all-targets --all-features -- -D warnings`, or set `CARGO_BUILD_JOBS` in your environment to override the repository setting. Lower the limit if builds exhaust memory or cause swapping; increase it if memory and CPU capacity allow, and compare timings for the same workload. Run checks sequentially to avoid competing builds.
+
+Compilation jobs do not control test execution threads. Tests run in parallel by default; use `cargo test --all-features -- --test-threads=1` when serial test execution is required. The terminal regression CI job sets this explicitly. See [Cargo's test options](https://doc.rust-lang.org/cargo/commands/cargo-test.html#miscellaneous-options).
 
 ```bash
 # Formatting

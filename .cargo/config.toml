@@ -1,0 +1,3 @@
+[build]
+# Balance build parallelism against peak compiler and linker memory use.
+jobs = 8
