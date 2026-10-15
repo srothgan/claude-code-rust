@@ -64,7 +64,7 @@ pub(crate) fn build_user_system_message_rows(
                 match segment {
                     MessageRowSegment::Blank => physical.push(Line::default()),
                     MessageRowSegment::Lines { lines } => {
-                        physical.extend(super::wrap::wrap_markdown_lines_to_physical_rows(
+                        physical.extend(super::wrap::wrap_lines_to_physical_rows(
                             &lines,
                             MessageLayout::new(width).content_width,
                         ));
@@ -219,7 +219,7 @@ pub(super) fn render_btw_exchange_lines(
 
 fn render_btw_markdown(text: &str, width: u16) -> Vec<Line<'static>> {
     let logical = super::document_table::render_markdown_with_tables(text, width, None);
-    let mut physical = crate::ui::wrap::wrap_markdown_lines_to_physical_rows(&logical, width);
+    let mut physical = crate::ui::wrap::wrap_lines_to_physical_rows(&logical, width);
     for line in &mut physical {
         for span in &mut line.spans {
             if span.style.bg.is_none_or(|color| color == Color::Reset) {

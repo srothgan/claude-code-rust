@@ -127,6 +127,8 @@ fn random_welcome_tip_seed() -> u64 {
 pub enum TextBlockSpacing {
     #[default]
     None,
+    /// An internal cache split in the same source: insert no separator when joining.
+    Continuation,
     ParagraphBreak,
 }
 
@@ -147,7 +149,9 @@ impl TextBlockSpacing {
                         existing.push_str("\n\n");
                     }
                 }
-                TextBlockSpacing::None | TextBlockSpacing::ParagraphBreak => {}
+                TextBlockSpacing::None
+                | TextBlockSpacing::Continuation
+                | TextBlockSpacing::ParagraphBreak => {}
             }
         }
 
@@ -157,7 +161,7 @@ impl TextBlockSpacing {
     #[must_use]
     pub fn blank_lines(self) -> usize {
         match self {
-            Self::None => 0,
+            Self::None | Self::Continuation => 0,
             Self::ParagraphBreak => 1,
         }
     }
@@ -168,10 +172,10 @@ pub struct TextBlock {
     pub source_message_uuids: Vec<String>,
     pub text: String,
     pub cache: BlockCache,
-    /// Explicit visual spacing after this block.
+    /// Source relationship and visual spacing after this block.
     ///
     /// This is used when streaming splits one logical assistant message into
-    /// multiple cached blocks at paragraph boundaries. Rendering consumes this
+    /// multiple cached blocks inside paragraphs or at paragraph boundaries. Rendering consumes this
     /// metadata directly so spacing, height measurement, and scroll skipping all
     /// agree without mutating source text.
     pub trailing_spacing: TextBlockSpacing,

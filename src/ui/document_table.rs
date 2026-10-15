@@ -118,7 +118,7 @@ pub fn render_markdown_with_tables(
                 if chunk.trim().is_empty() {
                     continue;
                 }
-                out.extend(markdown::render_markdown_safe(&chunk, bg));
+                out.extend(markdown::render_markdown_at_width(&chunk, width, bg));
             }
             MarkdownBlock::Table(table) => {
                 if !out.is_empty() {
@@ -142,20 +142,30 @@ fn split_markdown_tables(text: &str) -> Vec<MarkdownBlock> {
     let mut blocks = Vec::new();
     let mut parser = Parser::new_ext(text, parser_options()).into_offset_iter().peekable();
     let mut text_start = 0usize;
+    let mut depth = 0usize;
 
     loop {
         let Some((event, range)) = parser.next() else {
             break;
         };
-        if let Event::Start(Tag::Table(alignments)) = event {
+        if let Event::Start(Tag::Table(alignments)) = &event
+            && depth == 0
+        {
             if text_start < range.start {
                 blocks.push(MarkdownBlock::Text(text[text_start..range.start].to_owned()));
             }
 
             let mut table_end = range.end;
-            let table = parse_table_ast(alignments, &mut parser, &mut table_end);
+            let table = parse_table_ast(alignments.clone(), &mut parser, &mut table_end);
             blocks.push(MarkdownBlock::Table(table));
             text_start = table_end;
+        } else {
+            // Nested tables belong to their container's layout and available width.
+            match event {
+                Event::Start(_) => depth += 1,
+                Event::End(_) => depth = depth.saturating_sub(1),
+                _ => {}
+            }
         }
     }
 

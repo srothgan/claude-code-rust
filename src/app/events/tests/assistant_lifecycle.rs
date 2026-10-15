@@ -312,3 +312,85 @@ fn empty_response_exit_removes_its_owner_without_consuming_the_next_draft() {
         }
     }
 }
+
+#[test]
+fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
+    fn take_text(
+        app: &mut App,
+        excluded: &mut BTreeSet<HistoryOutputId>,
+        stable_only: bool,
+    ) -> Vec<String> {
+        let rendered = serialize_live_rows_with_boundaries_excluding(app, 36, excluded);
+        let mut rows = Vec::new();
+        for segment in rendered.segments() {
+            if segment.kind != LiveRowBoundaryKind::AssistantText
+                || (stable_only && segment.end_row > rendered.stable_row_count())
+            {
+                continue;
+            }
+            rows.extend(
+                rendered
+                    .segment_rows(segment)
+                    .unwrap()
+                    .iter()
+                    .map(|row| row.to_string().trim_end().to_owned()),
+            );
+            excluded.extend(segment.ids.iter().cloned());
+        }
+        rows
+    }
+
+    let long_source = format!(
+        "Introduction.\n\n9. Parent item.\n\n   {}\n\n   - Child with 日本語😀.\n10. Next item.\n\nFinal paragraph.",
+        "Long continuation with useful detail. ".repeat(130)
+    );
+    for source in [long_source, "Introduction.\n\n9) Parent item.\n\n   - Child item.\n\n     Child continuation.\n10) Next item.\n\nFinal paragraph.".to_owned()] {
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut whole = connected_app().0;
+    whole.status = AppStatus::Ready;
+    update(&mut whole, model::SessionUpdate::AgentResponseStarted);
+    update(&mut whole, text(&source));
+    handle_client_event(&mut whole, turn_complete(None));
+    assert_eq!(
+        crate::app::copy::choices(&whole)[0].text,
+        source,
+        "cache splits must preserve the original Markdown source for copying"
+    );
+    let expected = take_text(&mut whole, &mut BTreeSet::new(), false);
+    assert!(
+        expected.iter().any(|row| row.contains("Introduction.")),
+        "fixture must deliver output through the session boundary"
+    );
+
+    let chunk_sizes = if chars.len() < 512 { [1, 17, chars.len()] } else { [17, 113, chars.len()] };
+    for chunk_size in chunk_sizes {
+        let mut app = connected_app().0;
+        app.status = AppStatus::Ready;
+        update(&mut app, model::SessionUpdate::AgentResponseStarted);
+        let mut committed = Vec::new();
+        let mut excluded = BTreeSet::new();
+        let mut committed_intro_while_running = false;
+        for chunk in chars.chunks(chunk_size) {
+            update(&mut app, text(&chunk.iter().collect::<String>()));
+            committed.extend(take_text(&mut app, &mut excluded, true));
+            committed_intro_while_running |=
+                committed.iter().any(|row| row.contains("Introduction."));
+        }
+        assert!(
+            committed_intro_while_running,
+            "ordinary completed paragraphs should still reach scrollback during a long list"
+        );
+        handle_client_event(&mut app, turn_complete(None));
+        committed.extend(take_text(&mut app, &mut excluded, false));
+        assert_eq!(
+            crate::app::copy::choices(&app)[0].text,
+            source,
+            "SDK chunk size {chunk_size} must preserve the copied Markdown exactly"
+        );
+        assert_eq!(
+            committed, expected,
+            "SDK chunk size {chunk_size} changed the displayed list or duplicated committed rows"
+        );
+    }
+    }
+}

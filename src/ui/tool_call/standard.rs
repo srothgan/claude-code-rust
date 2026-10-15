@@ -345,7 +345,7 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
         match content {
             model::ToolCallContent::Diff(diff) => {
                 if is_plan_file_path(&diff.path) {
-                    lines.extend(render_plan_content(&diff.new_text));
+                    lines.extend(render_plan_content(&diff.new_text, width));
                 } else {
                     let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
                     let raw = cap_write_diff_lines(raw);
@@ -353,14 +353,14 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
                 }
             }
             model::ToolCallContent::McpResource(resource) => {
-                lines.extend(render_mcp_resource_content(tc, resource));
+                lines.extend(render_mcp_resource_content(tc, resource, width));
             }
             model::ToolCallContent::ResourceLink(link) => {
                 lines.extend(render_mcp_resource_link_content(link));
             }
             model::ToolCallContent::Content(c) => {
                 if let model::ContentBlock::Text(text) = &c.content {
-                    render_text_content(tc, &text.text, &mut lines);
+                    render_text_content(tc, &text.text, width, &mut lines);
                 }
             }
             model::ToolCallContent::Terminal(_) => {}
@@ -610,9 +610,9 @@ fn cap_read_content_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     out
 }
 
-fn render_plan_content(text: &str) -> Vec<Line<'static>> {
+fn render_plan_content(text: &str, width: u16) -> Vec<Line<'static>> {
     let md_source = strip_outer_code_fence(text);
-    markdown::render_markdown_safe(&md_source, None)
+    markdown::render_markdown_at_width(&md_source, width, None)
         .into_iter()
         .map(|line| {
             let owned: Vec<Span<'static>> = line
@@ -625,15 +625,20 @@ fn render_plan_content(text: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn render_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
+fn render_text_content(tc: &ToolCallInfo, text: &str, width: u16, lines: &mut Vec<Line<'static>>) {
     if is_read_tool(tc) {
-        render_read_text_content(tc, text, lines);
+        render_read_text_content(tc, text, width, lines);
     } else {
-        render_generic_text_content(tc, text, lines);
+        render_generic_text_content(tc, text, width, lines);
     }
 }
 
-fn render_read_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
+fn render_read_text_content(
+    tc: &ToolCallInfo,
+    text: &str,
+    width: u16,
+    lines: &mut Vec<Line<'static>>,
+) {
     let fenced_language = outer_code_fence_language(text);
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
@@ -645,7 +650,7 @@ fn render_read_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<
         return;
     }
     if read_content_is_markdown(tc) {
-        render_markdown_content(&stripped, lines);
+        render_markdown_content(&stripped, width, lines);
         return;
     }
 
@@ -769,7 +774,12 @@ fn render_numbered_read_lines(
         .collect()
 }
 
-fn render_generic_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
+fn render_generic_text_content(
+    tc: &ToolCallInfo,
+    text: &str,
+    width: u16,
+    lines: &mut Vec<Line<'static>>,
+) {
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
         lines.extend(failed_lines);
@@ -785,24 +795,29 @@ fn render_generic_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Li
         ));
         return;
     };
-    render_markdown_content(&md_source, lines);
+    render_markdown_content(&md_source, width, lines);
 }
 
-fn render_mcp_resource_text_content(tc: &ToolCallInfo, text: &str, lines: &mut Vec<Line<'static>>) {
+fn render_mcp_resource_text_content(
+    tc: &ToolCallInfo,
+    text: &str,
+    width: u16,
+    lines: &mut Vec<Line<'static>>,
+) {
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
         lines.extend(failed_lines);
         return;
     }
     if is_markdown_file(&tc.title) {
-        render_markdown_content(&stripped, lines);
+        render_markdown_content(&stripped, width, lines);
     } else {
         lines.extend(highlight::plain_text_lines(&stripped));
     }
 }
 
-fn render_markdown_content(text: &str, lines: &mut Vec<Line<'static>>) {
-    for line in markdown::render_markdown_safe(text, None) {
+fn render_markdown_content(text: &str, width: u16, lines: &mut Vec<Line<'static>>) {
+    for line in markdown::render_markdown_at_width(text, width, None) {
         let owned: Vec<Span<'static>> =
             line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect();
         lines.push(Line::from(owned));
@@ -846,10 +861,11 @@ fn outer_code_fence_language(text: &str) -> Option<&str> {
 fn render_mcp_resource_content(
     tc: &ToolCallInfo,
     resource: &model::McpResource,
+    width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(text) = resource.text.as_deref() {
-        render_mcp_resource_text_content(tc, text, &mut lines);
+        render_mcp_resource_text_content(tc, text, width, &mut lines);
     }
     if let Some(blob_saved_to) = &resource.blob_saved_to {
         let saved_path = blob_saved_to.to_string_lossy().into_owned();

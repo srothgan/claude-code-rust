@@ -19,7 +19,7 @@ use crate::ui::message_rows::{
 use crate::ui::theme;
 use crate::ui::tool_call;
 use crate::ui::welcome;
-use crate::ui::wrap::{wrap_lines_to_physical_rows, wrap_markdown_lines_to_physical_rows};
+use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
@@ -575,8 +575,10 @@ impl PendingAssistantTextRun {
         }
     }
 
-    const fn can_merge(&self, commit_ready: bool) -> bool {
-        !self.commit_ready && !commit_ready
+    fn can_merge(&self, next: &TextBlock, commit_ready: bool) -> bool {
+        (!self.commit_ready && !commit_ready)
+            || self.trailing_spacing == TextBlockSpacing::Continuation
+            || assistant_list_crosses_handoff(&self.text, self.trailing_spacing, next)
     }
 
     fn append(
@@ -633,7 +635,7 @@ fn assistant_render_items_from_message(
                 let commit_ready =
                     assistant_text_block_commit_ready(message, block_idx, active_tail_block_idx);
                 if let Some(pending) = pending_text.as_mut()
-                    && pending.can_merge(commit_ready)
+                    && pending.can_merge(text, commit_ready)
                 {
                     let merged_commit_ready = assistant_text_run_commit_ready(
                         message,
@@ -862,8 +864,9 @@ fn assistant_text_run_handoff_requires_markdown_context(
         return false;
     };
 
-    assistant_text_handoff_continues_open_table(&text, next)
-        || assistant_text_handoff_continues_list_item(&text, trailing_spacing, next)
+    trailing_spacing == TextBlockSpacing::Continuation
+        || assistant_text_handoff_continues_open_table(&text, next)
+        || assistant_list_crosses_handoff(&text, trailing_spacing, next)
         || markdown_source_has_open_fence(&text)
         || markdown_source_has_open_inline_delimiter(&text)
 }
@@ -898,19 +901,15 @@ fn assistant_text_handoff_continues_open_table(current: &str, next: &TextBlock) 
     starts_with_markdown_table_row(&next.text)
 }
 
-fn assistant_text_handoff_continues_list_item(
+fn assistant_list_crosses_handoff(
     current: &str,
-    trailing_spacing: TextBlockSpacing,
+    spacing: TextBlockSpacing,
     next: &TextBlock,
 ) -> bool {
-    trailing_spacing == TextBlockSpacing::None
-        && markdown_source_ends_with_list_item(current)
-        && markdown_source_starts_with_list_continuation(&next.text)
-}
-
-fn markdown_source_starts_with_list_continuation(text: &str) -> bool {
-    markdown_source_boundary_line(text, BoundaryLine::First)
-        .is_some_and(|line| !markdown_source_line_is_list_item(line))
+    let boundary = current.len();
+    let mut source = current.to_owned();
+    spacing.append_source(&mut source, &next.text);
+    super::markdown::list_crosses_boundary(&source, boundary)
 }
 
 fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Option<&TextBlock> {
@@ -1029,8 +1028,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         spinner: request.spinner,
     });
 
-    let mut items = request.items.into_iter().peekable();
-    while let Some(item) = items.next() {
+    for item in request.items {
         let boundary = AssistantBoundaryMeta {
             ids: item.ids,
             msg_idx: item.msg_idx,
@@ -1041,7 +1039,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         let item_leading_blank_lines = item.leading_blank_lines;
         match item.item {
             AssistantRenderItem::Text(block) => {
-                let trailing_gap = assistant_text_trailing_gap(&block, items.peek());
+                let trailing_gap = block.trailing_blank_lines();
                 let rendered =
                     render_assistant_text_block(block, content_width, !state.has_visible_content);
                 if !rendered.is_empty() {
@@ -1057,7 +1055,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
                 }
             }
             AssistantRenderItem::Notice(block) => {
-                let trailing_gap = assistant_text_trailing_gap(&block.text, items.peek());
+                let trailing_gap = block.text.trailing_blank_lines();
                 let rendered =
                     render_assistant_notice_block(block, content_width, !state.has_visible_content);
                 if !rendered.is_empty() {
@@ -1142,88 +1140,6 @@ fn finish_assistant_rows(
         ));
     }
     RenderedMessageRows::rendered(trim_trailing_blank_rows(rows), boundaries)
-}
-
-fn assistant_text_trailing_gap(
-    block: &TextBlock,
-    next_item: Option<&AssistantRenderItemSpec>,
-) -> usize {
-    let gap = block.trailing_blank_lines();
-    if gap == 0 {
-        return 0;
-    }
-
-    let next_text = next_item.and_then(assistant_item_text);
-    if text_boundary_touches_markdown_list(&block.text, next_text) { 0 } else { gap }
-}
-
-fn assistant_item_text(item: &AssistantRenderItemSpec) -> Option<&TextBlock> {
-    match &item.item {
-        AssistantRenderItem::Text(block) => Some(block),
-        AssistantRenderItem::Notice(block) => Some(&block.text),
-        AssistantRenderItem::CanonicalBtw { .. } | AssistantRenderItem::CanonicalTool { .. } => {
-            None
-        }
-    }
-}
-
-fn text_boundary_touches_markdown_list(current: &str, next: Option<&TextBlock>) -> bool {
-    markdown_source_ends_with_list_item(current)
-        || next.is_some_and(|block| markdown_source_starts_with_list_item(&block.text))
-}
-
-fn markdown_source_starts_with_list_item(text: &str) -> bool {
-    markdown_source_boundary_line(text, BoundaryLine::First)
-        .is_some_and(markdown_source_line_is_list_item)
-}
-
-fn markdown_source_ends_with_list_item(text: &str) -> bool {
-    markdown_source_boundary_line(text, BoundaryLine::Last)
-        .is_some_and(markdown_source_line_is_list_item)
-}
-
-#[derive(Clone, Copy)]
-enum BoundaryLine {
-    First,
-    Last,
-}
-
-fn markdown_source_boundary_line(text: &str, boundary: BoundaryLine) -> Option<&str> {
-    let mut in_fenced_code = false;
-    let mut first = None;
-    let mut last = None;
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-        let in_code_line = in_fenced_code || is_fence;
-        if is_fence {
-            in_fenced_code = !in_fenced_code;
-        }
-        if in_code_line || trimmed.is_empty() {
-            continue;
-        }
-        first.get_or_insert(line);
-        last = Some(line);
-    }
-
-    match boundary {
-        BoundaryLine::First => first,
-        BoundaryLine::Last => last,
-    }
-}
-
-fn markdown_source_line_is_list_item(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("- ")
-        || trimmed.starts_with("* ")
-        || trimmed.starts_with("+ ")
-        || markdown_source_starts_with_ordered_list_marker(trimmed)
-}
-
-fn markdown_source_starts_with_ordered_list_marker(text: &str) -> bool {
-    let digit_count = text.bytes().take_while(u8::is_ascii_digit).count();
-    digit_count > 0 && text[digit_count..].starts_with(". ")
 }
 
 fn markdown_source_has_open_fence(text: &str) -> bool {
@@ -1392,7 +1308,7 @@ fn render_assistant_text_block(
     } else {
         lines
     };
-    wrap_markdown_lines_to_physical_rows(&lines, width)
+    wrap_lines_to_physical_rows(&lines, width)
 }
 
 fn trim_trailing_blank_rows(mut rows: Vec<Line<'static>>) -> Vec<Line<'static>> {
@@ -1520,7 +1436,7 @@ fn segments_to_physical_rows(segments: &[MessageRowSegment], width: u16) -> Vec<
         match segment {
             MessageRowSegment::Blank => rows.push(Line::default()),
             MessageRowSegment::Lines { lines } => {
-                rows.extend(wrap_markdown_lines_to_physical_rows(lines, width));
+                rows.extend(wrap_lines_to_physical_rows(lines, width));
             }
         }
     }
@@ -2288,7 +2204,7 @@ mod tests {
     }
 
     #[test]
-    fn live_assistant_text_suppresses_paragraph_gap_before_list_block() {
+    fn live_assistant_text_preserves_paragraph_gap_before_list_block() {
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(
@@ -2302,12 +2218,13 @@ mod tests {
 
         let text = line_texts(&rows);
         let intro = text.iter().position(|row| row.ends_with("Intro")).unwrap();
-        assert!(text[intro + 1].trim_start().starts_with("- One"));
-        assert!(text[intro + 2].trim_start().starts_with("- Two"));
+        assert!(text[intro + 1].trim().is_empty());
+        assert!(text[intro + 2].trim_start().starts_with("- One"));
+        assert!(text[intro + 3].trim_start().starts_with("- Two"));
     }
 
     #[test]
-    fn live_assistant_text_suppresses_paragraph_gap_after_list_block() {
+    fn live_assistant_text_preserves_paragraph_gap_after_list_block() {
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_blocks_message(vec![
             MessageBlock::Text(
@@ -2321,7 +2238,8 @@ mod tests {
 
         let text = line_texts(&rows);
         let last_item = text.iter().position(|row| row.trim() == "- Two").unwrap();
-        assert_eq!(text[last_item + 1].trim(), "Outro");
+        assert!(text[last_item + 1].trim().is_empty());
+        assert_eq!(text[last_item + 2].trim(), "Outro");
     }
 
     #[test]
@@ -2465,6 +2383,49 @@ mod tests {
             remaining_text.iter().any(|line| line.starts_with(" ●   3. Keymap survey")),
             "missing ordered list prefix: {remaining_text:?}"
         );
+    }
+
+    #[test]
+    fn streamed_list_paragraphs_keep_numbering_and_never_commit_an_incomplete_list() {
+        let pieces = [
+            "9. Parent item.\n\n",
+            "   Continuation paragraph.\n\n",
+            "   - Nested child.\n",
+            "10. Following item.",
+        ];
+        for width in [32, 80] {
+            let mut streamed = App::test_default();
+            streamed.transcript.messages.push(assistant_blocks_message(Vec::new()));
+            streamed.bind_active_turn_assistant(0);
+            streamed.status = AppStatus::Running;
+            for piece in pieces {
+                streamed.transcript.messages[0]
+                    .blocks
+                    .push(MessageBlock::Text(TextBlock::from_complete(piece)));
+                let partial = serialize_all_rows_with_boundaries(&mut streamed, width);
+                assert_eq!(
+                    partial.stable_row_count(),
+                    0,
+                    "list context must stay mutable until the list ends: {piece:?}"
+                );
+            }
+            let mut whole = App::test_default();
+            whole.transcript.messages.push(assistant_text_message(&pieces.concat()));
+            whole.bind_active_turn_assistant(0);
+            whole.status = AppStatus::Running;
+            assert_eq!(
+                line_texts(&serialize_live_rows(&mut streamed, width)),
+                line_texts(&serialize_live_rows(&mut whole, width)),
+                "stream boundaries must not change list structure"
+            );
+            streamed.status = AppStatus::Ready;
+            whole.status = AppStatus::Ready;
+            assert_eq!(
+                line_texts(&serialize_live_rows(&mut streamed, width)),
+                line_texts(&serialize_live_rows(&mut whole, width)),
+                "completion must preserve the list"
+            );
+        }
     }
 
     #[test]

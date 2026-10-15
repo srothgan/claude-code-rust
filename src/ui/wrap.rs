@@ -75,59 +75,6 @@ pub(crate) fn wrap_lines_to_physical_rows(
 }
 
 #[must_use]
-pub(crate) fn wrap_markdown_lines_to_physical_rows(
-    lines: &[Line<'static>],
-    width: u16,
-) -> Vec<Line<'static>> {
-    if lines.is_empty() {
-        return Vec::new();
-    }
-
-    let mut rows = Vec::new();
-    let mut in_fenced_code = false;
-    for line in lines {
-        let text = line_text(line);
-        let starts_fence =
-            text.trim_start().starts_with("```") || text.trim_start().starts_with("~~~");
-        let in_code_line = in_fenced_code || starts_fence;
-        rows.extend(wrap_markdown_line_to_physical_rows(line, width, in_code_line));
-        if starts_fence {
-            in_fenced_code = !in_fenced_code;
-        }
-    }
-    rows
-}
-
-fn wrap_markdown_line_to_physical_rows(
-    line: &Line<'static>,
-    width: u16,
-    in_fenced_code: bool,
-) -> Vec<Line<'static>> {
-    if in_fenced_code {
-        return wrap_lines_to_physical_rows(std::slice::from_ref(line), width);
-    }
-
-    let Some(body_start) = markdown_list_body_start(&line_text(line)) else {
-        return wrap_lines_to_physical_rows(std::slice::from_ref(line), width);
-    };
-    if width == 0 {
-        return vec![Line::default()];
-    }
-
-    let (marker, body) = split_line_chunks_at_byte(line, body_start);
-    let marker_width = marker.iter().map(|chunk| display_width(&chunk.text)).sum::<usize>();
-    let width = usize::from(width);
-    if marker_width == 0 || marker_width >= width {
-        return wrap_lines_to_physical_rows(
-            std::slice::from_ref(line),
-            u16::try_from(width).unwrap_or(u16::MAX),
-        );
-    }
-
-    wrap_styled_chunks_with_hanging_prefix(&marker, &body, width, line.style)
-}
-
-#[must_use]
 pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Line<'static>> {
     if width == 0 || chunks.is_empty() {
         return vec![Line::default()];
@@ -227,82 +174,6 @@ pub(crate) fn wrap_styled_chunks_with_hanging_prefix(
         Line::from(spans).style(line_style)
     }));
     rows
-}
-
-fn split_line_chunks_at_byte(
-    line: &Line<'static>,
-    split_at: usize,
-) -> (Vec<StyledChunk>, Vec<StyledChunk>) {
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    let mut seen = 0usize;
-
-    for span in &line.spans {
-        let text = span.content.as_ref();
-        let span_start = seen;
-        let span_end = seen + text.len();
-        if span_end <= split_at {
-            left.push(StyledChunk { text: text.to_owned(), style: span.style });
-        } else if span_start >= split_at {
-            right.push(StyledChunk { text: text.to_owned(), style: span.style });
-        } else {
-            let local_split = split_at - span_start;
-            let (prefix, suffix) = text.split_at(local_split);
-            if !prefix.is_empty() {
-                left.push(StyledChunk { text: prefix.to_owned(), style: span.style });
-            }
-            if !suffix.is_empty() {
-                right.push(StyledChunk { text: suffix.to_owned(), style: span.style });
-            }
-        }
-        seen = span_end;
-    }
-
-    (left, right)
-}
-
-fn markdown_list_body_start(text: &str) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut idx = bytes.iter().take_while(|byte| **byte == b' ').count();
-    if idx >= bytes.len() {
-        return None;
-    }
-
-    if matches!(bytes[idx], b'-' | b'*' | b'+')
-        && bytes.get(idx + 1).is_some_and(|byte| *byte == b' ')
-    {
-        idx += 2;
-        if task_list_marker_len(&bytes[idx..]).is_some() {
-            idx += 4;
-        }
-        return Some(idx);
-    }
-
-    let digit_start = idx;
-    while bytes.get(idx).is_some_and(u8::is_ascii_digit) {
-        idx += 1;
-    }
-    if idx > digit_start
-        && bytes.get(idx).is_some_and(|byte| *byte == b'.')
-        && bytes.get(idx + 1).is_some_and(|byte| *byte == b' ')
-    {
-        return Some(idx + 2);
-    }
-
-    None
-}
-
-fn task_list_marker_len(bytes: &[u8]) -> Option<usize> {
-    (bytes.len() >= 4
-        && bytes[0] == b'['
-        && matches!(bytes[1], b' ' | b'x' | b'X')
-        && bytes[2] == b']'
-        && bytes[3] == b' ')
-        .then_some(4)
-}
-
-fn line_text(line: &Line<'_>) -> String {
-    line.spans.iter().map(|span| span.content.as_ref()).collect()
 }
 
 #[must_use]
@@ -506,6 +377,9 @@ fn buffer_row_to_line(buf: &Buffer, area: Rect, row: u16) -> Line<'static> {
 
 #[cfg(test)]
 mod tests {
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
     use super::*;
     use pretty_assertions::assert_eq;
     use ratatui::style::Modifier;
@@ -534,7 +408,7 @@ mod tests {
         assert_eq!(line_text(&rows[0]).trim_end(), "日本語 😀 end");
         assert_eq!(rows[0].width(), 16);
         assert!(rows[0].spans[0].style.add_modifier.contains(Modifier::ITALIC));
-        let wrapped = wrap_markdown_lines_to_physical_rows(&[Line::from("日本語😀日本語")], 6);
+        let wrapped = wrap_lines_to_physical_rows(&[Line::from("日本語😀日本語")], 6);
         assert!(wrapped.iter().all(|row| row.width() <= 6));
         assert_eq!(
             wrapped.iter().map(|row| line_text(row).trim_end().to_owned()).collect::<String>(),
@@ -581,76 +455,6 @@ mod tests {
         assert_eq!(
             rows.into_iter().map(|line| line_text(&line)).collect::<Vec<_>>(),
             vec!["XX one", "   two"]
-        );
-    }
-
-    #[test]
-    fn markdown_ordered_list_wraps_with_hanging_indent() {
-        let rows = wrap_markdown_lines_to_physical_rows(
-            &[Line::from("  3. Keymap survey - mapping the keymap system")],
-            32,
-        );
-
-        assert_eq!(
-            rows.into_iter()
-                .map(|line| line
-                    .spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>())
-                .collect::<Vec<_>>(),
-            vec!["  3. Keymap survey - mapping the", "     keymap system"]
-        );
-    }
-
-    #[test]
-    fn markdown_task_list_wraps_under_task_marker() {
-        let rows = wrap_markdown_lines_to_physical_rows(
-            &[Line::from("  - [x] completed task with extra words")],
-            24,
-        );
-
-        let text = rows
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(text, vec!["  - [x] completed task", "        with extra words"]);
-    }
-
-    #[test]
-    fn markdown_list_wrapping_skips_fenced_code_lines() {
-        let rows = wrap_markdown_lines_to_physical_rows(
-            &[
-                Line::from("```md"),
-                Line::from("- code line that wraps without hanging indent"),
-                Line::from("```"),
-            ],
-            18,
-        );
-
-        let text = rows
-            .into_iter()
-            .map(|line| {
-                line.spans
-                    .into_iter()
-                    .map(|span| span.content.into_owned())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            text,
-            vec!["```md", "- code line that", "wraps without", "hanging indent", "```"]
         );
     }
 }

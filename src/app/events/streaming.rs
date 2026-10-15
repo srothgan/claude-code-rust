@@ -110,7 +110,7 @@ fn completed_text_block(
     source_message_uuids: Vec<String>,
 ) -> MessageBlock {
     let trailing_spacing = match split.kind {
-        TextSplitKind::Generic => TextBlockSpacing::None,
+        TextSplitKind::Generic => TextBlockSpacing::Continuation,
         TextSplitKind::ParagraphBoundary => TextBlockSpacing::ParagraphBreak,
     };
     MessageBlock::Text(

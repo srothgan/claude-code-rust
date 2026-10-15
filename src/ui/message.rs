@@ -5,7 +5,7 @@
 use crate::app::ChatMessage;
 use crate::app::{BlockCache, TextBlock};
 use crate::ui::tool_call;
-use crate::ui::wrap::wrap_markdown_lines_to_physical_rows;
+use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::Color;
 use ratatui::text::Line;
 
@@ -79,10 +79,23 @@ fn render_message_rows(
 /// Handles variations: `#Title`, `#  Title`, `  ## Title  `, etc.
 /// Links are left as-is -- `tui_markdown` handles `[title](url)` natively.
 fn preprocess_markdown(text: &str) -> String {
+    let code_ranges = pulldown_cmark::Parser::new(text)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            matches!(event, pulldown_cmark::Event::Start(pulldown_cmark::Tag::CodeBlock(_)))
+                .then_some(range)
+        })
+        .collect::<Vec<_>>();
     let mut result = String::with_capacity(text.len());
-    for line in text.lines() {
+    let mut offset = 0;
+    for source_line in text.split_inclusive('\n') {
+        let line = source_line.trim_end_matches(['\r', '\n']);
+        let in_code = code_ranges
+            .iter()
+            .any(|range| range.start < offset + source_line.len() && range.end > offset);
+        offset += source_line.len();
         let trimmed = line.trim();
-        if trimmed.starts_with('#') {
+        if !in_code && trimmed.starts_with('#') {
             // Strip all leading '#' characters
             let after_hashes = trimmed.trim_start_matches('#');
             // Extract heading content (trim spaces between # and text, and trailing)
@@ -92,6 +105,7 @@ fn preprocess_markdown(text: &str) -> String {
                 if !result.is_empty() && !result.ends_with("\n\n") {
                     result.push('\n');
                 }
+                result.push_str(&line[..line.len() - line.trim_start().len()]);
                 result.push_str("**");
                 result.push_str(content);
                 result.push_str("**\n");
@@ -119,8 +133,8 @@ pub(super) fn render_text_cached(
     out: &mut Vec<Line<'static>>,
 ) {
     // Fast path only when the cached lines were measured at this width.
-    // Markdown tables produce width-dependent logical lines before paragraph
-    // wrapping, so a fresh cache from another width is not safe to reuse.
+    // Lists and tables resolve width-dependent geometry before final row wrapping,
+    // so a fresh cache from another width is not safe to reuse.
     if cache.height_at(width).is_some()
         && let Some(cached_lines) = cache.get()
     {
@@ -137,7 +151,7 @@ pub(super) fn render_text_cached(
     // Store in the full block cache with wrapped height.
     // For streaming messages this will be invalidated on the next chunk,
     // but for completed messages it persists.
-    let h = wrap_markdown_lines_to_physical_rows(&fresh, width).len();
+    let h = wrap_lines_to_physical_rows(&fresh, width).len();
     cache.store(fresh);
     cache.set_height(h, width);
     if let Some(stored) = cache.get() {
@@ -200,6 +214,27 @@ mod tests {
         let input = "Just normal text\nwith multiple lines";
         let result = preprocess_markdown(input);
         assert_eq!(result, input);
+    }
+
+    #[test]
+    fn list_headings_and_code_survive_the_actual_message_pipeline() {
+        let source = "1. Parent\n\n   ## Child heading\n\n   ~~~text\n   # literal code\n   ~~~\n\n   Tail paragraph.";
+        let mut cache = BlockCache::default();
+        let mut lines = Vec::new();
+        render_text_cached(source, &mut cache, 60, None, true, &mut lines);
+        for (text, column) in [("Child heading", 5), ("# literal code", 5), ("Tail paragraph.", 5)]
+        {
+            let row = lines
+                .iter()
+                .map(Line::to_string)
+                .find(|row| row.contains(text))
+                .expect("message content survives preprocessing");
+            assert_eq!(
+                row.find(text),
+                Some(column),
+                "nested message content lost its owner: {row:?}"
+            );
+        }
     }
 
     #[test]
