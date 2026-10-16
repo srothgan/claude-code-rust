@@ -146,7 +146,7 @@ fn turn_text(
     let heading_style = Style::default()
         .fg(if selected { theme::RUST_ORANGE } else { theme::DIM })
         .add_modifier(Modifier::BOLD);
-    let plain = super::highlight::strip_ansi(&target.input_text);
+    let plain = super::terminal_output::strip_ansi(&target.input_text);
     let plain = plain
         .chars()
         .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))

@@ -33,19 +33,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ansi-to-tui"
-version = "8.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e42366bb9d958f042bf58f0a85e1b2d091997c1257ca49bddd7e4827aadc65fd"
-dependencies = [
- "nom 8.0.0",
- "ratatui-core",
- "simdutf8",
- "smallvec",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -576,7 +563,6 @@ dependencies = [
 name = "claude-code-rust"
 version = "0.15.2"
 dependencies = [
- "ansi-to-tui",
  "anyhow",
  "arboard",
  "base64 0.23.1",
@@ -3445,12 +3431,6 @@ name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
-
-[[package]]
-name = "simdutf8"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "similar"

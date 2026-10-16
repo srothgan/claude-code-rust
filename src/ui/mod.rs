@@ -21,6 +21,7 @@ pub(crate) mod message_layout;
 mod message_rows;
 mod session_picker;
 pub(crate) mod spinner_verbs;
+mod terminal_output;
 pub mod theme;
 mod tool_call;
 pub(crate) mod tool_display;

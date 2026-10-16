@@ -940,13 +940,87 @@ fn read_body_renders_sdk_line_numbers_as_dim_gutter() {
     );
 }
 
-#[test]
-fn shell_terminal_output_still_renders_ansi_sequences() {
-    let rendered = crate::ui::highlight::render_terminal_output("\u{1b}[31mred\u{1b}[0m plain");
+fn render_completed_shell(output: &str) -> (ToolCallInfo, Vec<Line<'static>>) {
+    let mut tc = test_tool_call("tc-shell-output", "Bash", model::ToolCallStatus::Completed);
+    tc.terminal_id = Some("term-shell-output".to_owned());
+    tc.terminal_command = Some("make".to_owned());
+    tc.terminal_output = Some(output.to_owned());
+    let mut rendered = Vec::new();
+    render_tool_call_cached(
+        &mut tc,
+        ToolCallRenderContext::default(),
+        80,
+        crate::ui::SpinnerState::Static,
+        &mut rendered,
+    );
+    (tc, rendered)
+}
 
-    assert_eq!(rendered.len(), 1);
-    assert_eq!(rendered[0].spans[0].content.as_ref(), "red");
-    assert_eq!(rendered[0].spans[0].style.fg, Some(Color::Red));
+/// Style of the first character of `needle` on the rendered row that contains it.
+fn style_of(lines: &[Line<'static>], needle: &str) -> Style {
+    for line in lines {
+        let text: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        let Some(byte_index) = text.find(needle) else {
+            continue;
+        };
+        let mut offset = 0;
+        for span in &line.spans {
+            offset += span.content.len();
+            if byte_index < offset {
+                return line.style.patch(span.style);
+            }
+        }
+    }
+    panic!("{needle:?} is not rendered");
+}
+
+#[test]
+fn shell_output_keeps_program_styles_over_the_dim_default() {
+    let output = concat!(
+        "\u{1b}[31mred\u{1b}[0m plain\n",
+        "\u{1b}[1;32mok\u{1b}[22m done\u{1b}[39m default\n",
+        "\u{1b}[38;5;196;1mhot\u{1b}[m \u{1b}[38:2::10:20:30mrgb\u{1b}[0m\n",
+        "\u{1b}[44mbg\u{1b}[49m after",
+    );
+    let (tc, rendered) = render_completed_shell(output);
+
+    assert_eq!(style_of(&rendered, "red").fg, Some(Color::Red));
+    assert_eq!(style_of(&rendered, "plain").fg, Some(theme::DIM));
+    let ok = style_of(&rendered, "ok");
+    assert_eq!(ok.fg, Some(Color::Green));
+    assert!(ok.add_modifier.contains(Modifier::BOLD));
+    let done = style_of(&rendered, "done");
+    assert_eq!(done.fg, Some(Color::Green));
+    assert!(!done.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(style_of(&rendered, "default").fg, Some(theme::DIM));
+    let hot = style_of(&rendered, "hot");
+    assert_eq!(hot.fg, Some(Color::Indexed(196)));
+    assert!(hot.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(style_of(&rendered, "rgb").fg, Some(Color::Rgb(10, 20, 30)));
+    let bg = style_of(&rendered, "bg");
+    assert_eq!((bg.fg, bg.bg), (Some(theme::DIM), Some(Color::Blue)));
+    assert!(matches!(style_of(&rendered, "after").bg, None | Some(Color::Reset)));
+    assert_eq!(tc.terminal_output.as_deref(), Some(output));
+}
+
+#[test]
+fn shell_output_drops_terminal_controls_and_applies_carriage_returns() {
+    let output = concat!(
+        "\u{1b}[?25lstart\u{1b}[2K\u{1b}[1A\u{1b}[3~ after\n",
+        "\u{1b}]0;window title\u{07}\u{1b}]8;;https://example.com\u{1b}\\link text\u{1b}]8;;\u{1b}\\ end\n",
+        "10%\r50%\r\u{1b}[32m100%\u{1b}[0m\r\n",
+        "crlf\r\n",
+        "bell\u{07}ok\n",
+    );
+    let (_, rendered) = render_completed_shell(output);
+    let body = rendered_line_texts(&rendered)
+        .iter()
+        .skip(1)
+        .map(|row| row.trim().to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(body, ["start after", "link text end", "100%", "crlf", "bellok"]);
+    assert_eq!(style_of(&rendered, "100%").fg, Some(Color::Green));
 }
 
 #[test]

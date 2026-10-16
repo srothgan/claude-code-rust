@@ -8,6 +8,7 @@ use crate::app::ToolCallInfo;
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
 use crate::ui::highlight;
 use crate::ui::markdown;
+use crate::ui::terminal_output;
 use crate::ui::theme;
 use crate::ui::tool_display;
 use crate::ui::wrap::wrap_lines_to_physical_rows;
@@ -222,7 +223,7 @@ pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
     // For Execute tool calls, show last non-empty line of terminal output
     if tc.terminal_id.is_some() {
         if let Some(ref output) = tc.terminal_output {
-            let stripped_output = highlight::strip_ansi(output);
+            let stripped_output = terminal_output::strip_ansi(output);
             if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
                 && let Some(first_line) = failed_execute_first_line(&stripped_output)
             {
@@ -654,7 +655,7 @@ fn render_read_text_content(
         return;
     }
 
-    let clean = highlight::strip_ansi(&stripped);
+    let clean = terminal_output::strip_ansi(&stripped);
     let title_lang = lang_from_title(&tc.title);
     if let Some(path) = read_syntax_path(tc) {
         let language_fallback = (!title_lang.is_empty()).then_some(title_lang.as_str());

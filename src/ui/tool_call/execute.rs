@@ -5,7 +5,7 @@
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
-use crate::ui::highlight;
+use crate::ui::terminal_output;
 use crate::ui::theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -25,8 +25,10 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         if let Some(failed_lines) = render_failed_tool_text_content(tc.status, output) {
             body_lines = failed_lines;
         } else {
-            body_lines =
-                highlight::render_terminal_output(output).into_iter().map(dim_line).collect();
+            body_lines = terminal_output::render_terminal_output(output)
+                .into_iter()
+                .map(dim_unstyled_output)
+                .collect();
         }
     } else if matches!(tc.status, model::ToolCallStatus::InProgress) {
         body_lines.push(Line::from(Span::styled("running...", Style::default().fg(theme::DIM))));
@@ -56,11 +58,11 @@ fn cap_execute_output_lines(lines: Vec<Line<'static>>, max_lines: usize) -> Vec<
     out
 }
 
-fn dim_line(line: Line<'static>) -> Line<'static> {
-    Line::from(
-        line.spans
-            .into_iter()
-            .map(|span| Span::styled(span.content.into_owned(), Style::default().fg(theme::DIM)))
-            .collect::<Vec<_>>(),
-    )
+/// Output renders dim unless the program styled it; program styles win.
+fn dim_unstyled_output(mut line: Line<'static>) -> Line<'static> {
+    let base = Style::default().fg(theme::DIM);
+    for span in &mut line.spans {
+        span.style = base.patch(span.style);
+    }
+    line
 }

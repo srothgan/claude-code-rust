@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::diff;
-use ansi_to_tui::IntoText as _;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::path::Path;
@@ -16,65 +14,6 @@ use two_face::theme::EmbeddedThemeName;
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 static THEME_SET: LazyLock<two_face::theme::EmbeddedLazyThemeSet> =
     LazyLock::new(two_face::theme::extra);
-pub(crate) fn strip_ansi(text: &str) -> String {
-    enum State {
-        Normal,
-        Escape,
-        Csi,
-        Osc,
-        OscEscape,
-    }
-
-    let mut out = String::with_capacity(text.len());
-    let mut state = State::Normal;
-
-    for ch in text.chars() {
-        state = match state {
-            State::Normal => {
-                if ch == '\u{1b}' {
-                    State::Escape
-                } else {
-                    out.push(ch);
-                    State::Normal
-                }
-            }
-            State::Escape => match ch {
-                '[' => State::Csi,
-                ']' => State::Osc,
-                _ => State::Normal,
-            },
-            State::Csi => {
-                if ('\u{40}'..='\u{7e}').contains(&ch) {
-                    State::Normal
-                } else {
-                    State::Csi
-                }
-            }
-            State::Osc => match ch {
-                '\u{07}' => State::Normal,
-                '\u{1b}' => State::OscEscape,
-                _ => State::Osc,
-            },
-            State::OscEscape => {
-                if ch == '\\' {
-                    State::Normal
-                } else {
-                    State::Osc
-                }
-            }
-        };
-    }
-
-    out
-}
-
-pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
-    let stripped = strip_ansi(text);
-    if diff::looks_like_unified_diff(&stripped) {
-        return diff::render_raw_unified_diff(&stripped);
-    }
-    ansi_text_lines(text).unwrap_or_else(|| plain_text_lines(&stripped))
-}
 
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
     highlight_with_syntax(text, syntax_for_language(language), highlight_theme())
@@ -167,11 +106,6 @@ pub(crate) fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
     lines
 }
 
-fn ansi_text_lines(text: &str) -> Option<Vec<Line<'static>>> {
-    let rendered = text.as_bytes().into_text().ok()?.clone();
-    Some(rendered.lines)
-}
-
 /// Unknown languages render as plain text.
 fn syntax_for_language(language: Option<&str>) -> &'static SyntaxReference {
     let Some(language) = language.filter(|language| !language.trim().is_empty()) else {
@@ -246,18 +180,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strip_ansi_removes_csi_sequences() {
-        let input = "\u{1b}[31mred\u{1b}[0m plain";
-        assert_eq!(strip_ansi(input), "red plain");
-    }
-
-    #[test]
-    fn strip_ansi_removes_osc_sequences() {
-        let input = "prefix\u{1b}]0;title\u{07}suffix";
-        assert_eq!(strip_ansi(input), "prefixsuffix");
-    }
-
-    #[test]
     fn highlight_code_preserves_text() {
         let rendered = highlight_code("fn main() {}\n", Some("rs"));
         let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
@@ -277,15 +199,5 @@ mod tests {
         assert!(text.contains("fn"));
         assert!(text.contains("main"));
         assert!(rendered[0].spans.iter().any(|span| span.style.fg.is_some()));
-    }
-
-    #[test]
-    fn render_terminal_output_preserves_ansi_color() {
-        let rendered = render_terminal_output("\u{1b}[31mred\u{1b}[0m plain");
-        assert_eq!(rendered.len(), 1);
-        assert_eq!(rendered[0].spans.len(), 2);
-        assert_eq!(rendered[0].spans[0].content.as_ref(), "red");
-        assert_eq!(rendered[0].spans[0].style.fg, Some(Color::Red));
-        assert_eq!(rendered[0].spans[1].content.as_ref(), " plain");
     }
 }
