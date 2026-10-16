@@ -1180,15 +1180,17 @@ fn auth_spawn_failure_restores_terminal_ownership_and_input() {
     let mut test = TerminalTest::start_with_auth("stream", 3, Some("spawn-error"));
     test.submit("/login", "/login");
     test.wait_screen_with("Failed to run claude auth login", &["[READY]"]);
-    test.resize(25, 61);
-    test.resize(38, 87);
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
     test.send(b"AFTER_SPAWN_ERROR");
-    test.wait_screen("AFTER_SPAWN_ERROR");
-    test.paste(" + PASTE");
-    test.wait_screen("+ PASTE");
+    test.wait_composer_text(offset, "AFTER_SPAWN_ERROR");
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.paste(" + PASTE 界 🦀");
+    test.wait_composer_text(offset, "AFTER_SPAWN_ERROR + PASTE 界 🦀");
+    test.resize_keeping(25, 61, &["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
+    test.resize_keeping(38, 87, &["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
     test.submit_draft();
-    test.wait_screen("reply 1 started");
-    test.assert_prompts(&["AFTER_SPAWN_ERROR + PASTE"]);
+    test.wait_turn_finished("reply 1 started");
+    test.assert_prompts(&["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
     test.shutdown();
 }
 
@@ -1582,6 +1584,7 @@ fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
         };
         second > first + 1 && transcript[first + 1..second].iter().all(|row| row.trim().is_empty())
     });
+    test.wait_until("submitted prompt recorded by the bridge", |test| !test.prompts().is_empty());
     test.assert_prompts(&["hello\n\nhow are you"]);
 
     for step in 0..RESIZES {

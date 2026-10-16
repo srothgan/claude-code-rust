@@ -93,6 +93,7 @@ Keep cleanup scoped to code made obsolete by the requested change unless broader
 - Add regression coverage for changed behavior when appropriate.
 - Prefer tests of the authoritative behavior and real workflow over tests that only exercise isolated helpers.
 - Define each test by the intended user or domain guarantee and the concrete defect it must catch. A passing test must distinguish the required behavior from a plausible broken implementation.
+- Test functional guarantees and observable outcomes. Never create tests that merely reaffirm the current implementation or freeze incidental counts, positions, or ordering; assert those only when they are themselves the intended feature or behavioral guarantee.
 - Derive expected results from requirements or independent fixtures, not from the production helper or calculation being tested.
 - Assert observable outcomes at the relevant boundary: persisted data, emitted commands, delivered notifications, interaction responses, or the relevant rendered region. Check the actual target and seed the state named by the test.
 - Use exact string assertions when the string itself is required output, such as copied content, time formatting, protocol bytes, or explicitly required UI wording. Do not lock down incidental prose, punctuation, or complete footer text.
@@ -139,7 +140,7 @@ Run the Rust checks after Rust changes. They match the core jobs in `.github/wor
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo test --all-features -- --test-threads=1
 cargo fetch --locked
 ```
 
