@@ -16,7 +16,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::path::Path;
-use two_face::theme::EmbeddedThemeName;
 
 use super::errors::{
     debug_failed_tool_render, failed_execute_first_line, failed_tool_text_summary,
@@ -24,22 +23,19 @@ use super::errors::{
 };
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
-    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, status_icon, tasks,
-    tool_display_title, tool_output_badge_spans, truncate_spans_to_width, typed,
+    TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, read, status_icon,
+    tasks, tool_display_title, tool_output_badge_spans, truncate_spans_to_width, typed,
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
 const DEFAULT_TEXT_SUMMARY_LIMIT: usize = 60;
 const IN_PROGRESS_SUBAGENT_TEXT_SUMMARY_LIMIT: usize = 180;
-const READ_BODY_HEAD_LINES: usize = 3;
-const READ_BODY_TAIL_LINES: usize = 4;
 const DIFF_BODY_INDENT: &str = "  ";
 const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
 const EXECUTE_BODY_INDENT: &str = "      ";
 const EXECUTE_BODY_INDENT_WIDTH: u16 = 6;
 const ASK_USER_QUESTION_RESULT_TEXT_INDENT: &str = "      ";
-const READ_SYNTAX_THEME: EmbeddedThemeName = EmbeddedThemeName::MonokaiExtendedBright;
 const VIEWED_IMAGE_RESULT_PREFIX: &str = "Viewed Image ";
 
 /// Render just the title line for a tool call (the line containing the spinner icon).
@@ -152,6 +148,7 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
     }
     content_lines.extend(render_non_execution_metadata(tc));
     content_lines = match tool_content_height_policy(tc) {
+        ToolContentHeightPolicy::Preformatted => content_lines,
         ToolContentHeightPolicy::Bounded => {
             let protected_source_lines = protected_content_source_lines(tc, &content_lines);
             cap_tool_content_lines(
@@ -369,9 +366,6 @@ fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
     }
 
     debug_failed_tool_render(tc);
-    if is_read_tool(tc) {
-        return cap_read_content_lines(lines);
-    }
     lines
 }
 
@@ -529,6 +523,8 @@ fn tool_body_uses_summary_only(tc: &ToolCallInfo) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolContentHeightPolicy {
+    /// Read source owns its gutter, wrapping, omission count, and row budget.
+    Preformatted,
     Bounded,
     Unbounded,
 }
@@ -536,6 +532,10 @@ enum ToolContentHeightPolicy {
 fn tool_content_height_policy(tc: &ToolCallInfo) -> ToolContentHeightPolicy {
     if renders_only_plan_file_content(tc) || renders_structured_ask_user_question_result(tc) {
         ToolContentHeightPolicy::Unbounded
+    } else if is_read_tool(tc)
+        && !matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
+    {
+        ToolContentHeightPolicy::Preformatted
     } else {
         ToolContentHeightPolicy::Bounded
     }
@@ -577,38 +577,18 @@ fn is_read_tool(tc: &ToolCallInfo) -> bool {
 }
 
 fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) -> usize {
-    let mut count = if is_read_tool(tc) {
-        READ_BODY_HEAD_LINES
-    } else if matches!(tc.content.first(), Some(model::ToolCallContent::ResourceLink(_))) {
-        2
-    } else {
-        leading_diff_metadata_line_count(lines)
-    }
-    .min(lines.len());
+    let mut count =
+        if matches!(tc.content.first(), Some(model::ToolCallContent::ResourceLink(_))) {
+            2
+        } else {
+            leading_diff_metadata_line_count(lines)
+        }
+        .min(lines.len());
 
     while lines.get(count).is_some_and(line_text_is_existing_omission_marker) {
         count += 1;
     }
     count
-}
-
-fn cap_read_content_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    let visible_content_lines = READ_BODY_HEAD_LINES.saturating_add(READ_BODY_TAIL_LINES);
-    let capped_line_count = visible_content_lines.saturating_add(1);
-    if lines.len() <= capped_line_count {
-        return lines;
-    }
-
-    let omitted = lines.len().saturating_sub(visible_content_lines);
-    let tail_start = lines.len().saturating_sub(READ_BODY_TAIL_LINES);
-    let mut out = Vec::with_capacity(capped_line_count);
-    out.extend(lines.iter().take(READ_BODY_HEAD_LINES).cloned());
-    out.push(Line::from(Span::styled(
-        format!("... {omitted} lines hidden ..."),
-        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-    )));
-    out.extend(lines.into_iter().skip(tail_start));
-    out
 }
 
 fn render_plan_content(text: &str, width: u16) -> Vec<Line<'static>> {
@@ -640,46 +620,29 @@ fn render_read_text_content(
     width: u16,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let fenced_language = outer_code_fence_language(text);
-    let stripped = strip_outer_code_fence(text);
-    if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-        lines.extend(failed_lines);
-        return;
-    }
-    if let Some(viewed_image) = render_viewed_image_content(tc, &stripped) {
-        lines.push(viewed_image);
-        return;
-    }
-    if read_content_is_markdown(tc) {
-        render_markdown_content(&stripped, width, lines);
-        return;
-    }
-
-    let clean = terminal_output::strip_ansi(&stripped);
-    let title_lang = lang_from_title(&tc.title);
-    if let Some(path) = read_syntax_path(tc) {
-        let language_fallback = (!title_lang.is_empty()).then_some(title_lang.as_str());
-        if let Some(numbered_lines) = parse_numbered_read_lines(&clean) {
-            let highlighted = highlight::highlight_code_for_path_with_theme(
-                &numbered_read_source(&numbered_lines),
-                path,
-                language_fallback,
-                READ_SYNTAX_THEME,
-            );
-            lines.extend(render_numbered_read_lines(numbered_lines, &highlighted));
+    let read = tc.read_output_metadata();
+    if read.is_none() {
+        let stripped = strip_outer_code_fence(text);
+        if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
+            lines.extend(failed_lines);
             return;
         }
-        lines.extend(highlight::highlight_code_for_path_with_theme(
-            &clean,
-            path,
-            language_fallback,
-            READ_SYNTAX_THEME,
-        ));
-        return;
+        if let Some(viewed_image) = render_viewed_image_content(tc, &stripped) {
+            lines.push(viewed_image);
+            return;
+        }
     }
 
-    let fallback_lang = (!title_lang.is_empty()).then_some(title_lang.as_str()).or(fenced_language);
-    lines.extend(highlight::highlight_code_with_theme(&clean, fallback_lang, READ_SYNTAX_THEME));
+    let title_lang = lang_from_title(&tc.title);
+    lines.extend(read::render_read_source(
+        &read::ReadSource {
+            text,
+            start_line: read.map(|read| read.start_line),
+            path: read.map(|read| read.file_path.as_path()).or_else(|| read_syntax_path(tc)),
+            language_fallback: (!title_lang.is_empty()).then_some(title_lang.as_str()),
+        },
+        width,
+    ));
 }
 
 fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'static>> {
@@ -702,77 +665,6 @@ fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'st
         Span::raw(" "),
         Span::styled(file_name.to_owned(), Style::default().fg(ratatui::style::Color::White)),
     ]))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NumberedReadLine {
-    number: String,
-    source: String,
-}
-
-fn parse_numbered_read_lines(text: &str) -> Option<Vec<NumberedReadLine>> {
-    let parsed = text.lines().map(parse_numbered_read_line).collect::<Option<Vec<_>>>()?;
-    if parsed.len() < 2 || !line_numbers_are_monotonic(&parsed) {
-        return None;
-    }
-    Some(parsed)
-}
-
-fn parse_numbered_read_line(line: &str) -> Option<NumberedReadLine> {
-    let trimmed = line.trim_start();
-    let digit_end = trimmed.find(|ch: char| !ch.is_ascii_digit()).unwrap_or(trimmed.len());
-    if digit_end == 0 {
-        return None;
-    }
-    let (number, rest) = trimmed.split_at(digit_end);
-    let source = rest.strip_prefix('\t').unwrap_or(rest).to_owned();
-    Some(NumberedReadLine { number: number.to_owned(), source })
-}
-
-fn line_numbers_are_monotonic(lines: &[NumberedReadLine]) -> bool {
-    let mut previous = None;
-    for line in lines {
-        let Ok(number) = line.number.parse::<u32>() else {
-            return false;
-        };
-        if let Some(previous) = previous
-            && number != previous + 1
-        {
-            return false;
-        }
-        previous = Some(number);
-    }
-    true
-}
-
-fn numbered_read_source(lines: &[NumberedReadLine]) -> String {
-    lines.iter().map(|line| line.source.as_str()).collect::<Vec<_>>().join("\n")
-}
-
-fn render_numbered_read_lines(
-    numbered_lines: Vec<NumberedReadLine>,
-    highlighted_lines: &[Line<'static>],
-) -> Vec<Line<'static>> {
-    let gutter_width = numbered_lines.iter().map(|line| line.number.len()).max().unwrap_or(1);
-    numbered_lines
-        .into_iter()
-        .enumerate()
-        .map(|(idx, numbered)| {
-            let mut spans = vec![
-                Span::styled(
-                    format!("{:>gutter_width$}", numbered.number),
-                    Style::default().fg(theme::DIM),
-                ),
-                Span::styled("  ".to_owned(), Style::default().fg(theme::DIM)),
-            ];
-            if let Some(highlighted) = highlighted_lines.get(idx) {
-                spans.extend(highlighted.spans.clone());
-            } else if !numbered.source.is_empty() {
-                spans.push(Span::raw(numbered.source));
-            }
-            Line::from(spans)
-        })
-        .collect()
 }
 
 fn render_generic_text_content(
@@ -825,10 +717,6 @@ fn render_markdown_content(text: &str, width: u16, lines: &mut Vec<Line<'static>
     }
 }
 
-fn read_content_is_markdown(tc: &ToolCallInfo) -> bool {
-    read_syntax_path(tc).is_some_and(path_is_markdown) || is_markdown_file(&tc.title)
-}
-
 fn read_syntax_path(tc: &ToolCallInfo) -> Option<&Path> {
     tc.locations
         .first()
@@ -844,19 +732,6 @@ fn raw_input_file_path(tc: &ToolCallInfo) -> Option<&str> {
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|path| !path.is_empty())
-}
-
-fn path_is_markdown(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()).is_some_and(|extension| {
-        matches!(extension.to_ascii_lowercase().as_str(), "md" | "mdx" | "markdown")
-    })
-}
-
-fn outer_code_fence_language(text: &str) -> Option<&str> {
-    let trimmed = text.trim_start();
-    let after_opening = trimmed.strip_prefix("```")?;
-    let first_line = after_opening.lines().next()?.trim();
-    (!first_line.is_empty()).then_some(first_line)
 }
 
 fn render_mcp_resource_content(

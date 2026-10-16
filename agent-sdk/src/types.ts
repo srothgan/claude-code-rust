@@ -228,6 +228,12 @@ export interface SkillOutputMetadata {
   background?: boolean;
 }
 
+export interface ReadOutputMetadata {
+  file_path: string;
+  /** One-based file line number of the first line in the text content. */
+  start_line: number;
+}
+
 export interface ToolNonExecutionMetadata {
   kind: string;
   user_feedback?: string;
@@ -241,6 +247,7 @@ export interface ToolOutputMetadata {
   agent?: AgentOutputMetadata;
   web_fetch?: WebFetchOutputMetadata;
   skill?: SkillOutputMetadata;
+  read?: ReadOutputMetadata;
   non_execution?: ToolNonExecutionMetadata;
 }
 

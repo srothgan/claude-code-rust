@@ -216,6 +216,11 @@ impl ToolCallInfo {
     }
 
     #[must_use]
+    pub fn read_output_metadata(&self) -> Option<&model::ReadOutputMetadata> {
+        self.output_metadata.as_ref()?.read.as_ref()
+    }
+
+    #[must_use]
     pub fn output_was_staged(&self) -> bool {
         self.output_metadata.as_ref().is_some_and(|metadata| metadata.staged)
     }

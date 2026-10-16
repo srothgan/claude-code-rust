@@ -17,6 +17,7 @@ mod interactions;
 mod monitor;
 mod projects;
 mod push_notification;
+mod read;
 mod remote_trigger;
 mod repl;
 mod schedule_wakeup;

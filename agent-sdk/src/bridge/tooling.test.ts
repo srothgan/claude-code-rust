@@ -1832,6 +1832,55 @@ test("buildToolResultFields renders array-wrapped file_unchanged Read results co
   assert.equal(fields.raw_output, "File unchanged: src/lib.rs");
 });
 
+test("buildToolResultFields carries Read file source and start line instead of numbered model text", () => {
+  const base = createToolCall("tc-read-source", "Read", {
+    file_path: "src/main.rs",
+    offset: 60,
+  });
+  const source = "fn main() {\n\tprintln!(\"hi\");\n}";
+  const fields = buildToolResultFields(
+    false,
+    [
+      {
+        type: "text",
+        text: "60\tfn main() {\n61\t\tprintln!(\"hi\");\n62\t}\n\n<system-reminder>internal</system-reminder>",
+      },
+    ],
+    base,
+    {
+      type: "text",
+      file: {
+        filePath: "C:\\work\\src\\main.rs",
+        content: source,
+        numLines: 3,
+        startLine: 60,
+        totalLines: 62,
+      },
+    },
+  );
+
+  assert.deepEqual(fields, {
+    status: "completed",
+    output_metadata: {
+      read: { file_path: "C:\\work\\src\\main.rs", start_line: 60 },
+    },
+    raw_output: source,
+    content: [{ type: "content", content: { type: "text", text: source } }],
+  });
+});
+
+test("buildToolResultFields keeps the SDK explanation for empty Read results", () => {
+  const base = createToolCall("tc-read-empty", "Read", { file_path: "empty.txt" });
+  const notice = "Warning: the file exists but the contents are empty.";
+  const fields = buildToolResultFields(false, notice, base, {
+    type: "text",
+    file: { filePath: "empty.txt", content: "", numLines: 0, startLine: 1, totalLines: 0 },
+  });
+
+  assert.equal(fields.raw_output, notice);
+  assert.equal(fields.output_metadata, undefined);
+});
+
 test("buildToolResultFields uses Agent output agentType as task title", () => {
   const base = createToolCall("tc-agent", "Agent", { prompt: "Review tests" });
   const fields = buildToolResultFields(

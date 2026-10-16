@@ -8627,6 +8627,23 @@ test("closing a session settles detached calls without waiting for another turn"
   assert.equal(call.status, "killed");
 });
 
+test("live Read results carry file source and start line", () => {
+  const session = makeSessionState();
+  const source = "line one\r\n\tline two  \r\n";
+  const events = captureBridgeEvents(() => {
+    handleSdkMessage(session, { type: "assistant", message: { content: [{ type: "tool_use", id: "read-live", name: "Read", input: { file_path: "notes.txt" } }] } } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+    handleSdkMessage(session, {
+      type: "user", tool_use_result: { type: "text", file: { filePath: "notes.txt", content: source, numLines: 2, startLine: 1, totalLines: 2 } },
+      message: { content: [{ type: "tool_result", tool_use_id: "read-live", content: "1\tline one\n2\tline two" }] },
+    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+  });
+  const update = events.at(-1)?.update as { tool_call_update: { tool_call_id: string; fields: { raw_output: string; output_metadata: unknown; content: unknown } } };
+  assert.equal(update.tool_call_update.tool_call_id, "read-live");
+  assert.deepEqual(update.tool_call_update.fields.output_metadata, { read: { file_path: "notes.txt", start_line: 1 } });
+  assert.equal(update.tool_call_update.fields.raw_output, source);
+  assert.deepEqual(update.tool_call_update.fields.content, [{ type: "content", content: { type: "text", text: source } }]);
+});
+
 test("MCP structured-content omission keeps readable output and resource links", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {

@@ -374,6 +374,8 @@ pub struct ToolOutputMetadata {
     pub agent: Option<AgentOutputMetadata>,
     pub web_fetch: Option<WebFetchOutputMetadata>,
     pub skill: Option<SkillOutputMetadata>,
+    /// Set when the text content is the file source of a Read, without line numbers.
+    pub read: Option<ReadOutputMetadata>,
     pub non_execution: Option<ToolNonExecutionMetadata>,
 }
 
@@ -410,6 +412,13 @@ pub struct WebFetchArtifactReadMetadata {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SkillOutputMetadata {
     pub background: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadOutputMetadata {
+    pub file_path: PathBuf,
+    /// One-based file line number of the first content line.
+    pub start_line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -462,6 +471,12 @@ impl ToolOutputMetadata {
     #[must_use]
     pub fn skill(mut self, skill: Option<SkillOutputMetadata>) -> Self {
         self.skill = skill;
+        self
+    }
+
+    #[must_use]
+    pub fn read(mut self, read: Option<ReadOutputMetadata>) -> Self {
+        self.read = read;
         self
     }
 

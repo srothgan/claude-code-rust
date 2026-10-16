@@ -1332,6 +1332,35 @@ function fileUnchangedResultText(
   return "";
 }
 
+type ReadTextResult = { content: string; filePath: string; startLine: number };
+
+/** File source from a structured Read result, without line numbers or reminders. */
+function readTextResult(
+  rawResult: unknown,
+  rawContent: unknown,
+): ReadTextResult | undefined {
+  for (const candidate of resultRecordCandidates(rawResult, rawContent)) {
+    if (candidate.type !== "text") {
+      continue;
+    }
+    const file = asRecordOrNull(candidate.file);
+    const content = file?.content;
+    const filePath = nonEmptyString(file?.filePath);
+    const startLine = nonNegativeInteger(file?.startLine);
+    // Empty reads keep the SDK's explanatory text instead of an empty body.
+    if (
+      typeof content === "string" &&
+      content.length > 0 &&
+      filePath &&
+      startLine !== undefined &&
+      startLine >= 1
+    ) {
+      return { content, filePath, startLine };
+    }
+  }
+  return undefined;
+}
+
 function agentTitleFromAgentOutput(
   rawResult: unknown,
   rawContent: unknown,
@@ -2904,6 +2933,22 @@ export function buildToolResultFields(
     fields.raw_output = imageReadText;
     fields.content = [
       { type: "content", content: { type: "text", text: imageReadText } },
+    ];
+    return fields;
+  }
+  const readText =
+    !isError && toolName === "Read"
+      ? readTextResult(rawResult, rawContent)
+      : undefined;
+  if (readText) {
+    // The body carries the file source; line numbers come from the metadata.
+    fields.output_metadata = {
+      ...fields.output_metadata,
+      read: { file_path: readText.filePath, start_line: readText.startLine },
+    };
+    fields.raw_output = readText.content;
+    fields.content = [
+      { type: "content", content: { type: "text", text: readText.content } },
     ];
     return fields;
   }

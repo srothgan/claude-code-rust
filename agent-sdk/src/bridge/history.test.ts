@@ -17,12 +17,15 @@ test("resume display restores compaction segments once and preserves SDK branch 
     mkdirSync(projectDir, { recursive: true });
     const sessionId = "11111111-1111-4111-8111-111111111111";
     const records: Record<string, unknown>[] = [];
+    const source = "# Notes\r\n\r\n\t**literal**  \r\n";
     const add = (uuid: string, parentUuid: string | null, type: string, message: unknown, extra = {}) => {
       records.push({ uuid, parentUuid, type, message, sessionId, cwd, timestamp: `2026-10-06T10:00:${String(records.length).padStart(2, "0")}.000Z`, ...extra });
     };
     add("prompt-1", null, "user", { role: "user", content: "First prompt" });
-    add("tool", "prompt-1", "assistant", { id: "assistant-1", role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "fixture.rs" } }] });
-    add("result", "tool", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "file contents" }] });
+    add("tool", "prompt-1", "assistant", { id: "assistant-1", role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "notes.md", offset: 60 } }] });
+    add("result", "tool", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "60\t# Notes\n61\t\n62\t\t**literal**  " }] }, {
+      toolUseResult: { type: "text", file: { filePath: "notes.md", content: source, numLines: 3, startLine: 60, totalLines: 100 } },
+    });
     add("answer-1", "result", "assistant", { id: "assistant-2", role: "assistant", content: [{ type: "text", text: "First answer" }] });
     add("boundary-1", null, "system", undefined, { subtype: "compact_boundary", logicalParentUuid: "answer-1", compactMetadata: { trigger: "auto", preservedMessages: { anchorUuid: "summary-1", uuids: ["tool", "result", "answer-1"] } } });
     add("summary-1", "boundary-1", "user", { role: "user", content: "Internal summary one" }, { isCompactSummary: true });
@@ -70,7 +73,9 @@ test("resume display restores compaction segments once and preserves SDK branch 
     assert.equal(tools[0].tool_call.status, "in_progress");
     const resultUpdate = result.updates.find((update: { type: string; tool_call_update?: { tool_call_id: string } }) => update.type === "tool_call_update" && update.tool_call_update?.tool_call_id === "read-1");
     assert.equal(resultUpdate.tool_call_update.fields.status, "completed");
-    assert.equal(resultUpdate.tool_call_update.fields.raw_output, "file contents");
+    assert.equal(resultUpdate.tool_call_update.fields.raw_output, source);
+    assert.deepEqual(resultUpdate.tool_call_update.fields.content, [{ type: "content", content: { type: "text", text: source } }]);
+    assert.deepEqual(resultUpdate.tool_call_update.fields.output_metadata, { read: { file_path: "notes.md", start_line: 60 } });
     assert.equal(readFileSync(transcript, "utf8"), before);
   } finally {
     assert.equal(dirname(directory), realpathSync(tmpdir()));

@@ -962,6 +962,10 @@ fn convert_tool_output_metadata(
                 .skill
                 .map(|skill| model::SkillOutputMetadata::new().background(skill.background)),
         )
+        .read(output_metadata.read.map(|read| model::ReadOutputMetadata {
+            file_path: read.file_path.into(),
+            start_line: read.start_line,
+        }))
         .non_execution(output_metadata.non_execution.map(|metadata| {
             model::ToolNonExecutionMetadata::new(metadata.kind)
                 .user_feedback(metadata.user_feedback)
@@ -1161,6 +1165,79 @@ mod tests {
         map_permission_request, map_question_request, map_session_update,
     };
     use crate::agent::{model, types};
+
+    #[test]
+    fn read_wire_updates_replace_cached_preview_without_changing_source() {
+        use crate::agent::events::ClientEvent;
+        use crate::agent::wire::{BridgeEvent, EventEnvelope};
+        use crate::app::{App, MessageBlock};
+        use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
+
+        let mut app = App::test_default();
+        app.session_runtime.activate_session("read-session".into());
+        let source = "# Notes\r\n\r\n\t**literal**  \r\n";
+        let updates = [
+            serde_json::json!({ "type": "tool_call", "tool_call": {
+                "tool_call_id": "read-1", "title": "Read notes.md", "kind": "read",
+                "status": "in_progress", "content": [{ "type": "content", "content": { "type": "text", "text": "old preview" } }],
+                "raw_input": { "file_path": "notes.md" }, "locations": [], "meta": { "claudeCode": { "toolName": "Read" } }
+            }}),
+            serde_json::json!({ "type": "tool_call_update", "tool_call_update": {
+                "tool_call_id": "read-1", "fields": {
+                    "status": "completed", "raw_output": source,
+                    "content": [{ "type": "content", "content": { "type": "text", "text": source } }],
+                    "output_metadata": { "read": { "file_path": "notes.md", "start_line": 60 } }
+                }
+            }}),
+        ];
+        for (index, update) in updates.into_iter().enumerate() {
+            let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+                "event": "session_update", "session_id": "read-session", "update": update
+            }))
+            .expect("Read wire event");
+            let BridgeEvent::SessionUpdate { session_id, update } = event.event else {
+                panic!("expected session update")
+            };
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::SessionUpdate {
+                    session_id,
+                    update: map_session_update(update).expect("mapped Read update"),
+                },
+            );
+            let (mi, bi) = app.lookup_tool_call("read-1").expect("Read card");
+            for width in [24, 80] {
+                let rendered = serialize_live_rows_with_boundaries_excluding(
+                    &mut app,
+                    width,
+                    &std::collections::BTreeSet::new(),
+                );
+                let segment = rendered
+                    .segments()
+                    .iter()
+                    .find(|segment| segment.msg_idx == mi && segment.block_idx == Some(bi))
+                    .expect("Read card segment");
+                let rows = rendered.segment_rows(segment).expect("Read card rows");
+                let body = rows
+                    .iter()
+                    .map(|row| {
+                        row.spans.iter().map(|span| span.content.as_ref()).collect::<String>()
+                    })
+                    .find(|text| text.trim_start().starts_with(['│', '└']))
+                    .expect("Read body row");
+                if index == 0 {
+                    assert_eq!(body.trim(), "└─ old preview");
+                } else {
+                    assert_eq!(body.trim(), "│  60  # Notes");
+                    let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] else {
+                        panic!("expected Read card")
+                    };
+                    assert_eq!(tc.content, vec![model::ToolCallContent::from(source)]);
+                    assert_eq!(tc.read_output_metadata().expect("Read metadata").start_line, 60);
+                }
+            }
+        }
+    }
 
     #[test]
     fn map_available_models_preserves_optional_fast_and_auto_metadata() {
@@ -1710,6 +1787,10 @@ mod tests {
                     }),
                 }),
                 skill: Some(types::SkillOutputMetadata { background: Some(true) }),
+                read: Some(types::ReadOutputMetadata {
+                    file_path: "src/lib.rs".to_owned(),
+                    start_line: 42,
+                }),
                 non_execution: Some(types::ToolNonExecutionMetadata {
                     kind: "interrupted".to_owned(),
                     user_feedback: Some("Stopped intentionally.".to_owned()),
@@ -1746,6 +1827,10 @@ mod tests {
                         ))
                     ))
                     .skill(Some(model::SkillOutputMetadata::new().background(Some(true))))
+                    .read(Some(model::ReadOutputMetadata {
+                        file_path: "src/lib.rs".into(),
+                        start_line: 42,
+                    }))
                     .non_execution(Some(
                         model::ToolNonExecutionMetadata::new("interrupted")
                             .user_feedback(Some("Stopped intentionally.".to_owned())),

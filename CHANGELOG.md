@@ -8,6 +8,10 @@ All notable changes to this project will be documented in this file.
 
 - **Background automatic updates** (#437, @srothgan): Install automatic updates in the background after exit, and show a warning at startup when the last one failed.
 
+### Fixes
+
+- **Markdown and tool previews** (#461, @srothgan): Preserve fenced code, show numbered file source in Read previews, and retain shell output colors.
+
 ## [0.15.2] - 2026-10-08 [Changes][v0.15.2]
 
 ### Fixes

@@ -19,24 +19,19 @@ pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'st
     highlight_with_syntax(text, syntax_for_language(language), highlight_theme())
 }
 
-pub(crate) fn highlight_code_with_theme(
-    text: &str,
-    language: Option<&str>,
-    theme_name: EmbeddedThemeName,
-) -> Vec<Line<'static>> {
-    highlight_with_syntax(text, syntax_for_language(language), theme(theme_name))
-}
-
-pub(crate) fn highlight_code_for_path_with_theme(
-    text: &str,
-    path: &Path,
+/// Advance syntax state through every line, retaining styled spans only for visible lines.
+pub(crate) fn highlight_source_lines(
+    lines: impl Iterator<Item = (String, bool)>,
+    path: Option<&Path>,
     language_fallback: Option<&str>,
     theme_name: EmbeddedThemeName,
 ) -> Vec<Line<'static>> {
-    let syntax = find_syntax_for_path(path)
+    let syntax = path
+        .and_then(find_syntax_for_path)
         .or_else(|| language_fallback.and_then(find_syntax))
         .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    highlight_with_syntax(text, syntax, theme(theme_name))
+    let mut highlighter = HighlightLines::new(syntax, theme(theme_name));
+    lines.filter_map(|(line, visible)| highlight_line(&line, &mut highlighter, visible)).collect()
 }
 
 fn highlight_with_syntax(
@@ -52,7 +47,7 @@ fn highlight_with_syntax(
     let mut lines = Vec::new();
 
     for raw_line in LinesWithEndings::from(text) {
-        lines.push(highlight_line(raw_line, &mut highlighter));
+        lines.extend(highlight_line(raw_line, &mut highlighter, true));
     }
 
     if text.ends_with('\n') {
@@ -62,8 +57,13 @@ fn highlight_with_syntax(
     lines
 }
 
-fn highlight_line(line: &str, highlighter: &mut HighlightLines<'_>) -> Line<'static> {
+fn highlight_line(
+    line: &str,
+    highlighter: &mut HighlightLines<'_>,
+    visible: bool,
+) -> Option<Line<'static>> {
     match highlighter.highlight_line(line, &SYNTAX_SET) {
+        Ok(_) if !visible => None,
         Ok(ranges) => {
             let spans = ranges
                 .into_iter()
@@ -79,7 +79,7 @@ fn highlight_line(line: &str, highlighter: &mut HighlightLines<'_>) -> Line<'sta
                     }
                 })
                 .collect::<Vec<_>>();
-            if spans.is_empty() { Line::default() } else { Line::from(spans) }
+            Some(if spans.is_empty() { Line::default() } else { Line::from(spans) })
         }
         Err(err) => {
             tracing::warn!(
@@ -89,7 +89,7 @@ fn highlight_line(line: &str, highlighter: &mut HighlightLines<'_>) -> Line<'sta
                 outcome = "fallback",
                 error_message = %err,
             );
-            Line::from(line.trim_end_matches('\n').to_owned())
+            visible.then(|| Line::from(line.trim_end_matches('\n').to_owned()))
         }
     }
 }
@@ -189,8 +189,9 @@ mod tests {
 
     #[test]
     fn highlight_code_accepts_explicit_theme() {
-        let rendered = highlight_code_with_theme(
-            "fn main() {}\n",
+        let rendered = highlight_source_lines(
+            std::iter::once(("fn main() {}\n".to_owned(), true)),
+            None,
             Some("rs"),
             EmbeddedThemeName::MonokaiExtendedBright,
         );
