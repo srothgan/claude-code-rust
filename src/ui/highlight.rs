@@ -77,9 +77,7 @@ pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
 }
 
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
-    let syntax =
-        language.and_then(find_syntax).unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    highlight_with_syntax(text, syntax, highlight_theme())
+    highlight_with_syntax(text, syntax_for_language(language), highlight_theme())
 }
 
 pub(crate) fn highlight_code_with_theme(
@@ -87,9 +85,7 @@ pub(crate) fn highlight_code_with_theme(
     language: Option<&str>,
     theme_name: EmbeddedThemeName,
 ) -> Vec<Line<'static>> {
-    let syntax =
-        language.and_then(find_syntax).unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    highlight_with_syntax(text, syntax, theme(theme_name))
+    highlight_with_syntax(text, syntax_for_language(language), theme(theme_name))
 }
 
 pub(crate) fn highlight_code_for_path_with_theme(
@@ -174,6 +170,23 @@ pub(crate) fn plain_text_lines(text: &str) -> Vec<Line<'static>> {
 fn ansi_text_lines(text: &str) -> Option<Vec<Line<'static>>> {
     let rendered = text.as_bytes().into_text().ok()?.clone();
     Some(rendered.lines)
+}
+
+/// Unknown languages render as plain text.
+fn syntax_for_language(language: Option<&str>) -> &'static SyntaxReference {
+    let Some(language) = language.filter(|language| !language.trim().is_empty()) else {
+        return SYNTAX_SET.find_syntax_plain_text();
+    };
+    find_syntax(language).unwrap_or_else(|| {
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "syntax_language_unknown",
+            message = "code language is not recognized; rendering plain text",
+            outcome = "fallback",
+            language,
+        );
+        SYNTAX_SET.find_syntax_plain_text()
+    })
 }
 
 fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {

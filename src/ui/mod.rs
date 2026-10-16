@@ -6,7 +6,6 @@ mod autocomplete;
 mod config;
 mod copy;
 mod diff;
-mod document_table;
 pub(crate) mod footer_rows;
 mod git_diff;
 pub(crate) mod help;

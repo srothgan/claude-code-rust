@@ -2353,28 +2353,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "onig"
-version = "6.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "336b9c63443aceef14bea841b899035ae3abe89b7c486aaf4c5bd8aafedac3f0"
-dependencies = [
- "bitflags 2.13.0",
- "libc",
- "once_cell",
- "onig_sys",
-]
-
-[[package]]
-name = "onig_sys"
-version = "69.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7f86c6eef3d6df15f23bcfb6af487cbd2fed4e5581d58d5bf1f5f8b7f6727dc"
-dependencies = [
- "cc",
- "pkg-config",
-]
-
-[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3626,7 +3604,6 @@ dependencies = [
  "flate2",
  "fnv",
  "once_cell",
- "onig",
  "plist",
  "regex-syntax",
  "serde",
@@ -4099,11 +4076,9 @@ version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bb1a6b3f82a27150540cd7ca8cc386471329f132460ef1da62f3573fe06f387"
 dependencies = [
- "ansi-to-tui",
  "itertools 0.15.0",
  "pulldown-cmark",
  "ratatui-core",
- "syntect",
  "tracing",
 ]
 

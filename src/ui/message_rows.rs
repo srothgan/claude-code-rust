@@ -218,7 +218,7 @@ pub(super) fn render_btw_exchange_lines(
 }
 
 fn render_btw_markdown(text: &str, width: u16) -> Vec<Line<'static>> {
-    let logical = super::document_table::render_markdown_with_tables(text, width, None);
+    let logical = super::markdown::render_markdown_at_width(text, width, None, false);
     let mut physical = crate::ui::wrap::wrap_lines_to_physical_rows(&logical, width);
     for line in &mut physical {
         for span in &mut line.spans {

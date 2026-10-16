@@ -612,7 +612,7 @@ fn cap_read_content_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 
 fn render_plan_content(text: &str, width: u16) -> Vec<Line<'static>> {
     let md_source = strip_outer_code_fence(text);
-    markdown::render_markdown_at_width(&md_source, width, None)
+    markdown::render_markdown_at_width(&md_source, width, None, false)
         .into_iter()
         .map(|line| {
             let owned: Vec<Span<'static>> = line
@@ -817,7 +817,7 @@ fn render_mcp_resource_text_content(
 }
 
 fn render_markdown_content(text: &str, width: u16, lines: &mut Vec<Line<'static>>) {
-    for line in markdown::render_markdown_at_width(text, width, None) {
+    for line in markdown::render_markdown_at_width(text, width, None, false) {
         let owned: Vec<Span<'static>> =
             line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect();
         lines.push(Line::from(owned));

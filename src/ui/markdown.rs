@@ -1,28 +1,54 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-mod lists;
+mod document;
+mod table;
 
 use crate::failure;
+use crate::ui::theme;
 use pulldown_cmark::{Event, Options, Parser, Tag};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-pub(super) fn render_markdown_safe(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
-    render_markdown_at_width(text, u16::MAX, bg)
+/// App styles for Markdown, shared by the document layout and `tui-markdown`.
+#[derive(Clone, Copy)]
+struct MarkdownStyle;
+
+impl tui_markdown::StyleSheet for MarkdownStyle {
+    fn heading(&self, level: u8) -> Style {
+        let style = Style::new().add_modifier(Modifier::BOLD);
+        if level == 1 { style.add_modifier(Modifier::UNDERLINED) } else { style }
+    }
+
+    fn heading_marker(&self, _level: u8) -> &'static str {
+        ""
+    }
 }
 
-/// List rows are laid out while parser ownership is available, before becoming plain rows.
+impl MarkdownStyle {
+    fn code_label() -> Style {
+        Style::new().fg(theme::DIM).add_modifier(Modifier::ITALIC)
+    }
+}
+
+pub(super) fn render_markdown_safe(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
+    render_markdown_at_width(text, u16::MAX, bg, false)
+}
+
+/// Lays out `text` from one parse. `preserve_newlines` renders soft line breaks as hard breaks.
 pub(super) fn render_markdown_at_width(
     text: &str,
     width: u16,
     bg: Option<Color>,
+    preserve_newlines: bool,
 ) -> Vec<Line<'static>> {
-    render_markdown_safe_with(text, bg, |text, bg| lists::render(text, width, bg))
+    render_markdown_safe_with(text, bg, |text, bg| {
+        document::render(text, width, bg, preserve_newlines)
+    })
 }
 
 fn parser_options() -> Options {
-    // Match the dialect used by tui-markdown for non-list blocks.
+    // Match the dialect used by tui-markdown for blocks it renders.
     Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
@@ -65,7 +91,8 @@ where
 }
 
 fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
-    let rendered = tui_markdown::from_str(text);
+    let rendered =
+        tui_markdown::from_str_with_options(text, &tui_markdown::Options::new(MarkdownStyle));
     rendered
         .lines
         .into_iter()
@@ -106,7 +133,7 @@ mod tests {
     }
 
     fn document_rows(source: &str, width: u16) -> Vec<String> {
-        let lines = crate::ui::document_table::render_markdown_with_tables(source, width, None);
+        let lines = render_markdown_at_width(source, width, None, false);
         crate::ui::wrap::wrap_lines_to_physical_rows(&lines, width)
             .iter()
             .map(|line| line_text(line).trim_end().to_owned())
@@ -184,10 +211,11 @@ mod tests {
 
     #[test]
     fn nested_list_wrapping_preserves_inline_styles_links_and_unicode() {
-        let lines = crate::ui::document_table::render_markdown_with_tables(
+        let lines = render_markdown_at_width(
             "1. Parent\n   - **Bold** and *italic* [docs](https://example.com) 日本語😀 words words words",
             28,
             Some(Color::Blue),
+            false,
         );
         let text = lines.iter().map(line_text).collect::<Vec<_>>();
         let content = text.join(" ");
@@ -321,7 +349,92 @@ mod tests {
     fn fenced_code_keeps_list_like_lines_unchanged() {
         let lines = render_markdown_safe("```md\n- Not a rendered list\n```", None);
 
-        assert_eq!(rendered_text(&lines), vec!["```md", "- Not a rendered list", "```"]);
+        assert_eq!(rendered_text(&lines), vec!["md", "- Not a rendered list"]);
+    }
+
+    #[test]
+    fn headings_render_bold_without_markers() {
+        let lines = render_markdown_safe("# Title\n\nBody\n\n## Section", None);
+        let text = rendered_text(&lines);
+
+        for heading in ["Title", "Section"] {
+            let line = lines.iter().find(|line| line_text(line) == heading).expect("heading row");
+            assert!(
+                line.spans.iter().all(|span| line
+                    .style
+                    .patch(span.style)
+                    .add_modifier
+                    .contains(Modifier::BOLD)),
+                "{heading} lost heading style: {text:?}"
+            );
+        }
+        assert!(!text.iter().any(|line| line.contains('#')), "{text:?}");
+    }
+
+    #[test]
+    fn fenced_code_renders_hash_lines_verbatim_under_a_language_label() {
+        let lines = render_markdown_safe(
+            "Intro\n\n```bash\n#!/usr/bin/env bash\n# install deps\n  npm ci\n```\n\nAfter",
+            None,
+        );
+
+        assert_eq!(
+            rendered_text(&lines),
+            vec![
+                "Intro",
+                "",
+                "bash",
+                "#!/usr/bin/env bash",
+                "# install deps",
+                "  npm ci",
+                "",
+                "After"
+            ]
+        );
+        let label = lines[2].spans.iter().find(|span| span.content == "bash").expect("label span");
+        assert_eq!(label.style, MarkdownStyle::code_label());
+    }
+
+    #[test]
+    fn unlabelled_and_indented_code_use_a_generic_label() {
+        for source in ["```\nplain\n```", "    plain"] {
+            let lines = render_markdown_safe(source, None);
+            assert_eq!(rendered_text(&lines), vec!["code", "plain"], "{source:?}");
+        }
+    }
+
+    #[test]
+    fn quoted_code_wraps_inside_the_quote_column() {
+        let code = "let value = compute_something_long(alpha, beta);";
+        let rows = document_rows(&format!("> ```rust\n> {code}\n> ```"), 24);
+
+        assert_eq!(rows[0], "> rust");
+        let body = &rows[1..];
+        assert!(body.len() > 1, "code must wrap at the available width: {rows:?}");
+        for row in body {
+            assert!(row.starts_with("> "), "wrapped code escaped its quote: {rows:?}");
+            assert!(crate::ui::wrap::display_width(row) <= 24);
+        }
+        let joined = body.iter().map(|row| &row[2..]).collect::<String>();
+        assert_eq!(joined.replace(' ', ""), code.replace(' ', ""));
+    }
+
+    #[test]
+    fn preserved_newlines_become_line_breaks_outside_code() {
+        let lines = render_markdown_at_width(
+            "first line\nsecond line\n\n- item one\n  continued\n\n```sh\necho a\necho b\n```",
+            80,
+            None,
+            true,
+        );
+        let text = rendered_text(&lines);
+
+        for row in
+            ["first line", "second line", "  - item one", "    continued", "echo a", "echo b"]
+        {
+            assert!(text.iter().any(|line| line == row), "missing {row:?}: {text:?}");
+        }
+        assert!(text.iter().all(|line| !line.ends_with(' ')), "trailing spaces: {text:?}");
     }
 
     #[test]

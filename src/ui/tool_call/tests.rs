@@ -246,31 +246,45 @@ fn tool_titles_project_one_source_line_and_preserve_literal_shell_commands() {
     }
 }
 
+/// Matches the renderer's unknown-language diagnostic, emitted once per code-block render.
+struct UnknownSyntaxEvent(bool);
+
+impl tracing::field::Visit for UnknownSyntaxEvent {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.0 |= field.name() == "event_name" && value == "syntax_language_unknown";
+    }
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
+}
+
+struct SyntaxWarnings(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SyntaxWarnings {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut unknown = UnknownSyntaxEvent(false);
+        event.record(&mut unknown);
+        if unknown.0 {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
 #[test]
 fn tool_title_cache_reuses_markdown_through_animation_resize_and_body_updates() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tracing_subscriber::layer::SubscriberExt;
 
-    struct SyntaxWarnings(Arc<AtomicUsize>);
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SyntaxWarnings {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if event.metadata().target() == "tui_markdown::renderer::code" {
-                self.0.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
     let warnings = Arc::new(AtomicUsize::new(0));
     let subscriber = tracing_subscriber::registry().with(SyntaxWarnings(Arc::clone(&warnings)));
     tracing::subscriber::with_default(subscriber, || {
         let mut tc = test_tool_call("title-cache", "Read", model::ToolCallStatus::InProgress);
-        // An indented code title exercises the actual Markdown renderer's syntax lookup.
-        tc.title = "    cached code title\n```unrecognized\nignored tail\n```".to_owned();
+        // An unknown fence language counts each syntax lookup by the actual Markdown renderer.
+        tc.title = "```unrecognized cached code title\nignored tail\n```".to_owned();
         let mut first = Vec::new();
         render_tool_call_cached(
             &mut tc,
@@ -320,7 +334,7 @@ fn tool_title_cache_reuses_markdown_through_animation_resize_and_body_updates() 
             "body invalidation must preserve unchanged title work"
         );
 
-        tc.title = "    updated code title".to_owned();
+        tc.title = "```unrecognized updated\ncode title\n```".to_owned();
         let mut updated = Vec::new();
         render_tool_call_cached(
             &mut tc,

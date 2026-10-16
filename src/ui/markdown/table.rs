@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2025 Simon Peter Rothgang
 
-use super::markdown;
-use super::wrap::{
+//! Table layout for Markdown tables parsed by the document renderer.
+
+use super::super::wrap::{
     StyledChunk, blank_line, display_width, line_display_width, pad_line_to_width,
     wrap_styled_chunks,
 };
-use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -59,26 +60,36 @@ struct TableCellAst {
 }
 
 #[derive(Clone, Debug, Default)]
-struct DocumentTable {
+pub(super) struct DocumentTable {
     header: TableRowAst,
     rows: Vec<TableRowAst>,
     alignments: Vec<ColumnAlignment>,
 }
 
-enum MarkdownBlock {
-    Text(String),
-    Table(DocumentTable),
-}
-
 const URL_TOKEN_SOFT_MIN_WIDTH: usize = 24;
 
 impl DocumentTable {
+    pub(super) fn new(
+        alignments: &[Alignment],
+        header: Vec<Vec<StyledChunk>>,
+        rows: Vec<Vec<Vec<StyledChunk>>>,
+    ) -> Self {
+        let row = |cells: Vec<Vec<StyledChunk>>| TableRowAst {
+            cells: cells.into_iter().map(TableCellAst::from_chunks).collect(),
+        };
+        Self {
+            header: row(header),
+            rows: rows.into_iter().map(row).collect(),
+            alignments: alignments.iter().copied().map(ColumnAlignment::from).collect(),
+        }
+    }
+
     fn column_count(&self) -> usize {
         let body_cols = self.rows.iter().map(|row| row.cells.len()).max().unwrap_or(0);
         self.header.cells.len().max(self.alignments.len()).max(body_cols)
     }
 
-    fn render_lines(&self, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
+    pub(super) fn render_lines(&self, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
         if self.column_count() == 0 || width == 0 {
             return Vec::new();
         }
@@ -103,255 +114,12 @@ impl TableCellAst {
     fn empty() -> Self {
         Self::default()
     }
-}
 
-pub fn render_markdown_with_tables(
-    text: &str,
-    width: u16,
-    bg: Option<Color>,
-) -> Vec<Line<'static>> {
-    let blocks = split_markdown_tables(text);
-    let mut out = Vec::new();
-    for block in blocks {
-        match block {
-            MarkdownBlock::Text(chunk) => {
-                if chunk.trim().is_empty() {
-                    continue;
-                }
-                out.extend(markdown::render_markdown_at_width(&chunk, width, bg));
-            }
-            MarkdownBlock::Table(table) => {
-                if !out.is_empty() {
-                    out.push(Line::default());
-                }
-                out.extend(table.render_lines(width, bg));
-                out.push(Line::default());
-            }
-        }
-    }
-    out
-}
-
-fn parser_options() -> Options {
-    let mut options = Options::ENABLE_STRIKETHROUGH;
-    options.insert(Options::ENABLE_TABLES);
-    options
-}
-
-fn split_markdown_tables(text: &str) -> Vec<MarkdownBlock> {
-    let mut blocks = Vec::new();
-    let mut parser = Parser::new_ext(text, parser_options()).into_offset_iter().peekable();
-    let mut text_start = 0usize;
-    let mut depth = 0usize;
-
-    loop {
-        let Some((event, range)) = parser.next() else {
-            break;
-        };
-        if let Event::Start(Tag::Table(alignments)) = &event
-            && depth == 0
-        {
-            if text_start < range.start {
-                blocks.push(MarkdownBlock::Text(text[text_start..range.start].to_owned()));
-            }
-
-            let mut table_end = range.end;
-            let table = parse_table_ast(alignments.clone(), &mut parser, &mut table_end);
-            blocks.push(MarkdownBlock::Table(table));
-            text_start = table_end;
-        } else {
-            // Nested tables belong to their container's layout and available width.
-            match event {
-                Event::Start(_) => depth += 1,
-                Event::End(_) => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-    }
-
-    if text_start < text.len() {
-        blocks.push(MarkdownBlock::Text(text[text_start..].to_owned()));
-    }
-
-    blocks
-}
-
-fn parse_table_ast<'input, I>(
-    alignments: Vec<Alignment>,
-    parser: &mut std::iter::Peekable<I>,
-    table_end: &mut usize,
-) -> DocumentTable
-where
-    I: Iterator<Item = (Event<'input>, std::ops::Range<usize>)>,
-{
-    let mut header = None;
-    let mut rows = Vec::new();
-    let mut current_row: Option<TableRowAst> = None;
-    let mut current_cell: Option<CellBuilder> = None;
-    let mut in_header = false;
-
-    for (event, range) in parser.by_ref() {
-        *table_end = (*table_end).max(range.end);
-        match event {
-            Event::Start(Tag::TableHead) => in_header = true,
-            Event::End(TagEnd::TableHead) => {
-                if let Some(row) = current_row.take()
-                    && !row.cells.is_empty()
-                    && header.is_none()
-                {
-                    header = Some(row);
-                }
-                in_header = false;
-            }
-            Event::Start(Tag::TableRow) => current_row = Some(TableRowAst::default()),
-            Event::End(TagEnd::TableRow) => {
-                let row = current_row.take().unwrap_or_default();
-                if in_header && header.is_none() {
-                    header = Some(row);
-                } else {
-                    rows.push(row);
-                }
-            }
-            Event::Start(Tag::TableCell) => {
-                current_row.get_or_insert_with(TableRowAst::default);
-                current_cell = Some(CellBuilder::new());
-            }
-            Event::End(TagEnd::TableCell) => {
-                if let Some(cell) = current_cell.take() {
-                    current_row.get_or_insert_with(TableRowAst::default).cells.push(cell.finish());
-                }
-            }
-            Event::End(TagEnd::Table) => break,
-            Event::Start(tag) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.start_tag(&tag);
-                }
-            }
-            Event::End(tag) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.end_tag(tag);
-                }
-            }
-            Event::Text(text) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_text(text.as_ref());
-                }
-            }
-            Event::Code(code) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_code(code.as_ref());
-                }
-            }
-            Event::SoftBreak => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_text(" ");
-                }
-            }
-            Event::HardBreak => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_text("\n");
-                }
-            }
-            Event::Html(raw) | Event::InlineHtml(raw) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_text(raw.as_ref());
-                }
-            }
-            Event::InlineMath(math) | Event::DisplayMath(math) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_text(math.as_ref());
-                }
-            }
-            Event::FootnoteReference(reference) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_text(reference.as_ref());
-                }
-            }
-            Event::TaskListMarker(done) => {
-                if let Some(cell) = current_cell.as_mut() {
-                    cell.push_text(if done { "[x] " } else { "[ ] " });
-                }
-            }
-            Event::Rule => {}
-        }
-    }
-
-    DocumentTable {
-        header: header.unwrap_or_default(),
-        rows,
-        alignments: alignments.into_iter().map(ColumnAlignment::from).collect(),
-    }
-}
-
-struct CellBuilder {
-    chunks: Vec<StyledChunk>,
-    current_text: String,
-    style_stack: Vec<Style>,
-    current_style: Style,
-}
-
-impl CellBuilder {
-    fn new() -> Self {
-        Self {
-            chunks: Vec::new(),
-            current_text: String::new(),
-            style_stack: vec![Style::default()],
-            current_style: Style::default(),
-        }
-    }
-
-    fn push_text(&mut self, text: &str) {
-        self.current_text.push_str(text);
-    }
-
-    fn push_code(&mut self, text: &str) {
-        self.flush_current();
-        let style = self.current_style.add_modifier(Modifier::REVERSED);
-        self.chunks.push(StyledChunk { text: text.to_owned(), style });
-    }
-
-    fn start_tag(&mut self, tag: &Tag<'_>) {
-        let next = match tag {
-            Tag::Strong => self.current_style.add_modifier(Modifier::BOLD),
-            Tag::Emphasis => self.current_style.add_modifier(Modifier::ITALIC),
-            Tag::Strikethrough => self.current_style.add_modifier(Modifier::CROSSED_OUT),
-            Tag::Link { .. } => self.current_style.add_modifier(Modifier::UNDERLINED),
-            _ => return,
-        };
-
-        self.flush_current();
-        self.style_stack.push(next);
-        self.current_style = next;
-    }
-
-    fn end_tag(&mut self, tag: TagEnd) {
-        let styled =
-            matches!(tag, TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link);
-        if !styled {
-            return;
-        }
-
-        self.flush_current();
-        let _ = self.style_stack.pop();
-        self.current_style = self.style_stack.last().copied().unwrap_or_default();
-    }
-
-    fn flush_current(&mut self) {
-        if self.current_text.is_empty() {
-            return;
-        }
-        self.chunks.push(StyledChunk {
-            text: std::mem::take(&mut self.current_text),
-            style: self.current_style,
-        });
-    }
-
-    fn finish(mut self) -> TableCellAst {
-        self.flush_current();
-        let plain_text: String = self.chunks.iter().map(|chunk| chunk.text.as_str()).collect();
+    fn from_chunks(chunks: Vec<StyledChunk>) -> Self {
+        let plain_text: String = chunks.iter().map(|chunk| chunk.text.as_str()).collect();
         let (preferred_width, soft_min_width) = measure_cell_widths(&plain_text);
-        TableCellAst {
-            chunks: self.chunks,
+        Self {
+            chunks,
             plain_text,
             preferred_width: preferred_width.max(1),
             soft_min_width: soft_min_width.max(1),
@@ -746,29 +514,24 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
+    fn render_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+        super::super::render_markdown_at_width(text, width, None, false)
+    }
+
     fn render_strings(text: &str, width: u16) -> Vec<String> {
-        render_markdown_with_tables(text, width, None)
+        render_lines(text, width)
             .into_iter()
             .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
             .collect()
     }
 
     #[test]
-    fn structural_parser_extracts_markdown_tables() {
-        let blocks =
-            split_markdown_tables("before\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\nafter");
-        assert_eq!(blocks.len(), 3);
-        assert!(matches!(blocks[0], MarkdownBlock::Text(_)));
-        assert!(matches!(blocks[1], MarkdownBlock::Table(_)));
-        assert!(matches!(blocks[2], MarkdownBlock::Text(_)));
-    }
-
-    #[test]
-    fn structural_parser_does_not_treat_code_fences_as_tables() {
+    fn code_fences_are_not_laid_out_as_tables() {
         let input = "```text\n| not | a table |\n| --- | --- |\n```\n";
-        let blocks = split_markdown_tables(input);
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(blocks[0], MarkdownBlock::Text(_)));
+        let rendered = render_strings(input, 40);
+        assert!(rendered.iter().any(|line| line == "| not | a table |"));
+        assert!(rendered.iter().any(|line| line == "| --- | --- |"));
+        assert!(!rendered.iter().any(|line| line.contains('─')));
     }
 
     #[test]
@@ -825,31 +588,35 @@ mod tests {
     }
 
     #[test]
-    fn malformed_markdown_falls_back_to_text_block() {
-        let blocks = split_markdown_tables("| a | b |\n| this is not a separator |\n| 1 | 2 |\n");
-        assert_eq!(blocks.len(), 1);
-        assert!(matches!(blocks[0], MarkdownBlock::Text(_)));
+    fn malformed_markdown_renders_as_text() {
+        let rendered = render_strings("| a | b |\n| this is not a separator |\n| 1 | 2 |\n", 60);
+        assert!(rendered.iter().any(|line| line.contains("this is not a separator")));
+        assert!(!rendered.iter().any(|line| line.contains('─') || line.contains("a:")));
     }
 
     #[test]
-    fn structural_parser_preserves_empty_cells_in_valid_table_rows() {
-        let blocks = split_markdown_tables(
+    fn empty_cells_keep_their_columns() {
+        let rendered = render_strings(
             "| Hassle | What users report | Refs |\n\
              | --- | --- | --- |\n\
              | Paste freeze | Pasting many lines froze the terminal |  |\n\
              | Scrollback destroyed |  | #42002 |\n",
+            100,
         );
 
-        let [MarkdownBlock::Table(table)] = blocks.as_slice() else {
-            panic!("expected one parsed table, got {} blocks", blocks.len());
+        let column = |line: &str, text: &str| {
+            line.find(text).map(|offset| display_width(&line[..offset])).expect("cell text")
         };
-
-        assert_eq!(table.column_count(), 3);
-        assert_eq!(table.rows.len(), 2);
-        assert_eq!(table.rows[0].cells.len(), 3);
-        assert_eq!(table.rows[1].cells.len(), 3);
-        assert_eq!(table.rows[0].cells[2].plain_text, "");
-        assert_eq!(table.rows[1].cells[1].plain_text, "");
+        let header = rendered.iter().find(|line| line.contains("Refs")).expect("header");
+        let paste = rendered.iter().find(|line| line.contains("Paste freeze")).expect("row");
+        let scrollback = rendered.iter().find(|line| line.contains("#42002")).expect("row");
+        assert!(scrollback.contains("Scrollback destroyed"));
+        assert_eq!(column(scrollback, "#42002"), column(header, "Refs"));
+        assert_eq!(
+            column(paste, "Pasting many lines"),
+            column(header, "What users report"),
+            "{rendered:?}"
+        );
     }
 
     #[test]
@@ -899,10 +666,13 @@ mod tests {
     #[test]
     fn inline_markdown_spans_render_inside_cells() {
         let input = "| col |\n| --- |\n| **bold** and `code` |\n";
-        let rendered = render_markdown_with_tables(input, 24, None);
+        let rendered = render_lines(input, 24);
         let body = &rendered[2];
-        assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::BOLD)));
-        assert!(body.spans.iter().any(|span| span.style.add_modifier.contains(Modifier::REVERSED)));
+        assert!(body.spans.iter().any(|span| span.content.contains("bold")
+            && span.style.add_modifier.contains(Modifier::BOLD)));
+        assert!(body.spans.iter().any(|span| span.content.contains("code")
+            && span.style.fg == Some(Color::White)
+            && span.style.bg == Some(Color::Black)));
     }
 
     #[test]

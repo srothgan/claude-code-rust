@@ -2029,6 +2029,91 @@ mod tests {
         }
     }
 
+    fn assistant_content_rows(app: &mut App, width: u16) -> (Vec<Line<'static>>, Vec<String>) {
+        let rows = serialize_live_rows(app, width);
+        let text = line_texts(&rows)
+            .into_iter()
+            .map(|row| row.chars().skip(3).collect::<String>())
+            .collect::<Vec<_>>();
+        (rows, text)
+    }
+
+    #[test]
+    fn assistant_markdown_shows_parsed_headings_and_verbatim_code_blocks() {
+        let source = concat!(
+            "## Setup\n\n",
+            "Run this first:\nthen continue\n\n",
+            "```bash\n#!/usr/bin/env bash\n# install deps\n  npm ci\n```\n\n",
+            "1. Then check\n\n",
+            "   ```sh\n   # nested\n   ```\n\n",
+            "   | Name | Value |\n   | --- | --- |\n   | Alpha | Beta |",
+        );
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message(source));
+        let (rows, text) = assistant_content_rows(&mut app, 80);
+
+        let heading = text.iter().position(|row| row == "Setup").expect("heading row");
+        assert_eq!(
+            text[heading..heading + 10],
+            [
+                "Setup",
+                "",
+                "Run this first:",
+                "then continue",
+                "",
+                "bash",
+                "#!/usr/bin/env bash",
+                "# install deps",
+                "  npm ci",
+                "",
+            ]
+        );
+        assert!(
+            rows[heading]
+                .spans
+                .iter()
+                .filter(|span| span.content.contains("Setup"))
+                .all(|span| span.style.add_modifier.contains(ratatui::style::Modifier::BOLD)),
+            "heading lost its style"
+        );
+        assert!(!text.iter().any(|row| row.contains("##") || row.contains("```")), "{text:?}");
+
+        let body_column = text
+            .iter()
+            .find_map(|row| row.find("1. Then check"))
+            .map(|column| column + 3)
+            .expect("list item");
+        for content in ["sh", "# nested", "Name"] {
+            let row =
+                text.iter().find(|row| row.trim() == content || row.trim().starts_with(content));
+            let row = row.unwrap_or_else(|| panic!("missing {content:?}: {text:?}"));
+            assert_eq!(row.find(content), Some(body_column), "{content:?} left its item: {text:?}");
+        }
+        let table_row = text.iter().find(|row| row.contains("Alpha")).expect("table row");
+        assert!(table_row.contains("Beta"), "table cells split across rows: {text:?}");
+        assert!(text.iter().any(|row| row.find('─') == Some(body_column)), "{text:?}");
+
+        let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
+            panic!("expected assistant text");
+        };
+        assert_eq!(block.text, source);
+    }
+
+    #[test]
+    fn assistant_code_blocks_wrap_inside_the_message_column() {
+        let code = "let value = compute_something_long(alpha, beta, gamma);";
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_text_message(&format!("```rust\n{code}\n```")));
+        let (rows, text) = assistant_content_rows(&mut app, 30);
+
+        assert!(rows.iter().all(|row| crate::ui::wrap::line_display_width(row) <= 30));
+        let label = text.iter().position(|row| row == "rust").expect("language label");
+        let body =
+            text[label + 1..].iter().take_while(|row| !row.is_empty()).cloned().collect::<Vec<_>>();
+        assert!(body.len() > 1, "long code must wrap: {text:?}");
+        assert_eq!(body.concat().replace(' ', ""), code.replace(' ', ""));
+    }
+
     #[test]
     fn width_rebuild_wraps_same_canonical_transcript_to_different_row_counts() {
         let mut app = App::test_default();

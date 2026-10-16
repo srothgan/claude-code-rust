@@ -74,6 +74,35 @@ pub(crate) fn wrap_lines_to_physical_rows(
     (0..area.height).map(|row| buffer_row_to_line(&buffer, area, row)).collect()
 }
 
+/// Splits a line at grapheme boundaries into rows of at most `width` cells, keeping every
+/// character, including leading and trailing whitespace, without padding rows.
+#[must_use]
+pub(crate) fn split_line_at_width(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
+    if width == 0 || line_display_width(&line) <= width {
+        return vec![line];
+    }
+    let style = line.style;
+    let mut rows = Vec::new();
+    let mut spans = Vec::new();
+    let mut row_width = 0;
+    for span in line.spans {
+        let mut text = String::new();
+        for grapheme in span.content.graphemes(true) {
+            let grapheme_width = display_width(grapheme);
+            if row_width > 0 && row_width + grapheme_width > width {
+                push_styled_text(&mut spans, &std::mem::take(&mut text), span.style);
+                rows.push(Line::from(std::mem::take(&mut spans)).style(style));
+                row_width = 0;
+            }
+            text.push_str(grapheme);
+            row_width += grapheme_width;
+        }
+        push_styled_text(&mut spans, &text, span.style);
+    }
+    rows.push(Line::from(spans).style(style));
+    rows
+}
+
 #[must_use]
 pub(crate) fn wrap_styled_chunks(chunks: &[StyledChunk], width: usize) -> Vec<Line<'static>> {
     if width == 0 || chunks.is_empty() {
@@ -383,6 +412,18 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn split_line_at_width_keeps_whitespace_styles_and_wide_graphemes_unpadded() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let line = Line::from(vec![Span::raw("  ab"), Span::styled("你好 x", bold)]);
+
+        let rows = split_line_at_width(line, 5);
+
+        assert_eq!(rows.iter().map(line_text).collect::<Vec<_>>(), ["  ab", "你好 ", "x"]);
+        assert_eq!(rows[1].spans[0].style, bold);
+        assert_eq!(rows[2].spans[0].style, bold);
+    }
 
     #[test]
     fn wrap_plain_preserves_explicit_newlines() {
