@@ -6,15 +6,16 @@ use crate::agent::model;
 use crate::app::ToolCallInfo;
 use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_outer_code_fence};
 use crate::ui::highlight;
+use crate::ui::layout_control::LayoutControl;
 use crate::ui::markdown;
 use crate::ui::terminal_output;
 use crate::ui::theme;
 use crate::ui::tool_display;
-use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 use std::path::Path;
+use std::task::Poll;
 
 use super::errors::{
     debug_failed_tool_render, failed_execute_first_line, failed_tool_text_summary,
@@ -94,10 +95,47 @@ fn hidden_subagent_permission_title_prefix(tc: &ToolCallInfo) -> Option<Span<'st
 
 /// Render the body lines (everything after the title) for a tool call.
 /// Used for in-progress tool calls where the body is cached separately from the title.
-pub(super) fn render_tool_call_body(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    render_standard_body(tc, width, &mut lines);
-    lines
+#[derive(Default)]
+pub(super) struct ToolBodyCursor {
+    content: ToolContentCursor,
+}
+
+impl ToolBodyCursor {
+    pub(super) fn render(
+        &mut self,
+        tc: &ToolCallInfo,
+        width: u16,
+        control: &LayoutControl<'_>,
+    ) -> Vec<Line<'static>> {
+        loop {
+            if let Poll::Ready(lines) = self.poll(tc, width, control) {
+                return lines;
+            }
+        }
+    }
+
+    pub(super) fn poll(
+        &mut self,
+        tc: &ToolCallInfo,
+        width: u16,
+        control: &LayoutControl<'_>,
+    ) -> Poll<Vec<Line<'static>>> {
+        if !tool_call_has_body(tc) || control.cancelled() {
+            return Poll::Ready(Vec::new());
+        }
+        let prefix = if tc.is_execute_tool() {
+            EXECUTE_BODY_INDENT_WIDTH
+        } else {
+            STANDARD_BODY_PREFIX_WIDTH
+        };
+        let Poll::Ready(content) = self.content.poll(tc, width.saturating_sub(prefix), control)
+        else {
+            return Poll::Pending;
+        };
+        let mut lines = Vec::new();
+        finish_standard_body(tc, width, content, &mut lines, control);
+        Poll::Ready(lines)
+    }
 }
 
 #[must_use]
@@ -127,7 +165,13 @@ pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
 }
 
 /// Render the body (everything after the title line) of a tool call.
-fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'static>>) {
+fn finish_standard_body(
+    tc: &ToolCallInfo,
+    width: u16,
+    mut content_lines: Vec<Line<'static>>,
+    lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
+) {
     let pipe_style = Style::default().fg(theme::DIM);
 
     if !tool_call_has_body(tc) {
@@ -138,7 +182,6 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
     let prefix_width =
         if is_execute { EXECUTE_BODY_INDENT_WIDTH } else { STANDARD_BODY_PREFIX_WIDTH };
     let content_width = width.saturating_sub(prefix_width);
-    let mut content_lines = render_tool_content(tc, content_width);
     if tc.output_was_staged() {
         content_lines.push(Line::from(vec![
             Span::styled("Staged for review: ", Style::default().add_modifier(Modifier::BOLD)),
@@ -155,10 +198,11 @@ fn render_standard_body(tc: &ToolCallInfo, width: u16, lines: &mut Vec<Line<'sta
                 content_width,
                 "source lines hidden",
                 protected_source_lines,
+                control,
             )
         }
         ToolContentHeightPolicy::Unbounded => {
-            wrap_content_lines_with_source(content_lines, content_width)
+            wrap_content_lines_with_source(content_lines, content_width, control)
                 .into_iter()
                 .map(|wrapped| wrapped.row)
                 .collect()
@@ -310,66 +354,99 @@ fn truncate_summary_line(line: &str, max_chars: usize) -> String {
     }
 }
 
-/// Render the full content of a tool call as lines.
-fn render_tool_content(tc: &ToolCallInfo, width: u16) -> Vec<Line<'static>> {
-    if hides_pending_ask_user_question_transcript(tc) {
-        return Vec::new();
-    }
-
-    if let Some(renderer) = typed::renderer_for(tc) {
-        return (renderer.render)(tc);
-    }
-
-    if tc.is_execute_tool() {
-        return render_execute_tool_content(tc);
-    }
-
-    if let Some(question_lines) = render_completed_ask_user_question_content(tc) {
-        return question_lines;
-    }
-
-    if tool_body_uses_summary_only(tc) {
-        let summary = content_summary(tc);
-        return if summary.is_empty() {
-            Vec::new()
-        } else {
-            vec![Line::from(Span::styled(summary, Style::default().fg(theme::DIM)))]
-        };
-    }
-
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for content in &tc.content {
-        match content {
-            model::ToolCallContent::Diff(diff) => {
-                if is_plan_file_path(&diff.path) {
-                    lines.extend(render_plan_content(&diff.new_text, width));
-                } else {
-                    let raw = render_diff(diff, width.saturating_sub(DIFF_BODY_INDENT_WIDTH));
-                    let raw = cap_write_diff_lines(raw);
-                    lines.extend(indent_rendered_lines(raw, DIFF_BODY_INDENT));
-                }
-            }
-            model::ToolCallContent::McpResource(resource) => {
-                lines.extend(render_mcp_resource_content(tc, resource, width));
-            }
-            model::ToolCallContent::ResourceLink(link) => {
-                lines.extend(render_mcp_resource_link_content(link));
-            }
-            model::ToolCallContent::Content(c) => {
-                if let model::ContentBlock::Text(text) = &c.content {
-                    render_text_content(tc, &text.text, width, &mut lines);
-                }
-            }
-            model::ToolCallContent::Terminal(_) => {}
-        }
-    }
-
-    debug_failed_tool_render(tc);
-    lines
+#[derive(Default)]
+struct ToolContentCursor {
+    next_content: usize,
+    lines: Vec<Line<'static>>,
+    read: Option<read::ReadCursor>,
 }
 
-fn render_execute_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
-    let lines = execute::render_execute_content(tc);
+impl ToolContentCursor {
+    fn poll(
+        &mut self,
+        tc: &ToolCallInfo,
+        width: u16,
+        control: &LayoutControl<'_>,
+    ) -> Poll<Vec<Line<'static>>> {
+        if hides_pending_ask_user_question_transcript(tc) || control.cancelled() {
+            return Poll::Ready(Vec::new());
+        }
+        if let Some(renderer) = typed::renderer_for(tc) {
+            return Poll::Ready((renderer.render)(tc));
+        }
+        if tc.is_execute_tool() {
+            return Poll::Ready(render_execute_tool_content(tc, control));
+        }
+        if let Some(lines) = render_completed_ask_user_question_content(tc) {
+            return Poll::Ready(lines);
+        }
+        if tool_body_uses_summary_only(tc) {
+            let summary = content_summary(tc);
+            return Poll::Ready(if summary.is_empty() {
+                Vec::new()
+            } else {
+                vec![Line::from(Span::styled(summary, Style::default().fg(theme::DIM)))]
+            });
+        }
+        while let Some(content) = tc.content.get(self.next_content) {
+            if control.cancelled() {
+                return Poll::Ready(Vec::new());
+            }
+            match content {
+                model::ToolCallContent::Diff(diff) => {
+                    if is_plan_file_path(&diff.path) {
+                        self.lines.extend(render_plan_content(&diff.new_text, width, control));
+                    } else {
+                        let raw = render_diff(
+                            diff,
+                            width.saturating_sub(DIFF_BODY_INDENT_WIDTH),
+                            control,
+                        );
+                        self.lines.extend(indent_rendered_lines(
+                            cap_write_diff_lines(raw),
+                            DIFF_BODY_INDENT,
+                        ));
+                    }
+                }
+                model::ToolCallContent::McpResource(resource) => {
+                    self.lines.extend(render_mcp_resource_content(tc, resource, width, control));
+                }
+                model::ToolCallContent::ResourceLink(link) => {
+                    self.lines.extend(render_mcp_resource_link_content(link));
+                }
+                model::ToolCallContent::Content(c) => {
+                    if let model::ContentBlock::Text(text) = &c.content
+                        && render_text_content(
+                            tc,
+                            &text.text,
+                            width,
+                            &mut self.lines,
+                            &mut self.read,
+                            control,
+                        )
+                        .is_pending()
+                    {
+                        return Poll::Pending;
+                    }
+                }
+                model::ToolCallContent::Terminal(_) => {}
+            }
+            self.read = None;
+            self.next_content += 1;
+            if self.next_content < tc.content.len() && control.yield_due() {
+                return Poll::Pending;
+            }
+        }
+        debug_failed_tool_render(tc);
+        Poll::Ready(std::mem::take(&mut self.lines))
+    }
+}
+
+fn render_execute_tool_content(
+    tc: &ToolCallInfo,
+    control: &LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let lines = execute::render_execute_content(tc, control);
     debug_failed_tool_render(tc);
     lines
 }
@@ -590,9 +667,9 @@ fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) ->
     count
 }
 
-fn render_plan_content(text: &str, width: u16) -> Vec<Line<'static>> {
+fn render_plan_content(text: &str, width: u16, control: &LayoutControl<'_>) -> Vec<Line<'static>> {
     let md_source = strip_outer_code_fence(text);
-    markdown::render_markdown_at_width(&md_source, width, None, false)
+    markdown::render_markdown_with_control(&md_source, width, None, false, control)
         .into_iter()
         .map(|line| {
             let owned: Vec<Span<'static>> = line
@@ -605,43 +682,43 @@ fn render_plan_content(text: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn render_text_content(tc: &ToolCallInfo, text: &str, width: u16, lines: &mut Vec<Line<'static>>) {
-    if is_read_tool(tc) {
-        render_read_text_content(tc, text, width, lines);
-    } else {
-        render_generic_text_content(tc, text, width, lines);
-    }
-}
-
-fn render_read_text_content(
+fn render_text_content(
     tc: &ToolCallInfo,
     text: &str,
     width: u16,
     lines: &mut Vec<Line<'static>>,
-) {
-    let read = tc.read_output_metadata();
-    if read.is_none() {
-        let stripped = strip_outer_code_fence(text);
-        if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
-            lines.extend(failed_lines);
-            return;
+    read_cursor: &mut Option<read::ReadCursor>,
+    control: &LayoutControl<'_>,
+) -> Poll<()> {
+    if is_read_tool(tc) {
+        let read = tc.read_output_metadata();
+        if read.is_none() {
+            let stripped = strip_outer_code_fence(text);
+            if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
+                lines.extend(failed_lines);
+                return Poll::Ready(());
+            }
+            if let Some(viewed_image) = render_viewed_image_content(tc, &stripped) {
+                lines.push(viewed_image);
+                return Poll::Ready(());
+            }
         }
-        if let Some(viewed_image) = render_viewed_image_content(tc, &stripped) {
-            lines.push(viewed_image);
-            return;
-        }
-    }
-
-    let title_lang = lang_from_title(&tc.title);
-    lines.extend(read::render_read_source(
-        &read::ReadSource {
+        let title_lang = lang_from_title(&tc.title);
+        let source = read::ReadSource {
             text,
             start_line: read.map(|read| read.start_line),
             path: read.map(|read| read.file_path.as_path()).or_else(|| read_syntax_path(tc)),
             language_fallback: (!title_lang.is_empty()).then_some(title_lang.as_str()),
-        },
-        width,
-    ));
+        };
+        let cursor = read_cursor.get_or_insert_with(|| read::ReadCursor::new(&source, width));
+        let Poll::Ready(rendered) = cursor.poll(&source, control) else {
+            return Poll::Pending;
+        };
+        lines.extend(rendered);
+    } else {
+        render_generic_text_content(tc, text, width, lines, control);
+    }
+    Poll::Ready(())
 }
 
 fn render_viewed_image_content(tc: &ToolCallInfo, text: &str) -> Option<Line<'static>> {
@@ -671,6 +748,7 @@ fn render_generic_text_content(
     text: &str,
     width: u16,
     lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
 ) {
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
@@ -681,13 +759,14 @@ fn render_generic_text_content(
         stripped
     } else {
         let lang = lang_from_title(&tc.title);
-        lines.extend(highlight::highlight_code(
+        lines.extend(highlight::highlight_code_with_control(
             &stripped,
             (!lang.is_empty()).then_some(lang.as_str()),
+            control,
         ));
         return;
     };
-    render_markdown_content(&md_source, width, lines);
+    render_markdown_content(&md_source, width, lines, control);
 }
 
 fn render_mcp_resource_text_content(
@@ -695,6 +774,7 @@ fn render_mcp_resource_text_content(
     text: &str,
     width: u16,
     lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
 ) {
     let stripped = strip_outer_code_fence(text);
     if let Some(failed_lines) = render_failed_tool_text_content(tc.status, &stripped) {
@@ -702,14 +782,19 @@ fn render_mcp_resource_text_content(
         return;
     }
     if is_markdown_file(&tc.title) {
-        render_markdown_content(&stripped, width, lines);
+        render_markdown_content(&stripped, width, lines, control);
     } else {
         lines.extend(highlight::plain_text_lines(&stripped));
     }
 }
 
-fn render_markdown_content(text: &str, width: u16, lines: &mut Vec<Line<'static>>) {
-    for line in markdown::render_markdown_at_width(text, width, None, false) {
+fn render_markdown_content(
+    text: &str,
+    width: u16,
+    lines: &mut Vec<Line<'static>>,
+    control: &LayoutControl<'_>,
+) {
+    for line in markdown::render_markdown_with_control(text, width, None, false, control) {
         let owned: Vec<Span<'static>> =
             line.spans.into_iter().map(|s| Span::styled(s.content.into_owned(), s.style)).collect();
         lines.push(Line::from(owned));
@@ -737,10 +822,11 @@ fn render_mcp_resource_content(
     tc: &ToolCallInfo,
     resource: &model::McpResource,
     width: u16,
+    control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(text) = resource.text.as_deref() {
-        render_mcp_resource_text_content(tc, text, width, &mut lines);
+        render_mcp_resource_text_content(tc, text, width, &mut lines, control);
     }
     if let Some(blob_saved_to) = &resource.blob_saved_to {
         let saved_path = blob_saved_to.to_string_lossy().into_owned();
@@ -873,16 +959,53 @@ fn cap_tool_content_lines(
     width: u16,
     omitted_label: &str,
     protected_source_lines: usize,
+    control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let source_line_count = lines.len();
-    let wrapped = wrap_content_lines_with_source(lines, width);
+    let protected_source_lines = protected_source_lines.min(source_line_count);
+    let mut head = lines;
+    let rest = head.split_off(protected_source_lines);
+    let mut wrapped = wrap_content_lines_with_source(head, width, control);
+    let protected_rows = wrapped.len();
+
+    // Every logical line produces at least one row. When the source already
+    // exceeds the cap, only the protected prefix and the visible tail need layout.
+    // Hidden middle lines are counted by source identity, not wrapped into cells.
+    if source_line_count > TOOL_BODY_MAX_LINES && protected_rows < TOOL_BODY_MAX_LINES {
+        let tail_budget = TOOL_BODY_MAX_LINES - protected_rows - 1;
+        let mut tail = std::collections::VecDeque::new();
+        for (index, line) in rest.into_iter().enumerate().rev() {
+            if tail.len() >= tail_budget || control.cancelled() {
+                break;
+            }
+            let rows = crate::ui::wrap::wrap_lines_with_control(&[line], width, control);
+            for row in rows.into_iter().rev().take(tail_budget - tail.len()) {
+                tail.push_front(WrappedContentRow {
+                    source_index: protected_source_lines + index,
+                    row,
+                });
+            }
+        }
+        let first_tail = tail.front().map_or(source_line_count, |row| row.source_index);
+        let omitted = first_tail.saturating_sub(protected_source_lines);
+        let mut out = wrapped.into_iter().map(|row| row.row).collect::<Vec<_>>();
+        out.push(Line::from(Span::styled(
+            format!("... {omitted} {omitted_label} ..."),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        )));
+        out.extend(tail.into_iter().map(|row| row.row));
+        return out;
+    }
+    wrapped.extend(wrap_content_lines_with_source(rest, width, control).into_iter().map(
+        |mut row| {
+            row.source_index += protected_source_lines;
+            row
+        },
+    ));
     if wrapped.len() <= TOOL_BODY_MAX_LINES {
         return wrapped.into_iter().map(|wrapped| wrapped.row).collect();
     }
 
-    let protected_source_lines = protected_source_lines.min(source_line_count);
-    let protected_rows =
-        wrapped.iter().take_while(|row| row.source_index < protected_source_lines).count();
     if protected_rows >= TOOL_BODY_MAX_LINES {
         let visible = TOOL_BODY_MAX_LINES.saturating_sub(1);
         let omitted_rows = wrapped.len().saturating_sub(visible);
@@ -919,11 +1042,18 @@ fn cap_tool_content_lines(
     out
 }
 
-fn wrap_content_lines_with_source(lines: Vec<Line<'static>>, width: u16) -> Vec<WrappedContentRow> {
+fn wrap_content_lines_with_source(
+    lines: Vec<Line<'static>>,
+    width: u16,
+    control: &LayoutControl<'_>,
+) -> Vec<WrappedContentRow> {
     let mut rows = Vec::new();
     for (source_index, line) in lines.into_iter().enumerate() {
+        if control.cancelled() {
+            return Vec::new();
+        }
         rows.extend(
-            wrap_lines_to_physical_rows(&[line], width)
+            crate::ui::wrap::wrap_lines_with_control(&[line], width, control)
                 .into_iter()
                 .map(|row| WrappedContentRow { source_index, row }),
         );
@@ -938,4 +1068,31 @@ fn line_text_is_existing_omission_marker(line: &Line<'static>) -> bool {
 
 fn line_plain_text(line: &Line<'static>) -> String {
     line.spans.iter().flat_map(|span| span.content.chars()).collect()
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn capped_output_does_not_lay_out_the_hidden_middle() {
+        let mut lines = vec![Line::from("HEADER")];
+        lines.extend((0..1000).map(|index| Line::from(format!("source {index}"))));
+        let checks = std::cell::Cell::new(0);
+        let cancel_after_bounded_work = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 100
+        };
+        let control = LayoutControl::new(&cancel_after_bounded_work);
+        let rows = cap_tool_content_lines(lines, 40, "source lines hidden", 1, &control);
+        assert!(!control.cancelled(), "hidden middle lines must not consume layout work");
+        let text =
+            rows.iter().map(|line| line.to_string().trim_end().to_owned()).collect::<Vec<_>>();
+        assert_eq!(text[0], "HEADER");
+        assert_eq!(text[1], "... 993 source lines hidden ...");
+        assert_eq!(
+            &text[2..],
+            &(993..1000).map(|index| format!("source {index}")).collect::<Vec<_>>()
+        );
+    }
 }

@@ -16,6 +16,34 @@ impl SerializedLiveRows {
         Self { rows, segments }
     }
 
+    pub(crate) fn append(&mut self, mut next: Self) {
+        let offset = self.rows.len();
+        for segment in &mut next.segments {
+            segment.start_row += offset;
+            segment.end_row += offset;
+        }
+        if let (Some(last), Some(first)) = (self.segments.last_mut(), next.segments.first())
+            && last.end_row == first.start_row
+            && last.msg_idx == first.msg_idx
+            && last.block_idx == first.block_idx
+            && last.kind == first.kind
+            && first.ids.iter().all(|id| last.ids.contains(id))
+        {
+            last.end_row = first.end_row;
+            last.commit_ready &= first.commit_ready;
+            next.segments.remove(0);
+        }
+        self.rows.append(&mut next.rows);
+        self.segments.append(&mut next.segments);
+    }
+
+    /// A preceding mutable segment prevents later chunks from entering scrollback.
+    pub(crate) fn defer_commit(&mut self) {
+        for segment in &mut self.segments {
+            segment.commit_ready = false;
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn from_parts_for_test(
         rows: Vec<Line<'static>>,

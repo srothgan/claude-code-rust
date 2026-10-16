@@ -3,6 +3,8 @@
 mod document;
 mod table;
 
+pub(super) use document::DocumentCursor;
+
 use crate::failure;
 use crate::ui::theme;
 use ratatui::style::{Color, Modifier, Style};
@@ -40,8 +42,24 @@ pub(super) fn render_markdown_at_width(
     bg: Option<Color>,
     preserve_newlines: bool,
 ) -> Vec<Line<'static>> {
+    render_markdown_with_control(
+        text,
+        width,
+        bg,
+        preserve_newlines,
+        &super::layout_control::LayoutControl::uninterrupted(),
+    )
+}
+
+pub(super) fn render_markdown_with_control(
+    text: &str,
+    width: u16,
+    bg: Option<Color>,
+    preserve_newlines: bool,
+    control: &super::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
     render_markdown_safe_with(text, bg, |text, bg| {
-        document::render(text, width, bg, preserve_newlines)
+        document::render(text, width, bg, preserve_newlines, control)
     })
 }
 
@@ -63,26 +81,31 @@ where
 }
 
 fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
-    let rendered =
-        tui_markdown::from_str_with_options(text, &tui_markdown::Options::new(MarkdownStyle));
-    rendered
-        .lines
-        .into_iter()
-        .map(|line| {
-            let owned_spans: Vec<Span<'static>> = line
-                .spans
-                .into_iter()
-                .map(|span| {
-                    let style =
-                        if let Some(bg_color) = bg { span.style.bg(bg_color) } else { span.style };
-                    Span::styled(span.content.into_owned(), style)
-                })
-                .collect();
-            let line_style =
-                if let Some(bg_color) = bg { line.style.bg(bg_color) } else { line.style };
-            Line::from(owned_spans).style(line_style)
-        })
-        .collect()
+    render_markdown_safe_with(text, bg, |text, bg| {
+        let rendered =
+            tui_markdown::from_str_with_options(text, &tui_markdown::Options::new(MarkdownStyle));
+        rendered
+            .lines
+            .into_iter()
+            .map(|line| {
+                let owned_spans: Vec<Span<'static>> = line
+                    .spans
+                    .into_iter()
+                    .map(|span| {
+                        let style = if let Some(bg_color) = bg {
+                            span.style.bg(bg_color)
+                        } else {
+                            span.style
+                        };
+                        Span::styled(span.content.into_owned(), style)
+                    })
+                    .collect();
+                let line_style =
+                    if let Some(bg_color) = bg { line.style.bg(bg_color) } else { line.style };
+                Line::from(owned_spans).style(line_style)
+            })
+            .collect()
+    })
 }
 
 fn plain_text_fallback(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {

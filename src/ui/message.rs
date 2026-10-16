@@ -4,7 +4,6 @@
 use crate::app::ChatMessage;
 use crate::app::{BlockCache, TextBlock};
 use crate::ui::tool_call;
-use crate::ui::wrap::wrap_lines_to_physical_rows;
 use ratatui::style::Color;
 use ratatui::text::Line;
 
@@ -48,7 +47,27 @@ pub(crate) struct MessageRenderContext<'a> {
 
 impl<'a> MessageRenderContext<'a> {
     pub(crate) fn new(current_mode_id: Option<&'a str>, width: u16) -> Self {
-        Self { tool_render_context: tool_call::ToolCallRenderContext { current_mode_id }, width }
+        Self {
+            tool_render_context: tool_call::ToolCallRenderContext {
+                current_mode_id,
+                control: None,
+            },
+            width,
+        }
+    }
+
+    pub(crate) fn with_control(
+        current_mode_id: Option<&'a str>,
+        width: u16,
+        control: &'a super::layout_control::LayoutControl<'a>,
+    ) -> Self {
+        Self {
+            tool_render_context: tool_call::ToolCallRenderContext {
+                current_mode_id,
+                control: Some(control),
+            },
+            width,
+        }
     }
 }
 
@@ -83,26 +102,25 @@ pub(super) fn render_text_cached(
     bg: Option<Color>,
     preserve_newlines: bool,
     out: &mut Vec<Line<'static>>,
+    control: &super::layout_control::LayoutControl<'_>,
 ) {
-    // Fast path only when the cached lines were measured at this width.
+    // Reuse only lines laid out at this width.
     // Lists and tables resolve width-dependent geometry before final row wrapping,
     // so a fresh cache from another width is not safe to reuse.
-    if cache.height_at(width).is_some()
-        && let Some(cached_lines) = cache.get()
-    {
+    if let Some(cached_lines) = cache.get_for_width(width) {
         out.extend_from_slice(cached_lines);
         return;
     }
 
-    let fresh = super::markdown::render_markdown_at_width(text, width, bg, preserve_newlines);
+    let fresh =
+        super::markdown::render_markdown_with_control(text, width, bg, preserve_newlines, control);
+    if control.cancelled() {
+        return;
+    }
 
-    // Store in the full block cache with wrapped height.
-    // For streaming messages this will be invalidated on the next chunk,
-    // but for completed messages it persists.
-    let h = wrap_lines_to_physical_rows(&fresh, width).len();
-    cache.store(fresh);
-    cache.set_height(h, width);
-    if let Some(stored) = cache.get() {
+    // Physical rows, and therefore their height, belong to the final layout pass.
+    cache.store_for_width(fresh, width);
+    if let Some(stored) = cache.get_for_width(width) {
         out.extend_from_slice(stored);
     }
 }
@@ -113,8 +131,9 @@ pub(super) fn render_text_block_cached(
     bg: Option<Color>,
     preserve_newlines: bool,
     out: &mut Vec<Line<'static>>,
+    control: &super::layout_control::LayoutControl<'_>,
 ) {
-    render_text_cached(&block.text, &mut block.cache, width, bg, preserve_newlines, out);
+    render_text_cached(&block.text, &mut block.cache, width, bg, preserve_newlines, out, control);
 }
 
 #[cfg(test)]

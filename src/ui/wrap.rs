@@ -57,6 +57,14 @@ pub(crate) fn wrap_lines_to_physical_rows(
     lines: &[Line<'static>],
     width: u16,
 ) -> Vec<Line<'static>> {
+    wrap_lines_with_control(lines, width, &super::layout_control::LayoutControl::uninterrupted())
+}
+
+pub(super) fn wrap_lines_with_control(
+    lines: &[Line<'static>],
+    width: u16,
+    control: &super::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
     if lines.is_empty() {
         return Vec::new();
     }
@@ -64,13 +72,27 @@ pub(crate) fn wrap_lines_to_physical_rows(
         return vec![Line::default(); lines.len()];
     }
 
-    let text = Text::from(lines.to_vec());
-    let height = Paragraph::new(text.clone()).wrap(Wrap { trim: false }).line_count(width).max(1);
-    let area = Rect::new(0, 0, width, u16::try_from(height).unwrap_or(u16::MAX));
-    let mut buffer = Buffer::empty(area);
-    Paragraph::new(text).wrap(Wrap { trim: false }).render(area, &mut buffer);
-
-    (0..area.height).map(|row| buffer_row_to_line(&buffer, area, row)).collect()
+    let mut rows = Vec::new();
+    // Paragraph wraps logical lines independently. Keep the temporary cell buffer local
+    // to one line instead of allocating a width × transcript-height intermediate.
+    for line in lines {
+        if control.cancelled() {
+            return Vec::new();
+        }
+        let text = Text::from(line.clone());
+        let height =
+            Paragraph::new(text.clone()).wrap(Wrap { trim: false }).line_count(width).max(1);
+        let area = Rect::new(0, 0, width, u16::try_from(height).unwrap_or(u16::MAX));
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(text).wrap(Wrap { trim: false }).render(area, &mut buffer);
+        for row in 0..area.height {
+            if control.cancelled() {
+                return Vec::new();
+            }
+            rows.push(buffer_row_to_line(&buffer, area, row));
+        }
+    }
+    rows
 }
 
 /// Splits a line at grapheme boundaries into rows of at most `width` cells, keeping every
@@ -411,6 +433,29 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn physical_rows_match_paragraph_cells_across_logical_lines() {
+        let lines = vec![
+            Line::from(vec![
+                Span::raw("  alpha "),
+                Span::styled("日本語👩‍💻beta", Style::new().add_modifier(Modifier::BOLD)),
+            ]),
+            Line::default(),
+            Line::from("right aligned words").right_aligned(),
+            Line::from(" trailing spaces  ").style(Style::new().bg(ratatui::style::Color::Blue)),
+        ];
+        for width in [1, 4, 13, 60] {
+            let paragraph = Paragraph::new(lines.clone()).wrap(Wrap { trim: false });
+            let height = u16::try_from(paragraph.line_count(width)).unwrap();
+            let area = Rect::new(0, 0, width, height);
+            let mut expected = Buffer::empty(area);
+            paragraph.render(area, &mut expected);
+            let mut actual = Buffer::empty(area);
+            Paragraph::new(wrap_lines_to_physical_rows(&lines, width)).render(area, &mut actual);
+            assert_eq!(actual, expected, "width={width}");
+        }
+    }
 
     #[test]
     fn split_line_at_width_keeps_whitespace_styles_and_wide_graphemes_unpadded() {

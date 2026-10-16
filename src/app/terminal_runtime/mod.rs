@@ -76,6 +76,19 @@ impl BootstrapSeedMode {
 }
 
 impl TerminalRuntime {
+    pub(crate) fn has_pending_surface_work(&self, app: &App) -> bool {
+        app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle)
+            || (matches!(
+                app.terminal_lifecycle,
+                TerminalLifecycleState::Running(SurfaceMode::Chat)
+            ) && matches!(&self.session, Some(SurfaceTerminalSession::Chat(session)) if session.has_pending_work()))
+    }
+
+    pub(crate) fn chat_layout_ready(&self, app: &App) -> bool {
+        matches!(app.terminal_lifecycle, TerminalLifecycleState::Running(SurfaceMode::Chat))
+            && matches!(&self.session, Some(SurfaceTerminalSession::Chat(session)) if session.layout_ready())
+    }
+
     pub(crate) fn bootstrap(app: &mut App) -> anyhow::Result<Self> {
         Self::bootstrap_inner(app, BootstrapSeedMode::MeasureBeforeInputReader)
     }
@@ -251,9 +264,9 @@ impl TerminalRuntime {
         }
     }
 
-    pub(crate) fn draw_active_surface(&mut self, app: &mut App) -> anyhow::Result<()> {
+    pub(crate) fn update_active_surface(&mut self, app: &mut App) -> anyhow::Result<()> {
         match self.session_mut()? {
-            SurfaceTerminalSession::Chat(session) => session.draw(app),
+            SurfaceTerminalSession::Chat(session) => session.update(app),
             SurfaceTerminalSession::Fullscreen(session) => session.draw(app),
         }
     }

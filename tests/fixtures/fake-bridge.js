@@ -231,6 +231,21 @@ function streamReply(messageUuid) {
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
     return;
   }
+  if (SCENARIO === 'resize-read') {
+    for (const count of [7, 8, 9, 10, 107, 207, LINES]) {
+      const file = `read-${count}.rs`;
+      const text = Array.from({ length: count }, (_, index) => `let READ_${count}_${index + 1} = ${index + 1};\n`).join('');
+      send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+        tool_call_id: `read-${count}`, title: `Read ${file}`, kind: 'read', status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text } }],
+        raw_input: { file_path: file }, locations: [{ path: file }],
+        output_metadata: { read: { file_path: file, start_line: 1 } },
+        meta: { claudeCode: { toolName: 'Read' } },
+      } } });
+    }
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   // Follow-up replies stay short so their start marker remains on screen.
   const lines = replyNumber === 1 || resizeCodeScenario ? LINES : FOLLOW_UP_LINES;
   const gated = (replyNumber === 1 && SCENARIO.startsWith('hold-') && SCENARIO !== 'hold-presentation') || (resizeCodeScenario && replyNumber === 2);

@@ -579,6 +579,7 @@ mod tests {
             app,
             width,
             &std::collections::BTreeSet::new(),
+            None,
         );
         let rows = serialized.rows();
         let start = rows
@@ -595,6 +596,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn btw_completion_enters_active_stream_and_history_before_subsequent_agent_output() {
         use crate::ui::inline_chat_rows::{
             LiveRowBoundaryKind, serialize_live_rows_with_boundaries_excluding,
@@ -626,7 +628,7 @@ mod tests {
         );
 
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let card = serialized
             .segments()
             .iter()
@@ -658,7 +660,8 @@ mod tests {
         assert!(
             matches!(&blocks[2], MessageBlock::Text(text) if text.text == "After the side answer.")
         );
-        let all = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+        let all =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let text = all.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         assert!(
             text.find("Before the side answer.").expect("before")
@@ -668,7 +671,8 @@ mod tests {
             text.find("Claude · BTW").expect("card")
                 < text.find("After the side answer.").expect("after")
         );
-        let mutable = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids);
+        let mutable =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids, None);
         assert!(
             mutable.rows().iter().any(|line| line.to_string().contains("After the side answer."))
         );
@@ -693,7 +697,8 @@ mod tests {
         finish_main_turn(&mut app);
         start_main_turn(&mut app, &mut rx);
         deliver_main_text(&mut app, "A new main turn.");
-        let rows = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+        let rows =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let text = rows.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
         assert_eq!(text.matches("Claude · BTW").count(), 1);
         assert!(

@@ -367,18 +367,19 @@ impl TerminalTest {
         self.settled = true;
     }
 
-    /// Returns once the app has drawn at the new size. The dimensions must
-    /// differ from the current ones, or an earlier draw would satisfy the wait.
+    /// Returns once the app has restored its output at the new size. Chat replay
+    /// can draw several partial frames, so its first draw is not completion.
     fn resize_and_wait_for_draw(&mut self, rows: u16, cols: u16) {
         let current = self.output.lock().expect("output lock").parser.screen().size();
         assert_ne!(current, (rows, cols), "a draw at the current size proves no resize");
         let log_path = self.temp.path().join("runtime.log");
         let previous_length = std::fs::read(&log_path).expect("runtime log").len();
         self.resize(rows, cols);
-        self.wait_until("draw at the new terminal dimensions", |test| {
+        self.wait_until("completed redraw at the new terminal dimensions", |test| {
             test.runtime_records_since(previous_length).iter().any(|record| {
-                (record["event_name"] == "inline_chat_viewport_draw"
-                    || record["event_name"] == "fullscreen_surface_draw")
+                (record["event_name"] == "fullscreen_surface_draw"
+                    || (record["event_name"] == "inline_chat_terminal_draw_transaction"
+                        && record["replay_complete"] == true))
                     && record["terminal_height"] == rows
                     && record["terminal_width"] == cols
             })
@@ -825,6 +826,181 @@ fn shutdown_force_interrupt_can_stop_pending_transcript_recovery() {
         test.missing_reply_row(2_000).is_some(),
         "the fixture must still have pending recovery"
     );
+}
+
+#[test]
+fn resize_inserts_ready_history_before_later_layout_and_restarts_partial_replay() {
+    let mut test = TerminalTest::start("resize-replay", 2_000);
+    test.submit("PROGRESSIVE_REPLAY", "PROGRESSIVE_REPLAY");
+    test.wait_turn_finished("streamed line 2000");
+    test.wait_completed_reply_in_scrollback(2_000);
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.resize(18, 73);
+    test.wait_until("assistant history prepared after initial history insertion", |test| {
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_layout_step" && record["assistant_text"] == true
+        })
+    });
+    let records = test.runtime_records_since(offset);
+    let inserted = records
+        .iter()
+        .position(|record| record["event_name"] == "inline_chat_history_insert_request")
+        .expect("initial insertion");
+    let assistant_layout = records
+        .iter()
+        .position(|record| {
+            record["event_name"] == "inline_chat_layout_step" && record["assistant_text"] == true
+        })
+        .expect("assistant layout");
+    assert!(inserted < assistant_layout, "ready history must not wait for the later large message");
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["event_name"] == "inline_chat_terminal_draw_transaction"
+                && record["replay_complete"] == true),
+        "fixture must still be replaying before the next resize"
+    );
+
+    test.resize_and_wait_for_draw(24, 61);
+    test.wait_completed_reply_in_scrollback(2_000);
+    let rows = test.transcript_rows();
+    for line in 1..=2_000 {
+        let suffix = format!("streamed line {line}");
+        assert_eq!(
+            rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(),
+            1,
+            "row {line} must survive exactly once at the latest width"
+        );
+    }
+    test.shutdown();
+}
+
+fn assert_read_previews(test: &TerminalTest) {
+    let cases: &[(usize, &[usize], Option<usize>)] = &[
+        (7, &[1, 2, 3, 4, 5, 6, 7], None),
+        (8, &[1, 2, 3, 4, 5, 6, 7, 8], None),
+        (9, &[1, 2, 3, 6, 7, 8, 9], Some(2)),
+        (10, &[1, 2, 3, 7, 8, 9, 10], Some(3)),
+        (107, &[1, 2, 3, 104, 105, 106, 107], Some(100)),
+        (207, &[1, 2, 3, 204, 205, 206, 207], Some(200)),
+        (2_000, &[1, 2, 3, 1997, 1998, 1999, 2000], Some(1993)),
+    ];
+    let rows = test.transcript_rows();
+    for &(count, visible, hidden) in cases {
+        let title = format!("read-{count}.rs");
+        let titles =
+            rows.iter().enumerate().filter(|(_, row)| row.contains(&title)).collect::<Vec<_>>();
+        assert_eq!(titles.len(), 1, "Read title {title} must appear exactly once");
+        let start = titles[0].0 + 1;
+        let end = rows[start..]
+            .iter()
+            .position(|row| {
+                cases.iter().any(|(count, _, _)| row.contains(&format!("read-{count}.rs")))
+            })
+            .map_or(rows.len(), |offset| start + offset);
+        let body = &rows[start..end];
+        let actual = body
+            .iter()
+            .flat_map(|row| row.split_whitespace())
+            .filter(|word| word.starts_with("READ_"))
+            .collect::<Vec<_>>();
+        let expected =
+            visible.iter().map(|line| format!("READ_{count}_{line}")).collect::<Vec<_>>();
+        assert_eq!(actual, expected, "visible source rows must belong to {title}");
+        let omissions = body.iter().filter(|row| row.contains("lines hidden")).collect::<Vec<_>>();
+        if let Some(hidden) = hidden {
+            assert_eq!(omissions.len(), 1, "omission marker for {title}");
+            assert!(omissions[0].contains(&format!("{hidden} lines hidden")));
+        } else {
+            assert!(omissions.is_empty(), "all lines of {title} must remain visible");
+        }
+    }
+}
+
+fn assert_read_preparation_avoids_empty_terminal_work(records: &[Value]) {
+    let mut pending = false;
+    let mut drew = false;
+    let mut continued_without_draw = false;
+    let mut shrank_for_insertion = false;
+    for record in records {
+        match record["event_name"].as_str() {
+            Some("inline_chat_layout_step") => {
+                continued_without_draw |= pending && !drew;
+                pending = record["rows"] == 0 && record["complete"] == false;
+                drew = false;
+            }
+            Some("inline_chat_geometry_reconciled") => {
+                shrank_for_insertion |=
+                    record["old_height"].as_u64().is_some_and(|height| height > 1)
+                        && record["target_height"] == 1;
+            }
+            Some("inline_chat_terminal_draw_transaction") => {
+                drew = true;
+                if record["flushed_rows"] == 0 {
+                    assert!(!shrank_for_insertion, "empty insertion must not shrink the viewport");
+                }
+                shrank_for_insertion = false;
+            }
+            _ => {}
+        }
+    }
+    assert!(continued_without_draw, "pending Read preparation must advance without a redraw");
+}
+
+#[test]
+fn read_replay_preserves_preview_windows_and_accepts_input_and_new_width_while_preparing() {
+    let mut test = TerminalTest::start("resize-read", 2_000);
+    test.submit("READ_PREVIEWS", "READ_PREVIEWS");
+    test.wait_turn_finished("READ_2000_2000");
+    assert_read_previews(&test);
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.resize(18, 73);
+    test.wait_until("Read preparation yielded without rows", |test| {
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_layout_step"
+                && record["rows"] == 0
+                && record["complete"] == false
+        })
+    });
+    let input_offset =
+        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.paste("DRAFT_DURING_READ");
+    test.wait_composer_text(input_offset, "DRAFT_DURING_READ");
+    let records = test.runtime_records_since(offset);
+    assert!(
+        !records.iter().any(|record| record["replay_complete"] == true),
+        "input must be displayed while Read preparation is still pending"
+    );
+    assert_read_preparation_avoids_empty_terminal_work(&records);
+    let resize_offset =
+        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.resize_and_wait_for_draw(24, 61);
+    test.wait_composer_text(resize_offset, "DRAFT_DURING_READ");
+    assert_read_previews(&test);
+    assert_read_preparation_avoids_empty_terminal_work(&test.runtime_records_since(resize_offset));
+    test.assert_prompts(&["READ_PREVIEWS"]);
+    test.shutdown();
+}
+
+#[test]
+fn shutdown_finishes_read_preparation_even_when_no_repaint_is_pending() {
+    let mut test = TerminalTest::start("resize-read", 2_000);
+    test.submit("READ_SHUTDOWN", "READ_SHUTDOWN");
+    test.wait_turn_finished("READ_2000_2000");
+    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.resize(18, 73);
+    test.wait_until("Read preparation pending at shutdown", |test| {
+        test.runtime_records_since(offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_layout_step"
+                && record["rows"] == 0
+                && record["complete"] == false
+        })
+    });
+    test.shutdown();
+    assert!(
+        test.runtime_records_since(offset).iter().any(|record| record["replay_complete"] == true)
+    );
+    assert_read_previews(&test);
 }
 
 #[test]

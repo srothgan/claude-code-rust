@@ -838,6 +838,7 @@ mod tests {
             &mut app,
             80,
             &std::collections::BTreeSet::new(),
+            None,
         );
         let rendered =
             serialized.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");

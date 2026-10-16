@@ -43,7 +43,8 @@ fn text(value: &str) -> model::SessionUpdate {
 
 pub(super) fn assert_owner_has_no_rows(app: &mut App, owner: usize) {
     for width in [80, 12, 80] {
-        let rendered = serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new());
+        let rendered =
+            serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None);
         assert!(rendered.segments().iter().all(|segment| segment.msg_idx != owner));
         assert_eq!(
             rendered.rows().len(),
@@ -90,7 +91,7 @@ fn accepted_prompt_reserves_one_invisible_owner_until_the_first_visible_event() 
 
         update(&mut app, first);
         let rendered =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let content = rendered
             .segments()
             .iter()
@@ -120,13 +121,15 @@ fn a_complete_live_reply_without_a_stream_start_cannot_extend_committed_history(
         let previous = app.active_turn_assistant_idx().unwrap();
         let previous_id = app.transcript.messages[previous].id;
         handle_client_event(&mut app, turn_complete(None));
-        let history = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+        let history =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let committed =
             history.segments().iter().flat_map(|segment| segment.ids.iter().cloned()).collect();
         update(&mut app, result);
         let owner = app.active_turn_assistant_idx().unwrap();
         assert_ne!(app.transcript.messages[owner].id, previous_id);
-        let remaining = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed);
+        let remaining =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed, None);
         assert!(remaining.segments().iter().any(|segment| segment.msg_idx == owner));
         let MessageBlock::Text(old) = &app.transcript.messages[previous].blocks[0] else {
             panic!("previous answer");
@@ -208,7 +211,8 @@ fn metadata_whitespace_and_hidden_tools_do_not_create_an_empty_message_frame() {
         SystemSeverity::Warning,
         "Visible notice",
     );
-    let rendered = serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+    let rendered =
+        serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
     let notice = rendered
         .segments()
         .iter()
@@ -319,7 +323,7 @@ fn take_assistant_text_rows(
     width: u16,
     stable_only: bool,
 ) -> Vec<String> {
-    let rendered = serialize_live_rows_with_boundaries_excluding(app, width, excluded);
+    let rendered = serialize_live_rows_with_boundaries_excluding(app, width, excluded, None);
     let mut rows = Vec::new();
     for segment in rendered.segments() {
         if segment.kind != LiveRowBoundaryKind::AssistantText

@@ -8,22 +8,47 @@ use super::history_insert::RenderedHistoryRows;
 use crate::app::{App, ChatPurgeReplayOptions, HistoryOutputId};
 use crate::ui::footer_rows::serialize_footer_rows;
 use crate::ui::inline_chat_rows::LiveRowBoundaryKind;
-use crate::ui::inline_chat_rows::{
-    SerializedLiveRows, serialize_live_rows_with_boundaries_excluding,
-};
+use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
+use crate::ui::inline_chat_rows::{LiveRowsCursor, SerializedLiveRows};
 use crate::ui::input;
 use crate::ui::input_rows::{blocked_input_lines, build_btw_status_rows, build_composer_hint_rows};
+use crate::ui::layout_control::LayoutControl;
 use crate::ui::theme;
 use anyhow::Context;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 
 pub(super) struct ChatTerminalSession {
     terminal: ChatTerminal,
     history: HistoryCommitState,
+    preparation: Option<Box<ReplayPreparation>>,
+}
+
+struct ReplayPreparation {
+    cursor: LiveRowsCursor,
+    reading_rows: SerializedLiveRows,
+    finished: bool,
+    mutable_seen: bool,
+    reading: bool,
+    source_revision: u64,
+}
+
+impl ReplayPreparation {
+    fn new(app: &App) -> Self {
+        Self {
+            cursor: LiveRowsCursor::new(Instant::now()),
+            reading_rows: SerializedLiveRows::new(Vec::new(), Vec::new()),
+            finished: false,
+            mutable_seen: false,
+            reading: app.chat_render.viewport.is_reading(),
+            source_revision: app.transcript.topology_revision(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +114,21 @@ impl ChatTerminalSeed {
 }
 
 impl ChatTerminalSession {
+    pub(super) fn has_pending_work(&self) -> bool {
+        self.preparation.is_some() || self.terminal.has_pending_history_rows()
+    }
+
+    pub(super) fn layout_ready(&self) -> bool {
+        self.preparation.is_some() && !self.terminal.has_pending_history_rows()
+    }
+
+    fn needs_draw(&self, app: &App, rows: &SerializedLiveRows) -> bool {
+        app.surface_dirty.chat.repaint
+            || !rows.rows().is_empty()
+            || self.terminal.has_pending_history_rows()
+            || self.preparation.as_ref().is_some_and(|preparation| preparation.finished)
+    }
+
     pub(super) fn new_before_input_reader() -> anyhow::Result<Self> {
         Ok(Self::new_with_seed(ChatTerminalSeed::read_before_input_reader()?))
     }
@@ -120,12 +160,17 @@ impl ChatTerminalSession {
             seed_provenance = ?seed.provenance,
         );
 
-        Self { terminal: ChatTerminal::new(owned_top), history: HistoryCommitState::default() }
+        Self {
+            terminal: ChatTerminal::new(owned_top),
+            history: HistoryCommitState::default(),
+            preparation: None,
+        }
     }
 
     pub(super) fn clear(&mut self, app: &mut App) {
         self.reset_inline_terminal(app);
         self.history.reset();
+        self.preparation = None;
     }
 
     pub(super) fn clear_for_purge_replay(
@@ -145,6 +190,7 @@ impl ChatTerminalSession {
         }
         app.chat_render.invalidate_live_anchor();
         self.history.reset_for_purge_replay();
+        self.preparation = Some(Box::new(ReplayPreparation::new(app)));
     }
 
     pub(super) fn clear_mutable_viewport(&mut self, app: &mut App) {
@@ -182,7 +228,7 @@ impl ChatTerminalSession {
         );
     }
 
-    pub(super) fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {
+    pub(super) fn update(&mut self, app: &mut App) -> anyhow::Result<()> {
         ChatTerminal::ensure_line_wrap_disabled(&mut app.chat_render.line_wrap_disabled)?;
 
         // The recorded size is owned by the resize path. A live size that differs
@@ -205,8 +251,48 @@ impl ChatTerminalSession {
         } else {
             base_excluded_ids.clone()
         };
-        let serialized_rows =
-            serialize_live_rows_with_boundaries_excluding(app, width, &serialization_excluded_ids);
+        let snapshot = TerminalSnapshot::new(width, terminal_height);
+        let observed_resize = Cell::new(None);
+        let last_check = Cell::new(None::<Instant>);
+        let check_size = || {
+            // Check inside parsing, highlighting and wrapping without a system call per cell.
+            if last_check.get().is_some_and(|at| at.elapsed() < Duration::from_millis(1)) {
+                return false;
+            }
+            last_check.set(Some(Instant::now()));
+            if let Ok((width, height)) = crossterm::terminal::size() {
+                let actual = TerminalSnapshot::new(width, height);
+                if actual != snapshot {
+                    observed_resize.set(Some(actual));
+                    return true;
+                }
+            }
+            false
+        };
+        let control = LayoutControl::new(&check_size);
+        let Some(serialized_rows) =
+            self.prepare_rows(app, width, &serialization_excluded_ids, &control)
+        else {
+            return Ok(());
+        };
+        if control.cancelled() {
+            self.preparation = None;
+            self.history.mark_out_of_sync();
+            mark_chat_terminal_history_out_of_sync(app);
+            if let Some(actual) = observed_resize.get() {
+                log_resize_interrupted_draw(TerminalResizeDuringDraw::new(
+                    snapshot, actual, "layout",
+                ));
+            } else {
+                tracing::debug!(target: crate::logging::targets::APP_RENDER, event_name = "inline_chat_layout_source_changed");
+            }
+            return Ok(());
+        }
+        // Layout can yield without changing anything visible. Keep its continuation
+        // independent of repainting so input and animations can still request a draw.
+        if !self.needs_draw(app, &serialized_rows) {
+            return Ok(());
+        }
         self.draw_incremental(
             app,
             screen_size,
@@ -215,6 +301,90 @@ impl ChatTerminalSession {
             &serialized_rows,
             base_excluded_ids,
         )
+    }
+
+    fn prepare_rows(
+        &mut self,
+        app: &mut App,
+        width: u16,
+        excluded_ids: &BTreeSet<HistoryOutputId>,
+        control: &LayoutControl<'_>,
+    ) -> Option<SerializedLiveRows> {
+        if self.preparation.as_ref().is_some_and(|preparation| {
+            preparation.source_revision != app.transcript.topology_revision()
+        }) {
+            self.preparation = None;
+            self.terminal.cancel_replay();
+            self.history.mark_out_of_sync();
+            mark_chat_terminal_history_out_of_sync(app);
+            return None;
+        }
+        let mut rows = SerializedLiveRows::new(Vec::new(), Vec::new());
+        if self.preparation.is_none() && !self.history.is_synced() {
+            self.preparation = Some(Box::new(ReplayPreparation::new(app)));
+        }
+        if let Some(preparation) = &mut self.preparation {
+            if preparation.finished {
+                return Some(preparation.reading_rows.clone());
+            }
+            // Changing the source-window policy restarts the whole replay. A semantic
+            // block may already have emitted its title but still be preparing its body.
+            if preparation.reading != app.chat_render.viewport.is_reading() {
+                self.preparation = None;
+                self.terminal.cancel_replay();
+                self.history.mark_out_of_sync();
+                mark_chat_terminal_history_out_of_sync(app);
+                return None;
+            }
+            // Apply backpressure: finish inserting this chunk before preparing more history.
+            if self.terminal.has_pending_history_rows() {
+                return Some(rows);
+            }
+            let started = Instant::now();
+            let mut complete = false;
+            while let Some(mut next) = preparation.cursor.next(app, width, excluded_ids, control) {
+                let has_mutable = next.stable_row_count() < next.rows().len();
+                if preparation.mutable_seen {
+                    next.defer_commit();
+                }
+                preparation.mutable_seen |= has_mutable;
+                rows.append(next);
+                // The mutable suffix is rebuilt from canonical state on the following frame.
+                if has_mutable && !app.chat_render.viewport.is_reading() {
+                    complete = true;
+                    break;
+                }
+                // Insert the ready chunk before starting another semantic item.
+                // Producers also yield while a source block has no rows ready.
+                if !rows.rows().is_empty() || control.yield_due() {
+                    break;
+                }
+            }
+            complete |= preparation.cursor.is_finished();
+            if app.chat_render.viewport.is_reading() {
+                preparation.reading_rows.append(rows.clone());
+            }
+            tracing::debug!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_layout_step",
+                rows = rows.rows().len(),
+                assistant_text = rows.segments().iter().any(|segment| segment.kind == LiveRowBoundaryKind::AssistantText),
+                elapsed_us = started.elapsed().as_micros(),
+                complete,
+                cancelled = control.cancelled(),
+            );
+            if complete {
+                preparation.finished = true;
+            }
+        } else {
+            rows = serialize_live_rows_with_boundaries_excluding(
+                app,
+                width,
+                excluded_ids,
+                Some(control),
+            );
+        }
+        Some(rows)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -233,13 +403,29 @@ impl ChatTerminalSession {
             self.prepare_history_flush(serialized_rows, width, base_excluded_ids);
         // Reading chooses the visible source window independently of restoring
         // terminal history. Confirmed and queued IDs still prevent duplicate inserts.
-        if app.chat_render.viewport.is_reading() {
-            history_plan.live_rows = serialized_rows.rows().to_vec();
+        let layout_pending = self.preparation.as_ref().is_some_and(|preparation| {
+            !preparation.finished || preparation.reading != app.chat_render.viewport.is_reading()
+        });
+        if !layout_pending && app.chat_render.viewport.is_reading() {
+            history_plan.live_rows = self.preparation.as_ref().map_or_else(
+                || serialized_rows.rows().to_vec(),
+                |preparation| preparation.reading_rows.rows().to_vec(),
+            );
             history_plan.excluded_rows = 0;
         }
         let live_rows = history_plan.live_rows.as_slice();
-        let (requested_layout_plan, layout_plan) =
-            viewport_layout(app, serialized_rows, live_rows, &composer, terminal_height);
+        let reading_rows = self
+            .preparation
+            .as_ref()
+            .filter(|preparation| preparation.finished && app.chat_render.viewport.is_reading());
+        let viewport_rows =
+            reading_rows.map_or(serialized_rows, |preparation| &preparation.reading_rows);
+        let (requested_layout_plan, layout_plan) = if layout_pending {
+            let requested = MutableLayoutPlan::new(live_rows, &composer, terminal_height);
+            (requested, MutableLayoutPlan::new(live_rows, &composer, requested.viewport_height))
+        } else {
+            viewport_layout(app, viewport_rows, live_rows, &composer, terminal_height)
+        };
         let visible_activity_rows =
             layout_plan.activity_window.slice(&composer.activity_rows).to_vec();
         let visible_hint_rows = layout_plan.hint_visible_rows(&composer.hint_rows).to_vec();
@@ -300,12 +486,19 @@ impl ChatTerminalSession {
         let Some(outcome) = self.resolve_chat_draw_outcome(app, outcome_result)? else {
             return Ok(());
         };
-        record_viewport_anchor(
-            app,
-            serialized_rows,
-            layout_plan.live_window.start,
-            visible_live_row_count,
-        );
+        if !layout_pending {
+            let viewport_rows = self
+                .preparation
+                .as_ref()
+                .filter(|preparation| preparation.finished && app.chat_render.viewport.is_reading())
+                .map_or(serialized_rows, |preparation| &preparation.reading_rows);
+            record_viewport_anchor(
+                app,
+                viewport_rows,
+                layout_plan.live_window.start,
+                visible_live_row_count,
+            );
+        }
         self.complete_history_flush(app, &outcome);
         let viewport_area = outcome.viewport_area;
         let (live_area, activity_area, hint_area, btw_area, editor_area, footer_area) =
@@ -383,17 +576,21 @@ impl ChatTerminalSession {
         base_excluded_ids: BTreeSet<HistoryOutputId>,
     ) -> HistoryFlushPlan {
         if self.terminal.is_replay_active() {
-            if self.terminal.active_replay_matches_width(width) {
+            if !self.terminal.active_replay_matches_width(width) {
+                self.terminal.cancel_replay();
+            } else if self.terminal.has_pending_history_rows() {
                 let mut excluded_ids = base_excluded_ids;
                 excluded_ids.extend(self.terminal.replay_pending_ids());
                 return history_flush_without_action(serialized_rows, excluded_ids, true);
             }
-
-            self.terminal.cancel_replay();
         }
 
-        let replay = build_replay_history_batches(serialized_rows, width);
-        if replay.confirm_ids.is_empty() {
+        let replay =
+            build_replay_history_batches(serialized_rows, width, self.history.confirmed_ids());
+        if replay.confirm_ids.is_empty()
+            && self.preparation.is_none()
+            && !self.terminal.is_replay_active()
+        {
             self.history.confirm(Vec::new());
             return history_flush_without_action(serialized_rows, base_excluded_ids, true);
         }
@@ -406,7 +603,7 @@ impl ChatTerminalSession {
             live_rows,
             excluded_row_count(serialized_rows, &excluded_ids),
             excluded_ids,
-            HistoryFlushAction::StartReplay {
+            HistoryFlushAction::FeedReplay {
                 render_width: width,
                 batches: replay.batches,
                 confirm_ids: replay.confirm_ids,
@@ -453,8 +650,10 @@ impl ChatTerminalSession {
                     self.terminal.queue_static_history(batch);
                 }
             }
-            HistoryFlushAction::StartReplay { render_width, batches, confirm_ids } => {
-                self.terminal.start_replay(render_width, batches, confirm_ids);
+            HistoryFlushAction::FeedReplay { render_width, batches, confirm_ids } => {
+                let input_complete =
+                    self.preparation.as_ref().is_none_or(|preparation| preparation.finished);
+                self.terminal.queue_replay(render_width, batches, confirm_ids, input_complete);
             }
         }
     }
@@ -469,11 +668,13 @@ impl ChatTerminalSession {
         {
             self.history.confirm(outcome.flushed_history.confirmed_ids.clone());
         }
-
-        if outcome.flushed_history.replay_incomplete
-            || (outcome.flushed_history.flushed_rows > 0
-                && !self.terminal.pending_history_ids().is_empty())
+        if outcome.flushed_history.replay_complete
+            && let Some(preparation) = self.preparation.take()
+            && preparation.mutable_seen
+            && !preparation.reading
         {
+            // Replay stops at the first mutable item. Now that the stable prefix
+            // is committed, render the entire live suffix from canonical state.
             app.request_chat_repaint();
         }
     }
@@ -751,7 +952,7 @@ impl HistoryFlushPlan {
 enum HistoryFlushAction {
     None,
     QueueStatic(Vec<PendingHistoryBatch>),
-    StartReplay {
+    FeedReplay {
         render_width: u16,
         batches: Vec<PendingHistoryBatch>,
         confirm_ids: Vec<HistoryOutputId>,
@@ -818,12 +1019,14 @@ fn build_static_history_batches(
 fn build_replay_history_batches(
     serialized_rows: &SerializedLiveRows,
     width: u16,
+    excluded_ids: &BTreeSet<HistoryOutputId>,
 ) -> ReplayHistoryPlan {
     let stable_row_count = serialized_rows.stable_row_count();
     let stable_segments = serialized_rows
         .segments()
         .iter()
         .filter(|segment| segment.commit_ready && segment.start_row < stable_row_count)
+        .filter(|segment| !segment.ids.iter().all(|id| excluded_ids.contains(id)))
         .filter(|segment| serialized_rows.segment_rows(segment).is_some())
         .collect::<Vec<_>>();
     let confirm_ids = unique_ids(stable_segments.iter().flat_map(|segment| segment.ids.iter()));
@@ -840,8 +1043,7 @@ fn build_replay_history_batches(
         if segment_ids.is_empty() {
             continue;
         }
-        if expected_start.is_some_and(|expected| expected != segment.start_row) || rows.len() >= 160
-        {
+        if expected_start.is_some_and(|expected| expected != segment.start_row) {
             queued_rows = queued_rows.saturating_add(rows.len());
             push_history_batch(&mut batches, HistoryBatchKind::Replay, width, &mut rows, &mut ids);
         }
@@ -1370,7 +1572,266 @@ mod tests {
     }
 
     fn session_with_history(history: HistoryCommitState) -> ChatTerminalSession {
-        ChatTerminalSession { terminal: ChatTerminal::new(0), history }
+        ChatTerminalSession { terminal: ChatTerminal::new(0), history, preparation: None }
+    }
+
+    #[test]
+    fn read_preparation_yields_without_repainting_and_preserves_preview_boundaries() {
+        use crate::agent::model;
+        use crate::ui::layout_control::LayoutControl;
+        use std::fmt::Write as _;
+        use std::time::Duration;
+
+        let cases: &[(usize, &[usize], Option<usize>)] = &[
+            (1, &[1], None),
+            (7, &[1, 2, 3, 4, 5, 6, 7], None),
+            (8, &[1, 2, 3, 4, 5, 6, 7, 8], None),
+            (9, &[1, 2, 3, 6, 7, 8, 9], Some(2)),
+            (10, &[1, 2, 3, 7, 8, 9, 10], Some(3)),
+            (107, &[1, 2, 3, 104, 105, 106, 107], Some(100)),
+            (207, &[1, 2, 3, 204, 205, 206, 207], Some(200)),
+        ];
+        for &(count, visible, hidden) in cases {
+            for width in [25, 80] {
+                let mut app = App::test_default();
+                let mut tool = crate::app::test_support::tool_call_info(
+                    "preview.txt",
+                    model::ToolCallStatus::Completed,
+                );
+                let mut content = String::new();
+                for line in 1..=count {
+                    writeln!(content, "READ_ROW_{line:03}").unwrap();
+                }
+                tool.content = vec![model::ToolCallContent::from(content)];
+                app.push_message_tracked(assistant_blocks_message(vec![MessageBlock::ToolCall(
+                    Box::new(tool),
+                )]));
+                app.surface_dirty = crate::app::SurfaceDirtyState::default();
+                let mut history = HistoryCommitState::default();
+                history.reset_for_purge_replay();
+                let mut session = session_with_history(history);
+                let mut output = Vec::new();
+                let mut yielded = false;
+                loop {
+                    // Force a checkpoint after each source line, independent of machine speed.
+                    let control = LayoutControl::with_budget(&|| false, Duration::ZERO);
+                    let rows =
+                        session.prepare_rows(&mut app, width, &BTreeSet::new(), &control).unwrap();
+                    assert!(!app.surface_dirty.chat.repaint, "preparation is not a UI change");
+                    assert!(session.has_pending_work());
+                    if session.preparation.as_ref().unwrap().finished {
+                        assert!(session.needs_draw(&app, &rows), "completion must be flushed");
+                        output.extend(rows.rows().iter().map(line_text));
+                        break;
+                    }
+                    if rows.rows().is_empty() {
+                        yielded = true;
+                        assert!(session.layout_ready(), "preparation must keep making progress");
+                        assert!(!session.needs_draw(&app, &rows), "empty work must not repaint");
+                        app.input.set_text("draft during preparation");
+                        app.request_chat_repaint();
+                        assert!(session.needs_draw(&app, &rows), "input must still repaint");
+                        app.surface_dirty.chat.take_repaint();
+                    } else {
+                        assert!(session.needs_draw(&app, &rows), "ready rows must be inserted");
+                    }
+                    output.extend(rows.rows().iter().map(line_text));
+                }
+                if count > 1 {
+                    assert!(yielded, "fixture must exercise pending Read preparation");
+                }
+                let actual = output
+                    .iter()
+                    .filter_map(|row| row.split_once("READ_ROW_"))
+                    .map(|(_, number)| number.trim().parse::<usize>().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, visible, "Read {count} at width {width}");
+                let omissions =
+                    output.iter().filter(|row| row.contains("hidden")).collect::<Vec<_>>();
+                if let Some(hidden) = hidden {
+                    assert_eq!(omissions.len(), 1);
+                    assert!(omissions[0].split_whitespace().any(|word| word == hidden.to_string()));
+                } else {
+                    assert!(omissions.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn completed_replay_schedules_the_remaining_live_response() {
+        let mut app = App::test_default();
+        app.push_message_tracked(assistant_blocks_message(vec![MessageBlock::Text(
+            TextBlock::from_complete("Live response remains visible"),
+        )]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+        let mut history = HistoryCommitState::default();
+        history.reset_for_purge_replay();
+        let mut session = session_with_history(history);
+        let control = crate::ui::layout_control::LayoutControl::uninterrupted();
+        loop {
+            let _ = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control);
+            if session.preparation.as_ref().unwrap().finished {
+                break;
+            }
+        }
+        assert!(session.preparation.as_ref().unwrap().mutable_seen);
+        assert!(!session.preparation.as_ref().unwrap().cursor.is_finished());
+        app.surface_dirty.chat.take_repaint();
+        session.complete_history_flush(
+            &mut app,
+            &super::super::chat_terminal::ChatDrawOutcome {
+                viewport_area: Rect::new(0, 20, 80, 4),
+                flushed_history: super::super::chat_terminal::FlushedHistory {
+                    replay_complete: true,
+                    ..Default::default()
+                },
+            },
+        );
+        assert!(app.surface_dirty.chat.repaint, "the live suffix still needs a frame");
+        assert!(!session.has_pending_work(), "completed replay must release its continuation");
+        let rows = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control).unwrap();
+        assert!(
+            rows.rows().iter().any(|row| line_text(row).contains("Live response remains visible"))
+        );
+    }
+
+    #[test]
+    fn replay_exposes_first_message_before_preparing_later_history() {
+        let mut app = App::test_default();
+        for text in
+            ["FIRST".to_owned(), format!("{}LAST", "long subsequent message\n".repeat(1000))]
+        {
+            app.transcript.messages.push(ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(&text))],
+                None,
+            ));
+        }
+        let mut history = HistoryCommitState::default();
+        history.reset_for_purge_replay();
+        let mut session = session_with_history(history);
+        let rows = session
+            .prepare_rows(
+                &mut app,
+                80,
+                &BTreeSet::new(),
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            )
+            .unwrap();
+        let text = rows.rows().iter().map(line_text).collect::<Vec<_>>();
+        assert!(text.iter().any(|row| row.contains("FIRST")));
+        assert!(!text.iter().any(|row| row.contains("subsequent") || row.contains("LAST")));
+        let mut plan = session.prepare_history_flush(&rows, 80, BTreeSet::new());
+        session.queue_history_plan(plan.take_action());
+        assert!(session.terminal.has_pending_history_rows());
+        assert!(
+            session.history.confirmed_ids().is_empty(),
+            "prepared output is not committed output"
+        );
+        let blocked = session
+            .prepare_rows(
+                &mut app,
+                80,
+                &BTreeSet::new(),
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            )
+            .unwrap();
+        assert!(
+            blocked.rows().is_empty(),
+            "insertion must consume pending rows before more are prepared"
+        );
+    }
+
+    #[test]
+    fn replay_inserts_a_continued_block_even_when_its_prefix_is_already_queued() {
+        let id = output_id();
+        let continued = SerializedLiveRows::from_parts_for_test(
+            vec![Line::from("remaining source")],
+            vec![live_segment(0, 1, id.clone())],
+        );
+        let mut history = HistoryCommitState::default();
+        history.reset_for_purge_replay();
+        let mut session = session_with_history(history);
+        let plan = session.prepare_history_flush(&continued, 40, BTreeSet::from([id.clone()]));
+        assert_eq!(
+            plan.queued_rows, 1,
+            "a queued semantic ID does not mean all of its rows were produced"
+        );
+        let super::HistoryFlushAction::FeedReplay { batches, confirm_ids, .. } = plan.action else {
+            panic!("continued replay")
+        };
+        assert_eq!(line_text(&batches[0].rows.slice(0..1)[0]), "remaining source");
+        assert_eq!(confirm_ids, vec![id]);
+        assert!(session.history.confirmed_ids().is_empty());
+    }
+
+    #[test]
+    fn removing_history_during_replay_discards_queued_rows_and_requests_a_fresh_replay() {
+        let mut app = App::test_default();
+        for text in ["REMOVED", "RETAINED"] {
+            app.push_message_tracked(ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(text))],
+                None,
+            ));
+        }
+        let _ = app.surface_dirty.chat.take_rebuild();
+        let mut history = HistoryCommitState::default();
+        history.reset_for_purge_replay();
+        let mut session = session_with_history(history);
+        let control = crate::ui::layout_control::LayoutControl::uninterrupted();
+        let rows = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control).unwrap();
+        let mut plan = session.prepare_history_flush(&rows, 80, BTreeSet::new());
+        session.queue_history_plan(plan.take_action());
+        assert!(session.terminal.has_pending_history_rows());
+
+        assert!(app.remove_message_tracked(0).is_some());
+        assert!(session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control).is_none());
+        assert!(!session.terminal.is_replay_active());
+        assert!(session.history.confirmed_ids().is_empty());
+        assert_eq!(
+            app.surface_dirty.chat.take_rebuild(),
+            crate::app::ChatRebuildKind::PurgeReplay(
+                crate::app::ChatPurgeReplayOptions::terminal_history_out_of_sync()
+            )
+        );
+        let fresh = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control).unwrap();
+        let text = fresh.rows().iter().map(line_text).collect::<Vec<_>>();
+        assert_eq!(text.iter().filter(|row| row.contains("RETAINED")).count(), 1);
+        assert!(!text.iter().any(|row| row.contains("REMOVED")));
+    }
+
+    #[test]
+    fn entering_reading_during_preparation_includes_the_already_visited_prefix() {
+        let mut app = App::test_default();
+        for text in ["FIRST", "LAST"] {
+            app.transcript.messages.push(ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(text))],
+                None,
+            ));
+        }
+        let mut history = HistoryCommitState::default();
+        history.reset_for_purge_replay();
+        let mut session = session_with_history(history);
+        let control = crate::ui::layout_control::LayoutControl::uninterrupted();
+        let _ = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control);
+        app.chat_render.viewport.pause();
+        assert!(session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control).is_none());
+        assert!(matches!(
+            app.surface_dirty.chat.take_rebuild(),
+            crate::app::ChatRebuildKind::PurgeReplay(_)
+        ));
+        let _ = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control);
+        while session.preparation.as_ref().is_some_and(|preparation| !preparation.finished) {
+            let _ = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control);
+        }
+        let rows = &session.preparation.as_ref().unwrap().reading_rows;
+        let text = rows.rows().iter().map(line_text).collect::<Vec<_>>();
+        assert_eq!(text.iter().filter(|row| row.contains("FIRST")).count(), 1);
+        assert_eq!(text.iter().filter(|row| row.contains("LAST")).count(), 1);
     }
 
     fn render_textarea_to_test_backend(app: &mut App, area: Rect) -> TestBackend {
@@ -1524,27 +1985,6 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_replay_requests_follow_up_repaint() {
-        let mut app = App::test_default();
-        let mut session = session_with_history(HistoryCommitState::default());
-
-        app.surface_dirty.chat.take_repaint();
-        session.complete_history_flush(
-            &mut app,
-            &super::super::chat_terminal::ChatDrawOutcome {
-                viewport_area: Rect::new(0, 27, 120, 3),
-                flushed_history: super::super::chat_terminal::FlushedHistory {
-                    flushed_rows: 160,
-                    replay_incomplete: true,
-                    ..Default::default()
-                },
-            },
-        );
-
-        assert!(app.surface_dirty.chat.repaint);
-    }
-
-    #[test]
     fn replay_preserves_all_retained_segments_in_transcripts_over_nine_thousand_rows() {
         let first = output_id();
         let second = output_id();
@@ -1553,7 +1993,7 @@ mod tests {
             vec![live_segment(0, 4_550, first.clone()), live_segment(4_550, 9_100, second.clone())],
         );
 
-        let replay = super::build_replay_history_batches(&serialized, 80);
+        let replay = super::build_replay_history_batches(&serialized, 80, &BTreeSet::new());
         let text: Vec<_> = replay
             .batches
             .iter()
@@ -1581,12 +2021,16 @@ mod tests {
         app.status = AppStatus::Thinking;
         app.begin_turn_activity(std::time::Instant::now());
         for width in [32, 120, 32] {
-            let serialized =
-                serialize_live_rows_with_boundaries_excluding(&mut app, width, &BTreeSet::new());
+            let serialized = serialize_live_rows_with_boundaries_excluding(
+                &mut app,
+                width,
+                &BTreeSet::new(),
+                None,
+            );
             assert!(serialized.rows().iter().any(|row| line_text(row).contains("Thinking…")));
             let inserted =
                 super::build_static_history_batches(&serialized, width, &BTreeSet::new());
-            let replay = super::build_replay_history_batches(&serialized, width);
+            let replay = super::build_replay_history_batches(&serialized, width, &BTreeSet::new());
             for batches in [&inserted, &replay.batches] {
                 let text: Vec<_> = batches
                     .iter()
@@ -1621,7 +2065,7 @@ mod tests {
         app.transcript.messages.push(message);
 
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &BTreeSet::new(), None);
         let excluded_ids = BTreeSet::from([
             HistoryOutputId::AssistantLabel(message_id),
             HistoryOutputId::Block(first_id),
@@ -1671,7 +2115,7 @@ mod tests {
         app.status = AppStatus::Running;
 
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         let batches = super::build_static_history_batches(&serialized, 80, &BTreeSet::new());
         let committed_rows: Vec<_> = batches
             .iter()
@@ -1697,14 +2141,18 @@ mod tests {
             },
         );
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
         assert!(
             super::build_static_history_batches(&serialized, 80, history.confirmed_ids())
                 .is_empty(),
             "only the new streaming tail remains; confirmed cards must not be queued again"
         );
-        let live =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, history.confirmed_ids());
+        let live = serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            80,
+            history.confirmed_ids(),
+            None,
+        );
         assert!(live.rows().iter().any(|line| line_text(line) == "   After the card."));
         assert!(!live.rows().iter().any(|line| line_text(line).contains("Claude · BTW")));
         let combined: Vec<_> =
@@ -1712,9 +2160,13 @@ mod tests {
         assert_eq!(combined, serialized.rows());
 
         history.reset_for_purge_replay();
-        let resized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 24, history.confirmed_ids());
-        let replay = super::build_replay_history_batches(&resized, 24);
+        let resized = serialize_live_rows_with_boundaries_excluding(
+            &mut app,
+            24,
+            history.confirmed_ids(),
+            None,
+        );
+        let replay = super::build_replay_history_batches(&resized, 24, &BTreeSet::new());
         assert!(replay.confirm_ids.contains(&exchange_id));
         let replay_text: Vec<_> = replay
             .batches
@@ -1735,7 +2187,7 @@ mod tests {
             },
         );
         let completed =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 24, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 24, &BTreeSet::new(), None);
         let final_batches =
             super::build_static_history_batches(&completed, 24, history.confirmed_ids());
         let final_rows: Vec<_> = final_batches
@@ -1768,7 +2220,7 @@ mod tests {
         app.status = AppStatus::Running;
 
         let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &BTreeSet::new());
+            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &BTreeSet::new(), None);
         let batches = super::build_static_history_batches(&serialized, 180, &BTreeSet::new());
         let inserted_text = batches
             .iter()
@@ -1806,7 +2258,7 @@ mod tests {
 
         let static_batches =
             super::build_static_history_batches(&serialized, 120, &BTreeSet::new());
-        let replay = super::build_replay_history_batches(&serialized, 120);
+        let replay = super::build_replay_history_batches(&serialized, 120, &BTreeSet::new());
         let excluded_rows = super::excluded_row_count(&serialized, &BTreeSet::from([invalid_id]));
 
         assert!(static_batches.is_empty());

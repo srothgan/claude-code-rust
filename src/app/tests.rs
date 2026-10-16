@@ -697,6 +697,7 @@ fn rendered_welcome_text(app: &mut App) -> String {
         app,
         120,
         &std::collections::BTreeSet::new(),
+        None,
     );
     rows.rows()
         .iter()

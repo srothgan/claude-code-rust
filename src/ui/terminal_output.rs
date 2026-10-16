@@ -4,6 +4,7 @@
 //! default style; every other escape sequence and control character is dropped.
 
 use super::diff;
+use super::layout_control::LayoutControl;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::iter::Peekable;
@@ -21,12 +22,16 @@ enum Event<'a> {
 struct Scanner<'a> {
     text: &'a str,
     chars: Peekable<CharIndices<'a>>,
+    control: &'a LayoutControl<'a>,
 }
 
 impl<'a> Scanner<'a> {
-    fn scan(text: &'a str, mut emit: impl FnMut(Event<'a>)) {
-        let mut scanner = Self { text, chars: text.char_indices().peekable() };
+    fn scan(text: &'a str, control: &'a LayoutControl<'a>, mut emit: impl FnMut(Event<'a>)) {
+        let mut scanner = Self { text, chars: text.char_indices().peekable(), control };
         while let Some((_, ch)) = scanner.chars.next() {
+            if control.cancelled() {
+                break;
+            }
             match ch {
                 '\u{1b}' => scanner.escape(&mut emit),
                 '\n' => emit(Event::Newline),
@@ -67,6 +72,9 @@ impl<'a> Scanner<'a> {
     fn csi(&mut self, emit: &mut impl FnMut(Event<'a>)) {
         let start = self.chars.peek().map_or(self.text.len(), |&(index, _)| index);
         while let Some(&(index, ch)) = self.chars.peek() {
+            if self.control.cancelled() {
+                return;
+            }
             match ch {
                 '\u{20}'..='\u{3f}' => {
                     self.chars.next();
@@ -90,6 +98,9 @@ impl<'a> Scanner<'a> {
     /// OSC, DCS, SOS, PM, and APC strings end at BEL or ST (`ESC \`).
     fn control_string(&mut self, emit: &mut impl FnMut(Event<'a>)) {
         while let Some(&(_, ch)) = self.chars.peek() {
+            if self.control.cancelled() {
+                return;
+            }
             match ch {
                 '\u{07}' => {
                     self.chars.next();
@@ -115,7 +126,7 @@ impl<'a> Scanner<'a> {
 /// Remove escape sequences, keeping all other characters.
 pub(crate) fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    Scanner::scan(text, |event| match event {
+    Scanner::scan(text, &LayoutControl::uninterrupted(), |event| match event {
         Event::Char(ch) | Event::Control(ch) => out.push(ch),
         Event::Newline => out.push('\n'),
         Event::CarriageReturn => out.push('\r'),
@@ -126,8 +137,11 @@ pub(crate) fn strip_ansi(text: &str) -> String {
 
 /// Render output as the terminal shows it. Unstyled text carries no style, so
 /// callers choose the default appearance by patching their base style underneath.
-pub(crate) fn render_terminal_output(text: &str) -> Vec<Line<'static>> {
-    let lines = styled_lines(text);
+pub(crate) fn render_terminal_output(
+    text: &str,
+    control: &LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let lines = styled_lines(text, control);
     let plain = lines
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
@@ -187,9 +201,9 @@ impl LineBuilder {
     }
 }
 
-fn styled_lines(text: &str) -> Vec<Line<'static>> {
+fn styled_lines(text: &str, control: &LayoutControl<'_>) -> Vec<Line<'static>> {
     let mut builder = LineBuilder::default();
-    Scanner::scan(text, |event| match event {
+    Scanner::scan(text, control, |event| match event {
         Event::Char(ch) => builder.push_char(ch),
         Event::Newline => builder.end_line(),
         Event::CarriageReturn => builder.overwrite = true,

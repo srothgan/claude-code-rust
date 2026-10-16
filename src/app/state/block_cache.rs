@@ -17,6 +17,7 @@ pub(crate) fn next_cache_access_tick() -> u64 {
 #[derive(Default)]
 pub struct BlockCache {
     version: u64,
+    rendered_version: Option<u64>,
     lines: Option<Vec<ratatui::text::Line<'static>>>,
     render_width: Option<u16>,
     /// Segmentation metadata for KB-sized cache chunks shared across message/tool caches.
@@ -79,16 +80,21 @@ impl BlockCache {
         spans
     }
 
+    /// Source changes advance this revision; storing or evicting derived rows does not.
+    pub(crate) const fn source_revision(&self) -> u64 {
+        self.version
+    }
+
     /// Bump the version to invalidate cached lines and height.
     pub fn invalidate(&mut self) {
-        self.version += 1;
+        self.version = self.version.wrapping_add(1);
         self.wrapped_height_valid = false;
     }
 
     /// Get a reference to the cached lines, if fresh.
     #[must_use]
     pub fn get(&self) -> Option<&Vec<ratatui::text::Line<'static>>> {
-        if self.version == 0 && self.render_width.is_none() {
+        if self.rendered_version == Some(self.version) && self.render_width.is_none() {
             let lines = self.lines.as_ref();
             if lines.is_some() {
                 self.touch();
@@ -101,7 +107,7 @@ impl BlockCache {
 
     #[must_use]
     pub fn get_for_width(&self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {
-        if self.version == 0 && self.render_width == Some(width) {
+        if self.rendered_version == Some(self.version) && self.render_width == Some(width) {
             let lines = self.lines.as_ref();
             if lines.is_some() {
                 self.touch();
@@ -143,7 +149,7 @@ impl BlockCache {
         self.lines = Some(lines);
         self.segments = segments;
         self.cached_bytes = cached_bytes;
-        self.version = 0;
+        self.rendered_version = Some(self.version);
         self.wrapped_height = 0;
         self.wrapped_width = 0;
         self.wrapped_height_valid = false;
@@ -163,7 +169,10 @@ impl BlockCache {
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
     #[must_use]
     pub fn height_at(&self, width: u16) -> Option<usize> {
-        if self.version == 0 && self.wrapped_height_valid && self.wrapped_width == width {
+        if self.rendered_version == Some(self.version)
+            && self.wrapped_height_valid
+            && self.wrapped_width == width
+        {
             self.touch();
             Some(self.wrapped_height)
         } else {
@@ -204,7 +213,7 @@ impl BlockCache {
         self.wrapped_height = 0;
         self.wrapped_width = 0;
         self.wrapped_height_valid = false;
-        self.version = self.version.wrapping_add(1);
+        self.rendered_version = None;
         removed
     }
 }

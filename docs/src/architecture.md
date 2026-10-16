@@ -85,11 +85,29 @@ Tool titles share a one-line display projection and a source-keyed inline cache 
 
 Presentation preferences are projections of the acknowledged config snapshot; Rust keeps no second presentation store. History replay removes locally observed times and preserves native timestamps without reordering messages. Completed duration rows go through the same scrollback boundary and commit protocol as other transcript rows.
 
-### Transcript reading and `/copy`
+### Transcript rendering
 
-Chat reading owns a stable transcript-segment anchor and a rendered-text position; the saved Auto-scroll setting controls only the following policy. Reading suspends scrollback insertion, survives reflow of retained content, and returns to ordinary incremental history commits through an explicit keymap action.
+The canonical transcript owns message and tool content. The chat session traverses it through a resumable row producer, with cursors for assistant sections, Markdown lists and code lines, and file-preview syntax state. Text rendering avoids generating an extra physical-row copy solely to measure height. Capped tool bodies lay out the visible prefix and tail without wrapping hidden middle lines when the source-line count already proves overflow.
+
+### Resize replay
+
+Replay inserts ready rows before preparing more source. Tools can emit their title before their body is ready, and completed sections can be inserted before the rest of an assistant turn is laid out. Text production and terminal insertion use the same viewport-derived row target, while preparation also yields on a cooperative time budget. One replay stays open until both source traversal and insertion finish; an empty output queue alone does not confirm completion. No historical width layouts are retained.
+
+Pending replay work is independent of the repaint flag. Preparation can continue without redrawing unchanged content, while input and other visible changes still request a repaint. The terminal reserves insertion space only when history rows are queued; an empty preparation slice leaves the viewport geometry intact. When replay stops at mutable content, completion schedules a render of the full live suffix from canonical state. Shutdown waits for pending preparation and insertion even when no repaint is requested.
+
+Layout cancellation checkpoints observe terminal size independently of queued input events, including during Markdown parsing, source grouping, highlighting and physical-row conversion. A changed size discards the attempt and restarts through the resize owner. Transcript topology changes, changes to a tool being prepared, and reading-policy changes also discard an active replay; ordinary appended messages can be consumed by the existing traversal. Cancellation is cooperative: an individual parser or syntax-library call can exceed the scheduling budget before the next checkpoint.
+
+`inline_chat_layout_step` records preparation duration and row count; `inline_chat_draw_interrupted_by_resize` uses phase `layout` when cancellation happens before terminal insertion.
 
 Shutdown redraws the live viewport without resetting committed history. Reading returns to live output so its viewport copy does not remain beside native scrollback. The terminal owner finishes pending resize recovery and transcript replay before restoration; an explicit force interrupt can stop that recovery.
+
+### Transcript reading
+
+Chat reading owns a stable transcript-segment anchor and a rendered-text position; the saved Auto-scroll setting controls only the following policy. Reading chooses the visible source window independently of scrollback restoration, survives reflow of retained content, and returns to following new output through an explicit keymap action.
+
+While reading, the current replay accumulates the rows needed to resolve the saved text anchor and preserves that anchor until traversal finishes. These temporary rows belong to the active replay and are released with it.
+
+### `/copy`
 
 `/copy` derives its material from the canonical response text and the text-joining rule shared with rendering, then writes through the clipboard boundary shared with MCP authorization. Its picker owns only the current selection and retry state.
 

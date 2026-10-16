@@ -1210,6 +1210,7 @@ mod tests {
                     &mut app,
                     width,
                     &std::collections::BTreeSet::new(),
+                    None,
                 );
                 let segment = rendered
                     .segments()

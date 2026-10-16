@@ -57,7 +57,11 @@ fn read_tool_call(path: &str, text: &str) -> ToolCallInfo {
 
 fn assert_read_path_is_syntax_colored(path: &str, text: &str) {
     let tc = read_tool_call(path, text);
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     assert!(has_multiple_content_fg_colors(&body), "expected syntax coloring for path {path:?}");
 }
 
@@ -372,7 +376,11 @@ fn tool_title_cache_tracks_literal_rendering_and_display_context() {
         ("Read", ToolCallRenderContext::default(), "Visible title"),
         ("Bash", ToolCallRenderContext::default(), "**Visible title**"),
         ("Read", ToolCallRenderContext::default(), "Visible title"),
-        ("Write", ToolCallRenderContext { current_mode_id: Some("plan") }, "Create Plan"),
+        (
+            "Write",
+            ToolCallRenderContext { current_mode_id: Some("plan"), ..Default::default() },
+            "Create Plan",
+        ),
         ("Write", ToolCallRenderContext::default(), "Visible title"),
     ] {
         tc.sdk_tool_name = tool_name.to_owned();
@@ -696,7 +704,7 @@ fn tool_display_title_uses_plan_aliases() {
     let write = test_tool_call("tc-plan-write", "Write", model::ToolCallStatus::Completed);
     let edit = test_tool_call("tc-plan-edit", "Edit", model::ToolCallStatus::Completed);
     let read = test_tool_call("tc-plan-read", "Read", model::ToolCallStatus::Completed);
-    let plan = ToolCallRenderContext { current_mode_id: Some("plan") };
+    let plan = ToolCallRenderContext { current_mode_id: Some("plan"), ..Default::default() };
 
     assert_eq!(tool_display_title(&write, plan), "Create Plan");
     assert_eq!(tool_display_title(&edit, plan), "Update Plan");
@@ -794,7 +802,7 @@ fn standard_title_uses_plan_alias_for_write() {
 
     let rendered = standard::render_tool_call_title(
         &tc,
-        ToolCallRenderContext { current_mode_id: Some("plan") },
+        ToolCallRenderContext { current_mode_id: Some("plan"), ..Default::default() },
         80,
         crate::ui::SpinnerState::Animated(0),
     );
@@ -825,7 +833,11 @@ fn generic_renderer_preserves_refresh_mcp_tools_json_output() {
     let payload = r#"[{"server":"docs","status":"refreshed","toolCount":3,"added":["lookup"],"removed":["legacy_lookup"]}]"#;
     tc.content = vec![model::ToolCallContent::from(payload.to_owned())];
 
-    let body = standard::render_tool_call_body(&tc, 300);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        300,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body).join("\n");
 
     assert!(rendered.contains(payload));
@@ -878,7 +890,11 @@ fn read_body_highlights_dockerfile_by_filename() {
 #[test]
 fn read_body_strips_ansi_before_syntax_coloring() {
     let tc = read_tool_call("src/main.rs", "\u{1b}[31mfn\u{1b}[0m main() {}\n");
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts(&body).join("\n");
 
     assert!(rendered.contains("fn main"));
@@ -889,7 +905,11 @@ fn read_body_strips_ansi_before_syntax_coloring() {
 #[test]
 fn read_image_body_distinguishes_status_from_filename() {
     let tc = read_tool_call(r"C:\work\captures\screen.png", "Viewed Image screen.png");
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
 
     assert_eq!(
         rendered_line_texts_trimmed(&body),
@@ -915,7 +935,11 @@ fn read_image_body_distinguishes_status_from_filename() {
 #[test]
 fn read_body_does_not_style_unrelated_text_as_an_image_result() {
     let tc = read_tool_call("notes/status.txt", "Viewed Image screen.png");
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
 
     assert_eq!(
         rendered_line_texts_trimmed(&body),
@@ -1078,7 +1102,11 @@ fn structured_read_keeps_source_that_looks_like_image_status() {
 #[test]
 fn unstructured_read_keeps_numeric_source_prefixes() {
     let tc = read_tool_call("notes.txt", "1st line\n2nd line");
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
 
     assert_eq!(rendered_line_texts_trimmed(&body), ["  │  1st line", "  └─ 2nd line"]);
 }
@@ -1228,7 +1256,11 @@ fn mcp_resource_text_is_not_recolored_from_read_path() {
         model::McpResource::new("mcp://resource").text(Some("fn main() {}\n".to_owned())),
     )];
 
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts(&body).join("\n");
 
     assert!(rendered.contains("fn main"));
@@ -1277,7 +1309,11 @@ fn ask_user_question_completed_body_renders_structured_answers() {
     tc.content =
         vec![model::ToolCallContent::from("Target: Staging\n  Pick deployment target".to_owned())];
 
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body);
     let joined = rendered.join("\n");
 
@@ -1318,7 +1354,11 @@ fn ask_user_question_completed_body_indents_preview_and_notes_with_answers() {
         ]
     }));
 
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body);
 
     assert!(rendered.iter().any(|line| line.contains("  [x] JSON - Ubiquitous, no comments.")));
@@ -1360,7 +1400,11 @@ fn ask_user_question_pending_body_hides_answer_transcript() {
         total_questions: 4,
     });
 
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let joined = rendered_line_texts_trimmed(&body).join("\n");
 
     assert!(joined.contains("? Features (2/4)"));
@@ -1377,7 +1421,11 @@ fn ask_user_question_completed_body_falls_back_to_transcript_without_structured_
     tc.content =
         vec![model::ToolCallContent::from("Target: Staging\n  Pick deployment target".to_owned())];
 
-    let body = standard::render_tool_call_body(&tc, 120);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        120,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let joined = rendered_line_texts_trimmed(&body).join("\n");
 
     assert!(joined.contains("Target: Staging"));
@@ -1454,7 +1502,10 @@ fn powershell_execute_body_omits_command_prompt() {
     tc.terminal_command = Some("Get-ChildItem".to_owned());
     tc.terminal_output = Some("Directory listing".to_owned());
 
-    let lines = execute::render_execute_content(&tc);
+    let lines = execute::render_execute_content(
+        &tc,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = lines
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1472,7 +1523,11 @@ fn read_body_caps_long_wrapped_line_by_physical_rows() {
     let long_line = (0..80).map(|idx| format!("word{idx}")).collect::<Vec<_>>().join(" ");
     tc.content = vec![model::ToolCallContent::from(long_line)];
 
-    let body = standard::render_tool_call_body(&tc, 24);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        24,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body);
 
     assert_eq!(body.len(), TOOL_BODY_MAX_LINES);
@@ -1488,7 +1543,11 @@ fn body_cap_reports_hidden_source_lines_when_full_lines_are_omitted() {
     let text = (0..20).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n");
     tc.content = vec![model::ToolCallContent::from(text)];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body);
 
     assert_eq!(body.len(), TOOL_BODY_MAX_LINES);
@@ -1516,7 +1575,11 @@ fn wrapped_content_cap_keeps_permission_rows_visible() {
         focused: true,
     });
 
-    let body = standard::render_tool_call_body(&tc, 24);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        24,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body);
 
     assert!(rendered.iter().any(|line| line.contains("wrapped")));
@@ -1693,7 +1756,7 @@ fn bash_title_preserves_command_title_in_plan_mode() {
 
     let rendered = standard::render_tool_call_title(
         &tc,
-        ToolCallRenderContext { current_mode_id: Some("plan") },
+        ToolCallRenderContext { current_mode_id: Some("plan"), ..Default::default() },
         80,
         crate::ui::SpinnerState::Animated(0),
     );
@@ -1716,7 +1779,11 @@ fn mcp_resource_body_renders_saved_path_hint_when_text_omits_it() {
             .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
     )];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1739,7 +1806,11 @@ fn mcp_resource_body_avoids_duplicate_saved_path_hint_when_text_already_mentions
             .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
     )];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1769,7 +1840,11 @@ fn mcp_resource_links_render_summary_and_bounded_body_at_narrow_and_wide_widths(
 
     assert_eq!(standard::content_summary(&tc), "Quarterly report");
     for width in [24, 120] {
-        let body = standard::render_tool_call_body(&tc, width);
+        let body = standard::ToolBodyCursor::default().render(
+            &tc,
+            width,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
         let rendered_lines = rendered_line_texts(&body);
         let rendered = rendered_lines.join("\n");
         let compact = rendered_lines
@@ -1794,7 +1869,11 @@ fn read_tool_renders_head_hidden_marker_and_tail() {
         (0..12).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n"),
     )];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered_text: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1820,7 +1899,11 @@ fn compact_tools_render_only_summary_line() {
         );
         tc.content = vec![model::ToolCallContent::from("first line\nsecond line".to_owned())];
 
-        let body = standard::render_tool_call_body(&tc, 80);
+        let body = standard::ToolBodyCursor::default().render(
+            &tc,
+            80,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
         let rendered: Vec<String> = body
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1867,7 +1950,11 @@ fn diff_tool_body_adds_nested_indent_inside_tool_prefix() {
             .repository(Some("acme/project".to_owned())),
     )];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1888,7 +1975,11 @@ fn diff_tool_body_preserves_source_code_indentation() {
         "fn main() {\n    if true {\n        return;\n    }\n}\n".to_owned(),
     ))];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1906,7 +1997,11 @@ fn diff_tool_body_preserves_nested_indent_for_wrapped_continuations() {
         "        This is a long added line that should wrap onto another visual line.\n".to_owned(),
     ))];
 
-    let body = standard::render_tool_call_body(&tc, 28);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        28,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1930,7 +2025,11 @@ fn write_diff_cap_keeps_omission_marker_nested_indented() {
     let mut tc = test_tool_call("tc-diff-cap", "Write", model::ToolCallStatus::Completed);
     tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("src/main.rs", new_text))];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1963,7 +2062,11 @@ fn plan_files_render_markdown_instead_of_diff() {
         .old_text(Some("# Old Plan\n".to_owned())),
     )];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -1983,7 +2086,11 @@ fn plan_file_markdown_body_is_not_capped_by_tool_height() {
     tc.content =
         vec![model::ToolCallContent::Diff(model::Diff::new(".claude/plans/long.md", plan_text))];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body);
 
     assert!(body.len() > TOOL_BODY_MAX_LINES);
@@ -1998,7 +2105,11 @@ fn non_plan_write_diff_body_stays_capped_by_tool_height() {
     let new_text = (0..80).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n");
     tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("notes/long.md", new_text))];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered = rendered_line_texts_trimmed(&body);
 
     assert_eq!(body.len(), TOOL_BODY_MAX_LINES);
@@ -2225,7 +2336,10 @@ fn render_execute_content_keeps_tail_output() {
         history: crate::app::ToolCallHistory::Live,
     };
 
-    let lines = execute::render_execute_content(&tc);
+    let lines = execute::render_execute_content(
+        &tc,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> =
         lines.iter().map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
     assert_eq!(rendered.len(), super::TOOL_BODY_MAX_LINES);
@@ -2246,7 +2360,10 @@ fn render_execute_content_extracts_tool_use_error() {
                 .into(),
         );
 
-    let lines = execute::render_execute_content(&tc);
+    let lines = execute::render_execute_content(
+        &tc,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> =
         lines.iter().map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
 
@@ -2265,7 +2382,10 @@ fn render_execute_content_extracts_xml_message_error() {
     tc.terminal_id = Some("term-xml".into());
     tc.terminal_output = Some("<error><message>Adapter process crashed</message></error>".into());
 
-    let lines = execute::render_execute_content(&tc);
+    let lines = execute::render_execute_content(
+        &tc,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> =
         lines.iter().map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
 
@@ -2281,7 +2401,11 @@ fn failed_text_tool_body_extracts_xml_error_message() {
         "<error><message>Read failed</message></error>".to_owned(),
     )];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -2297,7 +2421,11 @@ fn successful_text_tool_body_preserves_xml_like_output() {
     let mut tc = test_tool_call("tc-read-xml", "Read", model::ToolCallStatus::Completed);
     tc.content = vec![model::ToolCallContent::from("<message>not an error</message>".to_owned())];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -2314,7 +2442,11 @@ fn diff_tool_body_preserves_xml_like_source() {
         "<message>source text</message>".to_owned(),
     ))];
 
-    let body = standard::render_tool_call_body(&tc, 80);
+    let body = standard::ToolBodyCursor::default().render(
+        &tc,
+        80,
+        &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    );
     let rendered: Vec<String> = body
         .iter()
         .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -2356,4 +2488,84 @@ fn write_diff_cap_preserves_diff_count_header() {
     assert!(!rendered.iter().any(|line| line == "line 0"));
     assert!(rendered.iter().any(|line| line == "line 113"));
     assert_eq!(rendered.last().map(String::as_str), Some("line 119"));
+}
+
+#[test]
+fn interrupted_tool_body_never_enters_the_render_cache() {
+    use crate::ui::layout_control::LayoutControl;
+    use std::cell::Cell;
+    let mut tc = read_tool_call("source.rs", &"fn main() {}\n".repeat(2000));
+    let checks = Cell::new(0);
+    let resize = || {
+        checks.set(checks.get() + 1);
+        checks.get() > 20
+    };
+    let control = LayoutControl::new(&resize);
+    render_tool_call_cached(
+        &mut tc,
+        ToolCallRenderContext { control: Some(&control), ..Default::default() },
+        80,
+        crate::ui::SpinnerState::Static,
+        &mut Vec::new(),
+    );
+    assert!(control.cancelled());
+    assert!(tc.cache.get_for_width(80).is_none());
+    let mut fresh = Vec::new();
+    render_tool_call_cached(
+        &mut tc,
+        ToolCallRenderContext::default(),
+        31,
+        crate::ui::SpinnerState::Static,
+        &mut fresh,
+    );
+    assert!(fresh.iter().any(|row| row.to_string().contains("hidden")));
+    assert!(tc.cache.get_for_width(31).is_some());
+}
+
+#[test]
+fn file_preview_resumes_with_multiline_syntax_and_cancels_when_source_changes() {
+    use crate::ui::layout_control::LayoutControl;
+    let source =
+        format!("/*\n{}inside comment\n*/\nfn tail() {{}}\n", "still comment\n".repeat(100));
+    let mut expected_tool = read_tool_call("source.rs", &source);
+    let mut expected = Vec::new();
+    render_tool_call_cached(
+        &mut expected_tool,
+        ToolCallRenderContext::default(),
+        40,
+        crate::ui::SpinnerState::Static,
+        &mut expected,
+    );
+    let mut tc = read_tool_call("source.rs", &source);
+    let mut cursor = ToolRowsCursor::default();
+    let mut actual = Vec::new();
+    let mut yielded_without_rows = false;
+    while !cursor.is_finished() {
+        let control = LayoutControl::with_budget(&|| false, std::time::Duration::ZERO);
+        let chunk = cursor.next(
+            &mut tc,
+            ToolCallRenderContext { control: Some(&control), ..Default::default() },
+            40,
+            crate::ui::SpinnerState::Static,
+        );
+        yielded_without_rows |= chunk.is_empty();
+        actual.extend(chunk);
+    }
+    assert!(
+        yielded_without_rows,
+        "a large preview must return control while retaining syntax state"
+    );
+    assert_eq!(actual, expected, "pauses must preserve every preview row and style");
+    let text = rendered_line_texts(&actual);
+    assert!(text.iter().any(|row| row.contains("inside comment")));
+    assert!(text.iter().any(|row| row.contains("fn tail")));
+
+    let mut cursor = ToolRowsCursor::default();
+    let control = LayoutControl::with_budget(&|| false, std::time::Duration::ZERO);
+    let context = ToolCallRenderContext { control: Some(&control), ..Default::default() };
+    let _ = cursor.next(&mut tc, context, 40, crate::ui::SpinnerState::Static);
+    tc.content = vec![model::ToolCallContent::from("replacement".to_owned())];
+    tc.invalidate_render_cache();
+    assert!(cursor.next(&mut tc, context, 40, crate::ui::SpinnerState::Static).is_empty());
+    assert!(control.cancelled(), "a changed source requires a fresh replay, never a mixed body");
 }

@@ -43,6 +43,8 @@ pub(crate) fn build_user_system_message_rows(
     msg: &mut ChatMessage,
     render_context: MessageRenderContext<'_>,
 ) -> MessageRows {
+    let uninterrupted = super::layout_control::LayoutControl::uninterrupted();
+    let control = render_context.tool_render_context.control.unwrap_or(&uninterrupted);
     let mut rows = MessageRows::new();
     if !matches!(msg.role, MessageRole::User | MessageRole::System(_)) {
         return rows;
@@ -57,15 +59,16 @@ pub(crate) fn build_user_system_message_rows(
     match msg.role {
         MessageRole::User => {
             let width = render_context.width;
-            append_user_blocks(msg, MessageLayout::new(width).content_width, &mut rows);
+            append_user_blocks(msg, MessageLayout::new(width).content_width, &mut rows, control);
             let mut physical = Vec::new();
             for segment in rows.segments {
                 match segment {
                     MessageRowSegment::Blank => physical.push(Line::default()),
                     MessageRowSegment::Lines { lines } => {
-                        physical.extend(super::wrap::wrap_lines_to_physical_rows(
+                        physical.extend(super::wrap::wrap_lines_with_control(
                             &lines,
                             MessageLayout::new(width).content_width,
+                            control,
                         ));
                     }
                 }
@@ -83,19 +86,35 @@ pub(crate) fn build_user_system_message_rows(
                 }],
             };
         }
-        MessageRole::System(_) => append_system_blocks(msg, render_context.width, &mut rows),
+        MessageRole::System(_) => {
+            append_system_blocks(msg, render_context.width, &mut rows, control);
+        }
         MessageRole::Assistant | MessageRole::Welcome => {}
     }
 
     rows
 }
 
-fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows) {
+fn append_user_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    rows: &mut MessageRows,
+    control: &super::layout_control::LayoutControl<'_>,
+) {
     for block in &mut msg.blocks {
+        if control.cancelled() {
+            return;
+        }
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                rows.push_lines(text_block_lines(block, width, Some(theme::USER_MSG_BG), true));
+                rows.push_lines(text_block_lines(
+                    block,
+                    width,
+                    Some(theme::USER_MSG_BG),
+                    true,
+                    control,
+                ));
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
@@ -116,13 +135,21 @@ fn append_user_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows)
     }
 }
 
-fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRows) {
+fn append_system_blocks(
+    msg: &mut ChatMessage,
+    width: u16,
+    rows: &mut MessageRows,
+    control: &super::layout_control::LayoutControl<'_>,
+) {
     let color = system_severity_color(system_severity_from_role(&msg.role));
     for block in &mut msg.blocks {
+        if control.cancelled() {
+            return;
+        }
         match block {
             MessageBlock::Text(block) => {
                 let trailing_gap = block.trailing_blank_lines();
-                let mut lines = text_block_lines(block, width, None, false);
+                let mut lines = text_block_lines(block, width, None, false, control);
                 tint_lines(&mut lines, color);
                 rows.push_lines(lines);
                 for _ in 0..trailing_gap {
@@ -131,13 +158,13 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
             }
             MessageBlock::Notice(notice) => {
                 let trailing_gap = notice.trailing_blank_lines();
-                rows.push_lines(notice_block_lines(notice, width, notice.severity));
+                rows.push_lines(notice_block_lines(notice, width, notice.severity, control));
                 for _ in 0..trailing_gap {
                     rows.push_blank();
                 }
             }
             MessageBlock::BtwExchange(exchange) => {
-                rows.push_lines(render_btw_exchange_lines(exchange, width));
+                rows.push_lines(render_btw_exchange_with_control(exchange, width, control));
             }
             MessageBlock::UserDialog(dialog) => {
                 rows.push_lines(render_user_dialog_lines(dialog));
@@ -151,9 +178,10 @@ fn append_system_blocks(msg: &mut ChatMessage, width: u16, rows: &mut MessageRow
     }
 }
 
-pub(super) fn render_btw_exchange_lines(
+pub(super) fn render_btw_exchange_with_control(
     block: &mut BtwExchangeBlock,
     width: u16,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     if block.cache.height_at(width).is_some()
         && let Some(lines) = block.cache.get()
@@ -173,13 +201,13 @@ pub(super) fn render_btw_exchange_lines(
         &[Line::from(Span::styled("Question:", label))],
         inner_width,
     );
-    content.extend(render_btw_markdown(&block.question, inner_width));
+    content.extend(render_btw_markdown(&block.question, inner_width, control));
     content.push(Line::default());
     content.extend(crate::ui::wrap::wrap_lines_to_physical_rows(
         &[Line::from(Span::styled("Answer:", label))],
         inner_width,
     ));
-    content.extend(render_btw_markdown(&block.answer, inner_width));
+    content.extend(render_btw_markdown(&block.answer, inner_width, control));
 
     let title = " Claude · BTW ";
     let top_inner_width = usize::from(card_width.saturating_sub(2));
@@ -195,6 +223,9 @@ pub(super) fn render_btw_exchange_lines(
         accent,
     ))];
     for line in content {
+        if control.cancelled() {
+            return Vec::new();
+        }
         let used = line.width().min(usize::from(inner_width));
         let mut spans = Vec::with_capacity(line.spans.len() + 3);
         spans.push(Span::styled("│ ", accent));
@@ -210,15 +241,22 @@ pub(super) fn render_btw_exchange_lines(
 
     // Normalize the completed physical rows here so inline and standalone cards
     // share identical spans, styles, and terminal-cell layout.
-    let rows = crate::ui::wrap::wrap_lines_to_physical_rows(&rows, width);
+    let rows = crate::ui::wrap::wrap_lines_with_control(&rows, width, control);
+    if control.cancelled() {
+        return Vec::new();
+    }
     block.cache.store(rows.clone());
     block.cache.set_height(rows.len(), width);
     rows
 }
 
-fn render_btw_markdown(text: &str, width: u16) -> Vec<Line<'static>> {
-    let logical = super::markdown::render_markdown_at_width(text, width, None, false);
-    let mut physical = crate::ui::wrap::wrap_lines_to_physical_rows(&logical, width);
+fn render_btw_markdown(
+    text: &str,
+    width: u16,
+    control: &super::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let logical = super::markdown::render_markdown_with_control(text, width, None, false, control);
+    let mut physical = crate::ui::wrap::wrap_lines_with_control(&logical, width, control);
     for line in &mut physical {
         for span in &mut line.spans {
             if span.style.bg.is_none_or(|color| color == Color::Reset) {
@@ -298,9 +336,10 @@ fn text_block_lines(
     width: u16,
     bg: Option<Color>,
     preserve_newlines: bool,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    render_text_block_cached(block, width, bg, preserve_newlines, &mut lines);
+    render_text_block_cached(block, width, bg, preserve_newlines, &mut lines, control);
     lines
 }
 
@@ -308,8 +347,9 @@ fn notice_block_lines(
     block: &mut crate::app::NoticeBlock,
     width: u16,
     severity: SystemSeverity,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
-    let mut lines = text_block_lines(&mut block.text, width, None, false);
+    let mut lines = text_block_lines(&mut block.text, width, None, false, control);
     tint_lines(&mut lines, system_severity_color(severity));
     lines
 }

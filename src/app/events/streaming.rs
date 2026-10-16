@@ -226,6 +226,7 @@ mod tests {
             &mut app,
             100,
             &std::collections::BTreeSet::new(),
+            None,
         );
         let text = rendered
             .rows()

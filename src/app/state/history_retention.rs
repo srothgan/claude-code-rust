@@ -287,6 +287,9 @@ impl super::App {
         }
         let bytes = Self::measure_message_bytes(&msg);
         self.transcript.messages.insert(insert_idx, msg);
+        if !appended_at_tail {
+            self.transcript.mark_topology_changed();
+        }
         self.transcript.message_retained_bytes.insert(insert_idx, bytes);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_add(bytes);
@@ -313,6 +316,7 @@ impl super::App {
         self.shift_active_turn_assistant_for_remove(idx);
         self.shift_turn_notice_refs_for_remove(idx);
         let removed = self.transcript.messages.remove(idx);
+        self.transcript.mark_topology_changed();
         let removed_bytes = self.transcript.message_retained_bytes.remove(idx);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_sub(removed_bytes);
@@ -329,6 +333,7 @@ impl super::App {
 
     pub(crate) fn clear_messages_tracked(&mut self) {
         self.transcript.messages.clear();
+        self.transcript.mark_topology_changed();
         self.transcript.message_retained_bytes.clear();
         self.transcript.retained_history_bytes = 0;
         self.clear_active_turn_assistant();
@@ -615,6 +620,7 @@ impl super::App {
             }
         }
         self.transcript.messages = retained;
+        self.transcript.mark_topology_changed();
         self.transcript.message_retained_bytes = retained_bytes;
         self.turn.assistant_message_idx = remapped_active_turn_owner;
         self.remap_turn_notice_refs_after_message_drop(&old_to_new);
