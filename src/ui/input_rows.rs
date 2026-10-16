@@ -2,6 +2,7 @@
 
 use crate::app::BtwRequestState;
 use crate::app::{App, ComposerBlockReason, FocusOwner};
+use crate::ui::message_layout::MessageLayout;
 use crate::ui::{autocomplete, theme};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -183,16 +184,18 @@ fn fit_status_text(text: &str, max_width: usize) -> String {
     result
 }
 
+/// Read-only status rows shown in the composer field in place of the draft.
+///
+/// Returns `None` for a silent pending command, which keeps the draft visible.
 pub(crate) fn blocked_input_lines(
     app: &App,
     reason: ComposerBlockReason,
     width: u16,
-) -> Vec<Line<'static>> {
-    match reason {
+) -> Option<Vec<Line<'static>>> {
+    let rows = match reason {
         ComposerBlockReason::CommandPending => {
+            let label = app.displayed_pending_command_label()?;
             let spinner_ch = crate::ui::SpinnerState::for_app(app).icon();
-            let label =
-                app.turn.pending_command_label.as_deref().unwrap_or("Processing command...");
             vec![Line::from(vec![
                 Span::styled(format!("{spinner_ch} "), Style::default().fg(theme::DIM)),
                 Span::styled(label.to_owned(), Style::default().fg(theme::DIM)),
@@ -216,13 +219,17 @@ pub(crate) fn blocked_input_lines(
                 )));
                 rows.extend(app.input.lines().iter().cloned().map(Line::from));
             }
-            crate::ui::wrap::wrap_lines_to_physical_rows(&rows, width)
+            crate::ui::wrap::wrap_lines_to_physical_rows(
+                &rows,
+                MessageLayout::new(width).content_width,
+            )
         }
         ComposerBlockReason::Shutdown => vec![Line::from(Span::styled(
             "Shutting down... Press Ctrl+C again to force exit.",
             Style::default().fg(theme::DIM),
         ))],
-    }
+    };
+    Some(rows)
 }
 
 #[cfg(test)]
@@ -244,13 +251,13 @@ mod tests {
             serde_json::json!(true),
         ));
         app.turn.cancel_requested = true;
-        app.turn.pending_command_label = Some("Switching mode...".to_owned());
+        app.status = AppStatus::CommandPending;
+        app.turn.pending_command_label = Some("Starting new session...".to_owned());
         for frame in [0, 4, 9] {
             app.spinner_frame = frame;
-            assert_eq!(
-                line_text(&blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)[0]),
-                "\u{25C6} Switching mode..."
-            );
+            let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)
+                .expect("labeled command shows a status");
+            assert_eq!(line_text(&rows[0]), "\u{25C6} Starting new session...");
         }
     }
 
@@ -438,12 +445,22 @@ mod tests {
     fn blocked_input_lines_shows_pending_command_label() {
         let mut app = App::test_default();
         app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = Some("Switching model...".to_owned());
+        app.turn.pending_command_label = Some("Resuming session abc...".to_owned());
 
-        let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)
+            .expect("labeled command shows a status");
 
         assert_eq!(rows.len(), 1);
-        assert!(line_text(&rows[0]).contains("Switching model..."));
+        assert!(line_text(&rows[0]).contains("Resuming session abc..."));
+    }
+
+    #[test]
+    fn blocked_input_lines_keeps_silent_pending_command_hidden() {
+        let mut app = App::test_default();
+        app.status = AppStatus::CommandPending;
+        app.turn.pending_command_label = None;
+
+        assert!(blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80).is_none());
     }
 
     #[test]
@@ -451,7 +468,8 @@ mod tests {
         let mut app = App::test_default();
         app.status = AppStatus::Error;
 
-        let rows = blocked_input_lines(&app, ComposerBlockReason::Error, 80);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::Error, 80)
+            .expect("error shows a status");
 
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).contains("Input disabled due to error"));
@@ -464,7 +482,8 @@ mod tests {
         app.status = AppStatus::Running;
         app.request_shutdown();
 
-        let rows = blocked_input_lines(&app, ComposerBlockReason::Shutdown, 80);
+        let rows = blocked_input_lines(&app, ComposerBlockReason::Shutdown, 80)
+            .expect("shutdown shows a status");
 
         assert_eq!(rows.len(), 1);
         assert_eq!(line_text(&rows[0]), "Shutting down... Press Ctrl+C again to force exit.");

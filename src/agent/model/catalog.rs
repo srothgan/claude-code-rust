@@ -87,7 +87,20 @@ impl AvailableAgent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, clap::ValueEnum)]
+/// Variants are declared from lowest to highest, so the derived order is the effort order.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    clap::ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
     Low,
@@ -266,6 +279,12 @@ impl CurrentModel {
             supports_adaptive_thinking: None,
             is_authoritative: false,
         }
+    }
+
+    /// Effort levels a session on this model may request.
+    #[must_use]
+    pub fn selectable_effort_levels(&self) -> &[EffortLevel] {
+        if self.supports_effort { &self.supported_effort_levels } else { &[] }
     }
 
     #[must_use]

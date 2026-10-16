@@ -7,6 +7,7 @@ use super::{
     require_active_session, require_connection, set_command_pending,
 };
 use crate::agent::events::ClientEvent;
+use crate::agent::model::EffortLevel;
 use crate::agent::types::RewindRestoreMode;
 use crate::app::connect::{SessionStartReason, begin_rewind, start_new_session};
 use crate::app::events::push_submission_feedback;
@@ -226,7 +227,7 @@ fn handle_login_submit(app: &mut App) -> bool {
         return true;
     };
 
-    set_command_pending(app, "Authenticating...", None);
+    set_command_pending(app, Some("Authenticating..."), None);
 
     let tx = app.event_tx.clone();
     let conn = app.session_runtime.conn.clone();
@@ -315,7 +316,7 @@ fn handle_logout_submit(app: &mut App) -> bool {
         return true;
     };
 
-    set_command_pending(app, "Signing out...", None);
+    set_command_pending(app, Some("Signing out..."), None);
 
     let tx = app.event_tx.clone();
     tokio::task::spawn_local(async move {
@@ -462,6 +463,8 @@ fn handle_mode_submit(app: &mut App, args: &[&str]) -> bool {
     request_mode_change(app, requested_mode_arg)
 }
 
+// TODO: evaluate moving the mode and effort request paths into a session-controls
+// module; key shortcuts call them too, so they are not slash-specific.
 pub(crate) fn request_mode_change(app: &mut App, requested_mode: &str) -> bool {
     let Some((conn, sid)) = require_active_session(
         app,
@@ -471,7 +474,7 @@ pub(crate) fn request_mode_change(app: &mut App, requested_mode: &str) -> bool {
         return true;
     };
 
-    set_command_pending(app, "Switching mode...", Some(crate::app::PendingCommandAck::CurrentMode));
+    set_command_pending(app, None, Some(crate::app::PendingCommandAck::CurrentMode));
 
     let tx = app.event_tx.clone();
     let requested_mode_owned = requested_mode.to_owned();
@@ -506,11 +509,7 @@ fn handle_model_submit(app: &mut App, args: &[&str]) -> bool {
         return true;
     };
 
-    set_command_pending(
-        app,
-        "Switching model...",
-        Some(crate::app::PendingCommandAck::CurrentModel),
-    );
+    set_command_pending(app, None, Some(crate::app::PendingCommandAck::CurrentModel));
 
     let tx = app.event_tx.clone();
     let model_name = model_name.to_owned();
@@ -535,8 +534,20 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
     let [effort_arg] = args else {
         unreachable!("validated /effort arguments must contain one value");
     };
-    let effort = (*effort_arg != "reset").then(|| (*effort_arg).to_owned());
+    let effort = match *effort_arg {
+        "reset" => None,
+        value => {
+            let Some(level) = EffortLevel::from_stored(value) else {
+                unreachable!("validated /effort arguments must name an effort level");
+            };
+            Some(level)
+        }
+    };
+    request_effort_change(app, effort)
+}
 
+/// Request a session-only effort change; `None` resets to the model default.
+pub(crate) fn request_effort_change(app: &mut App, effort: Option<EffortLevel>) -> bool {
     let Some((conn, sid)) = require_active_session(
         app,
         "Cannot switch effort: not connected yet.",
@@ -547,12 +558,13 @@ fn handle_effort_submit(app: &mut App, args: &[&str]) -> bool {
 
     set_command_pending(
         app,
-        "Switching effort...",
+        None,
         Some(crate::app::PendingCommandAck::ConfigOption { option_id: "effortLevel".to_owned() }),
     );
 
     let tx = app.event_tx.clone();
     let session_id = sid.to_string();
+    let effort = effort.map(|level| level.as_stored().to_owned());
     tokio::task::spawn_local(async move {
         match conn.set_effort(session_id.clone(), effort) {
             Ok(()) => {}
@@ -584,7 +596,7 @@ fn handle_thinking_submit(app: &mut App, args: &[&str]) -> bool {
     };
     set_command_pending(
         app,
-        "Changing thinking...",
+        Some("Changing thinking..."),
         Some(crate::app::PendingCommandAck::ConfigOption {
             option_id: "alwaysThinkingEnabled".to_owned(),
         }),
@@ -613,7 +625,7 @@ fn handle_ultracode_submit(app: &mut App, args: &[&str]) -> bool {
     };
     let enabled = args == ["on"];
     let label = if enabled { "Enabling Ultracode..." } else { "Disabling Ultracode..." };
-    set_command_pending(app, label, Some(crate::app::PendingCommandAck::Ultracode));
+    set_command_pending(app, Some(label), Some(crate::app::PendingCommandAck::Ultracode));
     let tx = app.event_tx.clone();
     let session_id = sid.to_string();
     tokio::task::spawn_local(async move {
@@ -682,7 +694,7 @@ fn handle_fast_submit(app: &mut App, args: &[&str]) -> bool {
         },
     };
     let label = if enabled { "Enabling fast mode..." } else { "Disabling fast mode..." };
-    set_command_pending(app, label, Some(crate::app::PendingCommandAck::FastMode));
+    set_command_pending(app, Some(label), Some(crate::app::PendingCommandAck::FastMode));
 
     let tx = app.event_tx.clone();
     let session_id = sid.to_string();
@@ -717,7 +729,7 @@ fn handle_agent_submit(app: &mut App, args: &[&str]) -> bool {
 
     set_command_pending(
         app,
-        "Switching agent...",
+        None,
         Some(crate::app::PendingCommandAck::ConfigOption { option_id: "agent".to_owned() }),
     );
 
@@ -747,7 +759,7 @@ fn handle_new_session_submit(app: &mut App) -> bool {
         return true;
     };
 
-    set_command_pending(app, "Starting new session...", None);
+    set_command_pending(app, Some("Starting new session..."), None);
 
     if let Err(e) = start_new_session(app, &conn, SessionStartReason::NewSession) {
         crate::app::events::handle_local_slash_command_error(
@@ -795,7 +807,7 @@ fn handle_rewind_submit(app: &mut App, args: &[&str]) -> bool {
         RewindRestoreMode::Code => "Restoring code...",
         RewindRestoreMode::Both => "Restoring code and conversation...",
     };
-    set_command_pending(app, pending_label, None);
+    set_command_pending(app, Some(pending_label), None);
     let session_id = session_id.to_string();
     if let Err(e) = begin_rewind(app, &conn, session_id.clone(), target_uuid, restore_mode) {
         crate::app::events::handle_local_slash_command_error(

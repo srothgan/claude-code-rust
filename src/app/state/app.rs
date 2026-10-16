@@ -135,6 +135,28 @@ impl App {
         }
     }
 
+    /// Label of the in-flight command shown to the user. Silent commands (no label) keep
+    /// the internal `CommandPending` state without displaying it.
+    #[must_use]
+    pub(crate) fn displayed_pending_command_label(&self) -> Option<&str> {
+        if self.status == AppStatus::CommandPending {
+            self.turn.pending_command_label.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Status as presented to the user; a silent pending command presents as `Ready`.
+    #[must_use]
+    pub(crate) fn displayed_status(&self) -> AppStatus {
+        match self.status {
+            AppStatus::CommandPending if self.displayed_pending_command_label().is_none() => {
+                AppStatus::Ready
+            }
+            status => status,
+        }
+    }
+
     pub(crate) fn request_shutdown(&mut self) {
         if let Some(cancel_tx) = self.terminal_child_cancel.take() {
             let _ = cancel_tx.send(());

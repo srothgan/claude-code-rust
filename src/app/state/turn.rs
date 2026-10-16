@@ -74,7 +74,8 @@ impl ActiveCompaction {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Default)]
 pub struct TurnState {
-    /// Spinner label shown while a slash command is in flight (`CommandPending`).
+    /// Composer status label while a slash command is in flight (`CommandPending`).
+    /// `None` marks a silent command whose pending state is not displayed.
     pub pending_command_label: Option<String>,
     /// Stable per-turn activity choices and tip repaint timing.
     pub(crate) activity: Option<crate::app::activity::TurnActivity>,

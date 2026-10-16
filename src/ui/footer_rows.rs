@@ -335,7 +335,7 @@ fn fast_mode_badge(state: model::FastModeState) -> (&'static str, Color) {
 }
 
 fn startup_status_badge(app: &App) -> Option<(&'static str, Color)> {
-    match app.status {
+    match app.displayed_status() {
         crate::app::AppStatus::Connecting => None,
         crate::app::AppStatus::Ready => Some(("READY", theme::DIM)),
         crate::app::AppStatus::CommandPending

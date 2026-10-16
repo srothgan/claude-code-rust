@@ -298,12 +298,12 @@ pub struct CacheBudgetEnforceStats {
     pub protected_bytes: usize,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppStatus {
     /// Waiting for bridge adapter connection. Draft editing remains available,
     /// but submission is disabled until a session is established.
     Connecting,
-    /// A slash command is in flight (input disabled, spinner shown).
+    /// A slash command is in flight (input disabled; its status shows only when labeled).
     CommandPending,
     Ready,
     Thinking,

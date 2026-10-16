@@ -221,6 +221,11 @@ pub fn visual_line_count(app: &mut App, area_width: u16) -> u16 {
     hint.saturating_add(input_lines).saturating_add(INPUT_VERTICAL_PAD * 2)
 }
 
+/// Field height for read-only status rows rendered in place of the draft.
+pub(crate) fn status_field_height(status_rows: usize) -> u16 {
+    u16::try_from(status_rows).unwrap_or(u16::MAX).saturating_add(INPUT_VERTICAL_PAD * 2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

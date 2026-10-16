@@ -129,6 +129,10 @@ impl ChatTerminalSession {
             || self.preparation.as_ref().is_some_and(|preparation| preparation.finished)
     }
 
+    pub(super) fn park_cursor_at_viewport_end(&self) -> anyhow::Result<()> {
+        self.terminal.park_cursor_at_viewport_end()
+    }
+
     pub(super) fn new_before_input_reader() -> anyhow::Result<Self> {
         Ok(Self::new_with_seed(ChatTerminalSeed::read_before_input_reader()?))
     }
@@ -707,8 +711,12 @@ impl ChatTerminalSession {
         let footer_rows = Vec::from(footer.rows);
         let footer_row_count = u16::try_from(footer_rows.len()).unwrap_or(u16::MAX);
 
-        let editor = if let Some(reason) = app.composer_access().blocked_reason() {
-            ComposerEditor::Rows(blocked_input_lines(app, reason, width))
+        let status_rows = app
+            .composer_access()
+            .blocked_reason()
+            .and_then(|reason| blocked_input_lines(app, reason, width));
+        let editor = if let Some(rows) = status_rows {
+            ComposerEditor::Status(rows)
         } else {
             let desired_height =
                 input::visual_line_count(app, width).saturating_sub(hint_row_count).max(1);
@@ -1147,7 +1155,7 @@ impl ComposerSurface {
                 format!("<textarea widget rows={desired_height}>"),
                 Style::default().fg(theme::DIM),
             ))],
-            ComposerEditor::Rows(_) => editor_rows.to_vec(),
+            ComposerEditor::Status(_) => editor_rows.to_vec(),
         };
 
         activity_rows
@@ -1162,15 +1170,18 @@ impl ComposerSurface {
 }
 
 enum ComposerEditor {
-    TextArea { desired_height: u16 },
-    Rows(Vec<Line<'static>>),
+    TextArea {
+        desired_height: u16,
+    },
+    /// Read-only status rows rendered in the composer field in place of the draft.
+    Status(Vec<Line<'static>>),
 }
 
 impl ComposerEditor {
     fn total_len(&self) -> usize {
         match self {
             Self::TextArea { desired_height } => usize::from(*desired_height),
-            Self::Rows(rows) => rows.len(),
+            Self::Status(rows) => usize::from(input::status_field_height(rows.len())),
         }
     }
 
@@ -1181,7 +1192,7 @@ impl ComposerEditor {
     fn visible_rows(&self, height: u16) -> &[Line<'static>] {
         match self {
             Self::TextArea { .. } => &[],
-            Self::Rows(rows) => RowWindow::tail(rows.len(), height).slice(rows),
+            Self::Status(rows) => RowWindow::tail(rows.len(), height).slice(rows),
         }
     }
 }
@@ -1338,14 +1349,12 @@ fn render_composer_editor(
 ) {
     match editor {
         ComposerEditor::TextArea { .. } => render_textarea_editor(frame, app, area),
-        ComposerEditor::Rows(rows) => {
-            let visible_rows = RowWindow::tail(rows.len(), area.height).slice(rows).to_vec();
-            frame.render_widget(Paragraph::new(visible_rows), area);
-        }
+        ComposerEditor::Status(rows) => render_status_editor(frame, rows, area),
     }
 }
 
-fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: Rect) {
+/// Paints the composer field background and prompt marker shared by every editor body.
+fn render_composer_field(frame: &mut ratatui::Frame<'_>, area: Rect) -> input::InputRenderGeometry {
     let geometry = input::compute_render_geometry(area, 0);
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(theme::USER_MSG_BG)),
@@ -1360,6 +1369,20 @@ fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: R
             geometry.prompt,
         );
     }
+    geometry
+}
+
+fn render_status_editor(frame: &mut ratatui::Frame<'_>, rows: &[Line<'static>], area: Rect) {
+    let geometry = render_composer_field(frame, area);
+    let visible_rows = RowWindow::tail(rows.len(), geometry.text.height).slice(rows).to_vec();
+    frame.render_widget(
+        Paragraph::new(visible_rows).style(Style::default().bg(theme::USER_MSG_BG)),
+        geometry.text,
+    );
+}
+
+fn render_textarea_editor(frame: &mut ratatui::Frame<'_>, app: &mut App, area: Rect) {
+    let geometry = render_composer_field(frame, area);
 
     if geometry.text.is_empty() {
         return;
@@ -1521,7 +1544,7 @@ mod tests {
         LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
         serialize_live_rows_with_boundaries_excluding,
     };
-    use crate::ui::theme;
+    use crate::ui::{input, theme};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Position;
@@ -1908,6 +1931,58 @@ mod tests {
                 assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
             }
         }
+    }
+
+    fn render_composer_editor_rows(app: &mut App, width: u16) -> Vec<(String, bool)> {
+        let surface = ChatTerminalSession::build_composer_surface(app, width);
+        let area = Rect::new(0, 0, width, surface.editor.total_len_u16());
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| super::render_composer_editor(frame, app, &surface.editor, area))
+            .expect("test draw should succeed");
+        let buffer = terminal.backend().buffer().clone();
+        (0..area.height)
+            .map(|y| {
+                let text = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+                let field_bg =
+                    (0..area.width).all(|x| buffer[(x, y)].style().bg == Some(theme::USER_MSG_BG));
+                (text.trim_end().to_owned(), field_bg)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn silent_pending_command_keeps_draft_in_composer_field() {
+        let mut app = App::test_default();
+        app.input.set_text("keep my draft");
+        app.status = AppStatus::CommandPending;
+        app.turn.pending_command_label = None;
+
+        let rows = render_composer_editor_rows(&mut app, 40);
+
+        let prompt = input::prompt_prefix_text();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|(_, field_bg)| *field_bg));
+        assert_eq!(rows[1].0, format!(" {prompt}keep my draft"));
+    }
+
+    #[test]
+    fn labeled_pending_command_renders_status_inside_composer_field() {
+        let mut app = App::test_default();
+        app.input.set_text("keep my draft");
+        app.status = AppStatus::CommandPending;
+        app.turn.pending_command_label = Some("Starting new session...".to_owned());
+        let spinner = crate::ui::SpinnerState::for_app(&app).icon();
+
+        let rows = render_composer_editor_rows(&mut app, 40);
+
+        let prompt = input::prompt_prefix_text();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|(_, field_bg)| *field_bg));
+        assert_eq!(rows[0].0, "");
+        assert_eq!(rows[1].0, format!(" {prompt}{spinner} Starting new session..."));
+        assert_eq!(rows[2].0, "");
     }
 
     #[test]

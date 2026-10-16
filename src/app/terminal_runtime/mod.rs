@@ -288,15 +288,31 @@ impl TerminalRuntime {
             app.terminal_lifecycle = TerminalLifecycleState::Restoring;
         }
 
-        let _session = self.session.take();
-        let _suspended_chat_session = self.suspended_chat_session.take();
+        let session = self.session.take();
+        let suspended_chat_session = self.suspended_chat_session.take();
         let _cached_chat_seed = self.cached_chat_seed.take();
+        let chat_session = match &session {
+            Some(SurfaceTerminalSession::Chat(chat_session)) => Some(chat_session),
+            _ => suspended_chat_session.as_ref(),
+        };
         restore_once(self.restored.as_ref(), || {
             if let Err(err) = restore_terminal_modes(self.alternate_screen_active.as_ref()) {
                 tracing::warn!(
                     target: crate::logging::targets::APP_LIFECYCLE,
                     event_name = "terminal_restore_failed",
                     message = "failed to restore terminal state",
+                    outcome = "failure",
+                    error_message = %err,
+                );
+            }
+            // Output printed after exit, such as the resume hint, starts below the chat viewport.
+            if let Some(chat_session) = chat_session
+                && let Err(err) = chat_session.park_cursor_at_viewport_end()
+            {
+                tracing::warn!(
+                    target: crate::logging::targets::APP_LIFECYCLE,
+                    event_name = "terminal_cursor_park_failed",
+                    message = "failed to move cursor below chat viewport",
                     outcome = "failure",
                     error_message = %err,
                 );

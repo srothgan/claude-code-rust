@@ -34,11 +34,8 @@ fn build_key_help_items(app: &App) -> Vec<(String, String)> {
     if app.status == AppStatus::Connecting {
         return blocked_input_help_items(app, "Unavailable while connecting");
     }
-    if app.status == AppStatus::CommandPending {
-        return blocked_input_help_items(
-            app,
-            &format!("Unavailable while command runs ({})", pending_command_help_label(app)),
-        );
+    if let Some(label) = app.displayed_pending_command_label() {
+        return blocked_input_help_items(app, &format!("Unavailable while command runs ({label})"));
     }
     if app.status == AppStatus::Error {
         return blocked_input_help_items(app, "Unavailable after error");
@@ -190,10 +187,6 @@ fn format_help_key_code(code: KeyCodeSpec) -> String {
     }
 }
 
-fn pending_command_help_label(app: &App) -> String {
-    app.turn.pending_command_label.clone().unwrap_or_else(|| "Processing command...".to_owned())
-}
-
 fn build_slash_help_items(app: &App) -> Vec<(String, String)> {
     build_slash_command_items(app)
 }
@@ -206,8 +199,8 @@ fn build_slash_command_items(app: &App) -> Vec<(String, String)> {
         rows.push(("Loading commands...".to_owned(), String::new()));
         return rows;
     }
-    if app.status == AppStatus::CommandPending {
-        rows.push((pending_command_help_label(app), String::new()));
+    if let Some(label) = app.displayed_pending_command_label() {
+        rows.push((label.to_owned(), String::new()));
         return rows;
     }
 
@@ -248,8 +241,8 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
         rows.push(("Loading subagents...".to_owned(), String::new()));
         return rows;
     }
-    if app.status == AppStatus::CommandPending {
-        rows.push((pending_command_help_label(app), String::new()));
+    if let Some(label) = app.displayed_pending_command_label() {
+        rows.push((label.to_owned(), String::new()));
         return rows;
     }
 
@@ -291,10 +284,10 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{key_help_items, keymap_help_rows};
-    use crate::app::App;
     use crate::app::keymap::{
         AppAction, KeyAction, KeyBinding, KeyBindingSource, KeyContext, ResolvedKeymap,
     };
+    use crate::app::{App, AppStatus};
 
     fn has_row(rows: &[(String, String)], key: &str, action: &str) -> bool {
         rows.iter().any(|(left, right)| left == key && right == action)
@@ -315,6 +308,34 @@ mod tests {
         assert!(has_row(&rows, "Ctrl+E", "Move line end, then down"));
         assert!(has_row(&rows, "Ctrl+Y", "Yank"));
         assert!(!rows.iter().any(|(left, right)| left == "Ctrl+z/y" || right == "Undo/redo"));
+    }
+
+    #[test]
+    fn silent_pending_command_keeps_chat_input_shortcuts() {
+        let mut app = App::test_default();
+        app.status = AppStatus::CommandPending;
+        app.turn.pending_command_label = None;
+
+        let rows = key_help_items(&app);
+
+        assert!(has_row(&rows, "Enter", "Send message"));
+        assert!(!rows.iter().any(|(_, right)| right.starts_with("Unavailable while command runs")));
+    }
+
+    #[test]
+    fn labeled_pending_command_reports_blocked_input() {
+        let mut app = App::test_default();
+        app.status = AppStatus::CommandPending;
+        app.turn.pending_command_label = Some("Starting new session...".to_owned());
+
+        let rows = key_help_items(&app);
+
+        assert!(has_row(
+            &rows,
+            "Input keys",
+            "Unavailable while command runs (Starting new session...)"
+        ));
+        assert!(!has_row(&rows, "Enter", "Send message"));
     }
 
     #[test]
