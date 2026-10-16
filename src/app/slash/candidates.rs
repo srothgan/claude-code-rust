@@ -271,15 +271,13 @@ fn static_argument_candidates(command_name: &str) -> Vec<SlashCandidate> {
 }
 
 fn effort_argument_candidates(app: &App) -> Vec<SlashCandidate> {
-    let levels = match app.session_runtime.current_model.as_ref() {
-        Some(model) if !model.supports_effort => Vec::new(),
-        Some(model) if !model.supported_effort_levels.is_empty() => {
-            model.supported_effort_levels.clone()
-        }
-        _ => Vec::new(),
-    };
+    let levels = app
+        .session_runtime
+        .current_model
+        .as_ref()
+        .map_or(&[][..], crate::agent::model::CurrentModel::selectable_effort_levels);
     let mut candidates: Vec<_> = levels
-        .into_iter()
+        .iter()
         .map(|level| SlashCandidate {
             insert_value: level.as_stored().to_owned(),
             primary: level.as_stored().to_owned(),

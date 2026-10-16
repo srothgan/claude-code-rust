@@ -1394,7 +1394,7 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching mode..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
 
             // Simulate mode-update ack arriving from bridge.
             super::super::events::handle_client_event(
@@ -1439,7 +1439,7 @@ async fn model_sets_command_pending_and_current_model_ack_updates_model_and_rest
                 "expected CommandPending, got {:?}",
                 app.status
             );
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
             assert_eq!(
                 app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
                 Some("old-model")
@@ -1484,7 +1484,7 @@ async fn effort_sets_command_pending_and_config_option_ack_restores_ready() {
             let consumed = try_handle_submit(&mut app, "/effort xhigh");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching effort..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
             assert!(matches!(
                 app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })
@@ -1566,7 +1566,7 @@ async fn agent_sets_command_pending_and_config_option_ack_restores_ready() {
             let consumed = try_handle_submit(&mut app, "/agent reviewer");
             assert!(consumed);
             assert!(matches!(app.status, AppStatus::CommandPending));
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching agent..."));
+            assert_eq!(app.displayed_status(), AppStatus::Ready);
             assert!(matches!(
                 app.turn.pending_command_ack.as_ref(),
                 Some(super::super::PendingCommandAck::ConfigOption { option_id })

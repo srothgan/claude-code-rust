@@ -303,7 +303,10 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
             app.request_chat_repaint();
             true.into()
         }
-        AppAction::CycleMode => handle_mode_cycle(app).into(),
+        AppAction::NextMode => step_mode(app, Step::Forward).into(),
+        AppAction::PreviousMode => step_mode(app, Step::Backward).into(),
+        AppAction::IncreaseEffort => step_effort(app, Step::Forward).into(),
+        AppAction::DecreaseEffort => step_effort(app, Step::Backward).into(),
     }
 }
 
@@ -582,23 +585,72 @@ fn handle_prompt_suggestion(app: &mut App) -> bool {
     true
 }
 
-fn handle_mode_cycle(app: &mut App) -> bool {
-    if app.status != AppStatus::Ready {
-        return true;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Step {
+    Forward,
+    Backward,
+}
+
+/// Mode and effort shortcuts change the active session, so they act only
+/// from the focused composer while no turn or command is in flight.
+fn session_controls_ready(app: &App) -> bool {
+    app.status == AppStatus::Ready && app.focus_owner() == FocusOwner::Input
+}
+
+fn is_session_control_action(action: Option<KeyAction>) -> bool {
+    matches!(
+        action,
+        Some(KeyAction::App(
+            AppAction::NextMode
+                | AppAction::PreviousMode
+                | AppAction::IncreaseEffort
+                | AppAction::DecreaseEffort
+        ))
+    )
+}
+
+/// Moves through the available modes in their advertised order, wrapping at both ends.
+fn step_mode(app: &mut App, step: Step) -> bool {
+    if !session_controls_ready(app) {
+        return false;
     }
     let Some(mode) = &app.session_runtime.mode else {
-        return true;
+        return false;
     };
-    if mode.available_modes.len() <= 1 {
-        return true;
+    let modes = &mode.available_modes;
+    let count = modes.len();
+    if count <= 1 {
+        return false;
     }
-    let next_index = mode
-        .available_modes
-        .iter()
-        .position(|mode_info| mode_info.id == mode.current_mode_id)
-        .map_or(0, |index| (index + 1) % mode.available_modes.len());
-    let next = mode.available_modes[next_index].id.clone();
-    slash::request_mode_change(app, &next)
+    let current = modes.iter().position(|mode_info| mode_info.id == mode.current_mode_id);
+    let target_index = match (current, step) {
+        (Some(index), Step::Forward) => (index + 1) % count,
+        (Some(index), Step::Backward) => (index + count - 1) % count,
+        (None, Step::Forward) => 0,
+        (None, Step::Backward) => count - 1,
+    };
+    let target = modes[target_index].id.clone();
+    slash::request_mode_change(app, &target)
+}
+
+/// Moves to the adjacent effort level the current model supports, stopping at
+/// the lowest and highest level. An unknown current effort requests nothing.
+fn step_effort(app: &mut App, step: Step) -> bool {
+    if !session_controls_ready(app) {
+        return false;
+    }
+    let Some(current) = app.session_effort() else {
+        return false;
+    };
+    let Some(model) = app.session_runtime.current_model.as_ref() else {
+        return false;
+    };
+    let levels = model.selectable_effort_levels().iter().copied();
+    let target = match step {
+        Step::Forward => levels.filter(|level| *level > current).min(),
+        Step::Backward => levels.filter(|level| *level < current).max(),
+    };
+    target.is_some_and(|target| slash::request_effort_change(app, Some(target)))
 }
 
 fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
@@ -822,6 +874,15 @@ pub(super) fn handle_mention_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
             mention::update_query(app);
             changed.into()
         }
+        // An open menu keeps session controls from reaching the composer.
+        _ if is_session_control_action(resolve_key_action_for_context(
+            app,
+            KeyContext::ChatInput,
+            key,
+        )) =>
+        {
+            KeyOutcome::Ignored
+        }
         // Any other key: deactivate mention and forward to normal handling
         _ => {
             mention::deactivate(app);
@@ -902,6 +963,15 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
             let changed = app.input.textarea_insert_char(c);
             subagent::update_query(app);
             changed.into()
+        }
+        // An open menu keeps session controls from reaching the composer.
+        _ if is_session_control_action(resolve_key_action_for_context(
+            app,
+            KeyContext::ChatInput,
+            key,
+        )) =>
+        {
+            KeyOutcome::Ignored
         }
         _ => {
             subagent::deactivate(app);

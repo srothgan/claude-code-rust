@@ -22,6 +22,7 @@ use tokio::sync::oneshot;
 mod assistant_lifecycle;
 mod client_events;
 mod clipboard_paste;
+mod session_controls;
 mod slash_input;
 
 fn session_update(update: model::SessionUpdate) -> ClientEvent {
@@ -3223,6 +3224,22 @@ fn attach_pending_question(
     response_rx
 }
 
+fn show_config_slash_menu(app: &mut App) {
+    app.slash.show(SlashState {
+        trigger_row: 0,
+        trigger_col: 0,
+        query: String::new(),
+        context: SlashContext::CommandName,
+        candidates: vec![SlashCandidate {
+            insert_value: "/config".into(),
+            primary: "/config".into(),
+            secondary: Some("Open settings".into()),
+        }],
+        placeholder: None,
+        dialog: crate::app::dialog::DialogState::default(),
+    });
+}
+
 fn permission_focus_state(app: &App, tool_id: &str) -> Option<bool> {
     let (mi, bi) = app.lookup_tool_call(tool_id)?;
     let MessageBlock::ToolCall(tc) = app.transcript.messages.get(mi)?.blocks.get(bi)? else {
@@ -3311,19 +3328,7 @@ fn permission_ctrl_n_does_not_bypass_mention_focus() {
         true,
     );
 
-    app.slash.show(SlashState {
-        trigger_row: 0,
-        trigger_col: 0,
-        query: String::new(),
-        context: SlashContext::CommandName,
-        candidates: vec![SlashCandidate {
-            insert_value: "/config".into(),
-            primary: "/config".into(),
-            secondary: Some("Open settings".into()),
-        }],
-        placeholder: None,
-        dialog: crate::app::dialog::DialogState::default(),
-    });
+    show_config_slash_menu(&mut app);
     app.claim_focus_target(FocusTarget::Mention);
     assert_eq!(app.focus_owner(), FocusOwner::Mention);
 
@@ -3612,19 +3617,7 @@ fn error_state_blocks_paste_events() {
 #[test]
 fn mention_owner_releases_back_to_input() {
     let mut app = make_test_app();
-    app.slash.show(SlashState {
-        trigger_row: 0,
-        trigger_col: 0,
-        query: String::new(),
-        context: SlashContext::CommandName,
-        candidates: vec![SlashCandidate {
-            insert_value: "/config".into(),
-            primary: "/config".into(),
-            secondary: Some("Open settings".into()),
-        }],
-        placeholder: None,
-        dialog: crate::app::dialog::DialogState::default(),
-    });
+    show_config_slash_menu(&mut app);
     app.claim_focus_target(FocusTarget::Mention);
 
     handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));

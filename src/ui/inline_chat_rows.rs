@@ -467,7 +467,7 @@ fn serialize_compact_welcome_entry(
 }
 
 fn status_label(app: &App) -> &'static str {
-    match app.status {
+    match app.displayed_status() {
         crate::app::AppStatus::Ready => "Ready",
         crate::app::AppStatus::Connecting => "Connecting",
         crate::app::AppStatus::CommandPending => "Working",

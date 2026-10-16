@@ -35,7 +35,9 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Esc` | Cancel the active assistant turn. |
 | `Ctrl+C` | Clear the local draft, or quit when the draft is empty. |
 | `Tab` | Focus prompts or accept suggestions. |
-| `Shift+Tab` | Cycle mode. |
+| `Shift+Tab`, `Shift+Right` | Switch to the next permission mode, wrapping after the last. |
+| `Shift+Left` | Switch to the previous permission mode, wrapping before the first. |
+| `Shift+Up`, `Shift+Down` | Raise or lower effort to the next level the current model supports, stopping at the highest and lowest level. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
 | `Down`, `Left`, `Right` | Move through text. |
 | `Home`, `End` | Move to line start or line end. |
@@ -43,6 +45,8 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Alt+Left`, `Alt+Right` | Move by word. |
 | `Ctrl+Backspace`, `Ctrl+Delete` | Delete by word. |
 | `Alt+Backspace`, `Alt+Delete` | Delete by word. |
+
+`Shift` with an arrow key changes the permission mode or effort; it does not select text. Mode and effort shortcuts act only while the composer has focus and no turn or command is running. They change the current session only and keep the draft. The footer updates once Claude confirms the change.
 
 Readline-style bindings are also supported:
 

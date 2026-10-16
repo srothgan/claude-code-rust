@@ -329,6 +329,14 @@ impl ChatTerminal {
         ids
     }
 
+    /// Parks the cursor on the last viewport row so output printed after exit starts below it.
+    pub(super) fn park_cursor_at_viewport_end(&self) -> anyhow::Result<()> {
+        let Some(area) = self.state.area else {
+            return Ok(());
+        };
+        move_cursor_to(Rect::new(0, area.bottom().saturating_sub(1), 0, 0))
+    }
+
     pub(super) fn is_replay_active(&self) -> bool {
         self.replay.is_some()
     }
