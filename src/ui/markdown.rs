@@ -6,7 +6,6 @@ mod table;
 
 use crate::failure;
 use crate::ui::theme;
-use pulldown_cmark::{Event, Options, Parser, Tag};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -45,32 +44,6 @@ pub(super) fn render_markdown_at_width(
     render_markdown_safe_with(text, bg, |text, bg| {
         document::render(text, width, bg, preserve_newlines)
     })
-}
-
-fn parser_options() -> Options {
-    // Match the dialect used by tui-markdown for blocks it renders.
-    Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TABLES
-        | Options::ENABLE_TASKLISTS
-        | Options::ENABLE_HEADING_ATTRIBUTES
-        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
-        | Options::ENABLE_SUPERSCRIPT
-        | Options::ENABLE_SUBSCRIPT
-        | Options::ENABLE_MATH
-        | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_DEFINITION_LIST
-        | Options::ENABLE_GFM
-}
-
-fn list_ranges(source: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
-    Parser::new_ext(source, parser_options())
-        .into_offset_iter()
-        .filter_map(|(event, range)| matches!(event, Event::Start(Tag::List(_))).then_some(range))
-}
-
-/// A boundary inside one parsed list cannot be frozen or rendered independently.
-pub(super) fn list_crosses_boundary(source: &str, boundary: usize) -> bool {
-    list_ranges(source).any(|range| range.start < boundary && range.end > boundary)
 }
 
 fn render_markdown_safe_with<F>(text: &str, bg: Option<Color>, renderer: F) -> Vec<Line<'static>>

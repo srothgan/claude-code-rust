@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Parser, Tag};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Tag};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::StyleSheet as _;
@@ -85,8 +85,7 @@ pub(super) fn render(
     bg: Option<Color>,
     preserve_newlines: bool,
 ) -> Vec<Line<'static>> {
-    let (nodes, _) =
-        nodes(&mut Parser::new_ext(source, super::parser_options()).into_offset_iter());
+    let (nodes, _) = nodes(&mut crate::markdown::parser(source).into_offset_iter());
     let mut out = Vec::new();
     render_document(&nodes, Layout { source, width, bg, preserve_newlines }, "", &mut out);
     out

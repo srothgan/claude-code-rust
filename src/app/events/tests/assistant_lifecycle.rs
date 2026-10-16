@@ -313,33 +313,86 @@ fn empty_response_exit_removes_its_owner_without_consuming_the_next_draft() {
     }
 }
 
+fn take_assistant_text_rows(
+    app: &mut App,
+    excluded: &mut BTreeSet<HistoryOutputId>,
+    width: u16,
+    stable_only: bool,
+) -> Vec<String> {
+    let rendered = serialize_live_rows_with_boundaries_excluding(app, width, excluded);
+    let mut rows = Vec::new();
+    for segment in rendered.segments() {
+        if segment.kind != LiveRowBoundaryKind::AssistantText
+            || (stable_only && segment.end_row > rendered.stable_row_count())
+        {
+            continue;
+        }
+        rows.extend(
+            rendered
+                .segment_rows(segment)
+                .unwrap()
+                .iter()
+                .map(|row| row.to_string().trim_end().to_owned()),
+        );
+        excluded.extend(segment.ids.iter().cloned());
+    }
+    rows
+}
+
+#[test]
+fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
+    use std::fmt::Write as _;
+
+    let long_rows = (0..95).fold(String::new(), |mut rows, n| {
+        writeln!(
+            rows,
+            "entry_{n} | value_{n} with enough detail to exceed the streaming cache budget"
+        )
+        .unwrap();
+        rows
+    });
+    let fixtures = [
+        ("Introduction.\n\n\u{540d}\u{524d} | Value\n- | -\nred | one\nblue | two\n\nFinal paragraph.".to_owned(), "red", "one"),
+        ("Introduction.\n\n> Name | Value\n> --- | ---\n> red | `one\\|two`\n> blue | **three**\n\nFinal paragraph.".to_owned(), "red", "one|two"),
+        (format!("Introduction.\n\nName | Value\n--- | ---\n{long_rows}\nFinal paragraph."), "entry_94", "value_94"),
+    ];
+    for (source, name, value) in fixtures {
+        let mut whole = connected_app().0;
+        update(&mut whole, model::SessionUpdate::AgentResponseStarted);
+        update(&mut whole, text(&source));
+        handle_client_event(&mut whole, turn_complete(None));
+        let expected = take_assistant_text_rows(&mut whole, &mut BTreeSet::new(), 36, false);
+        let row = expected.iter().find(|row| row.contains(name)).expect("table data row");
+        assert!(row.contains(value), "cells must remain associated on their table row: {row}");
+        assert!(!row.contains(&format!("{name} |")), "table delimiters must not render as source");
+        assert!(expected.iter().any(|row| row.contains('─')), "table header separator");
+
+        let chars = source.chars().collect::<Vec<_>>();
+        let chunk_sizes =
+            if chars.len() < 512 { [1, 17, chars.len()] } else { [113, 509, chars.len()] };
+        for chunk_size in chunk_sizes {
+            let mut app = connected_app().0;
+            update(&mut app, model::SessionUpdate::AgentResponseStarted);
+            let mut committed = Vec::new();
+            let mut excluded = BTreeSet::new();
+            for chunk in chars.chunks(chunk_size) {
+                update(&mut app, text(&chunk.iter().collect::<String>()));
+                committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, true));
+            }
+            assert!(
+                committed.iter().any(|row| row.contains("Introduction.")),
+                "completed prose should advance into scrollback while the table streams"
+            );
+            handle_client_event(&mut app, turn_complete(None));
+            committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, false));
+            assert_eq!(committed, expected, "chunk size {chunk_size}");
+            assert_eq!(crate::app::copy::choices(&app)[0].text, source);
+        }
+    }
+}
+
 #[test]
 fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
-    fn take_text(
-        app: &mut App,
-        excluded: &mut BTreeSet<HistoryOutputId>,
-        stable_only: bool,
-    ) -> Vec<String> {
-        let rendered = serialize_live_rows_with_boundaries_excluding(app, 36, excluded);
-        let mut rows = Vec::new();
-        for segment in rendered.segments() {
-            if segment.kind != LiveRowBoundaryKind::AssistantText
-                || (stable_only && segment.end_row > rendered.stable_row_count())
-            {
-                continue;
-            }
-            rows.extend(
-                rendered
-                    .segment_rows(segment)
-                    .unwrap()
-                    .iter()
-                    .map(|row| row.to_string().trim_end().to_owned()),
-            );
-            excluded.extend(segment.ids.iter().cloned());
-        }
-        rows
-    }
-
     let long_source = format!(
         "Introduction.\n\n9. Parent item.\n\n   {}\n\n   - Child with 日本語😀.\n10. Next item.\n\nFinal paragraph.",
         "Long continuation with useful detail. ".repeat(130)
@@ -356,7 +409,7 @@ fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
         source,
         "cache splits must preserve the original Markdown source for copying"
     );
-    let expected = take_text(&mut whole, &mut BTreeSet::new(), false);
+    let expected = take_assistant_text_rows(&mut whole, &mut BTreeSet::new(), 36, false);
     assert!(
         expected.iter().any(|row| row.contains("Introduction.")),
         "fixture must deliver output through the session boundary"
@@ -372,7 +425,7 @@ fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
         let mut committed_intro_while_running = false;
         for chunk in chars.chunks(chunk_size) {
             update(&mut app, text(&chunk.iter().collect::<String>()));
-            committed.extend(take_text(&mut app, &mut excluded, true));
+            committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, true));
             committed_intro_while_running |=
                 committed.iter().any(|row| row.contains("Introduction."));
         }
@@ -381,7 +434,7 @@ fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
             "ordinary completed paragraphs should still reach scrollback during a long list"
         );
         handle_client_event(&mut app, turn_complete(None));
-        committed.extend(take_text(&mut app, &mut excluded, false));
+        committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, false));
         assert_eq!(
             crate::app::copy::choices(&app)[0].text,
             source,

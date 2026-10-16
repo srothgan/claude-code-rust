@@ -51,8 +51,7 @@ pub struct TextSplitDecision {
 #[must_use]
 pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplitDecision> {
     let bytes = text.as_bytes();
-    let table_ranges = markdown_table_ranges(text);
-    let mut in_fence = false;
+    let protected_ranges = crate::markdown::table_and_code_ranges(text);
     let mut i = 0usize;
 
     let mut soft_newline = None;
@@ -63,46 +62,40 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
     let mut post_hard_sentence = None;
 
     while i < bytes.len() {
-        if (i == 0 || bytes[i - 1] == b'\n') && bytes[i..].starts_with(b"```") {
-            in_fence = !in_fence;
+        if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
+            let split_at = i + 2;
+            if split_inside_markdown_block(split_at, &protected_ranges) {
+                i += 1;
+                continue;
+            }
+            if split_at < bytes.len() {
+                return Some(TextSplitDecision {
+                    split_at,
+                    kind: TextSplitKind::ParagraphBoundary,
+                });
+            }
+            return None;
         }
 
-        if !in_fence {
-            if i + 1 < bytes.len() && bytes[i] == b'\n' && bytes[i + 1] == b'\n' {
-                let split_at = i + 2;
-                if split_inside_markdown_table(split_at, &table_ranges) {
-                    i += 1;
-                    continue;
-                }
-                if split_at < bytes.len() {
-                    return Some(TextSplitDecision {
-                        split_at,
-                        kind: TextSplitKind::ParagraphBoundary,
-                    });
-                }
-                return None;
-            }
+        if bytes[i] == b'\n' && !split_inside_markdown_block(i + 1, &protected_ranges) {
+            track_text_split_candidate(
+                i + 1,
+                &policy,
+                &mut soft_newline,
+                &mut hard_newline,
+                &mut post_hard_newline,
+            );
+        }
 
-            if bytes[i] == b'\n' && !split_inside_markdown_table(i + 1, &table_ranges) {
-                track_text_split_candidate(
-                    i + 1,
-                    &policy,
-                    &mut soft_newline,
-                    &mut hard_newline,
-                    &mut post_hard_newline,
-                );
-            }
-
-            if is_sentence_boundary(bytes, i) && !split_inside_markdown_table(i + 1, &table_ranges)
-            {
-                track_text_split_candidate(
-                    i + 1,
-                    &policy,
-                    &mut soft_sentence,
-                    &mut hard_sentence,
-                    &mut post_hard_sentence,
-                );
-            }
+        if is_sentence_boundary(bytes, i) && !split_inside_markdown_block(i + 1, &protected_ranges)
+        {
+            track_text_split_candidate(
+                i + 1,
+                &policy,
+                &mut soft_sentence,
+                &mut hard_sentence,
+                &mut post_hard_sentence,
+            );
         }
         i += 1;
     }
@@ -128,17 +121,6 @@ pub fn find_text_split(text: &str, policy: CacheSplitPolicy) -> Option<TextSplit
 #[must_use]
 pub fn find_text_split_index(text: &str, policy: CacheSplitPolicy) -> Option<usize> {
     find_text_split(text, policy).map(|decision| decision.split_at)
-}
-
-#[must_use]
-pub(crate) fn markdown_table_tail_is_open(text: &str) -> bool {
-    markdown_table_ranges(text).last().is_some_and(|range| range.end == text.len())
-}
-
-#[must_use]
-pub(crate) fn starts_with_markdown_table_row(text: &str) -> bool {
-    let first_line = text.split_inclusive('\n').next().unwrap_or(text);
-    markdown_table_row_cells(line_content(first_line)).is_some()
 }
 
 fn track_text_split_candidate(
@@ -167,107 +149,8 @@ fn is_sentence_boundary(bytes: &[u8], i: usize) -> bool {
         && (i + 1 == bytes.len() || matches!(bytes[i + 1], b' ' | b'\t' | b'\r' | b'\n'))
 }
 
-fn split_inside_markdown_table(split_at: usize, ranges: &[Range<usize>]) -> bool {
+fn split_inside_markdown_block(split_at: usize, ranges: &[Range<usize>]) -> bool {
     ranges.iter().any(|range| split_at > range.start && split_at < range.end)
-}
-
-#[derive(Debug, Clone, Copy)]
-struct MarkdownLine<'a> {
-    start: usize,
-    end: usize,
-    content: &'a str,
-}
-
-fn markdown_table_ranges(text: &str) -> Vec<Range<usize>> {
-    let lines = markdown_lines(text);
-    let mut ranges = Vec::new();
-    let mut in_fence = false;
-    let mut idx = 0usize;
-
-    while idx < lines.len() {
-        let line = lines[idx];
-        let trimmed = line.content.trim();
-        if markdown_fence_line(trimmed) {
-            in_fence = !in_fence;
-            idx += 1;
-            continue;
-        }
-
-        if !in_fence
-            && idx + 1 < lines.len()
-            && markdown_table_row_cells(line.content).is_some()
-            && markdown_table_delimiter_cells(lines[idx + 1].content).is_some()
-        {
-            let start = line.start;
-            let mut end = lines[idx + 1].end;
-            let mut next_idx = idx + 2;
-            while next_idx < lines.len() {
-                let next = lines[next_idx];
-                let next_trimmed = next.content.trim();
-                if next_trimmed.is_empty() || markdown_fence_line(next_trimmed) {
-                    break;
-                }
-                if markdown_table_row_cells(next.content).is_none() {
-                    break;
-                }
-                end = next.end;
-                next_idx += 1;
-            }
-            ranges.push(start..end);
-            idx = next_idx;
-            continue;
-        }
-
-        idx += 1;
-    }
-
-    ranges
-}
-
-fn markdown_lines(text: &str) -> Vec<MarkdownLine<'_>> {
-    let mut lines = Vec::new();
-    let mut start = 0usize;
-    for raw in text.split_inclusive('\n') {
-        let end = start + raw.len();
-        lines.push(MarkdownLine { start, end, content: line_content(raw) });
-        start = end;
-    }
-    if start < text.len() {
-        lines.push(MarkdownLine { start, end: text.len(), content: line_content(&text[start..]) });
-    }
-    lines
-}
-
-fn line_content(line: &str) -> &str {
-    line.trim_end_matches('\n').trim_end_matches('\r')
-}
-
-fn markdown_fence_line(trimmed: &str) -> bool {
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
-}
-
-fn markdown_table_row_cells(line: &str) -> Option<Vec<&str>> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || !trimmed.contains('|') {
-        return None;
-    }
-
-    let without_leading = trimmed.strip_prefix('|').unwrap_or(trimmed);
-    let without_outer = without_leading.strip_suffix('|').unwrap_or(without_leading);
-    Some(without_outer.split('|').map(str::trim).collect())
-}
-
-fn markdown_table_delimiter_cells(line: &str) -> Option<Vec<&str>> {
-    let cells = markdown_table_row_cells(line)?;
-    (!cells.is_empty() && cells.iter().all(|cell| markdown_table_delimiter_cell(cell)))
-        .then_some(cells)
-}
-
-fn markdown_table_delimiter_cell(cell: &str) -> bool {
-    let trimmed = cell.trim();
-    let without_leading_align = trimmed.strip_prefix(':').unwrap_or(trimmed);
-    let core = without_leading_align.strip_suffix(':').unwrap_or(without_leading_align);
-    core.len() >= 3 && core.bytes().all(|byte| byte == b'-')
 }
 
 #[cfg(test)]
@@ -295,6 +178,51 @@ mod tests {
     fn split_ignores_double_newline_inside_fence() {
         let text = "```rust\nfirst\n\nsecond\n```";
         assert!(find_text_split_index(text, *default_cache_split_policy()).is_none());
+    }
+
+    #[test]
+    fn split_keeps_tables_with_short_delimiters_and_rows_without_pipes_intact() {
+        let policy = CacheSplitPolicy {
+            soft_limit_bytes: 12,
+            hard_limit_bytes: 24,
+            ..CacheSplitPolicy::default()
+        };
+        for text in [
+            "Name | Value\n- | -\nfirst | one\nsecond | two\n",
+            "Name | Value\n--- | ---\nfirst\nsecond\nthird\n",
+        ] {
+            assert!(text.len() > policy.hard_limit_bytes);
+            assert_eq!(find_text_split_index(text, policy), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn split_does_not_treat_mismatched_table_columns_as_a_table() {
+        let header = "One | Two\n";
+        let text = format!("{header}--- | --- | ---\nfirst | second | third\nlast | row | here");
+        let policy = CacheSplitPolicy {
+            soft_limit_bytes: header.len(),
+            hard_limit_bytes: text.len(),
+            ..CacheSplitPolicy::default()
+        };
+
+        assert_eq!(find_text_split_index(&text, policy), Some(header.len()));
+    }
+
+    #[test]
+    fn split_keeps_table_like_code_in_its_parsed_fence() {
+        for text in [
+            "~~~md\nName | Value\n- | -\n\nfirst | second\n~~~",
+            "````md\n```\nName | Value\n- | -\n\nfirst | second\n````",
+        ] {
+            assert_eq!(find_text_split_index(text, *default_cache_split_policy()), None);
+            let closed = format!("{text}\n\nFollowing paragraph.");
+            assert_eq!(
+                find_text_split_index(&closed, *default_cache_split_policy()),
+                Some(text.len() + 2),
+                "completed code must release the next paragraph"
+            );
+        }
     }
 
     #[test]
@@ -358,7 +286,6 @@ mod tests {
         let text = format!("| Name | Empty | URL |\n| --- | --- | --- |\n{rows}");
 
         assert!(text.len() > policy.hard_limit_bytes);
-        assert!(markdown_table_tail_is_open(&text));
         assert!(find_text_split_index(&text, policy).is_none());
     }
 }

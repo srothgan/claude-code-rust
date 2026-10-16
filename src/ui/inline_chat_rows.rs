@@ -3,7 +3,7 @@
 use crate::app::{
     App, AppStatus, BtwExchangeBlock, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
     MessageRole, NoticeBlock, SystemSeverity, TextBlock, TextBlockSpacing, ToolCallInfo,
-    WelcomeBlock, markdown_table_tail_is_open, starts_with_markdown_table_row,
+    WelcomeBlock,
 };
 #[cfg(test)]
 pub(crate) use crate::ui::live_rows::segments::LiveRowSegment;
@@ -572,7 +572,7 @@ impl PendingAssistantTextRun {
     fn can_merge(&self, next: &TextBlock, commit_ready: bool) -> bool {
         (!self.commit_ready && !commit_ready)
             || self.trailing_spacing == TextBlockSpacing::Continuation
-            || assistant_list_crosses_handoff(&self.text, self.trailing_spacing, next)
+            || assistant_markdown_block_crosses_handoff(&self.text, self.trailing_spacing, next)
     }
 
     fn append(
@@ -607,6 +607,7 @@ impl PendingAssistantTextRun {
 struct AssistantInlineLayoutState {
     has_body_content: bool,
     has_visible_content: bool,
+    pending_blank_lines: usize,
 }
 
 fn assistant_render_items_from_message(
@@ -710,7 +711,22 @@ fn assistant_render_items_from_message(
     }
 
     flush_pending_text_run(&mut pending_text, &mut items);
+    assign_source_separators(&mut items);
     items
+}
+
+fn assign_source_separators(items: &mut [AssistantRenderItemSpec]) {
+    // Source separators belong to the following item, including after the prior
+    // item has been committed and excluded from the live rows.
+    let mut trailing_gap = 0;
+    for item in items {
+        item.leading_blank_lines += trailing_gap;
+        trailing_gap = match &item.item {
+            AssistantRenderItem::Text(block) => block.trailing_blank_lines(),
+            AssistantRenderItem::Notice(block) => block.text.trailing_blank_lines(),
+            _ => 0,
+        };
+    }
 }
 
 fn notice_render_item(
@@ -859,10 +875,7 @@ fn assistant_text_run_handoff_requires_markdown_context(
     };
 
     trailing_spacing == TextBlockSpacing::Continuation
-        || assistant_text_handoff_continues_open_table(&text, next)
-        || assistant_list_crosses_handoff(&text, trailing_spacing, next)
-        || markdown_source_has_open_fence(&text)
-        || markdown_source_has_open_inline_delimiter(&text)
+        || assistant_markdown_block_crosses_handoff(&text, trailing_spacing, next)
 }
 
 fn assistant_text_run_source(
@@ -887,15 +900,7 @@ fn assistant_text_run_source(
     (!text.is_empty()).then_some((text, trailing_spacing))
 }
 
-fn assistant_text_handoff_continues_open_table(current: &str, next: &TextBlock) -> bool {
-    if !markdown_table_tail_is_open(current) {
-        return false;
-    }
-
-    starts_with_markdown_table_row(&next.text)
-}
-
-fn assistant_list_crosses_handoff(
+fn assistant_markdown_block_crosses_handoff(
     current: &str,
     spacing: TextBlockSpacing,
     next: &TextBlock,
@@ -903,7 +908,8 @@ fn assistant_list_crosses_handoff(
     let boundary = current.len();
     let mut source = current.to_owned();
     spacing.append_source(&mut source, &next.text);
-    super::markdown::list_crosses_boundary(&source, boundary)
+    let next_start = source.len() - next.text.len();
+    crate::markdown::context_crosses_boundary(&source, boundary, next_start)
 }
 
 fn next_visible_assistant_text(message: &ChatMessage, block_idx: usize) -> Option<&TextBlock> {
@@ -1014,6 +1020,7 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
     let mut state = AssistantInlineLayoutState {
         has_body_content: request.has_prior_assistant_content,
         has_visible_content: request.has_prior_assistant_content,
+        pending_blank_lines: 0,
     };
     let thinking = request.show_thinking.then_some(AssistantThinkingMeta {
         message_id: request.message_id,
@@ -1033,36 +1040,28 @@ fn render_assistant_rows(mut request: AssistantRowsRequest<'_>) -> RenderedMessa
         let item_leading_blank_lines = item.leading_blank_lines;
         match item.item {
             AssistantRenderItem::Text(block) => {
-                let trailing_gap = block.trailing_blank_lines();
                 let rendered =
                     render_assistant_text_block(block, content_width, !state.has_visible_content);
-                if !rendered.is_empty() {
-                    append_rendered_assistant_item(
-                        &mut rows,
-                        &mut boundaries,
-                        &mut state,
-                        boundary,
-                        item_leading_blank_lines,
-                        rendered,
-                    );
-                    rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
-                }
+                append_rendered_assistant_item(
+                    &mut rows,
+                    &mut boundaries,
+                    &mut state,
+                    boundary,
+                    item_leading_blank_lines,
+                    rendered,
+                );
             }
             AssistantRenderItem::Notice(block) => {
-                let trailing_gap = block.text.trailing_blank_lines();
                 let rendered =
                     render_assistant_notice_block(block, content_width, !state.has_visible_content);
-                if !rendered.is_empty() {
-                    append_rendered_assistant_item(
-                        &mut rows,
-                        &mut boundaries,
-                        &mut state,
-                        boundary,
-                        item_leading_blank_lines,
-                        rendered,
-                    );
-                    rows.extend(std::iter::repeat_with(Line::default).take(trailing_gap));
-                }
+                append_rendered_assistant_item(
+                    &mut rows,
+                    &mut boundaries,
+                    &mut state,
+                    boundary,
+                    item_leading_blank_lines,
+                    rendered,
+                );
             }
             AssistantRenderItem::CanonicalBtw { msg_idx, block_idx } => {
                 let Some(app) = request.app.as_deref_mut() else {
@@ -1136,49 +1135,6 @@ fn finish_assistant_rows(
     RenderedMessageRows::rendered(trim_trailing_blank_rows(rows), boundaries)
 }
 
-fn markdown_source_has_open_fence(text: &str) -> bool {
-    let mut in_fenced_code = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fenced_code = !in_fenced_code;
-        }
-    }
-    in_fenced_code
-}
-
-fn markdown_source_has_open_inline_delimiter(text: &str) -> bool {
-    let mut in_code = false;
-    let mut strong_asterisk_open = false;
-    let mut strong_underscore_open = false;
-    let mut chars = text.char_indices().peekable();
-
-    while let Some((idx, ch)) = chars.next() {
-        if ch == '\\' {
-            let _ = chars.next();
-            continue;
-        }
-        if ch == '`' {
-            in_code = !in_code;
-            continue;
-        }
-        if in_code {
-            continue;
-        }
-
-        let rest = &text[idx..];
-        if rest.starts_with("**") {
-            strong_asterisk_open = !strong_asterisk_open;
-            let _ = chars.next();
-        } else if rest.starts_with("__") {
-            strong_underscore_open = !strong_underscore_open;
-            let _ = chars.next();
-        }
-    }
-
-    in_code || strong_asterisk_open || strong_underscore_open
-}
-
 fn frame_assistant_rows(
     app: &App,
     msg_idx: usize,
@@ -1249,11 +1205,13 @@ fn append_rendered_assistant_item(
     leading_blank_lines: usize,
     rendered: Vec<Line<'static>>,
 ) {
+    state.pending_blank_lines += leading_blank_lines;
     if rendered.is_empty() {
         return;
     }
     let boundary_start = rows.len();
-    rows.extend(std::iter::repeat_with(Line::default).take(leading_blank_lines));
+    rows.extend(std::iter::repeat_with(Line::default).take(state.pending_blank_lines));
+    state.pending_blank_lines = 0;
     push_assistant_boundary(boundaries, boundary, boundary_start);
     state.has_body_content = true;
     state.has_visible_content = true;
@@ -2413,6 +2371,134 @@ mod tests {
             !remaining_text.iter().any(|line| line.trim_start().starts_with("| Slow startup |")),
             "table continuation must not render as a raw pipe row: {remaining_text:?}"
         );
+    }
+
+    #[test]
+    fn parsed_markdown_handoffs_keep_rows_together_through_completion_and_resize() {
+        for (first, second) in [
+            ("Name | Value\n- | -\nred | one\n", "blue | two\n"),
+            ("Name | Value\n--- | ---\nred\n", "blue\n"),
+            ("> Name | Value\n> --- | ---\n> red | one\n", "> blue | two\n"),
+            ("````md\n```\nName | Value\n", "- | -\nred | one\n````"),
+        ] {
+            let first = TextBlock::from_complete(first);
+            let second = TextBlock::from_complete(second);
+            let block_ids = [HistoryOutputId::Block(first.id), HistoryOutputId::Block(second.id)];
+            let source = format!("{}{}", first.text, second.text);
+            let mut streamed = App::test_default();
+            streamed.transcript.messages.push(assistant_blocks_message(vec![
+                MessageBlock::Text(first),
+                MessageBlock::Text(second),
+            ]));
+            streamed.bind_active_turn_assistant(0);
+            let mut whole = App::test_default();
+            whole.transcript.messages.push(assistant_text_message(&source));
+            whole.bind_active_turn_assistant(0);
+            for running in [true, false] {
+                streamed.status = if running { AppStatus::Running } else { AppStatus::Ready };
+                whole.status = if running { AppStatus::Running } else { AppStatus::Ready };
+                for width in [24, 80, 24] {
+                    let actual = serialize_all_rows_with_boundaries(&mut streamed, width);
+                    let expected = serialize_all_rows_with_boundaries(&mut whole, width);
+                    assert_eq!(
+                        line_texts(actual.rows()),
+                        line_texts(expected.rows()),
+                        "{source:?}"
+                    );
+                    let text_segments = actual
+                        .segments()
+                        .iter()
+                        .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantText)
+                        .collect::<Vec<_>>();
+                    assert_eq!(text_segments.len(), 1, "one block must have one render owner");
+                    assert!(block_ids.iter().all(|id| text_segments[0].ids.contains(id)));
+                    if running {
+                        assert_eq!(actual.stable_row_count(), 0, "context must stay mutable");
+                    } else {
+                        assert_eq!(actual.stable_row_count(), actual.rows().len());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paragraph_gap_stays_with_the_table_after_an_empty_quote_prefix() {
+        let first = TextBlock::from_complete("Introduction.\n\n")
+            .with_trailing_spacing(TextBlockSpacing::ParagraphBreak);
+        let first_id = first.id;
+        let table = TextBlock::from_complete(">");
+        let table_id = table.id;
+        let mut app = App::test_default();
+        app.transcript.messages.push(assistant_blocks_message(vec![
+            MessageBlock::Text(first),
+            MessageBlock::Text(table),
+        ]));
+        app.bind_active_turn_assistant(0);
+        app.status = AppStatus::Running;
+        let initial = serialize_all_rows_with_boundaries(&mut app, 36);
+        let committed = initial
+            .segments()
+            .iter()
+            .filter(|segment| segment.commit_ready)
+            .flat_map(|segment| segment.ids.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        assert!(committed.contains(&HistoryOutputId::Block(first_id)));
+        assert!(!committed.contains(&HistoryOutputId::Block(table_id)));
+        let MessageBlock::Text(table) = &mut app.transcript.messages[0].blocks[1] else {
+            panic!("table block")
+        };
+        table.text = "> Name | Value\n> --- | ---\n> red | one\n".to_owned();
+        table.cache.invalidate();
+
+        let live = serialize_live_rows_with_boundaries_excluding(&mut app, 36, &committed);
+        let table = live
+            .segments()
+            .iter()
+            .find(|segment| segment.ids.contains(&HistoryOutputId::Block(table_id)))
+            .expect("live table segment");
+        let rows = live.segment_rows(table).unwrap();
+        assert!(super::line_is_blank(&rows[0]), "the table must own its leading paragraph gap");
+        assert!(
+            rows.iter().any(|row| line_text(row).contains("red") && line_text(row).contains("one"))
+        );
+    }
+
+    #[test]
+    fn a_closed_markdown_block_releases_scrollback_before_an_independent_pipe_paragraph() {
+        for (source, spacing) in [
+            ("Name | Value\n--- | ---\nred | one\n", TextBlockSpacing::ParagraphBreak),
+            ("Name | Value\n--- | ---\nred | literal **\n", TextBlockSpacing::ParagraphBreak),
+            ("Name | Value\n--- | ---\nred | literal **", TextBlockSpacing::ParagraphBreak),
+            ("One | Two\n--- | --- | ---\nred | one | two\n", TextBlockSpacing::None),
+            ("````md\n```\nliteral **\n````\n", TextBlockSpacing::None),
+            ("````md\n```\nliteral **\n````", TextBlockSpacing::None),
+        ] {
+            let mut app = App::test_default();
+            let first = TextBlock::from_complete(source).with_trailing_spacing(spacing);
+            let first_id = first.id;
+            app.transcript.messages.push(assistant_blocks_message(vec![
+                MessageBlock::Text(first),
+                MessageBlock::Text(TextBlock::from_complete("ordinary | paragraph")),
+            ]));
+            app.bind_active_turn_assistant(0);
+            app.status = AppStatus::Running;
+
+            let rows = serialize_all_rows_with_boundaries(&mut app, 80);
+            let table = rows
+                .segments()
+                .iter()
+                .find(|segment| segment.ids.contains(&HistoryOutputId::Block(first_id)))
+                .expect("table segment");
+            assert!(table.commit_ready, "independent pipe text must not hold the prefix");
+            assert!(table.end_row <= rows.stable_row_count());
+            assert!(
+                rows.segment_rows(table)
+                    .unwrap()
+                    .iter()
+                    .all(|row| !line_text(row).contains("ordinary"))
+            );
+        }
     }
 
     #[test]

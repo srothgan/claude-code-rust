@@ -1759,7 +1759,10 @@ mod tests {
         );
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(TextBlock::from_complete(table)),
+            MessageBlock::Text(
+                TextBlock::from_complete(table)
+                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
+            ),
             MessageBlock::Text(TextBlock::from_complete("streaming tail remains mutable")),
         ]));
         app.bind_active_turn_assistant(0);

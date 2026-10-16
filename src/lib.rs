@@ -10,6 +10,7 @@ pub mod failure;
 pub mod install_method;
 mod json_file;
 pub mod logging;
+mod markdown;
 pub mod permission_mode;
 pub mod ui;
 
