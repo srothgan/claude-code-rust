@@ -28,6 +28,8 @@ impl From<&str> for ConnectionFailure {
 
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
+    /// A local preference write completed independently of the agent session.
+    FooterSaved { request_id: String, revision: Option<String>, error: Option<String> },
     SettingsResultReceived {
         session_id: String,
         request_id: Option<String>,
@@ -271,7 +273,8 @@ impl ClientEvent {
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),
-            Self::Connected { .. }
+            Self::FooterSaved { .. }
+            | Self::Connected { .. }
             | Self::ConnectionFailed(_)
             | Self::AuthRequired { .. }
             | Self::SessionResumeFailed { .. }

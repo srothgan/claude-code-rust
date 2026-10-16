@@ -319,7 +319,7 @@ The first five are Claude settings and can be saved at User, Project or Local sc
 
 ## Footer
 
-Open `/config` → General → Footer with `Enter` or `Space`. The chat footer uses one row with independently ordered left- and right-aligned groups. Changes save automatically; the preview updates immediately and the running footer changes after each confirmed save. The field-position counter appears in the dialog's top-right corner. The settings row shows `Default layout` until a layout is saved, then `Custom layout`.
+Open `/config` → General → Footer with `Enter` or `Space`. The chat footer uses one row with independently ordered left- and right-aligned groups. Changes save automatically, and the running footer changes after each successful save. Layout and colors load before the first frame and remain available while connecting or authenticating. You can edit the footer when authentication is required, before an agent session exists. The field-position counter appears in the dialog's top-right corner. The settings row shows `Default layout` until a layout is saved, then `Custom layout`.
 
 | Key | Action |
 | --- | --- |
@@ -327,16 +327,21 @@ Open `/config` → General → Footer with `Enter` or `Space`. The chat footer u
 | `Space` | Toggle visibility, preserving the field's side and position. |
 | `Left`, `Right` | Switch between Left and Right; append the field to the destination group. |
 | `Ctrl+Up`, `Ctrl+Down` | Move the field within its group; selection follows it. |
+| `C` | Expand or collapse the inline color palette for an eligible field. |
 | `Ctrl+R` | Remove the saved layout and restore defaults. |
 | `Esc` | Close after any pending changes finish saving. |
 
-You can keep editing while a save is in progress. Later edits are saved next, using the confirmed file revision. A failed save or conflict keeps your edits in the dialog and shows an error; `Enter` retries the save, and `Esc` discards the unsaved edits and closes. An interrupted session reports unconfirmed edits as unsaved and asks you to reopen the editor.
+You can keep editing while a save is in progress. Later edits are saved next, using the confirmed file revision. A failed save or conflict keeps your edits in the dialog and shows an error; `Enter` retries the save, and `Esc` discards the unsaved edits and closes. Session changes leave the active footer, editor draft, and local saves intact.
+
+Model, effort, working directory, Git branch, and context remaining support optional colors. Press `C` to expand a palette directly below the selected field. Arrow keys move between color boxes; the selected color name appears underneath. `Enter` applies and autosaves the choice, while `Esc` or `C` collapses the palette without applying it. Choose `Current` (`Home`) to restore the field's existing appearance. Permission mode, Fast mode, and Ultracode retain their fixed colors. Narrow windows show fewer boxes per row and keep the focused box visible.
 
 Permission mode, model, effort, Ultracode, fast mode, working directory, Git branch and context remaining are independent fields. Hiding the model does not hide effort or Ultracode; hiding the directory does not hide the branch. Fields appear only when their session data applies: effort requires a model that supports it, Ultracode requires verified effective state, and branch requires a Git branch.
 
 Permission and startup MCP-authentication notices remain at the far right and take priority over configured fields. On narrow terminals, paths and branches shorten first, then later fields are omitted, with the left group preceding the right group for overflow priority. The footer never wraps.
 
-The layout is a user-level app preference saved as the `presentation.footer` array in `claude-code-rust/settings.json` in the OS config directory. Each entry has an `id`, a `visible` boolean and a `side` of `left` or `right`; array order determines reading order within each group. The field IDs are `permissionMode`, `model`, `effort`, `ultracode`, `fastMode`, `directory`, `gitBranch` and `contextRemaining`. Omitted fields remain available in the dialog but are hidden. An empty array hides all optional fields. Removing the setting restores the built-in layout.
+The layout is a user-level app preference saved as the `presentation.footer` array in `claude-code-rust/settings.json` in the OS config directory. Each entry has an `id`, a `visible` boolean, a `side` of `left` or `right`, and an optional `color`; array order determines reading order within each group. The field IDs are `permissionMode`, `model`, `effort`, `ultracode`, `fastMode`, `directory`, `gitBranch` and `contextRemaining`. Omitted fields remain available in the dialog but are hidden. An empty array hides all optional fields. Removing the setting restores the built-in layout.
+
+For example, `{ "id": "model", "visible": true, "side": "left", "color": "cyan" }` sets the model color. Omitting `color` keeps its existing appearance. The palette IDs are `red`, `orange`, `amber`, `yellow`, `lime`, `green`, `emerald`, `teal`, `cyan`, `sky`, `blue`, `indigo`, `violet`, `purple`, `fuchsia`, `pink`, `rose`, `white`, `gray`, and `slate`.
 
 ## Notifications
 

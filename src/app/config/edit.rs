@@ -9,6 +9,10 @@ use crate::app::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
+    if setting.id == crate::app::footer::SETTING_ID {
+        super::footer::open(app, setting);
+        return;
+    }
     if !setting.allows_custom {
         step_setting(app, 1);
         return;
@@ -20,10 +24,7 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
         return;
     };
     let scope = app.config.selected_scope;
-    if !setting.writable_at(scope)
-        && setting.editor.is_none()
-        && setting.id != crate::app::footer::SETTING_ID
-    {
+    if !setting.writable_at(scope) && setting.editor.is_none() {
         app.config.last_error = Some(
             setting
                 .unavailable
@@ -35,19 +36,6 @@ pub(super) fn activate_setting(app: &mut App, setting: &SettingDescriptor) {
     let Some(value) = snapshot.scoped(&setting.id, scope) else {
         return;
     };
-    if setting.id == crate::app::footer::SETTING_ID {
-        let editor = SettingOverlayState {
-            setting: Box::new(setting.clone()),
-            scope,
-            context: snapshot.context.clone(),
-            revision: value.revision.clone(),
-            draft: String::new(),
-            cursor: 0,
-            structured: None,
-        };
-        super::footer::open(app, editor);
-        return;
-    }
     let initial = value
         .value
         .as_ref()

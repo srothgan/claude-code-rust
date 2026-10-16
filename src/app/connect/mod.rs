@@ -73,12 +73,7 @@ pub(crate) use session_start::{
 pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = super::READY_EVENT_DRAIN_ROUNDS * 4;
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
-#[allow(clippy::too_many_lines)]
 pub fn create_app(cli: &Cli) -> App {
-    let cwd = resolve_startup_cwd(cli);
-
-    let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
-    let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
     let loaded_settings = match settings::load_global_settings() {
         Ok(loaded) => loaded,
         Err(err) => {
@@ -95,6 +90,17 @@ pub fn create_app(cli: &Cli) -> App {
             }
         }
     };
+    create_app_with_settings(cli, loaded_settings)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(super) fn create_app_with_settings(
+    cli: &Cli,
+    loaded_settings: settings::LoadedAppSettings,
+) -> App {
+    let cwd = resolve_startup_cwd(cli);
+    let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
+    let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
     let (update_prompt, update_install_failure) =
         if super::update_check::update_check_disabled(cli.no_update_check) {
             (None, None)
@@ -188,6 +194,7 @@ pub fn create_app(cli: &Cli) -> App {
         bridge_task: None,
     };
 
+    app.config.load_footer(app.global_settings_path.as_deref());
     app.rebuild_history_retention_accounting();
     app.rebuild_render_cache_accounting();
     trust::initialize(&mut app);

@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod preferences;
+pub(crate) use preferences::{FooterPreferences, PendingSave, save};
+
 pub(crate) const SETTING_ID: &str = "presentation.footer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +21,13 @@ pub(crate) enum FooterFieldId {
 }
 
 impl FooterFieldId {
+    pub(crate) const fn supports_color(self) -> bool {
+        matches!(
+            self,
+            Self::Model | Self::Effort | Self::Directory | Self::GitBranch | Self::ContextRemaining
+        )
+    }
+
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::PermissionMode => "Permission mode",
@@ -30,6 +40,34 @@ impl FooterFieldId {
             Self::ContextRemaining => "Context remaining",
         }
     }
+}
+
+macro_rules! palette {
+    ($($name:ident => ($r:literal, $g:literal, $b:literal)),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "lowercase")]
+        pub(crate) enum FooterColor { $($name),+ }
+
+        impl FooterColor {
+            pub(crate) const ALL: &[Self] = &[$(Self::$name),+];
+            pub(crate) const fn label(self) -> &'static str {
+                match self { $(Self::$name => stringify!($name)),+ }
+            }
+            pub(crate) const fn color(self) -> ratatui::style::Color {
+                match self { $(Self::$name => ratatui::style::Color::Rgb($r, $g, $b)),+ }
+            }
+        }
+    };
+}
+
+palette! {
+    Red => (248, 113, 113), Orange => (251, 146, 60), Amber => (251, 191, 36),
+    Yellow => (250, 204, 21), Lime => (163, 230, 53), Green => (74, 222, 128),
+    Emerald => (52, 211, 153), Teal => (45, 212, 191), Cyan => (34, 211, 238),
+    Sky => (56, 189, 248), Blue => (96, 165, 250), Indigo => (129, 140, 248),
+    Violet => (167, 139, 250), Purple => (192, 132, 252), Fuchsia => (232, 121, 249),
+    Pink => (244, 114, 182), Rose => (251, 113, 133), White => (248, 250, 252),
+    Gray => (161, 161, 170), Slate => (148, 163, 184),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -53,6 +91,8 @@ pub(crate) struct FooterField {
     pub(crate) id: FooterFieldId,
     pub(crate) visible: bool,
     pub(crate) side: FooterSide,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) color: Option<FooterColor>,
 }
 
 /// Each field occurs once. Array order is reading order within each side.
@@ -76,7 +116,7 @@ impl Default for FooterLayout {
                 (Id::ContextRemaining, Right),
             ]
             .into_iter()
-            .map(|(id, side)| FooterField { id, visible: true, side })
+            .map(|(id, side)| FooterField { id, visible: true, side, color: None })
             .collect(),
         )
     }
@@ -86,6 +126,12 @@ impl<'de> Deserialize<'de> for FooterLayout {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut fields = Vec::<FooterField>::deserialize(deserializer)?;
         for (index, field) in fields.iter().enumerate() {
+            if field.color.is_some() && !field.id.supports_color() {
+                return Err(serde::de::Error::custom(format!(
+                    "{} uses its fixed semantic color",
+                    field.id.label()
+                )));
+            }
             if fields[..index].iter().any(|previous| previous.id == field.id) {
                 return Err(serde::de::Error::custom(format!(
                     "{} occurs more than once",
@@ -106,6 +152,12 @@ impl<'de> Deserialize<'de> for FooterLayout {
 }
 
 impl FooterLayout {
+    pub(crate) fn set_color(&mut self, index: usize, color: Option<FooterColor>) {
+        if let Some(field) = self.0.get_mut(index).filter(|field| field.id.supports_color()) {
+            field.color = color;
+        }
+    }
+
     pub(crate) fn from_saved(value: Option<&serde_json::Value>) -> Result<Self, serde_json::Error> {
         value.map_or_else(|| Ok(Self::default()), |value| serde_json::from_value(value.clone()))
     }
@@ -154,6 +206,61 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn only_informational_fields_accept_named_colors_and_old_entries_keep_their_appearance() {
+        for (id, field_id) in [
+            ("model", FooterFieldId::Model),
+            ("effort", FooterFieldId::Effort),
+            ("directory", FooterFieldId::Directory),
+            ("gitBranch", FooterFieldId::GitBranch),
+            ("contextRemaining", FooterFieldId::ContextRemaining),
+        ] {
+            let layout = FooterLayout::from_saved(Some(&json!([
+                {"id":id,"visible":true,"side":"left","color":"cyan"}
+            ])))
+            .expect("eligible field");
+            assert_eq!(
+                layout
+                    .fields()
+                    .iter()
+                    .find(|field| field.id == field_id)
+                    .expect("colored field")
+                    .color,
+                Some(FooterColor::Cyan)
+            );
+            let plain = FooterLayout::from_saved(Some(&json!([
+                {"id":id,"visible":true,"side":"left"}
+            ])))
+            .expect("existing format");
+            assert!(plain.fields().iter().all(|field| field.color.is_none()));
+            assert!(
+                serde_json::to_value(plain)
+                    .expect("serialize")
+                    .as_array()
+                    .expect("array")
+                    .iter()
+                    .all(|field| field.get("color").is_none())
+            );
+        }
+        for id in ["permissionMode", "fastMode", "ultracode"] {
+            assert!(
+                FooterLayout::from_saved(Some(&json!([
+                    {"id":id,"visible":true,"side":"left","color":"cyan"}
+                ])))
+                .is_err(),
+                "fixed field {id}"
+            );
+        }
+        for color in ["", "ultraviolet", "#123456"] {
+            assert!(
+                FooterLayout::from_saved(Some(&json!([
+                    {"id":"model","visible":true,"side":"left","color":color}
+                ])))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn saved_order_and_disabled_placement_survive_round_trip() {
         let fixture = json!([
             {"id":"effort","visible":false,"side":"right"},
@@ -174,7 +281,21 @@ mod tests {
     #[test]
     fn empty_layout_disables_fields_and_missing_setting_restores_defaults() {
         let empty = FooterLayout::from_saved(Some(&json!([]))).expect("empty layout");
-        assert_eq!(empty.fields().len(), 8);
+        for id in [
+            FooterFieldId::PermissionMode,
+            FooterFieldId::Model,
+            FooterFieldId::Effort,
+            FooterFieldId::Ultracode,
+            FooterFieldId::FastMode,
+            FooterFieldId::Directory,
+            FooterFieldId::GitBranch,
+            FooterFieldId::ContextRemaining,
+        ] {
+            assert!(
+                empty.fields().iter().any(|field| field.id == id),
+                "omitted {id:?} remains editable"
+            );
+        }
         assert!(empty.fields().iter().all(|f| !f.visible));
         assert!(
             FooterLayout::from_saved(None).expect("defaults").fields().iter().all(|f| f.visible)

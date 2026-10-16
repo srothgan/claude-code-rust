@@ -14,10 +14,6 @@ use ratatui::{
 };
 
 pub(super) fn render_setting_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    if matches!(app.config.overlay, Some(crate::app::config::ConfigOverlayState::Footer(_))) {
-        super::footer::render(frame, area, app);
-        return;
-    }
     let Some(overlay) = app.config.setting_overlay() else {
         return;
     };

@@ -3634,12 +3634,13 @@ fn mention_owner_releases_back_to_input() {
 }
 
 #[test]
-fn settings_view_routes_enter_to_close_not_chat_submit() {
+fn config_status_routes_enter_to_close_not_chat_submit() {
     let mut app = make_test_app();
     let dir = tempfile::tempdir().expect("tempdir");
     app.settings_home_override = Some(dir.path().to_path_buf());
     app.cwd_raw = dir.path().to_string_lossy().to_string();
     crate::app::config::open(&mut app).expect("open settings");
+    app.config.active_tab = crate::app::config::ConfigTab::Status;
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
     app.input.set_text("seed");
 

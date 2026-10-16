@@ -34,7 +34,6 @@ const CATEGORY_SETTINGS: Record<string, string[]> = {
     "prefersReducedMotion",
     "presentation.showStatusInTerminalTab",
     "presentation.copyFullResponse",
-    "presentation.footer",
     "respectGitignore",
     "preferredNotifChannel",
     "notifications.actionsRequired",

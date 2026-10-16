@@ -5,6 +5,9 @@ use crate::agent::events::ClientEvent;
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
     match event {
+        ClientEvent::FooterSaved { request_id, revision, error } => {
+            crate::app::config::complete_footer_save(app, &request_id, revision, error);
+        }
         ClientEvent::UpdateCheckCompleted { result } => {
             crate::app::update_check::apply_check_result(app, &result);
         }

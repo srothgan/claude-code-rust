@@ -30,21 +30,20 @@ use overlay::{OverlayChrome, OverlayLayoutSpec, render_overlay_shell};
 pub fn render(frame: &mut Frame, app: &mut App) {
     let frame_area = frame.area();
     if (frame_area.width < 30 || frame_area.height < 12)
+        && matches!(app.config.overlay, Some(crate::app::config::ConfigOverlayState::Footer(_)))
+    {
+        footer::render(frame, frame_area, app);
+        return;
+    }
+    if (frame_area.width < 30 || frame_area.height < 12)
         && (app.config.overlay.is_none() || app.config.setting_overlay().is_some())
     {
         frame.render_widget(
-            Paragraph::new(
-                if app.config.setting_overlay().is_some()
-                    && !matches!(
-                        app.config.overlay,
-                        Some(crate::app::config::ConfigOverlayState::Footer(_))
-                    )
-                {
-                    "Window too small. Resize to view config.\nEsc cancel"
-                } else {
-                    "Window too small. Resize to view config.\nEsc close"
-                },
-            )
+            Paragraph::new(if app.config.setting_overlay().is_some() {
+                "Window too small. Resize to view config.\nEsc cancel"
+            } else {
+                "Window too small. Resize to view config.\nEsc close"
+            })
             .wrap(Wrap { trim: false }),
             frame_area,
         );
@@ -169,8 +168,10 @@ fn config_help_text(app: &App, width: u16) -> String {
     common::hint_text(hints, width)
 }
 
-fn render_active_overlay(frame: &mut Frame, frame_area: Rect, app: &App) {
-    if app.config.setting_overlay().is_some() {
+fn render_active_overlay(frame: &mut Frame, frame_area: Rect, app: &mut App) {
+    if matches!(app.config.overlay, Some(crate::app::config::ConfigOverlayState::Footer(_))) {
+        footer::render(frame, frame_area, app);
+    } else if app.config.setting_overlay().is_some() {
         settings_overlay::render_setting_overlay(frame, frame_area, app);
     } else if app.config.session_rename_overlay().is_some() {
         settings_overlay::render_session_rename_overlay(frame, frame_area, app);
@@ -466,6 +467,7 @@ mod tests {
             "sources": [{"scope": "user", "path": "settings.json", "status": "valid", "values": [{"id": "alwaysThinkingEnabled", "revision": "r", "value": true}, {"id": "language", "revision": "r"}]}],
             "values": [{"id": "alwaysThinkingEnabled", "value": true, "contributors": ["user"], "policy_restricted": false}]
         })).expect("snapshot"));
+        app.config.settings.select("alwaysThinkingEnabled".into());
         app
     }
 
@@ -547,7 +549,15 @@ mod tests {
     #[test]
     fn read_only_settings_keep_the_value_visible_and_visually_disabled() {
         let mut app = settings_preview_app();
-        let setting = &mut app.config.snapshot.as_mut().expect("snapshot").catalog[0];
+        let setting = app
+            .config
+            .snapshot
+            .as_mut()
+            .expect("snapshot")
+            .catalog
+            .iter_mut()
+            .find(|setting| setting.id == "alwaysThinkingEnabled")
+            .expect("Thinking control");
         setting.writable_scopes.clear();
         setting.unavailable = Some("POLICY_RESTRICTION".to_owned());
         let mut terminal = Terminal::new(TestBackend::new(110, 32)).expect("terminal");

@@ -3,7 +3,9 @@
 use super::prelude::*;
 
 pub fn open(app: &mut App) -> Result<(), String> {
-    open_category(app, "general")
+    open_category(app, "general")?;
+    app.config.settings = Box::default();
+    Ok(())
 }
 
 pub(crate) fn open_category(app: &mut App, category: &str) -> Result<(), String> {
@@ -40,6 +42,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
 }
 
 pub fn close(app: &mut App) {
+    app.config.settings = Box::default();
     view::set_chat_surface(app);
 }
 
@@ -193,7 +196,7 @@ fn handle_settings_key(app: &mut App, key: KeyEvent) -> bool {
             edit::step_setting(app, if key.code == KeyCode::Left { -1 } else { 1 });
         }
         KeyCode::Char('s') => app.config.selected_scope = app.config.selected_scope.next(),
-        KeyCode::Char('r') => super::service::request_settings(app),
+        KeyCode::Char('r') => super::service::refresh_settings(app),
         KeyCode::Delete => super::service::reset_selected(app),
         _ => return false,
     }

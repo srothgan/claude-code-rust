@@ -6,11 +6,26 @@ use crate::agent::settings::{
 use crate::app::App;
 
 pub(crate) fn request_settings(app: &mut App) {
+    app.config.project_footer(app.global_settings_path.as_deref());
+    request_agent_settings(app);
+}
+
+pub(super) fn refresh_settings(app: &mut App) {
+    if app.config.footer.pending.is_none() && app.config.overlay.is_none() {
+        app.config.load_footer(app.global_settings_path.as_deref());
+    } else {
+        app.config.project_footer(app.global_settings_path.as_deref());
+    }
+    request_agent_settings(app);
+}
+
+fn request_agent_settings(app: &mut App) {
     let (Some(conn), Some(session_id)) =
         (app.session_runtime.conn.as_ref(), app.session_runtime.session_id.as_ref())
     else {
         if app.status != crate::app::AppStatus::Connecting {
-            app.config.last_error = Some("Settings are currently unavailable.".to_owned());
+            app.config.status_message =
+                Some("Agent settings require an active session.".to_owned());
         }
         return;
     };
@@ -84,6 +99,10 @@ pub(crate) fn reset_selected(app: &mut App) {
     if !setting.writable_at(app.config.selected_scope) {
         return;
     }
+    if setting.id == crate::app::footer::SETTING_ID {
+        super::footer::reset(app);
+        return;
+    }
     let Some(value) = snapshot.scoped(&setting.id, app.config.selected_scope) else {
         return;
     };
@@ -118,25 +137,22 @@ pub(crate) fn apply_settings_result(
     };
     let owns_editor =
         app.config.setting_overlay().is_some_and(|editor| pending.owns_editor(editor));
-    let footer_save =
-        owns_editor && matches!(app.config.overlay, Some(super::ConfigOverlayState::Footer(_)));
-    let saved =
-        matches!(result.persistence, SettingsPersistence::Saved | SettingsPersistence::Unchanged);
     let previous_fast_mode = app.config.fast_mode_effective();
     let previous_gitignore = app.config.respect_gitignore_effective();
     let previous_scroll = app.config.auto_scroll_effective();
     let previous_clock = clock_preferences(app);
-    if let Some(snapshot) = result.snapshot {
+    if let Some(mut snapshot) = result.snapshot {
         if snapshot.cwd != app.cwd_raw {
             return;
         }
+        app.config.footer.project(&mut snapshot, app.global_settings_path.as_deref());
         let previous_index = app
             .config
             .snapshot
             .as_ref()
             .map_or(0, |previous| app.config.settings.selected_index(previous));
         app.config.settings.reconcile(&snapshot, previous_index);
-        if (result.persistence == SettingsPersistence::Conflict || (footer_save && saved))
+        if result.persistence == SettingsPersistence::Conflict
             && let Some(editor) = app.config.setting_overlay_mut()
             && let Some(value) = snapshot.scoped(&editor.setting.id, editor.scope)
             && owns_editor
@@ -173,7 +189,7 @@ pub(crate) fn apply_settings_result(
     app.config.last_error = result.error;
     app.config.status_message = match result.persistence {
         SettingsPersistence::Saved | SettingsPersistence::Unchanged => {
-            if owns_editor && !footer_save {
+            if owns_editor {
                 app.config.clear_overlay();
             }
             Some(if result.persistence == SettingsPersistence::Unchanged {
@@ -194,9 +210,6 @@ pub(crate) fn apply_settings_result(
         && owns_editor
     {
         app.config.set_overlay_error(error);
-    }
-    if footer_save {
-        super::footer::complete_save(app, saved);
     }
 }
 

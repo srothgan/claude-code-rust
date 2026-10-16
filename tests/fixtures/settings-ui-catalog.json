@@ -918,24 +918,6 @@
       "allows_custom": false,
       "reset": "Reset clears this scope's value and uses the other scopes or Default.",
       "application": "host"
-    },
-    {
-      "id": "presentation.footer",
-      "label": "Footer",
-      "description": "Choose visible footer fields, their left or right alignment, and their order. Permission and authentication notices remain at the far right. Applies immediately.",
-      "key_path": [
-        "presentation",
-        "footer"
-      ],
-      "kind": "json",
-      "category": "general",
-      "options": [],
-      "writable_scopes": [
-        "user"
-      ],
-      "allows_custom": true,
-      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
-      "application": "host"
     }
   ]
 }

@@ -63,42 +63,6 @@ function mutation(snapshot: SettingsSnapshot, id: string, scope: SettingsScope, 
   return { context: snapshot.context, id, scope, expected_revision: previous.revision, operation: value === undefined ? "remove" : "set", ...(value === undefined ? {} : { value }) };
 }
 
-test("footer layout round-trips through app preferences with scoped saves, conflicts and reset", async () => {
-  const appFile = path.join(root, "app-settings.json");
-  const retained = { updates: { skipped_version: "keep" }, presentation: { copyFullResponse: true, future: 17 } };
-  await fs.writeFile(appFile, JSON.stringify(retained));
-  await write("user", { language: "German" });
-  const inspect = () => inspectSettings(cwd, [], [], appFile);
-  const initial = await inspect();
-  const setting = initial.catalog.find(setting => setting.id === "presentation.footer");
-  assert.ok(setting);
-  assert.equal(setting.category, "general");
-  assert.equal(setting.application, "host");
-  assert.deepEqual(setting.writable_scopes, ["user"]);
-  const layout = [
-    { id: "gitBranch", visible: true, side: "right" },
-    { id: "model", visible: false, side: "left" },
-  ];
-  const saved = await mutateSetting(cwd, mutation(initial, setting.id, "user", layout), [], [], appFile);
-  assert.equal(saved.persistence, "saved");
-  assert.equal(saved.application, "host");
-  assert.deepEqual(saved.snapshot?.values.find(value => value.id === setting.id)?.value, layout);
-  assert.deepEqual(JSON.parse(await fs.readFile(appFile, "utf8")), { ...retained, presentation: { ...retained.presentation, footer: layout } });
-  const profile = process.env.CLAUDE_CONFIG_DIR;
-  assert.ok(profile);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(profile, "settings.json"), "utf8")), { language: "German" });
-  for (const scope of ["project", "local"] as const) {
-    assert.equal((await mutateSetting(cwd, mutation(await inspect(), setting.id, scope, layout), [], [], appFile)).persistence, "failure");
-  }
-  const stale = mutation(await inspect(), setting.id, "user", layout);
-  await fs.writeFile(appFile, JSON.stringify({ ...retained, presentation: { ...retained.presentation, footer: [] } }));
-  assert.equal((await mutateSetting(cwd, stale, [], [], appFile)).persistence, "conflict");
-  assert.deepEqual((await inspect()).values.find(value => value.id === setting.id)?.value, []);
-  const reset = await mutateSetting(cwd, mutation(await inspect(), setting.id, "user"), [], [], appFile);
-  assert.equal(reset.persistence, "saved");
-  assert.deepEqual(JSON.parse(await fs.readFile(appFile, "utf8")), retained);
-});
-
 test("presentation preferences share targeted saves while retaining their distinct storage and scopes", async () => {
   const appFile = path.join(root, "app-settings.json");
   await write("user", { presentation: { copyFullResponse: true }, showMessageTimestamps: false, future: 17 });

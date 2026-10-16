@@ -226,12 +226,7 @@ fn table_rows<'a>(
         };
         let writable = setting.writable_at(app.config.selected_scope);
         let summary = if is_footer {
-            match crate::app::footer::FooterLayout::from_saved(value) {
-                Ok(_) if value.is_none() => "Default layout",
-                Ok(_) => "Custom layout",
-                Err(_) => "Invalid layout",
-            }
-            .to_owned()
+            app.config.footer.summary().to_owned()
         } else {
             value.map_or_else(
                 || {
@@ -327,12 +322,16 @@ fn details_lines(app: &App) -> Vec<Line<'static>> {
         SettingsApplication::Blocked => {}
     }
     let mut lines = vec![description_line(&setting.description)];
-    if let Some(error) = snapshot
-        .sources
-        .iter()
-        .find(|source| source.scope == app.config.selected_scope)
-        .and_then(|source| source.error.as_ref())
-    {
+    let source_error = if setting.id == crate::app::footer::SETTING_ID {
+        app.config.footer.error.as_ref()
+    } else {
+        snapshot
+            .sources
+            .iter()
+            .find(|source| source.scope == app.config.selected_scope)
+            .and_then(|source| source.error.as_ref())
+    };
+    if let Some(error) = source_error {
         lines.push(Line::styled(error.clone(), Style::default().fg(theme::STATUS_WARNING)));
     }
     if let Some(restriction) = restriction_text(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::agent::model;
-use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide, SETTING_ID};
+use crate::app::footer::{FooterFieldId, FooterLayout, FooterSide};
 use crate::app::{App, MessageBlock, MessageRole};
 use crate::ui::theme;
 use ratatui::style::{Color, Style};
@@ -18,11 +18,11 @@ pub(crate) struct SerializedFooterRows {
 }
 
 pub(crate) fn serialize_footer_rows(app: &App, total_width: u16) -> SerializedFooterRows {
-    let layout = FooterLayout::from_saved(app.config.saved_value(SETTING_ID)).unwrap_or_default();
+    let layout = app.config.footer.layout();
     SerializedFooterRows { rows: [serialize_footer(app, &layout, total_width)] }
 }
 
-/// The dialog preview and chat use exactly the same formatter and width policy.
+/// Format the configured fields and notices within the chat footer's single row.
 pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> Line<'static> {
     let width = usize::from(width);
     let notice = footer_notice(app)
@@ -37,7 +37,7 @@ pub(crate) fn serialize_footer(app: &App, layout: &FooterLayout, width: u16) -> 
                 id: field.id,
                 side: field.side,
                 text,
-                color,
+                color: field.color.map_or(color, crate::app::footer::FooterColor::color),
             })
         })
         .collect();
@@ -539,10 +539,10 @@ mod tests {
         let serialized = serialize_footer_rows(&app, 80);
         let text = line_text(&serialized.rows[0]);
         assert!(text.ends_with("1 PEND. PERM."));
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            SETTING_ID,
-            serde_json::json!([]),
-        ));
+        let directory = tempfile::tempdir().expect("preferences");
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, r#"{"presentation":{"footer":[]}}"#).expect("save layout");
+        app.config.load_footer(Some(&path));
         let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
         assert!(text.ends_with("1 PEND. PERM."));
         assert!(!text.contains("FAST:"));
@@ -679,5 +679,33 @@ mod tests {
         let shortened = line_text(&serialize_footer(&app, &layout, 12));
         assert!(shortened.contains("f..."));
         assert_eq!(shortened.width(), 12);
+    }
+    #[test]
+    fn each_informational_field_renders_its_own_color_instead_of_a_global_override() {
+        let mut app = app_with_mode();
+        app.cwd = "~/work".into();
+        app.set_git_branch_for_test(Some("feature/footer"));
+        app.session_runtime.session_usage.context_usage_percent = Some(42);
+        let layout = FooterLayout::from_saved(Some(&serde_json::json!([
+            {"id":"model","visible":true,"side":"left","color":"cyan"},
+            {"id":"directory","visible":true,"side":"left","color":"orange"},
+            {"id":"gitBranch","visible":true,"side":"right","color":"pink"},
+            {"id":"contextRemaining","visible":true,"side":"right","color":"green"}
+        ])))
+        .expect("layout");
+        let line = serialize_footer(&app, &layout, 160);
+        for (text, color) in [
+            ("test-model", Color::Rgb(34, 211, 238)),
+            ("Loc: ~/work", Color::Rgb(251, 146, 60)),
+            ("Branch: feature/footer", Color::Rgb(244, 114, 182)),
+            ("Context: 58%", Color::Rgb(74, 222, 128)),
+        ] {
+            let span = line
+                .spans
+                .iter()
+                .find(|span| span.content.contains(text))
+                .expect("associated field");
+            assert_eq!(span.style.fg, Some(color), "{text}");
+        }
     }
 }

@@ -157,19 +157,17 @@ fn activate_tab_clears_status_and_error_feedback() {
 #[test]
 fn reopen_clears_stale_transient_feedback() {
     let (_dir, mut app) = open_settings_test_app();
+    let _commands = attach_test_connection(&mut app);
+    app.session_runtime.session_id = Some("session-1".into());
     app.config.status_message = Some("stale status".to_owned());
     app.config.last_error = Some("stale error".to_owned());
 
     super::controller::close(&mut app);
     open(&mut app).expect("reopen");
 
-    assert!(app.config.status_message.is_none());
-    assert!(
-        app.config
-            .last_error
-            .as_deref()
-            .is_some_and(|error| error.contains("Settings are currently unavailable"))
-    );
+    assert_ne!(app.config.status_message.as_deref(), Some("stale status"));
+    assert!(app.config.last_error.is_none());
+    assert!(app.config.pending_settings_request.is_some(), "reopening refreshes agent settings");
 }
 
 #[test]

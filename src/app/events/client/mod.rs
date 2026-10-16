@@ -96,7 +96,8 @@ fn client_event_family(event: &ClientEvent) -> ClientEventFamily {
         | ClientEvent::RewindTargetsReceived { .. }
         | ClientEvent::RewindResultReceived { .. }
         | ClientEvent::FatalError(_) => ClientEventFamily::Session,
-        ClientEvent::UpdateCheckCompleted { .. }
+        ClientEvent::FooterSaved { .. }
+        | ClientEvent::UpdateCheckCompleted { .. }
         | ClientEvent::TerminalReleasedToChild { .. }
         | ClientEvent::TerminalReturnedFromChild { .. }
         | ClientEvent::RuntimeReloadCompleted { .. }

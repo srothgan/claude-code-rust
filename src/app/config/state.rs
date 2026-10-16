@@ -54,6 +54,7 @@ pub struct PendingSessionTitleChangeState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
+    pub(crate) footer: Box<crate::app::footer::FooterPreferences>,
     pub active_tab: ConfigTab,
     pub settings: Box<super::SettingsBrowse>,
     pub mcp_selected_server_index: usize,
@@ -73,6 +74,7 @@ pub struct ConfigState {
 impl Default for ConfigState {
     fn default() -> Self {
         Self {
+            footer: Box::default(),
             active_tab: ConfigTab::Settings,
             settings: Box::default(),
             mcp_selected_server_index: 0,
@@ -92,6 +94,15 @@ impl Default for ConfigState {
 }
 
 impl ConfigState {
+    pub(crate) fn load_footer(&mut self, path: Option<&std::path::Path>) {
+        *self.footer = crate::app::footer::FooterPreferences::load(path);
+        self.project_footer(path);
+    }
+
+    pub(crate) fn project_footer(&mut self, path: Option<&std::path::Path>) {
+        self.footer.project(self.snapshot.get_or_insert_with(Default::default), path);
+    }
+
     pub fn saved_value(&self, id: &str) -> Option<&Value> {
         self.snapshot.as_ref()?.value(id)
     }
@@ -156,14 +167,12 @@ impl ConfigState {
     pub fn setting_overlay(&self) -> Option<&SettingOverlayState> {
         match &self.overlay {
             Some(ConfigOverlayState::Setting(overlay)) => Some(overlay),
-            Some(ConfigOverlayState::Footer(overlay)) => Some(&overlay.editor),
             _ => None,
         }
     }
     pub fn setting_overlay_mut(&mut self) -> Option<&mut SettingOverlayState> {
         match &mut self.overlay {
             Some(ConfigOverlayState::Setting(overlay)) => Some(overlay),
-            Some(ConfigOverlayState::Footer(overlay)) => Some(&mut overlay.editor),
             _ => None,
         }
     }
@@ -178,31 +187,18 @@ impl ConfigState {
         self.overlay_message = None;
     }
 
-    pub fn invalidate_session(&mut self) {
-        let footer_save_interrupted =
-            if let Some(ConfigOverlayState::Footer(overlay)) = &mut self.overlay {
-                if self
-                    .pending_settings_request
-                    .as_ref()
-                    .is_some_and(|pending| pending.owns_editor(&overlay.editor))
-                {
-                    overlay.queue_save();
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
+    pub fn invalidate_session(&mut self, path: Option<&std::path::Path>) {
         self.snapshot = None;
+        // The local preference and its in-flight save outlive agent sessions.
+        self.project_footer(path);
         self.pending_settings_request = None;
         self.pending_session_title_change = None;
         self.status_message = None;
         self.last_error = None;
-        if self.setting_overlay().is_none() {
+        if self.setting_overlay().is_none()
+            && !matches!(self.overlay, Some(ConfigOverlayState::Footer(_)))
+        {
             self.clear_overlay();
-        } else if footer_save_interrupted {
-            self.set_overlay_error("The settings session changed. Unconfirmed footer changes were not saved. Close and reopen the footer editor.");
         }
     }
 

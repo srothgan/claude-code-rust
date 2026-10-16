@@ -50,7 +50,7 @@ export async function validateSettingValue(setting: SettingDescriptor, value: Js
       }
       break;
     case "json":
-      if (value === null || typeof value !== "object" || (!isAppSetting(setting) && Array.isArray(value))) throw new Error("Expected a JSON object or supported app preference array.");
+      if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected a JSON object.");
       break;
   }
   if (!setting.allows_custom && !setting.options.includes(value)) throw new Error("Choose one of the available options.");
