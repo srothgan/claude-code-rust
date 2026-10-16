@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 use super::clipboard_image::{ClipboardRead, encode_clipboard_image};
 use super::paste_burst::CharAction;
 use super::{App, AppStatus, FocusOwner};

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::{App, AppStatus, ChatMessage, MessageBlock, MessageRole, TextBlock};
 use crate::agent::model;

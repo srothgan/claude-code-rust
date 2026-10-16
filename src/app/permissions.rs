@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 use super::inline_interactions::{
     clear_inline_interaction_focus, focus_next_inline_interaction, focused_interaction,
     focused_interaction_dirty_idx, focused_interaction_is_active, get_focused_interaction_tc,

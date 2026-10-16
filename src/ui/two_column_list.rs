@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::wrap::{StyledChunk, join_column_lines, wrap_styled_chunks, wrapped_line_count};
 use ratatui::style::Style;

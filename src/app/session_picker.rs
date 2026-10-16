@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::connect::{begin_resume_session, begin_resume_session_at};
 use super::events::push_system_message_with_severity;

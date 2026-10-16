@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::inventory::request_inventory_refresh_manual;
 use super::overlays::{

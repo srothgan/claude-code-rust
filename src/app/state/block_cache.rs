@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};

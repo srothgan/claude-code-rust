@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Simon Peter Rothgang
 
 use crate::app::clipboard_image::ImageAttachment;
 use std::collections::VecDeque;

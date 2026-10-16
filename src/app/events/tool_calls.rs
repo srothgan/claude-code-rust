@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 use super::super::{App, BlockCache, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_updates::raw_output_to_terminal_text;

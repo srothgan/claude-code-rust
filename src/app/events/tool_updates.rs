@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 use super::super::{App, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_calls::{
     current_session_id, json_value_size, log_terminal_spawned, parent_tool_use_id_from_meta,

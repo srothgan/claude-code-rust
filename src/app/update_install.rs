@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Simon Peter Rothgang
 
 //! Update installs after exit: in the terminal when chosen in the update window,
 //! in a detached worker process for automatic updates.

@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copyright 2025 Simon Peter Rothgang
 
 //! Drift check between the `claude-rs` CLI and the CLI Options table in the manual.
 //!
