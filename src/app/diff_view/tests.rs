@@ -266,6 +266,46 @@ fn keyboard_flow_selects_only_files_and_scrolls_the_focused_pane() {
 }
 
 #[test]
+fn full_file_mode_preserves_nested_indentation_after_resize() {
+    let repo = Repo::new();
+    repo.write(
+        "src/example.rs",
+        "impl Example {\n    fn run(&self) {\n        if self.ready() {\n            self.work();\n        }\n    }\n}",
+    );
+    let mut app = open_repo(&repo);
+    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Char('v'));
+
+    for width in [120, 60, 120] {
+        let buffer = draw(&mut app, width, 24);
+        let tree_width = (width / 3).clamp(18, 48);
+        let content_x = tree_width + 1;
+        let content_width = width - tree_width - 2;
+        let rows = (3..10)
+            .map(|y| {
+                region(&buffer, Rect::new(content_x, y, content_width, 1)).trim_end().to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            [
+                "1  impl Example {",
+                "2      fn run(&self) {",
+                "3          if self.ready() {",
+                "4              self.work();",
+                "5          }",
+                "6      }",
+                "7  }",
+            ],
+            "full file source at width {width}"
+        );
+        assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "src/example.rs");
+        assert!(app.diff_view.as_ref().unwrap().full_file);
+        assert!(matches!(buffer[(content_x + 7, 4)].fg, ratatui::style::Color::Rgb(..)));
+    }
+}
+
+#[test]
 fn comparison_selection_and_refresh_keep_the_selected_file_and_show_the_selected_version() {
     let repo = Repo::new();
     repo.write("b.txt", "base\n");
