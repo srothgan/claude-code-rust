@@ -69,7 +69,7 @@ unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 uuid = { version = "1.23.2", features = ["v4"] }
 which = "8.0.2"
-zip = { version = "9.0.0", default-features = false, features = ["deflate", "time"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate", "time"] }
 
 [profile.dev]
 debug = "line-tables-only"
