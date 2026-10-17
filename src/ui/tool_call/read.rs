@@ -35,102 +35,131 @@ enum Entry {
     Hidden(usize),
 }
 
-pub(super) fn render_read_source(source: &ReadSource<'_>, width: u16) -> Vec<Line<'static>> {
-    let lines = source.text.lines().collect::<Vec<_>>();
-    if lines.is_empty() || width == 0 {
-        return Vec::new();
-    }
-    let number_width = source
-        .start_line
-        .map_or(0, |start| start.saturating_add(lines.len() - 1).to_string().len());
-    let gutter_width = if source.start_line.is_some() { number_width + GUTTER_GAP } else { 0 };
-    let text_width = usize::from(width).saturating_sub(gutter_width).max(1);
-
-    let hidden = if lines.len() > HEAD_LINES + TAIL_LINES + 1 {
-        HEAD_LINES..lines.len() - TAIL_LINES
-    } else {
-        0..0
-    };
-    let mut entries = source_entries(source, &lines, hidden, text_width);
-    clip_to_height(&mut entries, TOOL_BODY_MAX_LINES, text_width);
-
-    let gutter_style = Style::default().fg(theme::DIM);
-    let mut out = Vec::new();
-    for entry in entries {
-        match entry {
-            Entry::Source { number, rows } => {
-                for (row_index, row) in rows.into_iter().enumerate() {
-                    let mut spans = Vec::with_capacity(row.spans.len() + 1);
-                    if let Some(number) = number {
-                        let gutter = if row_index == 0 {
-                            format!("{number:>number_width$}{}", " ".repeat(GUTTER_GAP))
-                        } else {
-                            " ".repeat(gutter_width)
-                        };
-                        spans.push(Span::styled(gutter, gutter_style));
-                    }
-                    spans.extend(row.spans);
-                    out.push(Line::from(spans));
-                }
-            }
-            Entry::Hidden(count) => {
-                let full = format!("... {count} lines hidden ...");
-                let text = if full.len() <= usize::from(width) {
-                    full
-                } else {
-                    let compact = format!("… {count} hidden");
-                    if crate::ui::wrap::display_width(&compact) <= usize::from(width) {
-                        compact
-                    } else {
-                        format!("… {count}")
-                    }
-                };
-                out.push(Line::from(truncate_spans_to_width(
-                    vec![Span::styled(
-                        text,
-                        Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-                    )],
-                    usize::from(width),
-                )));
-            }
-        }
-    }
-    out
+/// Resumes at the next source line without re-parsing already visited lines.
+pub(super) struct ReadCursor {
+    highlighter: highlight::SourceHighlighter,
+    next_byte: usize,
+    next_line: usize,
+    total_lines: usize,
+    hidden: Range<usize>,
+    entries: Vec<Entry>,
+    width: u16,
+    number_width: usize,
+    gutter_width: usize,
+    text_width: usize,
 }
 
-/// Parse all source lines to retain multiline syntax state, but build spans and rows
-/// only for the selected head and tail lines.
-fn source_entries(
-    source: &ReadSource<'_>,
-    lines: &[&str],
-    hidden: Range<usize>,
-    text_width: usize,
-) -> Vec<Entry> {
-    let highlighted = highlight::highlight_source_lines(
-        lines.iter().enumerate().map(|(index, line)| {
+impl ReadCursor {
+    pub(super) fn new(source: &ReadSource<'_>, width: u16) -> Self {
+        let total_lines = source.text.lines().count();
+        let number_width = source.start_line.map_or(0, |start| {
+            start.saturating_add(total_lines.saturating_sub(1)).to_string().len()
+        });
+        let gutter_width = if source.start_line.is_some() { number_width + GUTTER_GAP } else { 0 };
+        Self {
+            highlighter: highlight::SourceHighlighter::new(
+                source.path,
+                source.language_fallback,
+                SYNTAX_THEME,
+            ),
+            next_byte: 0,
+            next_line: 0,
+            total_lines,
+            hidden: if total_lines > HEAD_LINES + TAIL_LINES + 1 {
+                HEAD_LINES..total_lines - TAIL_LINES
+            } else {
+                0..0
+            },
+            entries: Vec::new(),
+            width,
+            number_width,
+            gutter_width,
+            text_width: usize::from(width).saturating_sub(gutter_width).max(1),
+        }
+    }
+
+    pub(super) fn poll(
+        &mut self,
+        source: &ReadSource<'_>,
+        control: &crate::ui::layout_control::LayoutControl<'_>,
+    ) -> std::task::Poll<Vec<Line<'static>>> {
+        while self.next_line < self.total_lines && self.width > 0 {
+            if control.cancelled() {
+                return std::task::Poll::Ready(Vec::new());
+            }
+            let remaining = &source.text[self.next_byte..];
+            let bytes = remaining.find('\n').map_or(remaining.len(), |end| end + 1);
+            let raw = &remaining[..bytes];
+            let line =
+                raw.strip_suffix('\n').map_or(raw, |line| line.strip_suffix('\r').unwrap_or(line));
             let mut display = display_source_line(line);
             display.push('\n');
-            (display, !hidden.contains(&index))
-        }),
-        source.path,
-        source.language_fallback,
-        SYNTAX_THEME,
-    );
-    let mut highlighted = highlighted.into_iter();
-    lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, _)| {
-            if hidden.contains(&index) {
-                return (index == hidden.start).then_some(Entry::Hidden(hidden.len()));
+            let visible = !self.hidden.contains(&self.next_line);
+            if let Some(line) = self.highlighter.line(&display, visible) {
+                self.entries.push(Entry::Source {
+                    number: source.start_line.map(|start| start + self.next_line),
+                    rows: split_line_at_width(line, self.text_width),
+                });
+            } else if self.next_line == self.hidden.start {
+                self.entries.push(Entry::Hidden(self.hidden.len()));
             }
-            let line = highlighted.next().unwrap_or_default();
-            Some(Entry::Source {
-                number: source.start_line.map(|start| start + index),
-                rows: split_line_at_width(line, text_width),
-            })
-        })
-        .collect()
+            self.next_byte += bytes;
+            self.next_line += 1;
+            if self.next_line < self.total_lines && control.yield_due() {
+                return std::task::Poll::Pending;
+            }
+        }
+        clip_to_height(&mut self.entries, TOOL_BODY_MAX_LINES, self.text_width);
+        let gutter_style = Style::default().fg(theme::DIM);
+        let mut out = Vec::new();
+        for entry in self.entries.drain(..) {
+            if control.cancelled() {
+                return std::task::Poll::Ready(Vec::new());
+            }
+            match entry {
+                Entry::Source { number, rows } => {
+                    for (row_index, row) in rows.into_iter().enumerate() {
+                        let mut spans = Vec::with_capacity(row.spans.len() + 1);
+                        if let Some(number) = number {
+                            let gutter = if row_index == 0 {
+                                format!(
+                                    "{number:>number_width$}{}",
+                                    " ".repeat(GUTTER_GAP),
+                                    number_width = self.number_width
+                                )
+                            } else {
+                                " ".repeat(self.gutter_width)
+                            };
+                            spans.push(Span::styled(gutter, gutter_style));
+                        }
+                        spans.extend(row.spans);
+                        out.push(Line::from(spans));
+                    }
+                }
+                Entry::Hidden(count) => {
+                    let full = format!("... {count} lines hidden ...");
+                    let text = if full.len() <= usize::from(self.width) {
+                        full
+                    } else {
+                        let compact = format!("… {count} hidden");
+                        if crate::ui::wrap::display_width(&compact) <= usize::from(self.width) {
+                            compact
+                        } else {
+                            format!("… {count}")
+                        }
+                    };
+                    out.push(Line::from(truncate_spans_to_width(
+                        vec![Span::styled(
+                            text,
+                            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+                        )],
+                        usize::from(self.width),
+                    )));
+                }
+            }
+        }
+        std::task::Poll::Ready(out)
+    }
 }
 
 /// Escape sequences are not source text and tabs advance to the next tab stop.

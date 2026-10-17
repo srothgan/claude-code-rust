@@ -303,9 +303,9 @@ fn cache_set_height_invalidate_clears_height() {
 fn cache_set_height_on_invalidated_cache_returns_none() {
     let mut cache = BlockCache::default();
     cache.store(vec![Line::from("data")]);
-    cache.invalidate(); // version != 0
+    cache.invalidate();
     cache.set_height(5, 80);
-    // height_at returns None because cache is stale (version != 0)
+    // A source change invalidates the measured height.
     assert!(cache.height_at(80).is_none());
 }
 

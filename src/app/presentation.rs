@@ -292,6 +292,7 @@ mod tests {
             &mut app,
             100,
             &std::collections::BTreeSet::default(),
+            None,
         );
         let hidden_text: String = hidden
             .rows()
@@ -307,7 +308,7 @@ mod tests {
             crate::app::HistoryOutputId::Block(text_id),
         ]);
         let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
-            &mut app, 100, &excluded,
+            &mut app, 100, &excluded, None,
         );
         let text: String = rows
             .rows()
@@ -330,6 +331,7 @@ mod tests {
             &mut app,
             100,
             &std::collections::BTreeSet::default(),
+            None,
         );
         assert!(
             all.rows()

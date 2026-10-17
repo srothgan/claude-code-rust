@@ -15,7 +15,10 @@ use super::{TOOL_BODY_MAX_LINES, errors::render_failed_tool_text_content};
 /// This is width-independent and safe to cache across resizes.
 /// Returns command and output lines only; permission/question controls are appended
 /// by the standard body renderer so they are never hidden by the content cap.
-pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
+pub(super) fn render_execute_content(
+    tc: &ToolCallInfo,
+    control: &crate::ui::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     let mut body_lines: Vec<Line<'static>> = Vec::new();
@@ -24,7 +27,7 @@ pub(super) fn render_execute_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
         if let Some(failed_lines) = render_failed_tool_text_content(tc.status, output) {
             body_lines = failed_lines;
         } else {
-            body_lines = terminal_output::render_terminal_output(output)
+            body_lines = terminal_output::render_terminal_output(output, control)
                 .into_iter()
                 .map(dim_unstyled_output)
                 .collect();

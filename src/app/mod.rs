@@ -183,6 +183,9 @@ async fn run_tui_loop(
                 app.request_shutdown();
             }
             _ = event_loop_interval.tick() => {}
+            // Continue prepared history without adding an idle tick per layout step.
+            // The next phase still drains input fairly before the next layout step.
+            () = tokio::task::yield_now(), if terminal_runtime.chat_layout_ready(app) => {}
         }
 
         // Phase 2: process a bounded, fair batch of already-ready events.
@@ -275,7 +278,7 @@ async fn run_tui_loop(
 
         terminal_runtime.sync_surface(app)?;
 
-        // Phase 3: render once (only when something changed)
+        // Phase 3: advance layout and render only when something visible changed.
         let is_animating = schedule_animation_frame(app, now);
         if is_animating {
             tab_title::update_tab_title(app);
@@ -284,7 +287,7 @@ async fn run_tui_loop(
         if !is_animating && app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
             tab_title::update_tab_title(app);
         }
-        draw_pending_surface(app, terminal_runtime)?;
+        update_pending_surface(app, terminal_runtime)?;
 
         if app.shutdown_requested() {
             finish_shutdown_render(app, terminal_runtime, &mut events).await?;
@@ -303,7 +306,7 @@ async fn run_tui_loop(
     Ok(())
 }
 
-fn draw_pending_surface(
+fn update_pending_surface(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
@@ -311,8 +314,8 @@ fn draw_pending_surface(
         crossterm::terminal::size().context("failed to read terminal size before draw")?;
     events::reconcile_terminal_size(app, width, height);
     terminal_runtime.apply_surface_rebuilds(app)?;
-    if app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
-        terminal_runtime.draw_active_surface(app)?;
+    if terminal_runtime.has_pending_surface_work(app) {
+        terminal_runtime.update_active_surface(app)?;
     }
     Ok(())
 }
@@ -324,11 +327,11 @@ async fn finish_shutdown_render(
 ) -> anyhow::Result<()> {
     let mut interval = event_loop_interval();
     let mut os_shutdown = Box::pin(wait_for_shutdown_signal().fuse());
-    // The terminal owner requests another draw when replay is incomplete or a
-    // resize interrupts a transaction. Keep its progress instead of resetting it.
+    // Preparation can continue without repainting. Drain both pending layout and
+    // terminal output before restoration, while still accepting resize and force exit.
     while !app.shutdown_forced() {
-        draw_pending_surface(app, terminal_runtime)?;
-        if !app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle) {
+        update_pending_surface(app, terminal_runtime)?;
+        if !terminal_runtime.has_pending_surface_work(app) {
             break;
         }
         tokio::select! {
@@ -348,6 +351,7 @@ async fn finish_shutdown_render(
                 }
             }
             _ = interval.tick() => {}
+            () = tokio::task::yield_now(), if terminal_runtime.chat_layout_ready(app) => {}
         }
     }
     Ok(())

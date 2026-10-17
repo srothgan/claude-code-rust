@@ -15,28 +15,56 @@ static THEME_SET: LazyLock<two_face::theme::EmbeddedLazyThemeSet> =
     LazyLock::new(two_face::theme::extra);
 
 pub(crate) fn highlight_code(text: &str, language: Option<&str>) -> Vec<Line<'static>> {
-    highlight_with_syntax(text, syntax_for_language(language), highlight_theme())
+    highlight_code_with_control(
+        text,
+        language,
+        &super::layout_control::LayoutControl::uninterrupted(),
+    )
 }
 
-/// Advance syntax state through every line, retaining styled spans only for visible lines.
-pub(crate) fn highlight_source_lines(
-    lines: impl Iterator<Item = (String, bool)>,
-    path: Option<&Path>,
-    language_fallback: Option<&str>,
-    theme_name: EmbeddedThemeName,
+pub(super) fn highlight_code_with_control(
+    text: &str,
+    language: Option<&str>,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
-    let syntax = path
-        .and_then(find_syntax_for_path)
-        .or_else(|| language_fallback.and_then(find_syntax))
-        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
-    let mut highlighter = HighlightLines::new(syntax, theme(theme_name));
-    lines.filter_map(|(line, visible)| highlight_line(&line, &mut highlighter, visible)).collect()
+    highlight_with_syntax(text, syntax_for_language(language), highlight_theme(), control)
+}
+
+/// The syntax state of one active source traversal; dropped when that traversal ends.
+pub(crate) struct SourceHighlighter(HighlightLines<'static>);
+
+impl SourceHighlighter {
+    pub(crate) fn new(
+        path: Option<&Path>,
+        language_fallback: Option<&str>,
+        theme_name: EmbeddedThemeName,
+    ) -> Self {
+        let syntax = path
+            .and_then(find_syntax_for_path)
+            .or_else(|| language_fallback.and_then(find_syntax))
+            .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+        Self(HighlightLines::new(syntax, theme(theme_name)))
+    }
+
+    pub(crate) fn for_code(language: Option<&str>) -> Self {
+        Self(HighlightLines::new(syntax_for_language(language), highlight_theme()))
+    }
+
+    pub(crate) fn line(&mut self, source: &str, visible: bool) -> Option<Line<'static>> {
+        let started = std::time::Instant::now();
+        let line = highlight_line(source, &mut self.0, visible);
+        if started.elapsed() >= std::time::Duration::from_millis(50) {
+            tracing::debug!(target: crate::logging::targets::APP_RENDER, event_name = "syntax_highlight_slow_line", bytes = source.len(), elapsed_us = started.elapsed().as_micros());
+        }
+        line
+    }
 }
 
 fn highlight_with_syntax(
     text: &str,
     syntax: &SyntaxReference,
     theme: &'static Theme,
+    control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     if text.is_empty() {
         return vec![Line::default()];
@@ -46,6 +74,9 @@ fn highlight_with_syntax(
     let mut lines = Vec::new();
 
     for raw_line in LinesWithEndings::from(text) {
+        if control.cancelled() {
+            return Vec::new();
+        }
         lines.extend(highlight_line(raw_line, &mut highlighter, true));
     }
 
@@ -188,16 +219,14 @@ mod tests {
 
     #[test]
     fn highlight_code_accepts_explicit_theme() {
-        let rendered = highlight_source_lines(
-            std::iter::once(("fn main() {}\n".to_owned(), true)),
-            None,
-            Some("rs"),
-            EmbeddedThemeName::MonokaiExtendedBright,
-        );
-        let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
+        let rendered =
+            SourceHighlighter::new(None, Some("rs"), EmbeddedThemeName::MonokaiExtendedBright)
+                .line("fn main() {}\n", true)
+                .unwrap();
+        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert!(text.contains("fn"));
         assert!(text.contains("main"));
-        assert!(rendered[0].spans.iter().any(|span| span.style.fg.is_some()));
+        assert!(rendered.spans.iter().any(|span| span.style.fg.is_some()));
     }
 }

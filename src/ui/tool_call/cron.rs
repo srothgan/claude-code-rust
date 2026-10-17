@@ -135,7 +135,12 @@ mod tests {
             None,
         );
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
         let rendered: Vec<String> =
             rendered.into_iter().map(|line| line.trim_end().to_owned()).collect();
 
@@ -195,7 +200,12 @@ mod tests {
     fn list_input_has_no_body() {
         let tc = cron_tool_call("CronList", json!({}), None);
 
-        let rendered = rendered_line_texts(&super::super::standard::render_tool_call_body(&tc, 80));
+        let rendered =
+            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
+                &tc,
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            ));
 
         assert!(rendered.is_empty());
     }
@@ -257,7 +267,11 @@ mod tests {
         );
         let tc = cron_tool_call("CronList", json!({}), Some(&content));
 
-        let body = super::super::standard::render_tool_call_body(&tc, 40);
+        let body = super::super::standard::ToolBodyCursor::default().render(
+            &tc,
+            40,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
         let rendered = rendered_line_texts(&body);
 
         assert_eq!(body.len(), super::super::TOOL_BODY_MAX_LINES);
@@ -272,7 +286,11 @@ mod tests {
         );
         let tc = cron_tool_call("CronList", json!({}), Some(&content));
 
-        let body = super::super::standard::render_tool_call_body(&tc, 40);
+        let body = super::super::standard::ToolBodyCursor::default().render(
+            &tc,
+            40,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
         let rendered = rendered_line_texts(&body);
 
         assert_eq!(body.len(), super::super::TOOL_BODY_MAX_LINES);

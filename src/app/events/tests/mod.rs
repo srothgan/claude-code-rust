@@ -749,6 +749,7 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
         &mut app,
         180,
         &std::collections::BTreeSet::new(),
+        None,
     );
     let committed_ids = serialized
         .segments()
@@ -760,6 +761,7 @@ fn streaming_long_markdown_table_does_not_leave_raw_pipe_row_tail() {
         &mut app,
         180,
         &committed_ids,
+        None,
     );
     let remaining_text = remaining
         .rows()
@@ -809,6 +811,7 @@ fn live_rows_contain_text(app: &mut App, expected: &str) -> bool {
         app,
         120,
         &std::collections::BTreeSet::new(),
+        None,
     )
     .rows()
     .iter()
@@ -1349,6 +1352,7 @@ fn resume_history_preserves_user_message_boundaries_and_joins_only_same_source_c
             &mut app,
             80,
             &std::collections::BTreeSet::new(),
+            None,
         );
         let text = rows
             .rows()

@@ -2,6 +2,7 @@
 
 use super::history_insert::RenderedHistoryRows;
 use crate::app::HistoryOutputId;
+use crate::ui::layout_control::replay_row_budget;
 use anyhow::{Context, anyhow, bail};
 use crossterm::SynchronizedUpdate;
 use crossterm::cursor::MoveTo;
@@ -13,7 +14,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
 use ratatui::{Terminal, TerminalOptions, Viewport};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 use std::io::{Stdout, Write};
@@ -21,8 +22,6 @@ use std::io::{Stdout, Write};
 type StdoutBackend = super::tracked_cursor_backend::TrackedCursorBackend<CrosstermBackend<Stdout>>;
 type StdoutTerminal = Terminal<StdoutBackend>;
 pub(super) const PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
-const MIN_REPLAY_BATCH_ROWS: usize = 32;
-const MAX_REPLAY_BATCH_ROWS: usize = 160;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TerminalSnapshot {
@@ -49,7 +48,11 @@ pub(super) struct TerminalResizeDuringDraw {
 }
 
 impl TerminalResizeDuringDraw {
-    fn new(expected: TerminalSnapshot, actual: TerminalSnapshot, phase: &'static str) -> Self {
+    pub(super) fn new(
+        expected: TerminalSnapshot,
+        actual: TerminalSnapshot,
+        phase: &'static str,
+    ) -> Self {
         Self { expected, actual, phase }
     }
 
@@ -163,7 +166,8 @@ pub(super) struct ChatTerminal {
 struct ReplayState {
     render_width: u16,
     pending_batches: VecDeque<PendingHistoryBatch>,
-    confirm_ids: Vec<HistoryOutputId>,
+    confirm_ids: BTreeSet<HistoryOutputId>,
+    input_complete: bool,
 }
 
 impl ReplayState {
@@ -175,7 +179,8 @@ impl ReplayState {
         Self {
             render_width: render_width.max(1),
             pending_batches: VecDeque::from(batches),
-            confirm_ids,
+            confirm_ids: confirm_ids.into_iter().collect(),
+            input_complete: false,
         }
     }
 
@@ -188,7 +193,7 @@ impl ReplayState {
     }
 
     fn is_complete(&self) -> bool {
-        self.pending_batches.is_empty()
+        self.input_complete && self.pending_batches.is_empty()
     }
 }
 
@@ -299,14 +304,27 @@ impl ChatTerminal {
         self.pending_history.push_back(batch);
     }
 
-    pub(super) fn start_replay(
+    pub(super) fn queue_replay(
         &mut self,
         render_width: u16,
         batches: Vec<PendingHistoryBatch>,
         confirm_ids: Vec<HistoryOutputId>,
+        input_complete: bool,
     ) {
         self.pending_history.clear();
-        self.replay = Some(ReplayState::new(render_width, batches, confirm_ids));
+        let replay = self
+            .replay
+            .get_or_insert_with(|| ReplayState::new(render_width, Vec::new(), Vec::new()));
+        replay.pending_batches.extend(batches);
+        replay.confirm_ids.extend(confirm_ids);
+        replay.input_complete |= input_complete;
+    }
+
+    pub(super) fn has_pending_history_rows(&self) -> bool {
+        self.pending_history.iter().any(|batch| !batch.is_complete())
+            || self.replay.as_ref().is_some_and(|replay| {
+                replay.pending_batches.iter().any(|batch| !batch.is_complete())
+            })
     }
 
     pub(super) fn replay_pending_ids(&self) -> Vec<HistoryOutputId> {
@@ -371,7 +389,7 @@ impl ChatTerminal {
                 ensure_terminal_snapshot(snapshot, "draw_start")?;
                 // Insert history before allocating the live viewport. A full-height
                 // live window must not consume the capacity needed to restore scrollback.
-                if self.replay.is_some() || !self.pending_history.is_empty() {
+                if self.has_pending_history_rows() {
                     self.ensure_chat_geometry(1, snapshot)?;
                 }
                 let flushed_history = self.flush_queued_history(snapshot)?;
@@ -385,6 +403,8 @@ impl ChatTerminal {
                     event_name = "inline_chat_terminal_draw_transaction",
                     message = "chat terminal owner completed draw transaction",
                     outcome = "success",
+                    terminal_width = snapshot.width,
+                    terminal_height = snapshot.height,
                     requested_height = chat_frame.requested_inline_height,
                     final_height = viewport_area.height,
                     viewport_top = viewport_area.top(),
@@ -673,7 +693,7 @@ impl ChatTerminal {
             return Ok(FlushedHistory::default());
         }
 
-        let budget = replay_batch_row_budget(snapshot.height);
+        let budget = replay_row_budget(snapshot.height);
         let mut flushed_rows = 0usize;
         while let Some(mut batch) =
             self.replay.as_mut().and_then(|replay| replay.pending_batches.pop_front())
@@ -698,7 +718,9 @@ impl ChatTerminal {
 
         let replay_complete = self.replay.as_ref().is_some_and(ReplayState::is_complete);
         let confirmed_ids = if replay_complete {
-            self.replay.as_ref().map_or_else(Vec::new, |replay| replay.confirm_ids.clone())
+            self.replay
+                .as_ref()
+                .map_or_else(Vec::new, |replay| replay.confirm_ids.iter().cloned().collect())
         } else {
             Vec::new()
         };
@@ -1106,12 +1128,6 @@ fn ensure_area_inside_snapshot(
     Ok(())
 }
 
-fn replay_batch_row_budget(terminal_height: u16) -> usize {
-    usize::from(terminal_height)
-        .saturating_mul(4)
-        .clamp(MIN_REPLAY_BATCH_ROWS, MAX_REPLAY_BATCH_ROWS)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct InlineGeometryPlan {
     pub(crate) old_area: Option<Rect>,
@@ -1250,7 +1266,7 @@ fn plan_owned_insert(
     // scrollback and leaves the viewport in place. Bound the batch so a resize
     // can still interrupt between native insertion calls.
     let max_insert_rows_for_viewport = if screen_height == 1 {
-        u16::try_from(MIN_REPLAY_BATCH_ROWS).unwrap_or(u16::MAX)
+        u16::try_from(replay_row_budget(screen_height)).unwrap_or(u16::MAX)
     } else {
         screen_height.saturating_sub(viewport_area.height)
     };
@@ -1660,6 +1676,22 @@ mod tests {
     #[test]
     fn purge_replay_uses_codex_clear_sequence() {
         assert_eq!(super::PURGE_REPLAY_CLEAR_ANSI, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
+    }
+
+    #[test]
+    fn replay_cannot_complete_while_layout_may_still_produce_rows() {
+        let mut terminal = ChatTerminal::new(0);
+        let snapshot = TerminalSnapshot::new(80, 24);
+        terminal.queue_replay(80, Vec::new(), Vec::new(), false);
+        let waiting = terminal.flush_replay_history(snapshot).unwrap();
+        assert!(waiting.replay_incomplete);
+        assert!(!waiting.replay_complete);
+        assert!(waiting.confirmed_ids.is_empty());
+        terminal.queue_replay(80, Vec::new(), Vec::new(), true);
+        let finished = terminal.flush_replay_history(snapshot).unwrap();
+        assert!(finished.replay_complete);
+        assert!(!finished.replay_incomplete);
+        assert!(!terminal.is_replay_active());
     }
 
     #[test]

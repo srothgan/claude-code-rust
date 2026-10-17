@@ -88,7 +88,12 @@ impl DocumentTable {
         self.header.cells.len().max(self.alignments.len()).max(body_cols)
     }
 
-    pub(super) fn render_lines(&self, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
+    pub(super) fn render_lines(
+        &self,
+        width: u16,
+        bg: Option<Color>,
+        control: &crate::ui::layout_control::LayoutControl<'_>,
+    ) -> Vec<Line<'static>> {
         if self.column_count() == 0 || width == 0 {
             return Vec::new();
         }
@@ -102,9 +107,9 @@ impl DocumentTable {
         let layout = resolve_layout(self, usize::from(width), policy);
         match layout.mode {
             TableLayoutMode::Grid | TableLayoutMode::DenseGrid => {
-                render_grid_lines(self, &layout, bg)
+                render_grid_lines(self, &layout, bg, control)
             }
-            TableLayoutMode::Stacked => render_stacked_lines(self, usize::from(width), bg),
+            TableLayoutMode::Stacked => render_stacked_lines(self, usize::from(width), bg, control),
         }
     }
 }
@@ -264,6 +269,7 @@ fn render_grid_lines(
     table: &DocumentTable,
     layout: &ResolvedTableLayout,
     bg: Option<Color>,
+    control: &crate::ui::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let header_style = bg.map_or_else(
         || Style::default().add_modifier(Modifier::BOLD),
@@ -282,6 +288,9 @@ fn render_grid_lines(
         lines.push(render_separator_line(&layout.column_widths, layout.spacing, row_style));
     }
     for row in &table.rows {
+        if control.cancelled() {
+            return Vec::new();
+        }
         lines.extend(render_row_lines(
             row,
             &layout.column_widths,
@@ -403,6 +412,7 @@ fn render_stacked_lines(
     table: &DocumentTable,
     width: usize,
     bg: Option<Color>,
+    control: &crate::ui::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
     let header_style = bg.map_or_else(
         || Style::default().add_modifier(Modifier::BOLD),
@@ -413,6 +423,9 @@ fn render_stacked_lines(
     let mut lines = Vec::new();
 
     for (row_idx, row) in table.rows.iter().enumerate() {
+        if control.cancelled() {
+            return Vec::new();
+        }
         if row_idx > 0 {
             lines.push(Line::default());
         }

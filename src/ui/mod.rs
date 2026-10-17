@@ -14,6 +14,7 @@ pub(crate) mod host_tips;
 pub(crate) mod inline_chat_rows;
 pub(crate) mod input;
 pub(crate) mod input_rows;
+pub(crate) mod layout_control;
 pub(crate) mod live_rows;
 mod markdown;
 mod message;

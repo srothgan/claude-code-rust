@@ -10,7 +10,11 @@ use similar::TextDiff;
 /// Render a diff with proper unified-style output using the `similar` crate.
 /// The model `Diff` struct provides `old_text`/`new_text` -- we compute the actual
 /// line-level changes and show only changed lines with context.
-pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
+pub fn render_diff(
+    diff: &model::Diff,
+    width: u16,
+    control: &super::layout_control::LayoutControl<'_>,
+) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     if let Some(repository) = diff.repository.as_deref() {
         lines.push(Line::from(Span::styled(
@@ -21,6 +25,9 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
 
     let old = diff.old_text.as_deref().unwrap_or("");
     let new = &diff.new_text;
+    if control.cancelled() {
+        return Vec::new();
+    }
     let text_diff = TextDiff::from_lines(old, new);
     let line_number_width = old.lines().count().max(new.lines().count()).max(1).to_string().len();
     let content_width = usize::from(width).saturating_sub(line_number_width + 5).max(1);
@@ -29,6 +36,9 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
     // instead of the full file content.
     let udiff = text_diff.unified_diff();
     for hunk in udiff.iter_hunks() {
+        if control.cancelled() {
+            return Vec::new();
+        }
         let (added, removed) =
             hunk.iter_changes().fold((0, 0), |(added, removed), change| match change.tag() {
                 similar::ChangeTag::Delete => (added, removed + 1),
@@ -40,6 +50,9 @@ pub fn render_diff(diff: &model::Diff, width: u16) -> Vec<Line<'static>> {
         }
 
         for change in hunk.iter_changes() {
+            if control.cancelled() {
+                return Vec::new();
+            }
             let value = change.as_str().unwrap_or("").trim_end_matches('\n');
             let (marker, style, line_number) = match change.tag() {
                 similar::ChangeTag::Delete => (
@@ -399,6 +412,7 @@ mod tests {
                 .old_text(Some("fn old() {}\n"))
                 .repository(Some("acme/project".to_owned())),
             80,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
         );
         let repository_line: String =
             lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
@@ -429,6 +443,7 @@ mod tests {
                 "This is a long added line that should wrap onto another visual line.\n".to_owned(),
             ),
             28,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
         );
         let rendered: Vec<String> = lines
             .iter()
@@ -450,7 +465,11 @@ mod tests {
             text
         });
         let new = old.replace("line 122\n", "first\nsecond\n");
-        let lines = render_diff(&model::Diff::new("tmp.rs", new).old_text(Some(old)), 80);
+        let lines = render_diff(
+            &model::Diff::new("tmp.rs", new).old_text(Some(old)),
+            80,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
         let rendered: Vec<String> = lines
             .iter()
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
@@ -481,6 +500,7 @@ mod tests {
                 "fn main() {\n    if true {\n        return;\n    }\n}\n".to_owned(),
             ),
             80,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
         );
         let rendered: Vec<String> = lines
             .iter()
@@ -500,6 +520,7 @@ mod tests {
                     .to_owned(),
             ),
             28,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
         );
         let rendered: Vec<String> = lines
             .iter()

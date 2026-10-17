@@ -36,8 +36,9 @@ pub(crate) fn context_crosses_boundary(
     source: &str,
     current_end: usize,
     next_start: usize,
+    mut cancelled: impl FnMut() -> bool,
 ) -> bool {
-    parser(source).into_offset_iter().any(|(event, range)| {
+    parser(source).into_offset_iter().take_while(|_| !cancelled()).any(|(event, range)| {
         if range.start >= current_end || range.end <= next_start {
             return false;
         }

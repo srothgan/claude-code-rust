@@ -51,9 +51,10 @@ use standard::{cap_write_diff_lines, content_summary};
 pub(super) const TOOL_MAX_RENDER_LINES: usize = 10;
 pub(super) const TOOL_BODY_MAX_LINES: usize = TOOL_MAX_RENDER_LINES - 1;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default)]
 pub struct ToolCallRenderContext<'a> {
     pub current_mode_id: Option<&'a str>,
+    pub control: Option<&'a crate::ui::layout_control::LayoutControl<'a>>,
 }
 
 pub fn status_icon(
@@ -78,42 +79,81 @@ pub fn status_icon(
 // Public entry points (delegating to submodules)
 // ---------------------------------------------------------------------------
 
-/// Render a tool call with caching. Only re-renders when cache is stale.
-///
-/// Title content and body are cached independently; title chrome stays live.
-/// Tool content is capped by policy, while pending permission/question controls remain visible.
+/// One active tool traversal. Title and body can be delivered separately, while
+/// a large file preview keeps its syntax state across scheduling turns.
+#[derive(Default)]
+pub(crate) struct ToolRowsCursor {
+    source_revision: Option<u64>,
+    body: standard::ToolBodyCursor,
+    finished: bool,
+}
+
+impl ToolRowsCursor {
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    pub(crate) fn next(
+        &mut self,
+        tc: &mut ToolCallInfo,
+        context: ToolCallRenderContext<'_>,
+        width: u16,
+        spinner: crate::ui::SpinnerState,
+    ) -> Vec<Line<'static>> {
+        let uninterrupted = crate::ui::layout_control::LayoutControl::uninterrupted();
+        let control = context.control.unwrap_or(&uninterrupted);
+        if self.finished || control.cancelled() {
+            return Vec::new();
+        }
+        if self.source_revision.is_some_and(|revision| revision != tc.cache.source_revision()) {
+            control.cancel();
+            return Vec::new();
+        }
+        if self.source_revision.is_none() {
+            self.source_revision = Some(tc.cache.source_revision());
+            self.finished = !standard::tool_call_has_body(tc);
+            return vec![standard::render_tool_call_title(tc, context, width, spinner)];
+        }
+        let depends_on_width = standard::tool_call_body_depends_on_width(tc);
+        let cached = if depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
+        if let Some(cached) = cached {
+            self.finished = true;
+            return cached.clone();
+        }
+        let body = if control.can_yield() {
+            self.body.poll(tc, width, control)
+        } else {
+            std::task::Poll::Ready(self.body.render(tc, width, control))
+        };
+        let std::task::Poll::Ready(body) = body else {
+            return Vec::new();
+        };
+        if control.cancelled() {
+            return Vec::new();
+        }
+        self.finished = true;
+        if depends_on_width {
+            tc.cache.store_for_width(body.clone(), width);
+        } else {
+            tc.cache.store(body.clone());
+        }
+        body
+    }
+}
+
+/// Synchronous consumers drain the same cursor used by incremental replay.
 pub fn render_tool_call_cached(
     tc: &mut ToolCallInfo,
-    render_context: ToolCallRenderContext<'_>,
+    context: ToolCallRenderContext<'_>,
     width: u16,
     spinner: crate::ui::SpinnerState,
     out: &mut Vec<Line<'static>>,
 ) {
-    let title = standard::render_tool_call_title(tc, render_context, width, spinner);
-    out.push(title);
-
-    if !standard::tool_call_has_body(tc) {
-        return;
-    }
-
-    let body_depends_on_width = standard::tool_call_body_depends_on_width(tc);
-
-    // Expanded body: use cache if valid, otherwise render and cache.
-    let cached_body =
-        if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
-    if let Some(cached_body) = cached_body {
-        out.extend_from_slice(cached_body);
-    } else {
-        let body = standard::render_tool_call_body(tc, width);
-        if body_depends_on_width {
-            tc.cache.store_for_width(body, width);
-        } else {
-            tc.cache.store(body);
-        }
-        let stored =
-            if body_depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
-        if let Some(stored) = stored {
-            out.extend_from_slice(stored);
+    let mut cursor = ToolRowsCursor::default();
+    while !cursor.is_finished() {
+        out.extend(cursor.next(tc, context, width, spinner));
+        if context.control.is_some_and(crate::ui::layout_control::LayoutControl::cancelled) {
+            break;
         }
     }
 }

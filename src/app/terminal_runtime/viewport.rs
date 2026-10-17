@@ -107,6 +107,7 @@ mod tests {
             app,
             width,
             &std::collections::BTreeSet::default(),
+            None,
         )
     }
 
