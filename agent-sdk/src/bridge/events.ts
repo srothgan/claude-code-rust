@@ -9,6 +9,7 @@ import type {
   BridgeEventEnvelope,
   McpOperationError,
   SessionUpdate,
+  SystemNoticeSeverity,
 } from "../types.js";
 import { buildModeState } from "./commands.js";
 import { mapSdkSessions } from "./history.js";
@@ -191,6 +192,22 @@ export function emitMcpOperationError(
   );
 }
 
+export function emitSystemNoticeUpdate(
+  session: SessionState,
+  severity: SystemNoticeSeverity,
+  message: string,
+): void {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return;
+  }
+  emitSessionUpdate(session.sessionId, {
+    type: "system_notice_update",
+    severity,
+    message: trimmed,
+  });
+}
+
 export function emitSessionUpdate(
   sessionId: string,
   update: SessionUpdate,
@@ -353,7 +370,11 @@ function logConnectEventEmission(
   });
 }
 
-export function emitConnectEvent(session: SessionState): void {
+/**
+ * Writes the connect event and everything held until it. Returns the session-title
+ * read it starts in the background; callers do not wait for it.
+ */
+export function emitConnectEvent(session: SessionState): Promise<void> {
   const staleSessions = session.sessionsToCloseAfterConnect;
   if (staleSessions) {
     for (const stale of staleSessions) {
@@ -390,14 +411,18 @@ export function emitConnectEvent(session: SessionState): void {
     }
   }
   emitAvailableAgentsSnapshot(session);
-  void emitSessionTitle(session);
+  for (const { severity, message } of session.pendingHookNotices ?? []) {
+    emitSystemNoticeUpdate(session, severity, message);
+  }
+  session.pendingHookNotices = undefined;
+  const titleRead = emitSessionTitle(session);
   session.resumeUpdates = undefined;
   session.restoredInput = undefined;
 
   session.sessionsToCloseAfterConnect = undefined;
   if (!staleSessions || staleSessions.length === 0) {
     refreshSessionsList();
-    return;
+    return titleRead;
   }
   const closeTask = (async () => {
     // Lazy import to break circular dependency at module-evaluation time.
@@ -411,6 +436,7 @@ export function emitConnectEvent(session: SessionState): void {
     refreshSessionsList();
   })();
   trackSessionCloseTask(closeTask);
+  return titleRead;
 }
 
 export function emitSessionReplacedEvent(

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildRewindConversationPlan, rewindTargetsFromSessionMessages } from "../bridge.js";
-import { mapSessionMessagesToUpdates } from "./history.js";
+import { mapSessionMessagesToEntries, mapSessionMessagesToUpdates } from "./history.js";
 
 const rename = "<command-name>/rename</command-name>\n<command-message>rename</command-message>\n<command-args>review-444</command-args>";
 const color = "<command-name>/color</command-name>\n<command-message>color</command-message>\n<command-args>blue</command-args>";
@@ -43,6 +43,30 @@ test("resume shows complete command envelopes as commands while fork offers only
   assert.deepEqual(fork.retainedMessages[3].message, { role: "user", content: messages[3].message.content });
   assert.equal(buildRewindConversationPlan(messages, "rename"), null);
   assert.deepEqual(messages, original);
+});
+
+test("only a reminder the SDK marks as metadata is a system reminder, and the chat leaves it out", () => {
+  const assistant = (uuid: string, text: string) => ({ ...user(uuid, [{ type: "text", text }]), type: "assistant" as const, message: { role: "assistant", content: [{ type: "text", text }] } });
+  const messages = [
+    user("reminder", "<system-reminder>\nReport through SubagentHandback.\n</system-reminder>\n", { is_meta: true }),
+    user("typed", "<system-reminder>typed by the user</system-reminder>"),
+    user("quoted", "Quote <system-reminder>tags</system-reminder> as written."),
+    user("meta-with-more", "<system-reminder>first</system-reminder> and more", { is_meta: true }),
+    assistant("reply", "<system-reminder>an agent's own words</system-reminder>"),
+  ];
+  const text = (entry: ReturnType<typeof mapSessionMessagesToEntries>[number]) =>
+    entry.type === "system_reminder" ? ["reminder", entry.text]
+      : (entry.type === "user_message_chunk" || entry.type === "agent_message_chunk") && entry.content.type === "text" ? [entry.type, entry.content.text]
+      : undefined;
+  const literal = [
+    ["user_message_chunk", "<system-reminder>typed by the user</system-reminder>"],
+    ["user_message_chunk", "Quote <system-reminder>tags</system-reminder> as written."],
+    ["user_message_chunk", "<system-reminder>first</system-reminder> and more"],
+    ["agent_message_chunk", "<system-reminder>an agent's own words</system-reminder>"],
+  ];
+  assert.deepEqual(mapSessionMessagesToEntries(messages).map(text).filter(Boolean), [["reminder", "Report through SubagentHandback."], ...literal]);
+  assert.deepEqual(mapSessionMessagesToUpdates(messages).map(text).filter(Boolean), literal);
+  assert.ok(!rewindTargetsFromSessionMessages(messages).some(target => target.uuid === "reminder"), "a reminder is no fork point");
 });
 
 test("command output becomes a notice with literal content and never becomes a fork point", () => {

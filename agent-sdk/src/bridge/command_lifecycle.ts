@@ -1,6 +1,7 @@
 import {
   getSessionMessages,
   listSessions,
+  renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "../types.js";
 import {
@@ -22,7 +23,9 @@ import {
   createSession,
   detachSessionForClose,
   sessions,
+  type SessionState,
 } from "./session_lifecycle.js";
+import { emitSessionTitle } from "./session_title.js";
 import type { RewindConversationPlan } from "../bridge.js";
 
 type LifecycleCommand = Extract<
@@ -245,6 +248,7 @@ async function create(
   await createSession({
     cwd: command.cwd,
     resume: command.resume,
+    ...(command.resume && command.launch_settings.fork_session ? { forkSession: true } : {}),
     launchSettings: command.launch_settings,
     connectEvent: "connected",
     requestId,
@@ -308,9 +312,10 @@ async function resume(
         stale_session_count: staleSessions.length,
       },
     });
-    await createSession({
+    const session = await createSession({
       cwd: matched.cwd ?? process.cwd(),
       resume: command.session_id,
+      ...(command.launch_settings.fork_session ? { forkSession: true } : {}),
       launchSettings: command.launch_settings,
       ...(resumeUpdates.length > 0 ? { resumeUpdates } : {}),
       connectEvent: hadActiveSession ? "session_replaced" : "connected",
@@ -319,6 +324,7 @@ async function resume(
         ? { sessionsToCloseAfterConnect: staleSessions }
         : {}),
     });
+    await renameResumedSession(command, matched.cwd, requestId, session);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.error({
@@ -336,6 +342,57 @@ async function resume(
       requestId,
     );
   }
+}
+
+/**
+ * Apply a launch name to the session being resumed and report the new title. A fork is a new
+ * conversation and takes the SDK `title` option instead (buildLaunchQueryOptions), leaving the
+ * original's title alone.
+ *
+ * The rename waits for initialization to succeed: the SDK validates MCP servers and settings
+ * while the session starts, so a resume that fails there leaves the saved title untouched, and
+ * the startup tasks have already reported why. A signed-out user initializes successfully, but
+ * the startup tasks then ask for sign-in and the app starts a new session after /login, so the
+ * resumed one is not renamed either. Otherwise the connect event has been sent, so a rename
+ * failure, an SDK or disk failure since the app validated the flags, is reported on the
+ * connected session like any other error. It does not end the resume: the conversation matters
+ * more than its label.
+ */
+async function renameResumedSession(
+  command: Extract<LifecycleCommand, { command: "resume_session" }>,
+  cwd: string | undefined,
+  requestId: string | undefined,
+  session: SessionState,
+): Promise<void> {
+  const name = command.launch_settings.name;
+  if (name === undefined || command.launch_settings.fork_session) {
+    return;
+  }
+  try {
+    await awaitSessionInitialization(session);
+  } catch {
+    return;
+  }
+  if (session.authHintSent) {
+    return;
+  }
+  try {
+    await renameSession(command.session_id, name, cwd ? { dir: cwd } : undefined);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    bridgeLogger.warn({
+      target: LOG_TARGETS.APP_SESSION,
+      eventName: "session_launch_rename_failed",
+      message: "failed to apply the launch name to the resumed session",
+      outcome: "failure",
+      ...(requestId ? { requestId } : {}),
+      sessionId: command.session_id,
+      fields: { error_message: message },
+    });
+    slashError(session.sessionId, `failed to rename session: ${message}`, requestId);
+    return;
+  }
+  await emitSessionTitle(session);
 }
 
 async function replace(

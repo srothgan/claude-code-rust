@@ -384,6 +384,46 @@ test("resume restores background acknowledgements and routes task-only outcomes 
   }
 });
 
+const PROMPT_ENVELOPE = '{"command":"prompt","chunks":[{"kind":"text","value":"my private plan for the merger"';
+
+test("a malformed command envelope writes none of its content to the default log", async () => {
+  const bridge = new SpawnedBridge({ CLAUDE_RS_BRIDGE_DIAGNOSTICS: "0" });
+  let message: string;
+  try {
+    bridge.writeRaw(`${PROMPT_ENVELOPE}\n`);
+    const envelope = await bridge.nextEnvelope();
+    assertProtocolEvent(envelope, "connection_failed");
+    message = String(envelope.message);
+  } finally {
+    await bridge.stop();
+  }
+
+  const records = bridge.stderrLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const decode = records.find((record) => record.event_name === "bridge_command_decode_failed");
+  assert.ok(decode, bridge.stderrLines.join("\n"));
+  assert.equal(decode.size_bytes, PROMPT_ENVELOPE.length);
+  for (const text of [...bridge.stderrLines, message]) {
+    assert.ok(!text.includes("private plan"), text);
+  }
+  assert.equal("preview" in (decode.fields as Record<string, unknown>), false);
+});
+
+test("a malformed command envelope keeps its preview in the detailed log", async () => {
+  const bridge = new SpawnedBridge({ CLAUDE_RS_BRIDGE_DIAGNOSTICS: "1" });
+  try {
+    bridge.writeRaw(`${PROMPT_ENVELOPE}\n`);
+    await bridge.nextEnvelope();
+  } finally {
+    await bridge.stop();
+  }
+
+  const decode = bridge.stderrLines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((record) => record.event_name === "bridge_command_decode_failed");
+  assert.ok(decode, bridge.stderrLines.join("\n"));
+  assert.match(String((decode.fields as Record<string, unknown>).preview), /private plan/);
+});
+
 test("bridge process emits connection_failed for malformed JSON", async () => {
   const bridge = new SpawnedBridge();
   try {
@@ -626,14 +666,42 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       if (!entry || (options?.dir && entry.cwd !== options.dir)) return undefined;
       return entry;
     }
+    let subagentListings = 0;
+    export async function listSubagents(sessionId, options) {
+      record({ type: "listSubagents", sessionId, dir: options?.dir });
+      // The transcript directory becomes unreadable after the first listing.
+      if (++subagentListings > 1) throw new Error("subagent directory unreadable");
+      return ["agent-running", "agent-done"];
+    }
+    export async function getSubagentMessages(sessionId, agentId, options) {
+      record({ type: "getSubagentMessages", sessionId, agentId, dir: options?.dir });
+      if (agentId === "agent-unreadable") throw new Error("transcript unreadable");
+      const entry = (type, uuid, parentUuid, content) => ({ type, uuid, parentUuid, session_id: sessionId, parent_tool_use_id: null, message: { role: type, content } });
+      if (agentId === "agent-handback") return [
+        entry("user", "handback-prompt", null, "Survey the docs. Quote <system-reminder>tags</system-reminder> as written."),
+        { ...entry("user", "handback-reminder", "handback-prompt", "<system-reminder>\\nReport through SubagentHandback.\\n</system-reminder>\\n"), is_meta: true },
+        entry("user", "handback-follow-up", "handback-reminder", "<system-reminder>typed by the user</system-reminder>"),
+        entry("assistant", "handback-note", "handback-follow-up", [{ type: "text", text: "Keeping <system-reminder>as written</system-reminder>" }]),
+        entry("assistant", "handback-read", "handback-note", [{ type: "tool_use", id: "handback-glob", name: "Glob", input: { pattern: "docs/**" } }]),
+        entry("assistant", "handback-call", "handback-read", [{ type: "tool_use", id: "handback-1", name: "SubagentHandback", input: { message: "## Docs survey\\n\\n- 12 pages\\n- 2 stale links" } }]),
+        entry("user", "handback-ack", "handback-call", [{ type: "tool_result", tool_use_id: "handback-1", content: [{ type: "text", text: "Report delivered to your caller." }] }]),
+      ];
+      return [
+        entry("user", "agent-prompt", null, [{ type: "text", text: "Inspect the parser" }]),
+        entry("assistant", "agent-tool", "agent-prompt", [{ type: "tool_use", id: "agent-bash", name: "Bash", input: { command: "ls parser" } }]),
+        entry("assistant", "agent-reply", "agent-tool", [{ type: "text", text: "Parser checked" }]),
+      ];
+    }
     export async function getSessionMessages(...args) { return process.env.RESUME_TRANSCRIPT_FIXTURE === "1" ? sdkGetSessionMessages(...args) : []; }
     export async function importSessionToStore(...args) { if (process.env.RESUME_TRANSCRIPT_FIXTURE === "1") await sdkImportSessionToStore(...args); }
     export async function renameSession(sessionId, title, options) {
+      record({ type: "rename", sessionId, title, dir: options?.dir });
       const existing = saved.get(sessionId) ?? {};
       saved.set(sessionId, { ...existing, cwd: existing.cwd ?? options?.dir, title });
     }
     export function query({ prompt, options }) {
       record({ type: "query", cwd: options.cwd, resume: options.resume, model: options.model, effort: options.effort, permissionMode: options.permissionMode, agent: options.agent });
+      record({ type: "launch", forkSession: options.forkSession, title: options.title, additionalDirectories: options.additionalDirectories, mcpServers: options.mcpServers, strictMcpConfig: options.strictMcpConfig, settings: options.settings, systemPrompt: options.systemPrompt, enableFileCheckpointing: options.enableFileCheckpointing });
       const state = saved.get(options.resume) ?? { requested: false, effort: "high", cwd: options.cwd };
       if (options.title !== undefined) state.title = options.title;
       saved.set(options.sessionId ?? options.resume, state);
@@ -701,6 +769,10 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
             record({ type: "settings", effective: resolved.effective, checkpointing: options.enableFileCheckpointing });
           }
           return { current_permission_mode: process.env.PERMISSION_MODE_FIXTURE ?? effective.permissions?.defaultMode ?? "default", models: ["default", "opus", "sonnet", "haiku", "fixture-unavailable", "fixture-read-failure"].map(value => ({ value, resolvedModel: value === "default" || value === "opus" ? "claude-opus-5-5" : value === "sonnet" ? "claude-sonnet-5-5" : value, displayName: value, supportsEffort: value !== "haiku", supportsFastMode: value !== "haiku", supportsAutoMode: value !== "haiku", supportedEffortLevels: value === "haiku" ? [] : ["low", "medium", "high", "xhigh", "max"] })), commands: commandFixture ? bootstrapCommands : [], agents: sessionFixture ? [{ name: "reviewer", description: "Review code", model: "sonnet" }] : [], account: { apiKeySource: "fixture" }, fast_mode_state: "off" }; },
+        async stopTask(taskId) {
+          record({ type: "stopTask", taskId });
+          if (taskId === "agent-closing") throw new Error("Query closed before response received");
+        },
         async supportedCommands() { return bootstrapCommands; },
         async setModel(value) { model = process.env.MODEL_STEP_DOWN_FIXTURE === "1" && value === "opus" ? "sonnet" : value; },
         async setPermissionMode(value) { if (sessionFixture && value === "auto") throw new Error("Cannot set permission mode to auto: account restriction"); record({ type: "mode", value }); },
@@ -906,6 +978,116 @@ test("startup overrides and continue use the production session lifecycle", asyn
     assert.deepEqual(entries.find(entry => entry.type === "query"), { type: "query", cwd, resume: "newest-here", model: "opus", effort: "max", permissionMode: "plan", agent: "reviewer" });
     const list = entries.find(entry => entry.type === "list");
     assert.deepEqual(list?.options, { dir: cwd, includeProgrammatic: true, includeWorktrees: true, limit: 50 });
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+function launchJournal(journal: string): BridgeEnvelope[] {
+  return readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line) as BridgeEnvelope);
+}
+
+test("launch configuration reaches the SDK options of a new session", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-config-"));
+  const journal = join(directory, "query-options.jsonl");
+  const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_JOURNAL: journal });
+  try {
+    bridge.writeCommand({
+      command: "create_session",
+      cwd: process.cwd(),
+      launch_settings: {
+        name: "Release prep",
+        additional_directories: ["/work/shared", "/work/docs"],
+        settings: { spinnerTipsEnabled: false, feedbackDrafts: "on", crossSessionInbound: "accept" },
+        mcp_configs: [
+          { docs: { command: "docs-mcp" }, search: { command: "search-v1" } },
+          { search: { command: "search-v2" } },
+        ],
+        strict_mcp_config: true,
+        system_prompt: "You are a release bot.",
+        append_system_prompt: "End every reply with DONE.",
+      },
+    });
+    await nextMatching(bridge, event => event.event === "connected");
+    const launch = launchJournal(journal).find(entry => entry.type === "launch");
+    assert.equal(launch?.title, "Release prep");
+    assert.equal(launch?.forkSession, undefined);
+    assert.deepEqual(launch?.additionalDirectories, ["/work/shared", "/work/docs"]);
+    // A later --mcp-config replaces an earlier server of the same name; the others stay.
+    assert.deepEqual(launch?.mcpServers, { docs: { command: "docs-mcp" }, search: { command: "search-v2" } });
+    assert.equal(launch?.strictMcpConfig, true);
+    // The user's layer, with the host restrictions laid over it: drafts stay off and an
+    // explicit crossSessionInbound survives.
+    assert.deepEqual(launch?.settings, { spinnerTipsEnabled: false, feedbackDrafts: "off", crossSessionInbound: "accept" });
+    const prompt = launch?.systemPrompt as { type: string; prompt: string[]; snapshot: boolean };
+    assert.equal(prompt.type, "custom");
+    assert.equal(prompt.prompt[0], "You are a release bot.");
+    assert.match(prompt.prompt[1] ?? "", /^Do not terminate the Claude Rust bridge runtime process .*\n\nEnd every reply with DONE\.$/s);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a launch name renames the resumed session, and a fork takes it as its own title", async () => {
+  const cwd = process.cwd();
+  const sessions = JSON.stringify([{ sessionId: "saved-session", cwd, lastModified: 1, customTitle: "Original" }]);
+  for (const fork of [false, true]) {
+    const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-name-"));
+    const journal = join(directory, "query-options.jsonl");
+    const { bridge, cleanup } = ultracodeFixtureBridge({ STARTUP_JOURNAL: journal, STARTUP_SESSIONS_FIXTURE: sessions });
+    try {
+      bridge.writeCommand({
+        command: "resume_session",
+        session_id: "saved-session",
+        launch_settings: { name: "Experiment", ...(fork ? { fork_session: true } : {}) },
+      });
+      const connected = await nextMatching(bridge, event => event.event === "connected");
+      // A resumed session is renamed after it connects, and its new title is reported after the
+      // rename, so that report is the point where the rename has happened.
+      const reported = fork
+        ? undefined
+        : await nextMatching(bridge, event => (event.update as SessionUpdate | undefined)?.type === "session_title_update"
+          && (event.update as SessionUpdate & { type: "session_title_update" }).title === "Experiment");
+      const entries = launchJournal(journal);
+      const launch = entries.find(entry => entry.type === "launch");
+      const renames = entries.filter(entry => entry.type === "rename");
+      if (fork) {
+        // A new conversation under a new id; the original keeps its title.
+        assert.notEqual(connected.session_id, "saved-session");
+        assert.equal(launch?.forkSession, true);
+        assert.equal(launch?.title, "Experiment");
+        assert.deepEqual(renames, []);
+      } else {
+        assert.equal(connected.session_id, "saved-session");
+        assert.equal(launch?.forkSession, undefined);
+        assert.equal(launch?.title, undefined);
+        assert.deepEqual(renames, [{ type: "rename", sessionId: "saved-session", title: "Experiment", dir: cwd }]);
+        assert.equal(reported?.session_id, "saved-session");
+      }
+    } finally {
+      await cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a continue launch forks the most recent session", async () => {
+  const cwd = process.cwd();
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-launch-fork-"));
+  const journal = join(directory, "query-options.jsonl");
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    STARTUP_SESSIONS_FIXTURE: JSON.stringify([{ sessionId: "newest-here", cwd, lastModified: 10 }]),
+  });
+  try {
+    bridge.writeCommand({ command: "create_session", cwd, continue_session: true, launch_settings: { fork_session: true } });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    assert.notEqual(connected.session_id, "newest-here");
+    const entries = launchJournal(journal);
+    assert.equal(entries.find(entry => entry.type === "query")?.resume, "newest-here");
+    assert.equal(entries.find(entry => entry.type === "launch")?.forkSession, true);
   } finally {
     await cleanup();
     rmSync(directory, { recursive: true, force: true });
@@ -1362,4 +1544,97 @@ test("spawned bridge publishes the native starting mode independently of saved m
     const replacement = await nextMatching(bridge, event => event.event === "session_replaced");
     assert.equal((replacement.mode as BridgeEnvelope).current_mode_id, "auto");
   } finally { await cleanup(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("subagent commands read SDK transcripts and stop only a running subagent, leaving its status to the lifecycle", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "claude-rs-subagents-"));
+  const journal = join(directory, "sdk.jsonl");
+  const started = (taskId: string, taskType: string) => ({
+    type: "system", subtype: "task_started", uuid: crypto.randomUUID(), task_id: taskId,
+    task_type: taskType, description: `Run ${taskId}`, ...(taskType === "local_agent" ? { subagent_type: "general-purpose" } : {}),
+  });
+  const { bridge, cleanup } = ultracodeFixtureBridge({
+    STARTUP_JOURNAL: journal,
+    BACKGROUND_TASK_FIXTURE: JSON.stringify({
+      start: [started("agent-running", "local_agent"), started("agent-closing", "local_agent"), started("shell-1", "local_bash")],
+    }),
+  });
+  const sdkCalls = (type: string) =>
+    readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line) as BridgeEnvelope).filter(call => call.type === type);
+  try {
+    bridge.writeCommand({ command: "create_session", cwd: process.cwd(), launch_settings: {} });
+    const connected = await nextMatching(bridge, event => event.event === "connected");
+    const sessionId = String(connected.session_id);
+    const result = async (name: string, command: BridgeEnvelope) => {
+      const requestId = crypto.randomUUID();
+      bridge.writeCommand({ ...command, session_id: sessionId, request_id: requestId });
+      const event = await nextMatching(bridge, event => event.event === name);
+      assert.equal(event.request_id, requestId);
+      assert.equal(event.session_id, sessionId);
+      return event;
+    };
+
+    const listed = await result("subagents_listed", { command: "list_subagents" });
+    assert.deepEqual(listed.agent_ids, ["agent-running", "agent-done"]);
+    assert.equal(listed.error, undefined);
+    assert.deepEqual(sdkCalls("listSubagents").map(call => [call.sessionId, call.dir]), [[sessionId, process.cwd()]]);
+
+    const read = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-done" });
+    assert.equal(read.agent_id, "agent-done");
+    const messages = read.messages as Array<{ role: string; text: string }>;
+    assert.deepEqual(messages.filter(message => message.role !== "tool"), [
+      { role: "user", text: "Inspect the parser" },
+      { role: "assistant", text: "Parser checked" },
+    ]);
+    assert.ok(messages.some(message => message.role === "tool" && message.text.includes("ls parser")), JSON.stringify(messages));
+    // An agent whose only answer is its hand-back report: the reader gets the full report as its final reply.
+    const handback = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-handback" });
+    const handbackMessages = handback.messages as Array<{ role: string; text: string }>;
+    assert.deepEqual(handbackMessages.at(-1), { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" });
+    // Only the SDK's own reminder loses its wrapper; tags a user or the agent wrote stay.
+    assert.deepEqual(handbackMessages.filter(message => message.role !== "tool"), [
+      { role: "user", text: "Survey the docs. Quote <system-reminder>tags</system-reminder> as written." },
+      { role: "system_reminder", text: "Report through SubagentHandback." },
+      { role: "user", text: "<system-reminder>typed by the user</system-reminder>" },
+      { role: "assistant", text: "Keeping <system-reminder>as written</system-reminder>" },
+      { role: "assistant", text: "## Docs survey\n\n- 12 pages\n- 2 stale links" },
+    ]);
+    assert.ok(!handbackMessages.some(message => message.role === "tool" && message.text.includes("SubagentHandback")), JSON.stringify(handbackMessages));
+    const unreadable = await result("subagent_messages", { command: "get_subagent_messages", agent_id: "agent-unreadable" });
+    assert.deepEqual([unreadable.agent_id, unreadable.messages, unreadable.error], ["agent-unreadable", [], "transcript unreadable"]);
+
+    // Nothing has started yet, so there is nothing to stop.
+    const early = await result("subagent_stop_result", { command: "stop_subagent", task_id: "agent-running" });
+    assert.match(String(early.error), /not running/);
+
+    bridge.writeCommand({ command: "prompt", session_id: sessionId, message_uuid: crypto.randomUUID(), chunks: [{ kind: "text", value: "fixture task start" }] });
+    await nextMatching(bridge, event => ((event.update as BridgeEnvelope)?.tasks as BridgeEnvelope[] | undefined)?.some(task => task.task_id === "shell-1") === true);
+
+    const shell = await result("subagent_stop_result", { command: "stop_subagent", task_id: "shell-1" });
+    assert.equal(shell.task_id, "shell-1");
+    assert.match(String(shell.error), /not running/, "a background shell is not a subagent");
+
+    const stopRequestId = crypto.randomUUID();
+    bridge.writeCommand({ command: "stop_subagent", session_id: sessionId, task_id: "agent-running", request_id: stopRequestId });
+    const beforeAcknowledgement: BridgeEnvelope[] = [];
+    const acknowledged = await nextMatching(bridge, event => {
+      beforeAcknowledgement.push(event);
+      return event.event === "subagent_stop_result";
+    });
+    assert.deepEqual([acknowledged.request_id, acknowledged.task_id, acknowledged.error], [stopRequestId, "agent-running", undefined]);
+    assert.ok(
+      !beforeAcknowledgement.some(event => (event.update as BridgeEnvelope)?.type === "task_state_update"),
+      "acknowledging a stop request must not report the task as stopped",
+    );
+
+    const rejected = await result("subagent_stop_result", { command: "stop_subagent", task_id: "agent-closing" });
+    assert.equal(rejected.error, "Query closed before response received");
+    assert.deepEqual(sdkCalls("stopTask").map(call => call.taskId), ["agent-running", "agent-closing"]);
+
+    const failedList = await result("subagents_listed", { command: "list_subagents" });
+    assert.deepEqual([failedList.agent_ids, failedList.error], [[], "subagent directory unreadable"]);
+  } finally {
+    await cleanup();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

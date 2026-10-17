@@ -623,6 +623,7 @@ pub(super) fn handle_turn_complete_event(
     finish_ready_turn_exit(app, exit, tool_status);
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::config::refresh_session_transcript_if_shown(app);
     if turn_was_active
         && !exit.cancel_requested
         && !matches!(
@@ -655,7 +656,9 @@ pub(super) fn handle_turn_error_event(
 
     if exit.cancel_requested {
         let summary = summarize_internal_error(msg);
-        tracing::warn!(
+        // The user asked for the cancellation, so this is routine and stays out of the
+        // default log; a genuine turn error below is still logged as an error.
+        tracing::debug!(
             target: crate::logging::targets::APP_SESSION,
             event_name = "turn_error_suppressed",
             message = "turn error suppressed after cancellation request",
@@ -668,6 +671,7 @@ pub(super) fn handle_turn_error_event(
         finish_ready_turn_exit(app, exit, model::ToolCallStatus::Failed);
         request_post_turn_resize_purge_replay_if_needed(app);
         crate::app::session_runtime::request_context_usage_refresh(app);
+        crate::app::config::refresh_session_transcript_if_shown(app);
         return;
     }
 
@@ -705,6 +709,7 @@ pub(super) fn handle_turn_error_event(
     app.turn.reset_for_turn_exit();
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
+    crate::app::config::refresh_session_transcript_if_shown(app);
 }
 
 pub(super) fn handle_user_message_queued_event(app: &mut App, message_uuid: &str) {

@@ -816,6 +816,7 @@ mod tests {
             resume: None,
             continue_session: false,
             session_options: crate::SessionOptions::default(),
+            session_config: crate::SessionConfigArgs::default(),
             command: Some(crate::Command::Logs(LogsArgs {
                 path: false,
                 latest: false,

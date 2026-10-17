@@ -1,6 +1,6 @@
 import { refreshSessionModel } from "./bridge/session_model.js";
 import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
 import {
@@ -43,6 +43,7 @@ import {
   rewindTargetsFromSessionMessages,
   updateAvailableCommands,
   handleReloadPluginsCommand,
+  scheduleBridgeCommand,
 } from "./bridge.js";
 import type { SessionState } from "./bridge.js";
 import { getSessionMessages, type Options, type SessionMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -108,6 +109,7 @@ import {
 } from "./bridge/message_handlers.js";
 import { dispatchCancelTurnCommand } from "./bridge/command_dispatch.js";
 import { handleSessionControlCommand } from "./bridge/command_session_control.js";
+import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import {
   handleSessionDataCommand,
   normalizeStructuredUsage,
@@ -1694,6 +1696,250 @@ test("parseCommandEnvelope validates reload_plugins command", () => {
     ).command,
     { command: "reload_plugins", session_id: "session-123", force: true },
   );
+});
+
+test("parseCommandEnvelope validates reload_skills_and_styles command", () => {
+  const parsed = parseCommandEnvelope(
+    JSON.stringify({
+      request_id: "req-reload",
+      command: "reload_skills_and_styles",
+      session_id: "session-123",
+    }),
+  );
+
+  assert.equal(parsed.requestId, "req-reload");
+  assert.deepEqual(parsed.command, {
+    command: "reload_skills_and_styles",
+    session_id: "session-123",
+  });
+  assert.throws(
+    () => parseCommandEnvelope(JSON.stringify({ command: "reload_skills_and_styles" })),
+    /session_id/,
+  );
+});
+
+type ReloadQueryStub = {
+  reloadSkills: () => Promise<unknown>;
+  reloadOutputStyles: () => Promise<unknown>;
+};
+
+const SKILLS_RELOADED = {
+  skills: [
+    { name: "deploy", description: "d", argumentHint: "" },
+    { name: "lint", description: "l", argumentHint: "" },
+  ],
+};
+const STYLES_RELOADED = { available_output_styles: ["default", "Explanatory", "mine"] };
+
+// Runs the command against a stubbed query; `during` runs while the reload is in flight.
+async function runReloadSkillsAndStyles(
+  query: ReloadQueryStub,
+  during?: () => void | Promise<void>,
+  after?: () => void | Promise<void>,
+): Promise<{ sessionId: string; events: Array<Record<string, unknown>> }> {
+  sessions.clear();
+  const session = makeSessionState();
+  session.query = query as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+  try {
+    const events = await captureBridgeEventsAsync(async () => {
+      const reload = handleSessionControlCommand(
+        { command: "reload_skills_and_styles", session_id: session.sessionId },
+        "req-reload",
+        promptControlDeps(),
+      );
+      await during?.();
+      await reload;
+      await after?.();
+    });
+    return { sessionId: session.sessionId, events };
+  } finally {
+    sessions.clear();
+  }
+}
+
+test("reload_skills_and_styles reloads output styles before skills and reports both names", async () => {
+  const calls: string[] = [];
+  const { sessionId, events } = await runReloadSkillsAndStyles({
+    reloadSkills: async () => {
+      calls.push("skills");
+      return SKILLS_RELOADED;
+    },
+    reloadOutputStyles: async () => {
+      calls.push("styles");
+      return STYLES_RELOADED;
+    },
+  });
+
+  // reloadOutputStyles() drops the SDK's markdown scan cache, so skills are read after it.
+  assert.deepEqual(calls, ["styles", "skills"]);
+  assert.deepEqual(events, [
+    {
+      request_id: "req-reload",
+      event: "skills_and_styles_reloaded",
+      session_id: sessionId,
+      skills: { status: "reloaded", names: ["deploy", "lint"] },
+      output_styles: { status: "reloaded", names: ["default", "Explanatory", "mine"] },
+    },
+  ]);
+});
+
+test("reload_skills_and_styles reports a failed half next to the half that reloaded", async () => {
+  const { sessionId, events } = await runReloadSkillsAndStyles({
+    reloadSkills: async () => SKILLS_RELOADED,
+    reloadOutputStyles: async () => {
+      throw new Error("style directory unreadable");
+    },
+  });
+
+  assert.deepEqual(events, [
+    {
+      request_id: "req-reload",
+      event: "skills_and_styles_reloaded",
+      session_id: sessionId,
+      skills: { status: "reloaded", names: ["deploy", "lint"] },
+      output_styles: { status: "failed", message: "style directory unreadable" },
+    },
+  ]);
+});
+
+test("reload_skills_and_styles reports a synchronous SDK throw as a failed half", async () => {
+  const { events } = await runReloadSkillsAndStyles({
+    reloadSkills: () => {
+      throw new Error("query closed");
+    },
+    reloadOutputStyles: async () => STYLES_RELOADED,
+  });
+
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]?.skills, { status: "failed", message: "query closed" });
+  assert.deepEqual(events[0]?.output_styles, {
+    status: "reloaded",
+    names: ["default", "Explanatory", "mine"],
+  });
+});
+
+test("reload_skills_and_styles reports an unanswered half after 10 seconds and ignores its late answer", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let answerLate!: (value: unknown) => void;
+    const { sessionId, events } = await runReloadSkillsAndStyles(
+      {
+        reloadSkills: () =>
+          new Promise((resolve) => {
+            answerLate = resolve;
+          }),
+        reloadOutputStyles: async () => STYLES_RELOADED,
+      },
+      async () => {
+        // Styles answer at once; the skills request is then the one left waiting.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        mock.timers.tick(10_000);
+      },
+      async () => {
+        // The SDK answers after the bound: it must not produce a second event.
+        answerLate(SKILLS_RELOADED);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      },
+    );
+
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reloaded",
+        session_id: sessionId,
+        skills: { status: "timed_out", after_ms: 10_000 },
+        output_styles: { status: "reloaded", names: ["default", "Explanatory", "mine"] },
+      },
+    ]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reload_skills_and_styles reports unanswered output styles next to skills that reloaded", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const { sessionId, events } = await runReloadSkillsAndStyles(
+      {
+        reloadSkills: async () => SKILLS_RELOADED,
+        reloadOutputStyles: () => new Promise(() => undefined),
+      },
+      () => {
+        // Styles are asked first and stay silent; skills are only asked once that bound ends.
+        mock.timers.tick(10_000);
+      },
+    );
+
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reloaded",
+        session_id: sessionId,
+        skills: { status: "reloaded", names: ["deploy", "lint"] },
+        output_styles: { status: "timed_out", after_ms: 10_000 },
+      },
+    ]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("reload_skills_and_styles queued behind a stalled session request answers after 10 seconds and never reloads later", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  sessions.clear();
+  const session = makeSessionState();
+  const calls: string[] = [];
+  let answerUsage!: (usage: unknown) => void;
+  session.query = {
+    // An earlier request for the same session that has not answered yet.
+    getContextUsage: () =>
+      new Promise((resolve) => {
+        answerUsage = resolve;
+      }),
+    reloadSkills: async () => {
+      calls.push("skills");
+      return SKILLS_RELOADED;
+    },
+    reloadOutputStyles: async () => {
+      calls.push("styles");
+      return STYLES_RELOADED;
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  sessions.set(session.sessionId, session);
+  try {
+    const scheduler = new BridgeCommandScheduler();
+    const allEvents = await captureBridgeEventsAsync(async () => {
+      // Both commands go through the bridge's own scheduling step, as main() schedules them.
+      const earlier = scheduleBridgeCommand(scheduler, {
+        requestId: "req-usage",
+        command: { command: "get_context_usage", session_id: session.sessionId },
+      });
+      const reload = scheduleBridgeCommand(scheduler, {
+        requestId: "req-reload",
+        command: { command: "reload_skills_and_styles", session_id: session.sessionId },
+      });
+      mock.timers.tick(10_000);
+      // The earlier request finishes after the deadline; the expired reload must stay skipped.
+      answerUsage({ percentage: 10, totalTokens: 100, maxTokens: 1000 });
+      await Promise.all([earlier, reload]);
+      await scheduler.whenIdle();
+    });
+    const events = allEvents.filter((event) => event.request_id === "req-reload");
+
+    assert.deepEqual(events, [
+      {
+        request_id: "req-reload",
+        event: "skills_and_styles_reload_expired",
+        session_id: session.sessionId,
+        after_ms: 10_000,
+      },
+    ]);
+    assert.deepEqual(calls, []);
+  } finally {
+    sessions.clear();
+    mock.timers.reset();
+  }
 });
 
 test("handleReloadPluginsCommand holds cache-impacting reloads and sanitizes plugin names", async () => {
@@ -5026,6 +5272,7 @@ test("TaskStop renders structured output and marks the task terminal", () => {
           blocks: [],
           blocked_by: [],
           metadata: {
+            sdk_lifecycle_task: true,
             terminal_status: "stopped",
             task_type: "bash",
             command: "npm run watch",
@@ -5321,6 +5568,33 @@ test("TaskList complete snapshot preserves richer retained fields", () => {
   });
 });
 
+test("TaskList keeps completed subagents while removing stale plan tasks", () => {
+  const session = makeSessionState();
+  const events = captureBridgeEvents(() => {
+    emitToolCall(session, "agent-tool", "Agent", { description: "Research", prompt: "Research" });
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "agent-1", tool_use_id: "agent-tool", task_type: "local_agent", description: "Research",
+    });
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "agent-1", tool_use_id: "agent-tool", status: "completed", summary: "Research done",
+    });
+    session.tasksById.set("plan-old", { task_id: "plan-old", subject: "Stale plan", status: "pending", blocks: [], blocked_by: [] });
+    session.taskOrder.push("plan-old");
+    emitToolCall(session, "list-tool", "TaskList", {});
+    emitToolResultUpdate(session, "list-tool", false, { tasks: [] });
+  });
+
+  const snapshot = events.map(event => event.update as Record<string, unknown>).filter(update => update.type === "task_state_update").at(-1);
+  assert.equal(snapshot?.type, "task_state_update");
+  assert.equal(snapshot.source, "task_list");
+  assert.equal(snapshot.is_complete_snapshot, true);
+  const tasks = snapshot.tasks as Array<{ task_id: string; status: string; metadata?: Record<string, unknown> }>;
+  assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.metadata?.task_type]), [["agent-1", "completed", "local_agent"]]);
+  assert.deepEqual(snapshot.removed_task_ids, ["plan-old"]);
+  assert.equal(session.tasksById.get("agent-1")?.status, "completed");
+  assert.equal(session.tasksById.has("plan-old"), false);
+});
+
 test("TaskGet null emits removal or confirmed absence", () => {
   const session = makeSessionState();
   session.tasksById.set("task-1", {
@@ -5379,6 +5653,7 @@ test("handleTaskSystemMessage emits task state for unlinked task_updated message
             status: "in_progress",
             blocks: [],
             blocked_by: [],
+            metadata: { sdk_lifecycle_task: true },
           },
         ],
         removed_task_ids: [],
@@ -5425,6 +5700,7 @@ test("handleTaskSystemMessage maps stopped notifications to terminal task state"
             blocked_by: [],
             metadata: {
               output_file: "C:/tmp/task-1.txt",
+              sdk_lifecycle_task: true,
               summary: "Stopped background watch",
               terminal_status: "stopped",
               terminal_reason: "worker_restart",
@@ -7772,6 +8048,7 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
               request_id: "request-1",
               subagent_type: "tester",
               task_description: "Validate the branch",
+              sdk_lifecycle_task: true,
             },
             source_tool_call_id: "tool-1",
           },
@@ -7839,7 +8116,7 @@ test("ambient task lifecycle stays in inventory without creating a visible tool 
             status: "in_progress",
             blocks: [],
             blocked_by: [],
-            metadata: { task_type: "artifact_watch", ambient: true },
+            metadata: { task_type: "artifact_watch", ambient: true, sdk_lifecycle_task: true },
           },
         ],
         removed_task_ids: [],
@@ -9296,7 +9573,14 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
   const taskUpdates = updates.filter(
     (update) => update.type === "task_state_update",
   );
-  assert.equal(taskUpdates.length, 4);
+  // The three starts, then one update settling those with no saved outcome.
+  assert.equal(taskUpdates.length, 5);
+  const settled = taskUpdates.at(4);
+  assert.ok(settled?.type === "task_state_update");
+  assert.deepEqual(
+    settled.tasks.map((task) => [task.task_id, task.status, (task.metadata as Record<string, unknown>).terminal_status]),
+    [["task-bg", "completed", "interrupted"], ["task-remote", "completed", "interrupted"], ["task-mcp", "completed", "interrupted"]],
+  );
   assert.deepEqual(taskUpdates.at(1), {
     type: "task_state_update",
     source: "task_lifecycle",
@@ -9309,9 +9593,12 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
         blocks: [],
         blocked_by: [],
         metadata: {
+          // The saved start has no task_type; its Agent call makes it a subagent.
+          task_type: "local_agent",
           subagent_type: "general-purpose",
           is_backgrounded: true,
           spawn_depth: 2,
+          sdk_lifecycle_task: true,
         },
         source_tool_call_id: "tool-agent",
       },
@@ -9334,6 +9621,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
           task_description: "Remote agent smoke",
           task_type: "remote_agent",
           prompt: "Continue remotely",
+          sdk_lifecycle_task: true,
         },
       },
     ],
@@ -9355,6 +9643,7 @@ test("mapSessionMessagesToUpdates maps task system records from resume history",
           task_type: "mcp",
           workflow_name: "docs",
           prompt: "Read resource",
+          sdk_lifecycle_task: true,
         },
       },
     ],
@@ -10456,6 +10745,7 @@ test("buildQueryOptions adapts resolved checkpoint preferences and keeps host re
       });
       assert.equal(options.enableFileCheckpointing, enabled ?? true);
       assert.equal(options.agentProgressSummaries, true);
+      assert.equal(options.includeHookEvents, true);
       assert.equal(options.promptSuggestions, true);
       assert.deepEqual(options.disallowedTools, ["ProposeSkills", "ProposeGoal"]);
       assert.deepEqual(options.settings, {

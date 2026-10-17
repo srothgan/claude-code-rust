@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 pub(crate) mod activity;
+pub(crate) mod agents;
 pub(crate) mod auth;
 mod btw;
 mod cache_policy;
@@ -13,6 +14,7 @@ pub(crate) mod copy;
 mod dialog;
 pub(crate) mod diff_view;
 mod events;
+pub(crate) mod export;
 pub(crate) mod file_index;
 mod focus;
 pub(crate) mod footer;

@@ -81,11 +81,14 @@ impl App {
         self.config.invalidate_session(self.global_settings_path.as_deref());
         // Side-question work belongs to this conversation scope, not the next one.
         self.btw.clear();
+        self.agents.clear_session();
     }
 
     pub fn clear_session_runtime_identity(&mut self) {
         self.session_runtime.clear_identity();
         self.sdk_inventory.clear_rewind_targets();
+        // Its chunks are scoped to the old session and would be dropped as stale.
+        self.history_export = None;
     }
 
     pub fn reconcile_trust_state_from_preferences_and_cwd(&mut self) {

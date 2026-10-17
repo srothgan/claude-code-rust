@@ -10,8 +10,12 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
 
     if update.is_complete_snapshot {
         if update.source == model::TaskUpdateSource::BackgroundTasks {
+            let incoming: HashSet<&str> =
+                update.tasks.iter().map(|task| task.task_id.as_str()).collect();
             app.sdk_inventory.tasks.retain(|task| {
-                !is_sdk_background_task(task) && !removed.contains(task.task_id.as_str())
+                !is_sdk_background_task(task)
+                    && !removed.contains(task.task_id.as_str())
+                    && !incoming.contains(task.task_id.as_str())
             });
             for task in update.tasks {
                 if !removed.contains(task.task_id.as_str()) {
@@ -381,6 +385,41 @@ mod tests {
         assert!(app.sdk_inventory.tasks.iter().any(|task| task.task_id == "task-list"));
         assert!(app.sdk_inventory.tasks.iter().any(|task| task.task_id == "bg-new"));
         assert!(!app.sdk_inventory.tasks.iter().any(|task| task.task_id == "bg-old"));
+    }
+
+    #[test]
+    fn background_snapshot_replaces_a_foreground_subagent_by_task_id() {
+        let mut app = App::test_default();
+        let mut foreground = task("agent-1", "Research", model::TaskStatus::InProgress);
+        foreground.metadata = Some(serde_json::json!({ "task_type": "local_agent" }));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![foreground]),
+        );
+
+        let mut background = background_task("agent-1", "Research");
+        background.metadata = Some(serde_json::json!({
+            "task_type": "local_agent", "sdk_background_task": true
+        }));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::BackgroundTasks)
+                .tasks(vec![background])
+                .complete_snapshot(true),
+        );
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].task_id, "agent-1");
+
+        let mut completed = task("agent-1", "Research", model::TaskStatus::Completed);
+        completed.metadata = Some(serde_json::json!({
+            "task_type": "local_agent", "terminal_status": "completed"
+        }));
+        apply_task_state_update(
+            &mut app,
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Lifecycle).tasks(vec![completed]),
+        );
+        assert_eq!(app.sdk_inventory.tasks.len(), 1);
+        assert_eq!(app.sdk_inventory.tasks[0].status, model::TaskStatus::Completed);
     }
 
     #[test]

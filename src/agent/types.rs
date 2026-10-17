@@ -336,6 +336,15 @@ pub struct RuntimeReloadCacheImpact {
     pub invalid_server_name_count: usize,
 }
 
+/// How one half of a skills-and-styles reload ended, as the bridge reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ReloadOutcome {
+    Reloaded { names: Vec<String> },
+    Failed { message: String },
+    TimedOut { after_ms: u64 },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
@@ -617,6 +626,23 @@ pub struct TaskItem {
     pub blocked_by: Vec<String>,
     pub metadata: Option<serde_json::Value>,
     pub source_tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentMessageRole {
+    User,
+    Assistant,
+    Tool,
+    /// A reminder the SDK added to the subagent's context, without its XML wrapper.
+    SystemReminder,
+}
+
+/// One readable entry of a saved subagent transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentMessage {
+    pub role: SubagentMessageRole,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

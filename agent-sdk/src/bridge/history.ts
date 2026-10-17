@@ -16,7 +16,7 @@ import type {
 import { asRecordOrNull } from "./shared.js";
 import { messageCandidates, transcriptPresentation } from "./transcript_presentation.js";
 import { applyFieldsToBase, normalizeToolCallUpdateFields, toolAcceptsTaskLifecycle, toolNameFromMeta } from "./tool_calls.js";
-import { taskLifecyclePatch, upsertTask } from "./tasks.js";
+import { interruptedTaskPatch, taskLifecyclePatch, upsertTask } from "./tasks.js";
 import { linkTaskToolUse } from "./task_links.js";
 import type { SessionState } from "./session_lifecycle.js";
 import { taskSystemToolFields } from "./message_handlers.js";
@@ -26,6 +26,7 @@ import {
   buildToolResultFields,
   backgroundToolLaunchTaskIdFromResult,
   createToolCall,
+  isAgentLikeToolName,
   isToolSearchToolName,
   isToolSearchToolResultType,
   isToolUseBlockType,
@@ -77,8 +78,34 @@ function nonEmptyTrimmed(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/**
+ * What a subagent's task_started record would have said, read from the Agent
+ * call that launched it. Claude Code 2.1.300 saves no task_started record for a
+ * background Agent call, only the call and a task notification, so on resume
+ * this call is the only source of the row's type, subagent type and title.
+ */
+function agentLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
+  if (!isAgentLikeToolName(toolNameFromMeta(tool?.meta) ?? "")) return {};
+  const input = asRecordOrNull(tool?.raw_input);
+  const subagentType = nonEmptyTrimmed(input?.subagent_type);
+  const description = nonEmptyTrimmed(input?.description);
+  return {
+    task_type: "local_agent",
+    ...(subagentType ? { subagent_type: subagentType } : {}),
+    ...(description ? { task_description: description } : {}),
+  };
+}
+
+/** A saved SDK reminder. A subagent transcript shows it; the chat has no place for one. */
+interface SystemReminderEntry {
+  type: "system_reminder";
+  text: string;
+}
+
+type HistoryEntry = SessionUpdate | SystemReminderEntry;
+
 function pushResumeTaskSystemUpdate(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   tasksById: Map<string, TaskItem>,
   taskToolUseIds: Map<string, string>,
   toolCalls: Map<string, ToolCall>,
@@ -104,6 +131,12 @@ function pushResumeTaskSystemUpdate(
   }
   const toolUseId = explicitToolUseId ?? taskToolUseIds.get(taskId);
   const tool = toolUseId ? toolCalls.get(toolUseId) : undefined;
+  // The record's own fields win over what the launching call implies.
+  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, { ...agentLaunchFields(tool), ...msg }, toolUseId);
+  if (patch) {
+    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
+    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
+  }
   if (tool && toolUseId && toolAcceptsTaskLifecycle(tool)) {
     const fields = taskSystemToolFields(tool, subtype, msg);
     if (!normalizeToolCallUpdateFields(tool, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
@@ -113,16 +146,11 @@ function pushResumeTaskSystemUpdate(
     }
   }
 
-  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, msg, toolUseId);
-  if (patch) {
-    const task = upsertTask({ tasksById, taskOrder: [] }, patch);
-    updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [task], removed_task_ids: [], is_complete_snapshot: false });
-  }
   return true;
 }
 
 function pushResumeTextChunk(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   role: "user" | "assistant",
   text: string,
   sourceMessageUuid?: string,
@@ -146,7 +174,7 @@ function pushResumeTextChunk(
 }
 
 function pushResumeToolUse(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
@@ -175,7 +203,7 @@ function pushResumeToolUse(
 }
 
 function pushResumeToolResult(
-  updates: SessionUpdate[],
+  updates: HistoryEntry[],
   toolCalls: Map<string, ToolCall>,
   hiddenToolUseIds: Set<string>,
   block: Record<string, unknown>,
@@ -212,7 +240,7 @@ function pushResumeToolResult(
   if (taskId) {
     taskToolUseIds.set(taskId, toolUseId);
     const patch = taskLifecyclePatch(tasksById.get(taskId), "task_started", {
-      task_id: taskId, description: base?.title, is_backgrounded: true,
+      ...agentLaunchFields(base), task_id: taskId, description: base?.title, is_backgrounded: true,
     }, toolUseId);
     if (patch) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: [upsertTask({ tasksById, taskOrder: [] }, patch)], removed_task_ids: [], is_complete_snapshot: false });
   }
@@ -279,10 +307,18 @@ export function mapSdkSessions(
   return entries;
 }
 
+/** Saved history as the chat's session updates. */
 export function mapSessionMessagesToUpdates(
   messages: SessionMessage[],
 ): SessionUpdate[] {
-  const updates: SessionUpdate[] = [];
+  return mapSessionMessagesToEntries(messages).filter((entry): entry is SessionUpdate => entry.type !== "system_reminder");
+}
+
+/** Saved history as session updates and the SDK reminders between them, in order. */
+export function mapSessionMessagesToEntries(
+  messages: SessionMessage[],
+): HistoryEntry[] {
+  const updates: HistoryEntry[] = [];
   const toolCalls = new Map<string, ToolCall>();
   const hiddenToolUseIds = new Set<string>();
   const tasksById = new Map<string, TaskItem>();
@@ -292,6 +328,10 @@ export function mapSessionMessagesToUpdates(
     const record = asRecordOrNull(entry);
     const presentation = transcriptPresentation(entry);
     if (presentation.kind === "hidden") continue;
+    if (presentation.kind === "system_reminder") {
+      updates.push({ type: "system_reminder", text: presentation.text });
+      continue;
+    }
     if (presentation.kind === "task_notification") {
       const notification = presentation.notification;
       if (notification) pushResumeTaskSystemUpdate(updates, tasksById, taskToolUseIds, toolCalls, notification);
@@ -399,6 +439,14 @@ export function mapSessionMessagesToUpdates(
     const metadata = messageMetadata({ ...entry, ...asRecordOrNull(entry.message) }, fallbackRole);
     if (metadata) updates.push(metadata);
   }
+
+  // History records starts and outcomes, never a live process. A task still
+  // running here lost its process when the CLI exited, so it is not rebuilt as
+  // running; no outcome is claimed for it.
+  const interrupted = [...tasksById.values()]
+    .filter((task) => task.status === "in_progress")
+    .map((task) => upsertTask({ tasksById, taskOrder: [] }, interruptedTaskPatch(task)));
+  if (interrupted.length > 0) updates.push({ type: "task_state_update", source: "task_lifecycle", tasks: interrupted, removed_task_ids: [], is_complete_snapshot: false });
 
   return updates;
 }

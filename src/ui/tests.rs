@@ -34,11 +34,13 @@ fn render_fullscreen_surface_draws_trusted_view() {
     let mut terminal = Terminal::new(backend).expect("terminal");
     let mut app = App::test_default();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Trusted);
+    app.trust.project_key = "/test/project".to_owned();
 
     terminal.draw(|frame| render_fullscreen_surface(frame, &mut app)).expect("draw");
 
     let rendered = buffer_text(&terminal);
-    assert!(rendered.contains("Unknown Project"));
+    assert!(rendered.contains("Trust this project directory?"));
+    assert!(rendered.contains("/test/project"));
 }
 
 #[test]

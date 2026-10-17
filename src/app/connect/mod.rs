@@ -29,7 +29,6 @@ use crate::agent::events::ClientEvent;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -43,12 +42,6 @@ fn shorten_cwd(cwd: &std::path::Path) -> String {
         }
     }
     cwd_str
-}
-
-fn resolve_startup_cwd(cli: &Cli) -> PathBuf {
-    cli.dir
-        .clone()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
@@ -73,7 +66,9 @@ pub(crate) use session_start::{
 pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = super::READY_EVENT_DRAIN_ROUNDS * 4;
 
 /// Create the `App` struct in `Connecting` state and load shared settings state.
-pub fn create_app(cli: &Cli) -> App {
+///
+/// `session_config` is the resolved [`Cli::resolve_session_config`], kept for every session.
+pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) -> App {
     let loaded_settings = match settings::load_global_settings() {
         Ok(loaded) => loaded,
         Err(err) => {
@@ -90,7 +85,9 @@ pub fn create_app(cli: &Cli) -> App {
             }
         }
     };
-    create_app_with_settings(cli, loaded_settings)
+    let mut app = create_app_with_settings(cli, loaded_settings);
+    app.startup = app.startup.with_session_config(session_config);
+    app
 }
 
 #[allow(clippy::too_many_lines)]
@@ -98,7 +95,7 @@ pub(super) fn create_app_with_settings(
     cli: &Cli,
     loaded_settings: settings::LoadedAppSettings,
 ) -> App {
-    let cwd = resolve_startup_cwd(cli);
+    let cwd = cli.startup_cwd();
     let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
     let (file_index_event_tx, file_index_event_rx) = super::file_index::event_channel();
     let (update_prompt, update_install_failure) =
@@ -167,7 +164,9 @@ pub(super) fn create_app_with_settings(
         session_picker: SessionPickerState::default(),
         chat_render: super::ChatRenderState::default(),
         copy_picker: None,
+        history_export: None,
         diff_view: None,
+        agents: Box::default(),
         mention: None,
         committed_mentions: Vec::new(),
         file_index: super::file_index::FileIndexState::default(),

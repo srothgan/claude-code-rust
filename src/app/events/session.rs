@@ -126,6 +126,13 @@ pub(super) fn handle_sessions_listed_event(
             .any(|session| session.session_id == pending_title_change.session_id);
         pending_title_change_resolved = renamed_session_present;
         if renamed_session_present {
+            if matches!(
+                pending_title_change.kind,
+                crate::app::config::PendingSessionTitleChangeKind::Rename { .. }
+            ) && app.config.session_rename_overlay().is_some()
+            {
+                app.config.clear_overlay();
+            }
             app.config.last_error = None;
             app.config.status_message = Some(match pending_title_change.kind {
                 crate::app::config::PendingSessionTitleChangeKind::Rename { requested_title } => {
@@ -306,9 +313,16 @@ fn startup_failure_message(reason: &str) -> &'static str {
 }
 
 pub(super) fn handle_slash_command_error_event(app: &mut App, msg: &str) {
-    if app.config.pending_session_title_change.take().is_some() {
-        app.config.last_error = Some(msg.to_owned());
-        app.config.status_message = None;
+    if let Some(pending) = app.config.pending_session_title_change.take() {
+        // A failed rename stays in its dialog, with the draft, when it is open.
+        if matches!(pending.kind, crate::app::config::PendingSessionTitleChangeKind::Rename { .. })
+            && app.config.session_rename_overlay().is_some()
+        {
+            app.config.set_overlay_error(msg);
+        } else {
+            app.config.last_error = Some(msg.to_owned());
+            app.config.status_message = None;
+        }
         app.request_active_surface_repaint();
         return;
     }

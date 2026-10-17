@@ -143,13 +143,14 @@ async fn edits_persist_in_order_and_escape_waits_for_the_last_write() {
                     "effort",
                     "ultracode",
                     "fastMode",
+                    "runningSubagents",
                     "directory",
                     "gitBranch",
                     "model",
                     "contextRemaining"
                 ]
             );
-            assert_eq!(entries[6], json!({"id":"model","visible":false,"side":"right"}));
+            assert_eq!(entries[7], json!({"id":"model","visible":false,"side":"right"}));
             assert_eq!(saved["presentation"]["future"], 17);
             assert_eq!(saved["presentation"]["copyFullResponse"], true);
             assert_eq!(saved["updates"]["future"], "keep");

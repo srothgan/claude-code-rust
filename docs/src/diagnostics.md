@@ -1,6 +1,6 @@
 # Diagnostics
 
-Interactive TUI runs write a small local diagnostics baseline by default. The baseline records warnings, errors, and minimal application lifecycle metadata using a restricted field set; detailed diagnostics remain opt-in because verbose logs can grow quickly and may contain private context.
+Interactive TUI runs write a small local diagnostics baseline by default. The baseline records warnings and errors from the app, the bridge, and the SDK, plus minimal application lifecycle metadata, using a restricted field set. Detailed diagnostics (timings, routine activity, every protocol and SDK event) remain opt-in because verbose logs can grow quickly and may contain private context. `claude-rs logs` prints where the current log is; see [Finding Logs](#finding-logs).
 
 ## Doctor
 
@@ -93,7 +93,7 @@ Use an explicit tracing filter for targeted debugging:
 claude-rs --log-filter "info,app.render=trace,bridge.protocol=debug"
 ```
 
-`--log-filter` overrides `--diagnostics-preset`. Every interactive run writes to a timestamped default diagnostics file when `--log-file` is omitted. With no logging options, the filter is `warn,app.lifecycle=info` and versioned `claude-rs-baseline/v1` records retain only stable event metadata such as event name, message, outcome, error classification, duration, counts, and logging policy. Session and request identifiers, paths, commands, content, previews, and raw error payloads are omitted from the baseline format.
+`--log-filter` overrides `--diagnostics-preset`. Every interactive run writes to a timestamped default diagnostics file when `--log-file` is omitted. With no logging options, the filter is `warn,app.lifecycle=info` and versioned `claude-rs-baseline/v1` records keep stable event metadata (event name, message, outcome, error classification, duration, counts, logging policy) plus the failure detail needed to act on a warning or error: the error message or startup failure reason and, for bridge and SDK records, only a fixed set of failure fields (reason, hook name and event, exit code, output excerpt, plugin name and category). Text fields are redacted for common credential shapes (bearer, basic and token authorization values, API keys and tokens in `name=value` pairs, headers and query strings, and URL user information) and cut to a fixed length. Session, request and tool-call identifiers, working directories, project keys, commands, and conversation or file content are omitted from the baseline format. Redaction is pattern-based and best-effort. It also replaces your home directory with `~` in text, so `/Users/alice/.claude/settings.json` is logged as `~/.claude/settings.json`; a path outside the home directory (`/opt/tools/x`, `/tmp/build`, another drive) is kept as written. A free-text error message, a hook output excerpt, and the preview of an unstructured line the bridge printed to stderr (a stack trace, for example) are kept as written once redacted, so they can still hold such paths, file names and fragments of command output. Review a log before sharing it.
 
 Baseline logging is best-effort: if the default log cannot be initialized, the app continues without disrupting the TUI. Explicitly requested detailed logging still reports initialization failures as startup errors.
 
@@ -165,7 +165,9 @@ Unexpected Rust panics install a local panic hook. The hook writes a redacted `l
 
 ## Bridge Diagnostics
 
-When detailed diagnostics are requested through `--enable-logs`, a preset, `--log-file`, `--log-filter`, `--log-append`, or `RUST_LOG`, bridge diagnostics are enabled and bridge stderr is captured into the structured log. The always-on baseline leaves the high-volume bridge diagnostic stream disabled while retaining native bridge lifecycle warnings and errors.
+The bridge always writes its warnings and errors to stderr, and the app records them in the baseline log. Only the failure fields listed above are kept from each record; any other field the bridge sends, such as a working directory or a transcript key, is dropped. This includes SDK warnings and errors, and a hook that fails (its event, name, exit code, and the start of its stderr). A hook that exits with code 2 on an event where that is its decision (it blocks the action, keeps Claude working, or hands its output to Claude) is recorded only in the detailed log; on an event where Claude Code only shows the output to the user or ignores the exit code, such as `SessionStart` or `Notification`, or fails the operation on any non-zero exit, as `WorktreeCreate` does, and on an event the reference does not list, it is a failure like any other exit code. The [hook reference](https://code.claude.com/docs/en/hooks#exit-code-2-behavior-per-event) lists what exit code 2 does on each event. An ordinary user cancellation is not a warning either and is recorded only in the detailed log. A bridge process that prints something that is not a structured record is logged as an unstructured line with a bounded preview. A command the bridge cannot decode is logged with its size and a content-free error; the start of the text is kept only in detailed logs.
+
+When detailed diagnostics are requested through `--enable-logs`, a preset, `--log-file`, `--log-filter`, `--log-append`, or `RUST_LOG`, the bridge also writes its info, debug, and trace records, with their full fields, into the structured log. That is where timings, hook start and progress, and other routine activity appear.
 
 The bridge script can be overridden with:
 

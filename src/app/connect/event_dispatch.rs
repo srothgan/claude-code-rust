@@ -245,6 +245,20 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::RuntimeReloadFailed { session_id, message } => {
             let _ = event_tx.send(ClientEvent::RuntimeReloadFailed { session_id, message }).await;
         }
+        crate::agent::wire::BridgeEvent::SkillsAndStylesReloaded {
+            session_id,
+            skills,
+            output_styles,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SkillsAndStylesReloaded { session_id, skills, output_styles })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::SkillsAndStylesReloadExpired { session_id, after_ms } => {
+            let _ = event_tx
+                .send(ClientEvent::SkillsAndStylesReloadExpired { session_id, after_ms })
+                .await;
+        }
         crate::agent::wire::BridgeEvent::SessionReplaced {
             session_id,
             cwd,
@@ -301,6 +315,54 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::UsageSnapshot { session_id, snapshot, error } => {
             let _ = event_tx
                 .send(ClientEvent::StructuredUsageReceived { session_id, snapshot, error })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::SubagentsListed { session_id, agent_ids, error } => {
+            let _ =
+                event_tx.send(ClientEvent::SubagentsListed { session_id, agent_ids, error }).await;
+        }
+        crate::agent::wire::BridgeEvent::SubagentMessages {
+            session_id,
+            agent_id,
+            messages,
+            error,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SubagentMessagesReceived {
+                    session_id,
+                    agent_id,
+                    request_id,
+                    messages,
+                    error,
+                })
+                .await;
+        }
+        crate::agent::wire::BridgeEvent::SubagentStopResult { session_id, task_id, error } => {
+            let _ =
+                event_tx.send(ClientEvent::SubagentStopResult { session_id, task_id, error }).await;
+        }
+        crate::agent::wire::BridgeEvent::SessionHistoryExport {
+            session_id,
+            updates,
+            last,
+            omitted_updates,
+            error,
+        } => {
+            let received = updates.len();
+            let updates: Vec<_> = updates.into_iter().filter_map(map_session_update).collect();
+            let unmapped_updates = u64::try_from(received - updates.len()).unwrap_or(u64::MAX);
+            let _ = event_tx
+                .send(ClientEvent::SessionHistoryChunk {
+                    session_id,
+                    chunk: crate::agent::events::HistoryChunk {
+                        request_id,
+                        updates,
+                        last,
+                        omitted_updates,
+                        unmapped_updates,
+                        error,
+                    },
+                })
                 .await;
         }
         crate::agent::wire::BridgeEvent::RewindTargets { session_id, targets, error } => {

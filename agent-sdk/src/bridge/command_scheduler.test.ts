@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 import type { BridgeCommand } from "../types.js";
 import { BridgeCommandScheduler } from "./command_scheduler.js";
 
@@ -140,6 +140,27 @@ test("interactive responses bypass a blocked session operation", async () => {
   assert.deepEqual(order, ["parent:start", "response", "parent:end"]);
 });
 
+test("a pending subagent stop does not hold back later session commands", async () => {
+  const scheduler = new BridgeCommandScheduler();
+  const stopAnswered = deferred();
+  const order: string[] = [];
+
+  const stop = scheduler.schedule(command("stop_subagent"), async () => {
+    order.push("stop:start");
+    await stopAnswered.promise;
+    order.push("stop:end");
+  });
+  const next = scheduler.schedule(command("set_effort"), async () => {
+    order.push("next");
+  });
+
+  await next;
+  assert.deepEqual(order, ["stop:start", "next"]);
+  stopAnswered.resolve();
+  await stop;
+  assert.deepEqual(order, ["stop:start", "next", "stop:end"]);
+});
+
 test("shutdown drains prior work and drops later ordinary commands", async () => {
   const scheduler = new BridgeCommandScheduler();
   const inFlight = deferred();
@@ -215,4 +236,87 @@ test("a failed operation does not poison its scheduling lane", async () => {
   await assert.rejects(failed, /expected/);
   await next;
   assert.deepEqual(order, ["failed", "next"]);
+});
+
+// The runner's own timeout turns a lane stranded by the skipped command into a failure, not a hang.
+test("a command still queued at its deadline is answered once and skipped when its turn comes", { timeout: 5_000 }, async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const scheduler = new BridgeCommandScheduler();
+    const stalled = deferred();
+    const order: string[] = [];
+
+    const blocker = scheduler.schedule(command("get_context_usage"), async () => {
+      order.push("blocker:start");
+      await stalled.promise;
+      order.push("blocker:end");
+    });
+    const queued = scheduler.schedule(
+      command("reload_skills_and_styles"),
+      async () => {
+        order.push("queued:ran");
+      },
+      { ms: 10_000, onExpired: () => order.push("queued:expired") },
+    );
+    // A skipped command still settles its place in the lane, so later work is not stranded.
+    const later = scheduler.schedule(command("set_model"), async () => {
+      order.push("later");
+    });
+
+    mock.timers.tick(9_999);
+    assert.deepEqual(order, ["blocker:start"]);
+    mock.timers.tick(1);
+    assert.deepEqual(order, ["blocker:start", "queued:expired"]);
+
+    // The earlier request finishes late: the expired command must not run after its answer.
+    stalled.resolve();
+    await Promise.all([blocker, queued, later]);
+    assert.deepEqual(order, [
+      "blocker:start",
+      "queued:expired",
+      "blocker:end",
+      "later",
+    ]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a command that starts before its queue deadline runs to the end without expiring", async () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const scheduler = new BridgeCommandScheduler();
+    const earlier = deferred();
+    const started = deferred();
+    const running = deferred();
+    const order: string[] = [];
+
+    const blocker = scheduler.schedule(command("get_context_usage"), async () => {
+      await earlier.promise;
+      order.push("blocker:end");
+    });
+    const queued = scheduler.schedule(
+      command("reload_skills_and_styles"),
+      async () => {
+        order.push("queued:start");
+        started.resolve();
+        await running.promise;
+        order.push("queued:end");
+      },
+      { ms: 10_000, onExpired: () => order.push("queued:expired") },
+    );
+
+    mock.timers.tick(5_000);
+    earlier.resolve();
+    await started.promise;
+    assert.deepEqual(order, ["blocker:end", "queued:start"]);
+
+    // The deadline covers the wait only; execution has its own bounds.
+    mock.timers.tick(10_000);
+    running.resolve();
+    await Promise.all([blocker, queued]);
+    assert.deepEqual(order, ["blocker:end", "queued:start", "queued:end"]);
+  } finally {
+    mock.timers.reset();
+  }
 });

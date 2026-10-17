@@ -137,6 +137,10 @@ fn format_field(app: &App, id: FooterFieldId) -> FooterItem {
             let (text, color) = fast_mode_badge(app.session_runtime.fast_mode_state);
             Some((format!("[{text}]"), color))
         }
+        FooterFieldId::RunningSubagents => {
+            let running = crate::app::agents::running_subagent_count(app);
+            (running > 0).then(|| (format!("[AGENTS:{running}]"), Color::Yellow))
+        }
         FooterFieldId::Directory => Some((format!("Loc: {}", app.cwd), gray)),
         FooterFieldId::GitBranch => app
             .git_branch()
@@ -402,6 +406,34 @@ mod tests {
 
         assert!(text.contains("[default]"));
         assert!(text.contains("[FAST:OFF]"));
+    }
+
+    #[test]
+    fn footer_counts_running_subagents_and_hides_the_count_at_zero() {
+        let subagent = |id: &str, status, terminal: Option<&str>| {
+            let mut task = model::TaskItem::new(id, id, status);
+            task.metadata = Some(
+                serde_json::json!({ "task_type": "local_agent", "terminal_status": terminal }),
+            );
+            task
+        };
+        let mut shell = model::TaskItem::new("shell", "shell", model::TaskStatus::InProgress);
+        shell.metadata = Some(serde_json::json!({ "task_type": "local_bash" }));
+        let mut app = app_with_mode();
+        app.sdk_inventory.tasks = vec![
+            subagent("agent-1", model::TaskStatus::InProgress, None),
+            subagent("agent-2", model::TaskStatus::InProgress, None),
+            subagent("agent-3", model::TaskStatus::Completed, Some("completed")),
+            shell,
+        ];
+        let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
+        assert!(text.contains("[FAST:OFF] · [AGENTS:2]"), "{text}");
+
+        for task in &mut app.sdk_inventory.tasks {
+            task.status = model::TaskStatus::Completed;
+        }
+        let text = line_text(&serialize_footer_rows(&app, 80).rows[0]);
+        assert!(!text.contains("AGENTS"), "{text}");
     }
 
     #[test]

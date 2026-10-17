@@ -32,7 +32,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     if app.surface_mode != SurfaceMode::Fullscreen(FullscreenView::Config) {
         return;
     }
-    request_status_snapshot_if_needed(app);
+    refresh_status_tab(app);
     if app.config.active_tab == ConfigTab::Usage {
         crate::app::usage::request_refresh_if_needed(app);
     }
@@ -304,7 +304,7 @@ fn request_active_tab_side_effects(app: &mut App) {
     if app.config.active_tab == ConfigTab::Settings {
         super::service::request_settings(app);
     }
-    request_status_snapshot_if_needed(app);
+    refresh_status_tab(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {
         crate::app::usage::request_refresh_if_needed(app);

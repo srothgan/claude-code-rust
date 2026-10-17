@@ -522,12 +522,8 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
         }
         types::SessionUpdate::SessionTitleUpdate { title } => {
-            // A title is user text that the Status tab writes to the
-            // terminal, so control characters are stripped here, once.
-            let title: String = title.chars().filter(|ch| !ch.is_control()).collect();
-            let title = title.trim();
             Some(model::SessionUpdate::SessionTitleUpdate(
-                (!title.is_empty()).then(|| title.to_owned()),
+                crate::session_config::sanitize_session_title(&title),
             ))
         }
         types::SessionUpdate::RuntimeSessionStateUpdate { state } => {

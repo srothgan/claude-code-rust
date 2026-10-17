@@ -57,10 +57,12 @@ pub(crate) fn refresh(app: &mut App) {
         .ok_or_else(|| "Trust preferences path is not available".to_owned())
         .and_then(store::read_document);
     app.trust.preferences_path = path;
+    // The prompt names this directory, so it must be set whether or not the
+    // preferences could be read, and never carry over from an earlier refresh.
+    app.trust.project_key = store::normalize_project_key(std::path::Path::new(&app.cwd_raw));
     match result {
         Ok(document) => {
             let lookup = store::read_status(&document, std::path::Path::new(&app.cwd_raw));
-            app.trust.project_key = lookup.project_key;
             app.trust.status =
                 if lookup.trusted { TrustStatus::Trusted } else { TrustStatus::Untrusted };
             app.trust.last_error = None;

@@ -164,6 +164,8 @@ struct TerminalTest {
     /// not produced by that action.
     before_action: String,
     settled: bool,
+    /// The trust prompt as it was drawn, before the test answered it.
+    trust_prompt: String,
 }
 
 #[allow(clippy::expect_used, clippy::panic)]
@@ -216,8 +218,12 @@ impl TerminalTest {
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
         command.env("RUST_LOG", "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug");
-        command.arg("--dir");
-        command.arg(&project);
+        // The app starts in `project`; a test that passes its own `--dir` is resolved
+        // against it.
+        if !args.contains(&"--dir") {
+            command.arg("--dir");
+            command.arg(&project);
+        }
         for arg in args {
             command.arg(arg);
         }
@@ -252,8 +258,14 @@ impl TerminalTest {
             temp,
             before_action: String::new(),
             settled: true,
+            trust_prompt: String::new(),
         };
-        test.wait_screen("Trust this project");
+        // "> Yes" is drawn after everything above it, so seeing it means the
+        // whole prompt, directory included, is on screen.
+        test.wait_screen_with("Trust this project", &["> Yes"]);
+        // One string per visible row: `contents()` joins rows the terminal
+        // marks as wrapped, which ConPTY does for full-width box rows.
+        test.trust_prompt = test.screen_rows().join("\n");
         test.send(b"y");
         if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
@@ -328,6 +340,12 @@ impl TerminalTest {
 
     fn screen(&self) -> String {
         self.output.lock().expect("output lock").parser.screen().contents()
+    }
+
+    fn screen_rows(&self) -> Vec<String> {
+        let output = self.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        screen.rows(0, screen.size().1).collect()
     }
 
     fn transcript_rows(&self) -> Vec<String> {
@@ -683,6 +701,11 @@ impl TerminalTest {
     fn signal(&mut self, step: &str) {
         self.mark_action();
         std::fs::write(&self.release_file, step).expect("signal fixture barrier");
+    }
+
+    /// The session's working directory, where /export writes relative paths.
+    fn project_dir(&self) -> PathBuf {
+        self.temp.path().join("project")
     }
 
     fn shutdown(&mut self) {
@@ -1042,6 +1065,117 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
         );
         test.shutdown();
     }
+}
+
+#[test]
+fn session_configuration_reaches_later_sessions_while_the_launch_name_stays_initial() {
+    let files = tempfile::tempdir().expect("flag files");
+    let settings = files.path().join("settings.json");
+    std::fs::write(&settings, r#"{"spinnerTipsEnabled":false}"#).expect("settings file");
+    let append = files.path().join("append.md");
+    std::fs::write(&append, "End every reply with DONE.").expect("append file");
+    let mcp = r#"{"mcpServers":{"docs":{"command":"docs-mcp"}}}"#;
+    let args = [
+        "--add-dir",
+        "..",
+        "--settings",
+        settings.to_str().expect("UTF-8 path"),
+        "--mcp-config",
+        mcp,
+        "--strict-mcp-config",
+        "--append-system-prompt-file",
+        append.to_str().expect("UTF-8 path"),
+        "-n",
+        "Launch name",
+    ];
+    let mut test = TerminalTest::start_with_options("stream", 3, None, &args, false);
+    test.submit_command("/new-session");
+    test.wait_until("the replacement session request", |test| {
+        !test.commands("new_session").is_empty()
+    });
+
+    let created = test.commands("create_session").remove(0)["launch_settings"].clone();
+    let replaced = test.commands("new_session").remove(0)["launch_settings"].clone();
+    // `--add-dir ..` resolves against --dir, the fixture's project inside its temp root.
+    let added = created["additional_directories"][0].as_str().expect("added directory");
+    assert!(Path::new(added).is_absolute(), "{added}");
+    assert_eq!(
+        Path::new(added).canonicalize().expect("added directory exists"),
+        test.temp.path().canonicalize().expect("temp root")
+    );
+    let config = serde_json::json!({
+        "additional_directories": [added],
+        "settings": { "spinnerTipsEnabled": false },
+        "mcp_configs": [{ "docs": { "command": "docs-mcp" } }],
+        "strict_mcp_config": true,
+        "append_system_prompt": "End every reply with DONE.",
+    });
+    let mut named = config.clone();
+    named["name"] = "Launch name".into();
+    assert_eq!(created, named);
+    assert_eq!(replaced, config, "the name is for the initial session only");
+    test.shutdown();
+}
+
+#[test]
+fn forked_resume_continues_under_the_new_session_id() {
+    let mut test = TerminalTest::start_with_options(
+        "stream",
+        3,
+        None,
+        &["-r", "chosen-session", "--fork-session", "Continue the fork"],
+        true,
+    );
+    test.wait_journal("turn_complete");
+    assert_eq!(test.commands("resume_session")[0]["launch_settings"]["fork_session"], true);
+    assert_eq!(test.prompts()[0]["session_id"], "chosen-session-fork");
+    test.shutdown();
+    // ConPTY can report process exit before the capture thread drains its final output
+    // (Windows CI, 2026-10-13); wait for the resume hint itself.
+    let started = Instant::now();
+    loop {
+        let output =
+            String::from_utf8_lossy(&test.output.lock().expect("output lock").raw).into_owned();
+        if output.contains("Resume this session: claude-rs resume chosen-session-fork") {
+            break;
+        }
+        assert!(started.elapsed() < WAIT_LIMIT, "{}", tail(&output, 400));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn launch_configuration_leaves_the_saved_preferences_untouched() {
+    let files = tempfile::tempdir().expect("flag files");
+    let settings = files.path().join("settings.json");
+    std::fs::write(&settings, r#"{"model":"sonnet"}"#).expect("settings file");
+    let mut test = TerminalTest::start_with_options(
+        "stream",
+        3,
+        None,
+        &[
+            "--settings",
+            settings.to_str().expect("UTF-8 path"),
+            "--system-prompt",
+            "You are a release bot.",
+            "Review this project",
+        ],
+        true,
+    );
+    test.wait_journal("turn_complete");
+    let launch = test.commands("create_session").remove(0)["launch_settings"].clone();
+    assert_eq!(launch["settings"], serde_json::json!({ "model": "sonnet" }));
+    assert_eq!(launch["system_prompt"], "You are a release bot.");
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
+            .expect("saved settings"),
+    )
+    .expect("settings JSON");
+    assert_eq!(
+        saved,
+        serde_json::json!({"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}})
+    );
+    test.shutdown();
 }
 
 #[test]
@@ -1577,6 +1711,49 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
         assert!(!screen.contents().contains("Tip:"));
         assert!(!screen.contents().contains(&activity_header));
     }
+}
+
+#[test]
+fn trust_prompt_names_the_directory_that_yes_will_save() {
+    let test = TerminalTest::start("hold-success", 1);
+
+    // `start` answered Yes, so the profile now holds the key the prompt was
+    // about. The harness starts with an absolute `--dir`, which a temp
+    // directory behind a symlink (macOS) spells differently from its key.
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("profile").join(".claude.json")).expect("saved trust"),
+    )
+    .expect("trust json");
+    let keys: Vec<&String> = saved["projects"].as_object().expect("projects").keys().collect();
+    assert_eq!(keys.len(), 1, "{keys:?}");
+
+    let rows: Vec<String> = test
+        .trust_prompt
+        .lines()
+        .map(|row| {
+            let inside = row.trim_start_matches('\u{2502}').trim_end_matches('\u{2502}');
+            inside.strip_prefix(' ').unwrap_or(inside).trim_end().to_owned()
+        })
+        .collect();
+    let row_of = |text: &str| {
+        rows.iter()
+            .position(|row| row.starts_with(text))
+            .unwrap_or_else(|| panic!("no {text:?} row: {}", test.trust_prompt))
+    };
+    let path = row_of("Path: ");
+    assert!(row_of("Trust this project directory?") < row_of("Claude Rust will wait"));
+    assert!(row_of("Claude Rust will wait") < path, "{}", test.trust_prompt);
+    // The path may wrap; its later rows are indented under the label.
+    let shown: String = std::iter::once(&rows[path]["Path: ".len()..])
+        .chain(
+            rows[path + 1..]
+                .iter()
+                .map_while(|row| row.strip_prefix("      ").filter(|rest| !rest.trim().is_empty())),
+        )
+        .collect();
+    assert_eq!(&shown, keys[0], "{}", test.trust_prompt);
+    assert!(Path::new(keys[0]).is_absolute(), "{}", keys[0]);
+    assert!(!test.trust_prompt.contains("Unknown Project"), "{}", test.trust_prompt);
 }
 
 #[test]
@@ -2386,6 +2563,193 @@ fn status_tab_shows_the_session_name_after_rename() {
     test.shutdown();
 }
 
+const SESSION_NOT_SAVED_WARNING: &str = "Renaming becomes available after this session is saved. Run a command or send a message, then try again.";
+
+/// The rename dialog's rows below its field, inside the borders, up to the
+/// bottom border: `(rows under the field, help line)`.
+fn rename_dialog(test: &TerminalTest, field: &str) -> Option<(Vec<String>, String)> {
+    let screen = test.screen();
+    let lines: Vec<&str> = screen.lines().collect();
+    let title = lines.iter().position(|line| line.contains("Rename session"))?;
+    let inner = |line: &str| line.trim().trim_matches('│').trim().to_owned();
+    let body: Vec<String> = lines[title + 1..]
+        .iter()
+        .take_while(|line| !line.contains('└'))
+        .map(|line| inner(line))
+        .collect();
+    let field_row = body.iter().position(|row| row.contains(field))?;
+    let help = body.iter().rev().find(|row| !row.is_empty())?.clone();
+    Some((body[field_row + 1..].to_vec(), help))
+}
+
+/// The text shown directly beneath the rename field, before the dim hint.
+fn text_beneath_rename_field(rows: &[String]) -> String {
+    rows.iter()
+        .take_while(|row| !row.contains("Leave the field empty"))
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
+    let mut test = TerminalTest::start("status-rename", 3);
+    test.submit("/status", "/status");
+    test.wait_for("the unnamed session in Status", |test| {
+        status_name_row(test, "(unnamed session)")
+    });
+
+    // A fresh session has no transcript: the dialog opens, editable, with
+    // confirmation disabled and the warning beneath the field.
+    test.send(b"r");
+    let (rows, help) = test.wait_for("the not-saved warning", |test| {
+        rename_dialog(test, "Custom session name")
+            .filter(|(rows, _)| text_beneath_rename_field(rows) == SESSION_NOT_SAVED_WARNING)
+    });
+    assert_eq!(help, "Esc cancel", "{rows:?}");
+    test.paste("early");
+    test.wait_for("the edited draft", |test| rename_dialog(test, "early"));
+    test.send(b"\r");
+    test.send(b"\x1b");
+    test.wait_until("the dialog to close", |test| !test.screen().contains("Rename session"));
+
+    // A message saves the session.
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("hello", "hello");
+    test.wait_turn_finished("Saved reply");
+    // The bridge reads commands in order, so a rename sent by that Enter would
+    // be journaled before this prompt's turn finished.
+    assert!(test.commands("rename_session").is_empty(), "Enter must not rename an unsaved session");
+    test.submit("/status", "/status");
+    test.wait_for("Status", |test| status_name_row(test, "(unnamed session)"));
+    test.send(b"r");
+    let (rows, help) = test
+        .wait_for("an enabled rename dialog", |test| rename_dialog(test, "Custom session name"));
+    assert_eq!(text_beneath_rename_field(&rows), "", "the warning is gone");
+    assert_eq!(help, "Enter confirm | Esc cancel");
+
+    // The SDK's failure stays in the dialog with the draft.
+    test.paste("fail-me");
+    test.wait_for("the failing draft", |test| rename_dialog(test, "fail-me"));
+    test.send(b"\r");
+    test.wait_for("the rename failure in the dialog", |test| {
+        rename_dialog(test, "fail-me")
+            .filter(|(rows, _)| rows.iter().any(|row| row.contains("failed to rename session")))
+    });
+    test.send(&[0x7f; 7]);
+    test.paste("demo-488");
+    test.wait_for("the new draft", |test| rename_dialog(test, "demo-488"));
+    test.send(b"\r");
+    test.wait_for("the new name in Status", |test| status_name_row(test, "demo-488"));
+    assert!(!test.screen().contains("Rename session"), "success closes the dialog");
+    let titles: Vec<_> =
+        test.commands("rename_session").iter().map(|command| command["title"].clone()).collect();
+    assert_eq!(titles, ["fail-me", "demo-488"]);
+
+    // Neither outcome reaches the chat.
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    let chat = test.screen();
+    assert!(!chat.contains("failed to rename") && !chat.contains("Renamed session"), "{chat}");
+
+    // The fixture's `/clear` starts an unsaved session the listing names after the command.
+    test.submit_command("/clear");
+    test.wait_journal("session_replaced");
+    test.submit("/status", "/status");
+    test.wait_for("the cleared session in Status", |test| {
+        status_name_row(test, "(unnamed session)")
+    });
+    assert!(status_name_row(&test, "/clear").is_none());
+    test.send(b"r");
+    test.wait_for("the not-saved warning for the new session", |test| {
+        rename_dialog(test, "Custom session name")
+            .filter(|(rows, _)| text_beneath_rename_field(rows) == SESSION_NOT_SAVED_WARNING)
+    });
+    test.shutdown();
+}
+
+#[test]
+fn reload_reports_the_reloaded_counts_and_then_a_half_that_failed() {
+    let mut test = TerminalTest::start("reload", 3);
+    test.submit_command("/reload");
+    test.wait_turn_finished("Reloaded skills (2) and output styles (3)");
+
+    // The skills half still reports as reloaded next to the output styles that failed.
+    test.submit_command("/reload");
+    test.wait_turn_finished("Could not reload output styles: style directory unreadable");
+
+    // /reload is app-owned: it reaches the bridge as its own command, never as a prompt.
+    assert_eq!(test.commands("reload_skills_and_styles").len(), 2);
+    test.assert_prompts(&[]);
+    test.shutdown();
+}
+
+#[test]
+fn reload_that_expired_in_the_bridge_queue_releases_input_with_a_notice() {
+    let mut test = TerminalTest::start("reload-expired", 3);
+    test.submit_command("/reload");
+    // [READY] beside the notice: the reload no longer blocks input.
+    let screen = test.wait_turn_finished("Reload did not start within 10 s");
+    assert!(screen.contains("Nothing was reloaded"), "{screen}");
+    assert_eq!(test.commands("reload_skills_and_styles").len(), 1);
+    test.shutdown();
+}
+
+/// The Markdown the `export` scenario's saved conversation must produce, after the header.
+const EXPORTED_BODY: &str = "## User\n\nList the files\n\n## Assistant\n\nListing now.\n\n### Tool: Bash - ls -la\n\nResult:\n\n```\nREADME.md\nsrc\n```\n\nFixing the note.\n\n### Tool: Edit - notes.txt\n\n```diff\n--- notes.txt\n+++ notes.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new\n```\n\n";
+
+#[test]
+fn export_writes_the_saved_conversation_and_never_overwrites_it() {
+    let mut test = TerminalTest::start("export", 3);
+    test.submit_command("/export transcript.md");
+    test.wait_turn_finished("Exported the conversation to");
+
+    let target = test.project_dir().join("transcript.md");
+    let file = std::fs::read_to_string(&target).expect("exported file");
+    // Header fields vary with the machine and the clock; the body is exact.
+    let body = file
+        .split_once("- Exported: ")
+        .and_then(|(_, rest)| rest.split_once("\n\n"))
+        .map(|(_, body)| body)
+        .expect("exported body");
+    assert!(file.starts_with("# Conversation\n\n- Session: fake-session\n- Directory: "), "{file}");
+    assert!(file.contains("\n- Model: Fake model\n- Exported: "), "{file}");
+    assert_eq!(body, EXPORTED_BODY);
+    assert!(!file.contains('\u{1b}'), "terminal escapes must not reach the file");
+    assert_eq!(test.commands("export_session_history").len(), 1);
+    test.assert_prompts(&[]);
+
+    // A second export to the same path is refused before the bridge is asked.
+    test.submit_command("/export transcript.md");
+    test.wait_until("overwrite refusal across terminal wrapping", |test| {
+        let screen = test.screen();
+        screen.contains("Not exporting:")
+            && screen
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("already exists and will not be overwritten.")
+    });
+    assert_eq!(std::fs::read_to_string(&target).expect("kept file"), file);
+    assert_eq!(test.commands("export_session_history").len(), 1);
+
+    // Without a path the name is the session id and the UTC export time.
+    test.submit_command("/export");
+    test.wait_until("the default-named export", |test| {
+        std::fs::read_dir(test.project_dir()).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("export-fake-session-")
+                    && name.ends_with("Z.md")
+                    && name.len() == "export-fake-session-20261013T123045Z.md".len()
+            })
+        })
+    });
+    test.shutdown();
+}
+
 /// A terminal outside Windows sends Ctrl+V as one press byte and no release.
 /// Without a display server the clipboard cannot be opened, and the app has to
 /// say so: silence means the key never reached the clipboard path.
@@ -2449,4 +2813,138 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
     test.assert_prompts(&["[Image #1]"]);
     test.shutdown();
     drop(clipboard);
+}
+
+#[test]
+fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns_to_chat() {
+    let mut test = TerminalTest::start("agents", 3);
+    // A draft keeping Left as cursor movement is covered by the app key tests.
+    test.wait_screen("[AGENTS:1]");
+    test.send(b"\x1b[D");
+    let screen = test.wait_screen_with(
+        "Check the parser for edge cases",
+        &["Subagents", "running", "Inspect docs", "Prompt", "Transcript: not saved yet"],
+    );
+    assert!(!screen.contains("Watch logs"), "background shells are not listed:\n{screen}");
+    assert_eq!(test.commands("list_subagents").len(), 1);
+
+    test.send(b"s");
+    test.wait_screen("stopped");
+    let stops = test.commands("stop_subagent");
+    assert_eq!(stops.len(), 1);
+    assert_eq!(stops[0]["task_id"], "agent-running");
+
+    // Selecting the completed subagent previews the response it ended with.
+    test.send(b"\x1b[B");
+    test.wait_screen_with("Docs path checked", &["Response", "Transcript: saved"]);
+    // Opening it shows the read the preview came from: the bridge's first answer.
+    test.send(b"\r");
+    test.wait_screen_with(
+        "Inspect the docs",
+        &["System reminder", "Hand the report back when done.", "step 1", "r refresh"],
+    );
+    // r reads it again and shows the step the second answer adds.
+    test.send(b"r");
+    test.wait_screen_with("step 2", &["Docs path checked"]);
+    let reads = test.commands("get_subagent_messages");
+    assert!(reads.iter().all(|read| read["agent_id"] == "agent-done"), "{reads:?}");
+    test.send(b"\x1b");
+    test.wait_screen("Review parser");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+
+    test.submit("/agents", "/agents");
+    test.wait_screen("Review parser");
+    assert_eq!(test.commands("list_subagents").len(), 2);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.submit("after agents", "after agents");
+    test.wait_screen("reply 1 started");
+    test.assert_prompts(&["after agents"]);
+    test.shutdown();
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let profile = temp.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("profile");
+    let file = temp.path().join("notes.txt");
+    std::fs::write(&file, "").expect("file");
+    let cases = [
+        ("--dir", temp.path().join("missing")),
+        ("--dir", file),
+        ("--bridge-script", temp.path().join("missing-bridge.js")),
+    ];
+    for (flag, path) in cases {
+        let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        command.arg("--no-update-check");
+        command.arg(flag);
+        command.arg(&path);
+        command.cwd(temp.path());
+        command.env("CLAUDE_CONFIG_DIR", &profile);
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
+        let reader = pair.master.try_clone_reader().expect("pty reader");
+        let process = pair.slave.spawn_command(command).expect("spawn claude-rs");
+        let mut child = TestChild { process, writer: Arc::clone(&writer) };
+        drop(pair.slave);
+        let output = capture_output(reader, writer);
+
+        let status = child.wait_for_exit(WAIT_LIMIT).expect("claude-rs exits on its own");
+        assert_eq!(status.exit_code(), 2, "{flag}");
+        // The child's exit is the signal. ConPTY keeps the pseudo console open after the
+        // child exits, so the PTY never reaches EOF on Windows; wait for the error text the
+        // reader thread has not yet drained instead.
+        let expected = path.display().to_string();
+        let started = Instant::now();
+        while !output.lock().expect("output lock").parser.screen().contents().contains(&expected) {
+            assert!(started.elapsed() < WAIT_LIMIT, "{flag}: error text never reached the screen");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        #[cfg(unix)]
+        while !output.lock().expect("output lock").ended {
+            assert!(started.elapsed() < WAIT_LIMIT, "PTY stayed open after exit");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = output.lock().expect("output lock");
+        let screen = output.parser.screen().contents();
+        assert!(screen.contains(flag) && screen.contains(&path.display().to_string()), "{screen}");
+        assert!(!screen.contains("Trust this project"), "{screen}");
+        // Mode changes (alternate screen, focus reporting, keyboard enhancement) are CSI
+        // sequences with a `?`, `<` or `>` marker. ConPTY writes its own on Windows.
+        #[cfg(unix)]
+        {
+            let raw = String::from_utf8_lossy(&output.raw);
+            for marker in ["\x1b[?", "\x1b[<", "\x1b[>"] {
+                assert!(!raw.contains(marker), "{flag}: {}", tail(&raw, 400));
+            }
+        }
+        assert_eq!(std::fs::read_dir(&profile).expect("profile").count(), 0, "{flag}");
+    }
+}
+
+#[test]
+#[allow(clippy::expect_used)]
+fn a_relative_dir_starts_the_session_in_the_absolute_directory_it_names() {
+    // The app runs from `project`, so `--dir .` names it.
+    let mut test = TerminalTest::start_with_options("stream", 3, None, &["--dir", "."], false);
+    // The directory as the platform spells its own working directory: physical on Unix
+    // (macOS temp dirs sit behind a symlink), as given on Windows.
+    let project = test.temp.path().join("project");
+    #[cfg(not(windows))]
+    let project = project.canonicalize().expect("project path");
+
+    let session = test
+        .wait_for("the session request", |test| test.commands("create_session").into_iter().next());
+    assert_eq!(session["cwd"].as_str().map(Path::new), Some(project.as_path()), "{session}");
+    let location = test.wait_for("the footer location", |test| {
+        test.screen().lines().find_map(|line| {
+            let (_, value) = line.split_once("Loc: ")?;
+            Some(value.split_whitespace().next().unwrap_or_default().to_owned())
+        })
+    });
+    assert!(location.ends_with("project"), "Loc: {location}");
+    test.shutdown();
 }

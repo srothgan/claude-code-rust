@@ -144,6 +144,7 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
         "/plugins",
         "/status",
         "/usage",
+        "/agents",
     ] {
         assert_eq!(classify(input), SubmissionClass::Fullscreen, "unexpected class for {input}");
     }
@@ -2175,6 +2176,233 @@ async fn explicit_fast_retry_recovers_unknown_state_after_acknowledgement() {
             );
             assert_eq!(app.status, AppStatus::Ready);
             assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
+        })
+        .await;
+}
+
+#[test]
+fn reload_without_a_connection_or_with_arguments_is_refused_before_any_command() {
+    let mut app = App::test_default();
+    assert!(try_handle_submit(&mut app, "/reload"));
+    assert_eq!(app.status, AppStatus::Ready);
+    assert!(app.turn.pending_command_ack.is_none());
+    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("notice").blocks[0]
+    else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Cannot reload: not connected yet.");
+
+    assert!(try_handle_submit(&mut app, "/reload now"));
+    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("usage").blocks[0]
+    else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Usage: /reload");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reload_sends_one_bridge_command_and_blocks_input_until_acknowledged() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut app = App::test_default();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+
+            assert!(try_handle_submit(&mut app, "/reload"));
+
+            assert_eq!(app.status, AppStatus::CommandPending);
+            assert!(matches!(
+                app.turn.pending_command_ack,
+                Some(super::super::PendingCommandAck::SkillsAndStylesReload)
+            ));
+            tokio::task::yield_now().await;
+            assert_eq!(
+                commands.try_recv().expect("reload command").command,
+                crate::agent::wire::BridgeCommand::ReloadSkillsAndStyles {
+                    session_id: "sess-1".to_owned()
+                }
+            );
+            assert!(commands.try_recv().is_err());
+        })
+        .await;
+}
+
+#[test]
+fn export_without_a_connection_is_refused() {
+    let mut app = App::test_default();
+
+    assert!(try_handle_submit(&mut app, "/export"));
+
+    assert_eq!(app.status, AppStatus::Ready);
+    assert!(app.history_export.is_none());
+    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("notice").blocks[0]
+    else {
+        panic!("expected text block");
+    };
+    assert_eq!(block.text, "Cannot export: not connected yet.");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn export_requests_the_history_under_a_request_id_and_blocks_input() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut app = App::test_default();
+            app.cwd_raw = dir.path().display().to_string();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+
+            // The path after the command is taken whole, spaces included.
+            assert!(try_handle_submit(&mut app, "/export notes for review.md"));
+
+            assert_eq!(app.status, AppStatus::CommandPending);
+            assert!(matches!(
+                app.turn.pending_command_ack,
+                Some(super::super::PendingCommandAck::HistoryExport)
+            ));
+            tokio::task::yield_now().await;
+            let envelope = commands.try_recv().expect("history request");
+            assert_eq!(
+                envelope.command,
+                crate::agent::wire::BridgeCommand::ExportSessionHistory {
+                    session_id: "sess-1".to_owned()
+                }
+            );
+            let request_id = envelope.request_id.expect("request id");
+
+            // The chunk that answers it writes the file at the spelled path.
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionHistoryChunk {
+                    session_id: "sess-1".to_owned(),
+                    chunk: crate::agent::events::HistoryChunk {
+                        request_id: Some(request_id),
+                        updates: Vec::new(),
+                        last: true,
+                        omitted_updates: 0,
+                        unmapped_updates: 0,
+                        error: None,
+                    },
+                },
+            );
+            assert_eq!(app.status, AppStatus::Ready);
+            assert!(dir.path().join("notes for review.md").is_file());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn export_to_an_existing_file_is_refused_without_asking_the_bridge() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::fs::write(dir.path().join("out.md"), "original").expect("seed");
+            let mut app = App::test_default();
+            app.cwd_raw = dir.path().display().to_string();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+
+            assert!(try_handle_submit(&mut app, "/export out.md"));
+
+            assert_eq!(app.status, AppStatus::Ready);
+            assert!(app.history_export.is_none());
+            tokio::task::yield_now().await;
+            assert!(commands.try_recv().is_err(), "no history request for a refused target");
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("out.md")).expect("read"),
+                "original"
+            );
+            let MessageBlock::Text(block) =
+                &app.transcript.messages.last().expect("refusal").blocks[0]
+            else {
+                panic!("expected text block");
+            };
+            assert!(block.text.contains("already exists"), "{}", block.text);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_exports_own_error_ends_the_export() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut app = App::test_default();
+            app.cwd_raw = dir.path().display().to_string();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            assert!(try_handle_submit(&mut app, "/export out.md"));
+            tokio::task::yield_now().await;
+            let request_id = commands.try_recv().expect("history request").request_id;
+            // A rename waiting for its answer takes the next generic slash error for itself.
+            app.config.pending_session_title_change =
+                Some(crate::app::config::PendingSessionTitleChangeState {
+                    session_id: "sess-1".to_owned(),
+                    kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+                });
+
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SlashCommandError {
+                    session_id: Some("sess-1".to_owned()),
+                    message: "title generation failed".to_owned(),
+                },
+            );
+
+            assert!(app.history_export.is_some(), "an unrelated error must not cancel the export");
+            assert_eq!(app.status, AppStatus::CommandPending);
+
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::SessionHistoryChunk {
+                    session_id: "sess-1".to_owned(),
+                    chunk: crate::agent::events::HistoryChunk {
+                        request_id,
+                        updates: Vec::new(),
+                        last: true,
+                        omitted_updates: 0,
+                        unmapped_updates: 0,
+                        error: Some("unknown session: sess-1".to_owned()),
+                    },
+                },
+            );
+
+            assert!(app.history_export.is_none());
+            assert_eq!(app.status, AppStatus::Ready);
+            let MessageBlock::Notice(notice) =
+                &app.transcript.messages.last().expect("failure notice").blocks[0]
+            else {
+                panic!("expected notice block");
+            };
+            assert_eq!(notice.text.text, "unknown session: sess-1");
+            assert!(!dir.path().join("out.md").exists());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_request_that_cannot_be_sent_fails_the_export_itself() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut app = App::test_default();
+            app.cwd_raw = dir.path().display().to_string();
+            let commands = attach_test_connection(&mut app);
+            app.session_runtime.session_id = Some("sess-1".into());
+            // With the bridge gone the send fails, as it does after the bridge exits.
+            drop(commands);
+            let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(8);
+            app.event_tx = event_tx;
+
+            assert!(try_handle_submit(&mut app, "/export out.md"));
+            let event = event_rx.recv().await.expect("failure event");
+
+            let crate::agent::events::ClientEvent::SessionHistoryChunk { chunk, .. } = event else {
+                panic!("the failure must travel on the export's own event");
+            };
+            assert!(chunk.last);
+            assert!(chunk.request_id.is_some());
+            assert!(chunk.error.is_some_and(|error| error.contains("Failed to run /export")));
         })
         .await;
 }

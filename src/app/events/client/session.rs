@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::{App, SystemSeverity, session};
+use super::super::{App, SystemSeverity, notices, session};
 use crate::agent::events::ClientEvent;
 
 pub(super) fn handle(app: &mut App, event: ClientEvent) {
@@ -94,12 +94,32 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::RewindTargetsReceived { session_id, targets, error } => {
             apply_rewind_targets(app, session_id, targets, error);
         }
+        ClientEvent::SessionHistoryChunk { session_id: _, chunk } => {
+            apply_history_export_chunk(app, chunk);
+        }
         ClientEvent::RewindResultReceived { result } => {
             session::handle_rewind_result_event(app, &result);
         }
         ClientEvent::FatalError(error) => session::handle_fatal_error_event(app, error),
         _ => unreachable!("client event family routed a non-session event to the session handler"),
     }
+}
+
+fn apply_history_export_chunk(app: &mut App, chunk: crate::agent::events::HistoryChunk) {
+    use crate::app::PendingCommandAck;
+    use crate::app::export::{ExportProgress, apply_chunk};
+
+    let (severity, message) = match apply_chunk(app, chunk) {
+        ExportProgress::Ignored | ExportProgress::Collecting => return,
+        ExportProgress::Failed(message) => (SystemSeverity::Error, message),
+        ExportProgress::Written(path) => {
+            (SystemSeverity::Info, format!("Exported the conversation to {}", path.display()))
+        }
+    };
+    if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::HistoryExport)) {
+        session::clear_pending_command(app);
+    }
+    notices::emit_system_notice(app, severity, &message);
 }
 
 fn apply_rewind_targets(

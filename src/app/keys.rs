@@ -260,6 +260,12 @@ fn handle_chat_input_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 }
 
 fn execute_key_action(app: &mut App, action: KeyAction, key: KeyEvent) -> KeyOutcome {
+    if action == KeyAction::Input(InputAction::MoveCharLeft)
+        && key.code == KeyCode::Left
+        && open_agents_from_empty_composer(app)
+    {
+        return KeyOutcome::Handled(true);
+    }
     match action {
         KeyAction::App(action) => execute_app_action(app, action),
         KeyAction::Input(action) => execute_input_action(app, action),
@@ -310,12 +316,26 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
     }
 }
 
-fn clear_input_or_quit(app: &mut App) -> bool {
-    let has_local_input = !app.input.is_empty()
+fn has_local_draft(app: &App) -> bool {
+    !app.input.is_empty()
         || !app.pending_images.is_empty()
         || app.paste.has_pending_text()
-        || app.pending_submit.is_some();
-    if !has_local_input {
+        || app.pending_submit.is_some()
+}
+
+/// Left Arrow opens `/agents` only from an empty composer that owns focus;
+/// otherwise it keeps moving the cursor. Every autocomplete menu needs draft
+/// text, and an inline prompt that leaves Left unbound must keep its focus.
+fn open_agents_from_empty_composer(app: &mut App) -> bool {
+    if has_local_draft(app) || app.focus_owner() != FocusOwner::Input {
+        return false;
+    }
+    crate::app::agents::open(app);
+    true
+}
+
+fn clear_input_or_quit(app: &mut App) -> bool {
+    if !has_local_draft(app) {
         app.request_shutdown();
         return true;
     }

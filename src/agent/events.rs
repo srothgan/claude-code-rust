@@ -26,6 +26,19 @@ impl From<&str> for ConnectionFailure {
     }
 }
 
+/// One piece of the complete session history the bridge sends for `/export`.
+pub struct HistoryChunk {
+    /// The request the bridge answers; chunks of another request are ignored.
+    pub request_id: Option<String>,
+    pub updates: Vec<model::SessionUpdate>,
+    pub last: bool,
+    /// History entries left out of the whole export because the session is very large.
+    pub omitted_updates: u64,
+    /// Updates of this chunk the app could not map to something it can show.
+    pub unmapped_updates: u64,
+    pub error: Option<String>,
+}
+
 /// Messages sent from the backend bridge path to the App/UI layer.
 pub enum ClientEvent {
     /// A local preference write completed independently of the agent session.
@@ -165,6 +178,14 @@ pub enum ClientEvent {
     },
     /// Session runtime plugin reload failed after dispatch.
     RuntimeReloadFailed { session_id: String, message: String },
+    /// How the skills and the output styles halves of a `/reload` each ended.
+    SkillsAndStylesReloaded {
+        session_id: String,
+        skills: crate::agent::types::ReloadOutcome,
+        output_styles: crate::agent::types::ReloadOutcome,
+    },
+    /// A `/reload` waited too long behind earlier requests for its session and was skipped.
+    SkillsAndStylesReloadExpired { session_id: String, after_ms: u64 },
     /// Custom slash command replaced the active session.
     SessionReplaced {
         session_id: model::SessionId,
@@ -197,12 +218,27 @@ pub enum ClientEvent {
         snapshot: Option<crate::agent::types::StructuredUsageSnapshot>,
         error: Option<String>,
     },
+    /// Subagent ids with a saved transcript in the active session.
+    SubagentsListed { session_id: String, agent_ids: Vec<String>, error: Option<String> },
+    /// Saved transcript of one subagent in the active session.
+    SubagentMessagesReceived {
+        session_id: String,
+        agent_id: String,
+        /// The read request this answers.
+        request_id: Option<String>,
+        messages: Vec<crate::agent::types::SubagentMessage>,
+        error: Option<String>,
+    },
+    /// Acknowledgement or rejection of a subagent stop request; not its outcome.
+    SubagentStopResult { session_id: String, task_id: String, error: Option<String> },
     /// Rewind target candidates loaded from persisted SDK session history.
     RewindTargetsReceived {
         session_id: String,
         targets: Vec<model::RewindTarget>,
         error: Option<String>,
     },
+    /// One chunk of the complete session history requested by /export.
+    SessionHistoryChunk { session_id: String, chunk: HistoryChunk },
     /// Result of a rewind operation that touched files.
     RewindResultReceived { result: model::RewindResult },
     /// MCP server snapshot received from bridge.
@@ -266,10 +302,16 @@ impl ClientEvent {
             | Self::RuntimeReloadCompleted { session_id }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SettingsResultReceived { session_id, .. }
             | Self::StatusSnapshotReceived { session_id, .. }
             | Self::ContextUsageReceived { session_id, .. }
             | Self::StructuredUsageReceived { session_id, .. }
+            | Self::SubagentsListed { session_id, .. }
+            | Self::SubagentMessagesReceived { session_id, .. }
+            | Self::SubagentStopResult { session_id, .. }
+            | Self::SessionHistoryChunk { session_id, .. }
             | Self::McpSnapshotReceived { session_id, .. } => Some(session_id),
             Self::SlashCommandError { session_id, .. } => session_id.as_deref(),
             Self::RewindResultReceived { result } => Some(result.session_id.as_str()),

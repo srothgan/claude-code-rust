@@ -334,7 +334,7 @@ fn display_primary(session: &RecentSessionInfo) -> String {
     format!("{} - {}", format_relative_age(session.last_modified_ms), session_title(session))
 }
 
-fn fit_with_ellipsis(value: &str, max_width: usize) -> String {
+pub(super) fn fit_with_ellipsis(value: &str, max_width: usize) -> String {
     if UnicodeWidthStr::width(value) <= max_width {
         return value.to_owned();
     }

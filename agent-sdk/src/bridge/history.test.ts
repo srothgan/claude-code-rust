@@ -131,7 +131,7 @@ test("resume notifications preserve terminal outcomes, linked tools and optional
       assert.equal(results[0].tool_call_update.fields.task_metadata?.output_file, outputFile);
       assert.equal(results[0].tool_call_update.fields.task_metadata?.terminal_status, status);
       const tasks = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks);
-      assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.source_tool_call_id, task.description, task.metadata]), [[`task-${status}`, "completed", "monitor", summary, { output_file: outputFile, summary, terminal_status: status }]]);
+      assert.deepEqual(tasks.map(task => [task.task_id, task.status, task.source_tool_call_id, task.description, task.metadata]), [[`task-${status}`, "completed", "monitor", summary, { output_file: outputFile, summary, terminal_status: status, sdk_lifecycle_task: true }]]);
       assert.ok(!updates.some(update => update.type === "user_message_chunk"));
     }
   }
@@ -139,6 +139,67 @@ test("resume notifications preserve terminal outcomes, linked tools and optional
     { ...base, type: "user", uuid: "minimal", ...{ origin: { kind: "task-notification" } }, message: { role: "user", content: "</task-notification><task-notification><task-id>minimal</task-id><status>completed</status></task-notification>" } },
   ]);
   assert.deepEqual(minimal.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).map(task => [task.task_id, task.status, task.source_tool_call_id, task.description]), [["minimal", "completed", undefined, undefined]]);
+});
+
+test("resume settles a subagent task after its tool result has completed", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const notification = "<task-notification><task-id>agent-1</task-id><tool-use-id>tool-1</tool-use-id><status>completed</status><summary>Finished work</summary></task-notification>";
+  const updates = mapSessionMessagesToUpdates([
+    { ...base, type: "assistant", uuid: "launch", message: { role: "assistant", content: [{ type: "tool_use", id: "tool-1", name: "Agent", input: { description: "Work", prompt: "Work" } }] } },
+    { ...base, type: "system", uuid: "started", message: { subtype: "task_started", task_id: "agent-1", tool_use_id: "tool-1", task_type: "local_agent", description: "Work" } },
+    { ...base, type: "user", uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tool-1", content: "Done" }] } },
+    { ...base, type: "user", uuid: "notification", ...{ origin: { kind: "task-notification", producer: "session-task" } }, message: { role: "user", content: notification } },
+    { ...base, type: "system", uuid: "late-progress", message: { subtype: "task_progress", task_id: "agent-1", tool_use_id: "tool-1", description: "Stale progress" } },
+  ]);
+  const results = updates.filter(update => update.type === "tool_call_update").map(update => update.tool_call_update).filter(update => update.tool_call_id === "tool-1");
+  assert.equal(results.length, 2, "only the start and result update the tool");
+  assert.equal(results.at(-1)?.fields.status, "completed");
+  const rows = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks);
+  assert.deepEqual(rows.map(row => [row.task_id, row.status, (row.metadata as Record<string, unknown>)?.task_type, (row.metadata as Record<string, unknown>)?.terminal_status]), [
+    ["agent-1", "in_progress", "local_agent", undefined],
+    ["agent-1", "completed", "local_agent", "completed"],
+  ]);
+  assert.equal(rows.at(-1)?.description, "Finished work");
+});
+
+// Claude Code 2.1.300 saves no task_started record for a background Agent call
+// (measured 2026-10-16): only the tool_use, its async-launch result and one
+// task-notification per outcome. A user-stopped agent is saved as "killed".
+test("resume rebuilds background subagent rows from their Agent calls and notifications", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const saved = (toolUseId: string, agentId: string, description: string, status: string, summary: string) => [
+    { ...base, type: "assistant" as const, uuid: `launch-${agentId}`, message: { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "Agent", input: { description, prompt: `Prompt of ${description}`, subagent_type: "general-purpose", model: "haiku", run_in_background: true } }] } },
+    { ...base, type: "user" as const, uuid: `result-${agentId}`, ...{ toolUseResult: { isAsync: true, status: "async_launched", agentId, description, prompt: `Prompt of ${description}`, outputFile: `/tmp/tasks/${agentId}.output` } }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: [{ type: "text", text: `Async agent launched successfully.\nagentId: ${agentId} (internal ID - do not mention to user.)\nThe agent is working in the background.` }] }] } },
+    { ...base, type: "user" as const, uuid: `notification-${agentId}`, ...{ origin: { kind: "task-notification", producer: "session-task", runId: `run-${agentId}` } }, message: { role: "user", content: `<task-notification>\n<task-id>${agentId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<output-file>/tmp/tasks/${agentId}.output</output-file>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>` } },
+  ];
+  const updates = mapSessionMessagesToUpdates([
+    ...saved("toolu-quick", "a-quick", "Quick reply", "completed", "Agent \"Quick reply\" finished"),
+    ...saved("toolu-slow", "a-slow", "Slow facts", "killed", "Agent \"Slow facts\" was stopped by user"),
+  ]);
+  const rows = new Map<string, { status: string; subject: string; source_tool_call_id?: string; metadata?: unknown }>();
+  for (const update of updates) {
+    if (update.type === "task_state_update") for (const task of update.tasks) rows.set(task.task_id, task);
+  }
+  assert.deepEqual([...rows.entries()].map(([id, row]) => {
+    const metadata = row.metadata as Record<string, unknown> | undefined;
+    return [id, row.subject, row.status, row.source_tool_call_id, metadata?.task_type, metadata?.subagent_type, metadata?.terminal_status];
+  }), [
+    ["a-quick", "Quick reply", "completed", "toolu-quick", "local_agent", "general-purpose", "completed"],
+    ["a-slow", "Slow facts", "completed", "toolu-slow", "local_agent", "general-purpose", "killed"],
+  ]);
+});
+
+test("a resumed notification for a non-Agent tool stays a plain runtime task", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const updates = mapSessionMessagesToUpdates([
+    { ...base, type: "assistant", uuid: "launch", message: { role: "assistant", content: [{ type: "tool_use", id: "shell", name: "Bash", input: { command: "sleep 1", run_in_background: true } }] } },
+    { ...base, type: "user", uuid: "notification", ...{ origin: { kind: "task-notification", producer: "session-task" } }, message: { role: "user", content: "<task-notification><task-id>bash-1</task-id><tool-use-id>shell</tool-use-id><status>killed</status><summary>stopped</summary></task-notification>" } },
+  ]);
+  const row = updates.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).at(-1);
+  assert.equal(row?.status, "completed");
+  const metadata = row?.metadata as Record<string, unknown> | undefined;
+  assert.equal(metadata?.terminal_status, "killed");
+  assert.equal(metadata?.task_type, undefined);
 });
 
 test("resume skips malformed internal notifications and restores later conversation and task outcomes", () => {
@@ -216,4 +277,28 @@ test("resume display maps plain string messages and hides internal compact summa
     { type: "text", text: "Assistant response" },
   ]);
   assert.ok(!updates.some(update => update.type === "message_metadata" && update.source_message_uuid === "summary"));
+});
+
+// A background subagent still running when the CLI exited has a launch and no
+// notification. On resume nothing owns its process.
+test("a background subagent with no recorded outcome is rebuilt as interrupted, not running", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const saved = (toolUseId: string, agentId: string, withOutcome: boolean) => [
+    { ...base, type: "assistant" as const, uuid: `launch-${agentId}`, message: { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "Agent", input: { description: agentId, prompt: "p", subagent_type: "general-purpose", run_in_background: true } }] } },
+    { ...base, type: "user" as const, uuid: `result-${agentId}`, ...{ toolUseResult: { isAsync: true, status: "async_launched", agentId, description: agentId, prompt: "p", outputFile: `/tmp/tasks/${agentId}.output` } }, message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: [{ type: "text", text: `Async agent launched successfully.\nagentId: ${agentId}` }] }] } },
+    ...(withOutcome ? [{ ...base, type: "user" as const, uuid: `notification-${agentId}`, ...{ origin: { kind: "task-notification", producer: "session-task" } }, message: { role: "user", content: `<task-notification><task-id>${agentId}</task-id><tool-use-id>${toolUseId}</tool-use-id><status>completed</status><summary>ok</summary></task-notification>` } }] : []),
+  ];
+  const rows = new Map<string, { status: string; metadata?: unknown }>();
+  for (const update of mapSessionMessagesToUpdates([...saved("t-open", "a-open", false), ...saved("t-done", "a-done", true)])) {
+    if (update.type === "task_state_update") for (const task of update.tasks) rows.set(task.task_id, task);
+  }
+  const open = rows.get("a-open");
+  assert.ok(open, "the launched subagent still gets a row");
+  assert.notEqual(open.status, "in_progress", "nothing owns the process after a resume");
+  const metadata = open.metadata as Record<string, unknown>;
+  assert.equal(metadata.terminal_status, "interrupted");
+  assert.equal(metadata.task_type, "local_agent");
+  const done = rows.get("a-done");
+  assert.ok(done, "the finished subagent has a row");
+  assert.equal((done.metadata as Record<string, unknown>).terminal_status, "completed", "a recorded outcome is kept");
 });

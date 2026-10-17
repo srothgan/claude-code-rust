@@ -26,6 +26,21 @@ See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the
 
 The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
 
+## Subagents View
+
+`/agents`, or `Left` in an empty input, opens the current session's subagents.
+
+| Shortcut | Action |
+| --- | --- |
+| `Up`, `Down` | Select a subagent. |
+| `Enter` | Open the selected subagent's saved transcript. |
+| `s` | Ask the selected running subagent to stop. |
+| `r` | Check again which subagents have a saved transcript, and read the selected subagent's response again. |
+| `Page Up`, `Page Down` | Scroll the selected subagent's details. |
+| `Esc` | Return to chat with the draft unchanged. |
+
+In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a page, `r` reads the transcript again at the same position (also after a failed read), and `Esc` or `Left` returns to the list.
+
 ## Chat Input
 
 | Shortcut | Action |
@@ -39,7 +54,8 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Shift+Left` | Switch to the previous permission mode, wrapping before the first. |
 | `Shift+Up`, `Shift+Down` | Raise or lower effort to the next level the current model supports, stopping at the highest and lowest level. |
 | `Up` | Move up through text, or recall the latest user message when the input is empty. |
-| `Down`, `Left`, `Right` | Move through text. |
+| `Left` | Move left through text, or open `/agents` when the input is empty. |
+| `Down`, `Right` | Move through text. |
 | `Home`, `End` | Move to line start or line end. |
 | `Ctrl+Left`, `Ctrl+Right` | Move by word. |
 | `Alt+Left`, `Alt+Right` | Move by word. |

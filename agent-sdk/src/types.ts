@@ -366,6 +366,13 @@ export interface TaskItem {
   source_tool_call_id?: string;
 }
 
+/** One readable entry of a saved subagent transcript. `system_reminder` is a
+ * reminder the SDK added to the subagent's context, without its XML wrapper. */
+export interface SubagentMessage {
+  role: "user" | "assistant" | "tool" | "system_reminder";
+  text: string;
+}
+
 export interface TaskStateUpdate {
   source: TaskUpdateSource;
   tasks: TaskItem[];
@@ -721,6 +728,12 @@ export interface McpServerStatus {
   tools: McpTool[];
 }
 
+/** How one half of a skills-and-styles reload ended. */
+export type ReloadOutcome =
+  | { status: "reloaded"; names: string[] }
+  | { status: "failed"; message: string }
+  | { status: "timed_out"; after_ms: number };
+
 export interface McpSetServersResult {
   added: string[];
   removed: string[];
@@ -738,6 +751,21 @@ export interface SessionLaunchSettings {
   permission_mode?: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   effort?: EffortLevel;
   agent?: string;
+  /** The launch name: the initial session only. */
+  name?: string;
+  /** Resume under a new session ID: the initial session only, and nothing without a resume. */
+  fork_session?: boolean;
+  /** From here on, the configuration kept for every session of the process. Absolute paths. */
+  additional_directories?: string[];
+  /** A settings object for the SDK flag-settings layer, parsed by the app. */
+  settings?: { [key: string]: Json };
+  /** The `mcpServers` object of each --mcp-config, in command-line order. */
+  mcp_configs?: Array<{ [key: string]: Json }>;
+  strict_mcp_config?: boolean;
+  /** Replaces the claude_code preset; the runtime guard stays appended. */
+  system_prompt?: string;
+  /** Appended after the runtime guard. */
+  append_system_prompt?: string;
 }
 
 export interface RewindTarget {
@@ -1002,7 +1030,25 @@ export type BridgeCommand =
       session_id: string;
     }
   | {
+      command: "list_subagents";
+      session_id: string;
+    }
+  | {
+      command: "get_subagent_messages";
+      session_id: string;
+      agent_id: string;
+    }
+  | {
+      command: "stop_subagent";
+      session_id: string;
+      task_id: string;
+    }
+  | {
       command: "get_rewind_targets";
+      session_id: string;
+    }
+  | {
+      command: "export_session_history";
       session_id: string;
     }
   | {
@@ -1016,6 +1062,10 @@ export type BridgeCommand =
       command: "reload_plugins";
       session_id: string;
       force?: boolean;
+    }
+  | {
+      command: "reload_skills_and_styles";
+      session_id: string;
     }
   | {
       command: "mcp_status";
@@ -1226,6 +1276,17 @@ export type BridgeEvent =
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {
+      event: "skills_and_styles_reloaded";
+      session_id: string;
+      skills: ReloadOutcome;
+      output_styles: ReloadOutcome;
+    }
+  | {
+      event: "skills_and_styles_reload_expired";
+      session_id: string;
+      after_ms: number;
+    }
+  | {
       event: "session_replaced";
       session_id: string;
       cwd: string;
@@ -1253,9 +1314,36 @@ export type BridgeEvent =
       error?: string;
     }
   | {
+      event: "subagents_listed";
+      session_id: string;
+      agent_ids: string[];
+      error?: string;
+    }
+  | {
+      event: "subagent_messages";
+      session_id: string;
+      agent_id: string;
+      messages: SubagentMessage[];
+      error?: string;
+    }
+  | {
+      event: "subagent_stop_result";
+      session_id: string;
+      task_id: string;
+      error?: string;
+    }
+  | {
       event: "rewind_targets";
       session_id: string;
       targets: RewindTarget[];
+      error?: string;
+    }
+  | {
+      event: "session_history_export";
+      session_id: string;
+      updates: SessionUpdate[];
+      last: boolean;
+      omitted_updates: number;
       error?: string;
     }
   | {

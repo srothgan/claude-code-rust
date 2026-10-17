@@ -31,6 +31,7 @@ pub(crate) use mcp::{
     present_mcp_elicitation_request, reconcile_removed_config_mcp_server_guards,
     reconcile_stale_plugin_mcp_servers, refresh_mcp_snapshot,
 };
+pub(crate) use status::refresh_session_transcript_if_shown;
 // Used by the binary UI target, but not by the library target in isolation.
 pub use browse::{SettingsBrowse, SettingsFocus};
 pub use footer::FooterOverlayState;
@@ -41,7 +42,7 @@ pub use overlays::*;
 pub(crate) use service::{apply_settings_result, request_settings};
 pub use state::{
     ConfigState, PendingSessionTitleChangeKind, PendingSessionTitleChangeState,
-    PendingSettingsRequest,
+    PendingSettingsRequest, SessionTranscriptState,
 };
 pub(crate) use structured::{FieldInput, FormRow};
 pub use structured::{StructuredEditor, summary as structured_summary};
@@ -49,7 +50,7 @@ pub use tabs::{ConfigHelpSection, ConfigTab};
 
 mod prelude {
     pub(super) use super::overlays::*;
-    pub(super) use super::status::request_status_snapshot_if_needed;
+    pub(super) use super::status::refresh_status_tab;
     pub(super) use super::tabs::{ConfigHelpSection, ConfigTab};
     pub(super) use super::{edit, help, mcp};
     pub(super) use crate::app::App;

@@ -181,7 +181,9 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
             true
         }
         Some(ConfigOverlayState::SessionRename(_)) => {
-            insert_text_str(app.config.session_rename_overlay_mut(), text);
+            if !app.config.session_rename_in_flight() {
+                insert_text_str(app.config.session_rename_overlay_mut(), text);
+            }
             true
         }
         Some(ConfigOverlayState::AddMarketplace(_)) => {
@@ -454,9 +456,26 @@ pub(super) fn open_session_rename_overlay(app: &mut App) {
         SessionRenameOverlayState::from_text_input,
     )));
     app.config.last_error = None;
+    super::status::refresh_session_transcript(app);
 }
 
 pub(super) fn generate_session_title(app: &mut App) {
+    // One title change at a time: the session listing settles whichever is pending.
+    if let Some(pending) = app.config.pending_session_title_change.as_ref() {
+        app.config.last_error = None;
+        app.config.status_message = Some(
+            match pending.kind {
+                PendingSessionTitleChangeKind::Rename { .. } => {
+                    "The session is being renamed. Generate a title once it finishes."
+                }
+                PendingSessionTitleChangeKind::Generate => {
+                    "A session title is already being generated."
+                }
+            }
+            .to_owned(),
+        );
+        return;
+    }
     let Some(session_id) =
         app.session_runtime.session_id.as_ref().map(std::string::ToString::to_string)
     else {
@@ -491,9 +510,20 @@ pub(super) fn generate_session_title(app: &mut App) {
 }
 
 fn handle_session_rename_overlay_key(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Esc && key.modifiers == KeyModifiers::NONE {
+        app.config.clear_overlay();
+        return;
+    }
+    // The sent draft stays on screen until its result; a failure keeps it.
+    if app.config.session_rename_in_flight() {
+        return;
+    }
     match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_session_rename_overlay(app),
-        (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            if app.config.session_rename_confirmable() {
+                confirm_session_rename_overlay(app);
+            }
+        }
         (KeyCode::Left, KeyModifiers::NONE) => {
             move_text_cursor_left(app.config.session_rename_overlay_mut());
         }
@@ -544,7 +574,7 @@ fn confirm_session_rename_overlay(app: &mut App) {
                     requested_title: requested_title.clone(),
                 },
             });
-            app.config.clear_overlay();
+            app.config.overlay_message = None;
             app.config.last_error = None;
             app.config.status_message = Some(if requested_title.is_some() {
                 "Renaming session...".to_owned()

@@ -14,6 +14,14 @@ pub struct SessionLaunchSettings {
     pub effort: Option<super::model::EffortLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fork_session: bool,
+    /// Boxed so the session commands that carry launch settings stay small enough for
+    /// clippy's `large_futures` limit in futures that hold a command across an await.
+    #[serde(flatten)]
+    pub config: Box<SessionConfig>,
 }
 
 impl SessionLaunchSettings {
@@ -23,6 +31,44 @@ impl SessionLaunchSettings {
             && self.permission_mode.is_none()
             && self.effort.is_none()
             && self.agent.is_none()
+            && self.name.is_none()
+            && !self.fork_session
+            && self.config.is_empty()
+    }
+}
+
+/// Launch configuration kept for every session the process starts, unlike the initial-session
+/// fields above. The app has already resolved paths to absolute ones and checked that files
+/// were readable and JSON parsed; the bridge maps each field to its Agent SDK option.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_directories: Vec<String>,
+    /// A settings object for the SDK's flag-settings layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The `mcpServers` object of each `--mcp-config`, in command-line order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_configs: Vec<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_mcp_config: bool,
+    /// Replaces the default system prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Appended to the system prompt, after the bridge's own instruction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_system_prompt: Option<String>,
+}
+
+impl SessionConfig {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.additional_directories.is_empty()
+            && self.settings.is_none()
+            && self.mcp_configs.is_empty()
+            && !self.strict_mcp_config
+            && self.system_prompt.is_none()
+            && self.append_system_prompt.is_none()
     }
 }
 
@@ -166,7 +212,21 @@ pub enum BridgeCommand {
     GetUsage {
         session_id: String,
     },
+    ListSubagents {
+        session_id: String,
+    },
+    GetSubagentMessages {
+        session_id: String,
+        agent_id: String,
+    },
+    StopSubagent {
+        session_id: String,
+        task_id: String,
+    },
     GetRewindTargets {
+        session_id: String,
+    },
+    ExportSessionHistory {
         session_id: String,
     },
     Rewind {
@@ -180,6 +240,9 @@ pub enum BridgeCommand {
         session_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
+    },
+    ReloadSkillsAndStyles {
+        session_id: String,
     },
     GetMcpSnapshot {
         session_id: String,
@@ -245,9 +308,14 @@ impl BridgeCommand {
             Self::GetStatusSnapshot { .. } => "get_status_snapshot",
             Self::GetContextUsage { .. } => "get_context_usage",
             Self::GetUsage { .. } => "get_usage",
+            Self::ListSubagents { .. } => "list_subagents",
+            Self::GetSubagentMessages { .. } => "get_subagent_messages",
+            Self::StopSubagent { .. } => "stop_subagent",
             Self::GetRewindTargets { .. } => "get_rewind_targets",
+            Self::ExportSessionHistory { .. } => "export_session_history",
             Self::Rewind { .. } => "rewind",
             Self::ReloadPlugins { .. } => "reload_plugins",
+            Self::ReloadSkillsAndStyles { .. } => "reload_skills_and_styles",
             Self::GetMcpSnapshot { .. } => "get_mcp_snapshot",
             Self::McpReconnect { .. } => "mcp_reconnect",
             Self::McpToggle { .. } => "mcp_toggle",
@@ -286,9 +354,14 @@ impl BridgeCommand {
             | Self::GetStatusSnapshot { session_id }
             | Self::GetContextUsage { session_id }
             | Self::GetUsage { session_id }
+            | Self::ListSubagents { session_id }
+            | Self::GetSubagentMessages { session_id, .. }
+            | Self::StopSubagent { session_id, .. }
             | Self::GetRewindTargets { session_id }
+            | Self::ExportSessionHistory { session_id }
             | Self::Rewind { session_id, .. }
             | Self::ReloadPlugins { session_id, .. }
+            | Self::ReloadSkillsAndStyles { session_id }
             | Self::GetMcpSnapshot { session_id }
             | Self::McpReconnect { session_id, .. }
             | Self::McpToggle { session_id, .. }
@@ -331,9 +404,14 @@ impl BridgeCommand {
             | Self::GetStatusSnapshot { .. }
             | Self::GetContextUsage { .. }
             | Self::GetUsage { .. }
+            | Self::ListSubagents { .. }
+            | Self::GetSubagentMessages { .. }
+            | Self::StopSubagent { .. }
             | Self::GetRewindTargets { .. }
+            | Self::ExportSessionHistory { .. }
             | Self::Rewind { .. }
             | Self::ReloadPlugins { .. }
+            | Self::ReloadSkillsAndStyles { .. }
             | Self::GetMcpSnapshot { .. }
             | Self::McpReconnect { .. }
             | Self::McpToggle { .. }
@@ -502,6 +580,15 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    SkillsAndStylesReloaded {
+        session_id: String,
+        skills: types::ReloadOutcome,
+        output_styles: types::ReloadOutcome,
+    },
+    SkillsAndStylesReloadExpired {
+        session_id: String,
+        after_ms: u64,
+    },
     SessionReplaced {
         session_id: String,
         cwd: String,
@@ -535,9 +622,35 @@ pub enum BridgeEvent {
         snapshot: Option<types::StructuredUsageSnapshot>,
         error: Option<String>,
     },
+    SubagentsListed {
+        session_id: String,
+        agent_ids: Vec<String>,
+        error: Option<String>,
+    },
+    SubagentMessages {
+        session_id: String,
+        agent_id: String,
+        messages: Vec<types::SubagentMessage>,
+        error: Option<String>,
+    },
+    SubagentStopResult {
+        session_id: String,
+        task_id: String,
+        error: Option<String>,
+    },
     RewindTargets {
         session_id: String,
         targets: Vec<types::RewindTarget>,
+        error: Option<String>,
+    },
+    /// One chunk of a session's complete saved history, in resume order.
+    SessionHistoryExport {
+        session_id: String,
+        updates: Vec<types::SessionUpdate>,
+        last: bool,
+        #[serde(default)]
+        omitted_updates: u64,
+        #[serde(default)]
         error: Option<String>,
     },
     RewindResult {
@@ -590,6 +703,8 @@ impl BridgeEvent {
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
+            Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
+            Self::SkillsAndStylesReloadExpired { .. } => "skills_and_styles_reload_expired",
             Self::SessionReplaced { .. } => "session_replaced",
             Self::Initialized { .. } => "initialized",
             Self::SessionsListed { .. } => "sessions_listed",
@@ -597,7 +712,11 @@ impl BridgeEvent {
             Self::StatusSnapshot { .. } => "status_snapshot",
             Self::ContextUsage { .. } => "context_usage",
             Self::UsageSnapshot { .. } => "usage_snapshot",
+            Self::SubagentsListed { .. } => "subagents_listed",
+            Self::SubagentMessages { .. } => "subagent_messages",
+            Self::SubagentStopResult { .. } => "subagent_stop_result",
             Self::RewindTargets { .. } => "rewind_targets",
+            Self::SessionHistoryExport { .. } => "session_history_export",
             Self::RewindResult { .. } => "rewind_result",
             Self::McpSnapshot { .. } => "mcp_snapshot",
         }
@@ -630,12 +749,18 @@ impl BridgeEvent {
             | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
+            | Self::SkillsAndStylesReloaded { session_id, .. }
+            | Self::SkillsAndStylesReloadExpired { session_id, .. }
             | Self::SessionReplaced { session_id, .. }
             | Self::SettingsResult { session_id, .. }
             | Self::StatusSnapshot { session_id, .. }
             | Self::ContextUsage { session_id, .. }
             | Self::UsageSnapshot { session_id, .. }
+            | Self::SubagentsListed { session_id, .. }
+            | Self::SubagentMessages { session_id, .. }
+            | Self::SubagentStopResult { session_id, .. }
             | Self::RewindTargets { session_id, .. }
+            | Self::SessionHistoryExport { session_id, .. }
             | Self::RewindResult { session_id, .. }
             | Self::McpSnapshot { session_id, .. } => Some(session_id.as_str()),
             Self::AuthRequired { .. }
@@ -676,6 +801,8 @@ impl BridgeEvent {
             | Self::RuntimeReloadCompleted { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
+            | Self::SkillsAndStylesReloaded { .. }
+            | Self::SkillsAndStylesReloadExpired { .. }
             | Self::SessionReplaced { .. }
             | Self::Initialized { .. }
             | Self::SessionsListed { .. }
@@ -683,7 +810,11 @@ impl BridgeEvent {
             | Self::StatusSnapshot { .. }
             | Self::ContextUsage { .. }
             | Self::UsageSnapshot { .. }
+            | Self::SubagentsListed { .. }
+            | Self::SubagentMessages { .. }
+            | Self::SubagentStopResult { .. }
             | Self::RewindTargets { .. }
+            | Self::SessionHistoryExport { .. }
             | Self::RewindResult { .. }
             | Self::McpSnapshot { .. } => None,
         }
@@ -1187,6 +1318,134 @@ mod tests {
     }
 
     #[test]
+    fn reload_skills_and_styles_command_serializes_snake_case() {
+        let env = CommandEnvelope {
+            request_id: None,
+            command: BridgeCommand::ReloadSkillsAndStyles { session_id: "s1".to_owned() },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&env).expect("serialize"),
+            serde_json::json!({ "command": "reload_skills_and_styles", "session_id": "s1" })
+        );
+        assert_eq!(env.command.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn skills_and_styles_reloaded_event_deserializes_bridge_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "skills_and_styles_reloaded",
+            "session_id": "s1",
+            "skills": { "status": "reloaded", "names": ["deploy", "lint"] },
+            "output_styles": { "status": "timed_out", "after_ms": 10000 }
+        }))
+        .expect("deserialize reload result");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SkillsAndStylesReloaded {
+                session_id: "s1".to_owned(),
+                skills: types::ReloadOutcome::Reloaded {
+                    names: vec!["deploy".to_owned(), "lint".to_owned()]
+                },
+                output_styles: types::ReloadOutcome::TimedOut { after_ms: 10_000 },
+            }
+        );
+        assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn skills_and_styles_reload_expired_event_deserializes_bridge_payload() {
+        let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "skills_and_styles_reload_expired",
+            "session_id": "s1",
+            "after_ms": 10000
+        }))
+        .expect("deserialize expired reload");
+
+        assert_eq!(
+            decoded.event,
+            BridgeEvent::SkillsAndStylesReloadExpired {
+                session_id: "s1".to_owned(),
+                after_ms: 10_000
+            }
+        );
+        assert_eq!(decoded.event.session_id(), Some("s1"));
+    }
+
+    #[test]
+    fn failed_reload_outcome_deserializes_the_bridge_message() {
+        let decoded: types::ReloadOutcome = serde_json::from_value(
+            serde_json::json!({ "status": "failed", "message": "style directory unreadable" }),
+        )
+        .expect("deserialize outcome");
+
+        assert_eq!(
+            decoded,
+            types::ReloadOutcome::Failed { message: "style directory unreadable".to_owned() }
+        );
+    }
+
+    #[test]
+    fn export_session_history_command_serializes_with_its_request_id() {
+        let env = CommandEnvelope {
+            request_id: Some("export-1".to_owned()),
+            command: BridgeCommand::ExportSessionHistory { session_id: "s1".to_owned() },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&env).expect("serialize"),
+            serde_json::json!({
+                "request_id": "export-1",
+                "command": "export_session_history",
+                "session_id": "s1"
+            })
+        );
+    }
+
+    #[test]
+    fn session_history_export_event_deserializes_chunk_and_failure() {
+        let chunk: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "request_id": "export-1",
+            "event": "session_history_export",
+            "session_id": "s1",
+            "updates": [
+                { "type": "user_message_chunk",
+                  "content": { "type": "text", "text": "hello" },
+                  "source_message_uuid": "u1" }
+            ],
+            "last": false,
+            "omitted_updates": 0
+        }))
+        .expect("deserialize chunk");
+        assert_eq!(chunk.request_id.as_deref(), Some("export-1"));
+        let BridgeEvent::SessionHistoryExport { updates, last, omitted_updates, error, .. } =
+            chunk.event
+        else {
+            panic!("expected a history export chunk");
+        };
+        assert_eq!(updates.len(), 1);
+        assert!(!last);
+        assert_eq!(omitted_updates, 0);
+        assert_eq!(error, None);
+
+        // A failure omits the counters the bridge sends on success only.
+        let failure: EventEnvelope = serde_json::from_value(serde_json::json!({
+            "event": "session_history_export",
+            "session_id": "s1",
+            "updates": [],
+            "last": true,
+            "error": "failed to load session history: boom"
+        }))
+        .expect("deserialize failure");
+        let BridgeEvent::SessionHistoryExport { last, error, .. } = failure.event else {
+            panic!("expected a history export failure");
+        };
+        assert!(last);
+        assert_eq!(error.as_deref(), Some("failed to load session history: boom"));
+    }
+
+    #[test]
     fn structured_usage_event_deserializes_tolerant_snapshot() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "usage_snapshot",
@@ -1220,6 +1479,73 @@ mod tests {
         assert_eq!(snapshot.five_hour.map(|window| window.utilization), Some(42.0));
         assert_eq!(snapshot.session.and_then(|session| session.model_count), Some(2));
         assert_eq!(snapshot.activity_day.map(|window| window.request_count), Some(4));
+    }
+
+    #[test]
+    fn subagent_commands_and_results_match_the_bridge_contract() {
+        let commands = [
+            BridgeCommand::ListSubagents { session_id: "s1".to_owned() },
+            BridgeCommand::GetSubagentMessages {
+                session_id: "s1".to_owned(),
+                agent_id: "a1".to_owned(),
+            },
+            BridgeCommand::StopSubagent { session_id: "s1".to_owned(), task_id: "a1".to_owned() },
+        ];
+        let json: Vec<_> = commands
+            .into_iter()
+            .map(|command| serde_json::to_value(CommandEnvelope { request_id: None, command }))
+            .collect::<Result<_, _>>()
+            .expect("serialize");
+        assert_eq!(
+            json,
+            [
+                serde_json::json!({ "command": "list_subagents", "session_id": "s1" }),
+                serde_json::json!({ "command": "get_subagent_messages", "session_id": "s1", "agent_id": "a1" }),
+                serde_json::json!({ "command": "stop_subagent", "session_id": "s1", "task_id": "a1" }),
+            ]
+        );
+
+        let event = |value| serde_json::from_value::<EventEnvelope>(value).expect("event").event;
+        assert_eq!(
+            event(
+                serde_json::json!({ "event": "subagent_messages", "session_id": "s1", "agent_id": "a1",
+                "messages": [{ "role": "user", "text": "Go" }, { "role": "system_reminder", "text": "Report back" },
+                    { "role": "tool", "text": "ls" }, { "role": "assistant", "text": "Done" }] })
+            ),
+            BridgeEvent::SubagentMessages {
+                session_id: "s1".to_owned(),
+                agent_id: "a1".to_owned(),
+                messages: [
+                    (types::SubagentMessageRole::User, "Go"),
+                    (types::SubagentMessageRole::SystemReminder, "Report back"),
+                    (types::SubagentMessageRole::Tool, "ls"),
+                    (types::SubagentMessageRole::Assistant, "Done"),
+                ]
+                .map(|(role, text)| types::SubagentMessage { role, text: text.to_owned() })
+                .to_vec(),
+                error: None,
+            }
+        );
+        assert_eq!(
+            event(
+                serde_json::json!({ "event": "subagents_listed", "session_id": "s1", "agent_ids": [], "error": "unreadable" })
+            ),
+            BridgeEvent::SubagentsListed {
+                session_id: "s1".to_owned(),
+                agent_ids: Vec::new(),
+                error: Some("unreadable".to_owned()),
+            }
+        );
+        assert_eq!(
+            event(
+                serde_json::json!({ "event": "subagent_stop_result", "session_id": "s1", "task_id": "a1" })
+            ),
+            BridgeEvent::SubagentStopResult {
+                session_id: "s1".to_owned(),
+                task_id: "a1".to_owned(),
+                error: None,
+            }
+        );
     }
 
     #[test]
@@ -1691,12 +2017,29 @@ mod tests {
             permission_mode: Some("plan".to_owned()),
             effort: Some(super::super::model::EffortLevel::Max),
             agent: Some("reviewer".to_owned()),
+            name: Some("Release prep".to_owned()),
+            fork_session: true,
+            config: Box::new(super::SessionConfig {
+                additional_directories: vec!["/work/shared".to_owned()],
+                settings: serde_json::from_str(r#"{"model":"haiku"}"#).ok(),
+                mcp_configs: serde_json::from_str(r#"[{"docs":{"command":"docs-mcp"}}]"#)
+                    .expect("MCP servers"),
+                strict_mcp_config: true,
+                system_prompt: Some("You are a release bot.".to_owned()),
+                append_system_prompt: Some("End with DONE.".to_owned()),
+            }),
         };
         let json = serde_json::to_value(&settings).expect("serialize");
         assert_eq!(
             json,
             serde_json::json!({
-                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer"
+                "model": "haiku", "permission_mode": "plan", "effort": "max", "agent": "reviewer",
+                "name": "Release prep", "fork_session": true,
+                "additional_directories": ["/work/shared"],
+                "settings": {"model": "haiku"},
+                "mcp_configs": [{"docs": {"command": "docs-mcp"}}],
+                "strict_mcp_config": true, "system_prompt": "You are a release bot.",
+                "append_system_prompt": "End with DONE."
             })
         );
         assert_eq!(

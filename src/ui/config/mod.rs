@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod action_overlay;
-mod common;
+/// List, selection, badge and hint helpers shared by the fullscreen views.
+pub(super) mod common;
 mod footer;
 mod help;
 mod input;
@@ -652,6 +653,152 @@ mod tests {
             .expect("overlay title");
         assert!(row > 0);
         assert!(column > 0);
+    }
+
+    /// Renders the rename dialog and returns, for the rows between its field
+    /// and the dim hint or help line, each row's text inside the borders and
+    /// its colour, and the help line.
+    fn rename_dialog_rows(
+        transcript: Option<crate::app::config::SessionTranscriptState>,
+    ) -> (Vec<(String, Option<ratatui::style::Color>)>, String) {
+        rename_dialog_rows_at(100, 32, transcript)
+    }
+
+    fn rename_dialog_rows_at(
+        width: u16,
+        height: u16,
+        transcript: Option<crate::app::config::SessionTranscriptState>,
+    ) -> (Vec<(String, Option<ratatui::style::Color>)>, String) {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.config.session_transcript = transcript;
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::SessionRename(
+            crate::app::config::SessionRenameOverlayState {
+                draft: "Review settings".to_owned(),
+                cursor: 15,
+            },
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|frame| super::render(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let lines = buffer_lines(buffer);
+        // Each buffer cell is one character, so a char index is a column. The
+        // dialog's own columns lie between the corners of its title row.
+        let title = lines.iter().find(|line| line.contains("Rename session")).expect("title row");
+        let left = title.chars().position(|ch| ch == '┌').map_or(0, |column| column + 1);
+        let right = title.chars().position(|ch| ch == '┐').unwrap_or(usize::from(width));
+        let inner = |line: &str| {
+            line.chars().skip(left).take(right - left).collect::<String>().trim().to_owned()
+        };
+        let field = lines.iter().position(|line| line.contains("Review settings")).expect("field");
+        let is_help = |line: &str| line.contains("cancel") || line.contains("close");
+        let end = (field + 1..lines.len())
+            .find(|&row| {
+                let text = inner(&lines[row]);
+                text.is_empty() || text.contains("Leave the field empty") || is_help(&text)
+            })
+            .expect("end of the rows beneath the field");
+        let rows = (field + 1..end)
+            .map(|row| {
+                let first_text_column = lines[row]
+                    .chars()
+                    .enumerate()
+                    .skip(left)
+                    .take(right - left)
+                    .find(|(_, ch)| !ch.is_whitespace())
+                    .map(|(column, _)| u16::try_from(column).expect("column"));
+                let y = u16::try_from(row).expect("row");
+                let colour = first_text_column.map(|x| buffer[(x, y)].fg);
+                (inner(&lines[row]), colour)
+            })
+            .collect::<Vec<_>>();
+        let help = lines
+            .iter()
+            .skip(end)
+            .map(|line| inner(line))
+            .find(|line| is_help(line))
+            .expect("help row");
+        (rows, help)
+    }
+
+    #[test]
+    fn rename_dialog_warns_beneath_the_field_until_the_session_is_saved() {
+        use crate::app::config::SessionTranscriptState;
+        let (rows, help) = rename_dialog_rows(Some(SessionTranscriptState::NotSaved));
+        let warning = rows.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            warning,
+            "Renaming becomes available after this session is saved. Run a command or send a message, then try again."
+        );
+        assert!(
+            rows.iter().all(|(_, colour)| *colour == Some(ratatui::style::Color::Yellow)),
+            "{rows:?}"
+        );
+        assert_eq!(help, "Esc cancel");
+
+        let (rows, help) = rename_dialog_rows(Some(SessionTranscriptState::Saved));
+        assert!(rows.is_empty(), "{rows:?}");
+        assert_eq!(help, "Enter confirm | Esc cancel");
+    }
+
+    #[test]
+    fn rename_dialog_keeps_the_whole_warning_in_a_short_terminal() {
+        use crate::app::config::SessionTranscriptState;
+        for (width, height) in [(80, 16), (80, 18), (60, 14)] {
+            let (rows, help) =
+                rename_dialog_rows_at(width, height, Some(SessionTranscriptState::NotSaved));
+            let warning = rows.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join(" ");
+            assert_eq!(
+                warning,
+                "Renaming becomes available after this session is saved. Run a command or send a message, then try again.",
+                "{width}x{height}"
+            );
+            assert_eq!(help, "Esc cancel", "{width}x{height}");
+        }
+    }
+
+    #[test]
+    fn rename_dialog_says_why_it_waits_for_a_generated_title() {
+        let mut app = App::test_default();
+        app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+        app.config.session_transcript = Some(crate::app::config::SessionTranscriptState::Saved);
+        app.config.pending_session_title_change =
+            Some(crate::app::config::PendingSessionTitleChangeState {
+                session_id: "session-1".to_owned(),
+                kind: crate::app::config::PendingSessionTitleChangeKind::Generate,
+            });
+        app.config.overlay = Some(crate::app::config::ConfigOverlayState::SessionRename(
+            crate::app::config::SessionRenameOverlayState {
+                draft: "Review settings".to_owned(),
+                cursor: 15,
+            },
+        ));
+        let lines = render_config_lines(100, 32, app);
+        let title = lines.iter().position(|line| line.contains("Rename session")).expect("title");
+        let bottom = title
+            + lines[title..].iter().position(|line| line.contains('└')).expect("bottom border");
+        let dialog: Vec<&String> = lines[title..bottom].iter().collect();
+        let note = dialog
+            .iter()
+            .position(|line| line.contains("A session title is being generated."))
+            .expect("the reason inside the dialog");
+        assert!(dialog[note..].iter().any(|line| line.contains("Esc cancel")));
+        assert!(!dialog.iter().any(|line| line.contains("Enter confirm")));
+    }
+
+    #[test]
+    fn rename_dialog_shows_a_failed_check_as_an_error() {
+        use crate::app::config::SessionTranscriptState;
+        let error = "Cannot check whether this session is saved: Permission denied (os error 13)";
+        let (rows, help) =
+            rename_dialog_rows(Some(SessionTranscriptState::CheckFailed(error.to_owned())));
+        let shown = rows.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join(" ");
+        assert_eq!(shown, error);
+        assert!(rows.iter().all(|(_, colour)| *colour == Some(ratatui::style::Color::Red)));
+        assert!(!shown.contains("Renaming becomes available"));
+        assert_eq!(help, "Esc cancel");
     }
 
     #[test]

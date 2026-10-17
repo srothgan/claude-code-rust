@@ -37,6 +37,11 @@ export type TaskTitleContext = {
 };
 
 const BACKGROUND_TASK_METADATA_KEY = "sdk_background_task";
+// Set by every lifecycle edge (start, progress, update, notification, stop):
+// the row is a runtime task the lifecycle owns, never a TaskList plan step,
+// and background inventory snapshots can no longer remove it.
+const LIFECYCLE_TASK_METADATA_KEY = "sdk_lifecycle_task";
+const INTERRUPTED_TERMINAL_STATUS = "interrupted";
 
 export function isTaskToolName(name: string): boolean {
   return TASK_TOOL_NAMES.has(name);
@@ -704,6 +709,18 @@ function replaceTaskSnapshot(
     emitted.push(cloneTask(task));
   }
 
+  // TaskList is the plan-task inventory. Runtime tasks are reported by their
+  // own lifecycle and must remain in the complete snapshot sent to the UI.
+  for (const taskId of previousIds) {
+    if (nextTasks.has(taskId)) continue;
+    const task = session.tasksById.get(taskId);
+    const metadata = asRecordOrNull(task?.metadata);
+    if (!task || (metadata?.[LIFECYCLE_TASK_METADATA_KEY] !== true && metadata?.[BACKGROUND_TASK_METADATA_KEY] !== true)) continue;
+    nextTasks.set(taskId, task);
+    nextIds.push(taskId);
+    emitted.push(cloneTask(task));
+  }
+
   const retained = new Set(nextIds);
   const removedTaskIds = previousIds.filter((taskId) => !retained.has(taskId));
   for (const taskId of removedTaskIds) {
@@ -994,6 +1011,8 @@ export function applyTaskToolResult(
       return;
     }
     const metadata = mergeMetadata(existing?.metadata, {
+      [LIFECYCLE_TASK_METADATA_KEY]: true,
+      [BACKGROUND_TASK_METADATA_KEY]: null,
       terminal_status: "stopped",
       task_type: output.task_type as Json,
       ...(typeof output.command === "string"
@@ -1120,6 +1139,14 @@ export function taskLifecyclePatch(
   if (!taskId) return undefined;
   const patch = asRecordOrNull(msg.patch);
   const status = lifecycleTaskStatus(subtype, msg);
+  // Progress and updates can be queued behind the outcome. Only a new start
+  // or another outcome may change a settled row.
+  // A row settled only by our own inference (terminal_status "interrupted")
+  // is the exception: live evidence for it revives it.
+  const revived = isInterruptedRow(existing) && status === "in_progress";
+  if (existing?.status === "completed" && !revived && status !== "completed" && subtype !== "task_started") {
+    return undefined;
+  }
   const description =
     nonEmptyString(patch?.description) ??
     nonEmptyString(msg.description) ??
@@ -1133,7 +1160,16 @@ export function taskLifecyclePatch(
     nonEmptyString(msg.task_description) ??
     description ??
     taskId;
-  const metadata = mergeMetadata(existing?.metadata, lifecycleMetadata(msg));
+  // SDK 0.3.288 sends background snapshots before or after lifecycle edges.
+  // Once an edge owns a row, the inventory can no longer remove it.
+  const existingMetadata = asRecordOrNull(existing?.metadata);
+  const fields: Record<string, Json> = {
+    ...lifecycleMetadata(msg),
+    ...(revived ? { terminal_status: null } : {}),
+    ...(existingMetadata?.[LIFECYCLE_TASK_METADATA_KEY] === true ? {} : { [LIFECYCLE_TASK_METADATA_KEY]: true }),
+    ...(existingMetadata?.[BACKGROUND_TASK_METADATA_KEY] === true ? { [BACKGROUND_TASK_METADATA_KEY]: null, is_backgrounded: true } : {}),
+  };
+  const metadata = mergeMetadata(existing?.metadata, Object.keys(fields).length > 0 ? fields : undefined);
 
   if (
     !status &&
@@ -1156,6 +1192,27 @@ export function taskLifecyclePatch(
     };
 }
 
+function isInterruptedRow(task: TaskItem | undefined): boolean {
+  return (
+    task?.status === "completed" &&
+    asRecordOrNull(task.metadata)?.terminal_status === INTERRUPTED_TERMINAL_STATUS
+  );
+}
+
+/**
+ * A row that was running but that no live process reports any more. The wire
+ * has no "unknown" status, so it settles as `completed` carrying
+ * `terminal_status: "interrupted"`: not running, with no outcome claimed. A
+ * later real outcome still replaces it.
+ */
+export function interruptedTaskPatch(task: TaskItem): TaskPatch {
+  return {
+    task_id: task.task_id,
+    status: "completed",
+    metadata: mergeMetadata(task.metadata, { terminal_status: INTERRUPTED_TERMINAL_STATUS }),
+  };
+}
+
 export function applyBackgroundTasksChanged(
   session: SessionState,
   msg: Record<string, unknown>,
@@ -1171,31 +1228,49 @@ export function applyBackgroundTasksChanged(
       const taskType = nonEmptyString(task.task_type);
       const description = nonEmptyString(task.description);
       const ambient = typeof task.ambient === "boolean" ? task.ambient : undefined;
+      const existing = session.tasksById.get(taskId);
+      const inventoryOnly = !existing || asRecordOrNull(existing.metadata)?.[BACKGROUND_TASK_METADATA_KEY] === true;
+      // Listed means running in the background, whichever edge created the row.
+      // The SDK replaces the set with every live task, so a relisted row that
+      // we only inferred to be interrupted is live again. A recorded outcome
+      // is never undone by a listing.
+      const revived = isInterruptedRow(existing);
+      const listedByLifecycle = !inventoryOnly && (existing?.status === "in_progress" || revived);
       return {
         task_id: taskId,
         subject: description ?? taskType ?? taskId,
         description,
-        status: "in_progress",
-        blocks: [],
-        blocked_by: [],
-        metadata: {
-          [BACKGROUND_TASK_METADATA_KEY]: true,
+        status: revived ? "in_progress" : existing?.status ?? "in_progress",
+        metadata: mergeMetadata(existing?.metadata, {
+          ...(revived ? { terminal_status: null } : {}),
+          ...(inventoryOnly ? { [BACKGROUND_TASK_METADATA_KEY]: true } : {}),
           ...(taskType ? { task_type: taskType } : {}),
           ...(ambient !== undefined ? { ambient } : {}),
-        },
+          ...(listedByLifecycle ? { is_backgrounded: true } : {}),
+        }),
       };
     })
     .filter((task): task is TaskPatch => Boolean(task));
 
   const nextIds = new Set(nextTasks.map((task) => task.task_id));
-  const removedTaskIds = session.taskOrder.filter((taskId) => {
-    if (nextIds.has(taskId)) {
-      return false;
+  // The snapshot only says what is still in the background, so it removes
+  // only rows it alone owns. A lifecycle-owned row stays until its own outcome
+  // settles it; one that was listed and is still running when the snapshot no
+  // longer lists it is the missed-notification case the snapshot exists for,
+  // so it stops counting as running without claiming an outcome.
+  const removedTaskIds: string[] = [];
+  const unlisted: TaskPatch[] = [];
+  for (const taskId of session.taskOrder) {
+    if (nextIds.has(taskId)) continue;
+    const task = session.tasksById.get(taskId);
+    const metadata = asRecordOrNull(task?.metadata);
+    if (metadata?.[BACKGROUND_TASK_METADATA_KEY] === true) {
+      removedTaskIds.push(taskId);
+    } else if (task?.status === "in_progress" && metadata?.[LIFECYCLE_TASK_METADATA_KEY] === true && metadata.is_backgrounded === true) {
+      unlisted.push(interruptedTaskPatch(task));
     }
-    const metadata = asRecordOrNull(session.tasksById.get(taskId)?.metadata);
-    return metadata?.[BACKGROUND_TASK_METADATA_KEY] === true;
-  });
-  const tasks = nextTasks.map((task) => upsertTask(session, task));
+  }
+  const tasks = [...nextTasks, ...unlisted].map((task) => upsertTask(session, task));
   const removed = removeTasks(session, removedTaskIds);
   emitTaskStateUpdate(session, "background_tasks", tasks, removed, true);
 }

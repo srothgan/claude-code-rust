@@ -55,6 +55,7 @@ import {
 } from "./bridge/mcp.js";
 import {
   bridgeLogger,
+  detailedDiagnosticsEnabled,
   LOG_TARGETS,
   logBridgeCommandReceived,
 } from "./bridge/logger.js";
@@ -62,8 +63,12 @@ import { BridgeCommandScheduler } from "./bridge/command_scheduler.js";
 import { handleLifecycleCommand } from "./bridge/command_lifecycle.js";
 import { handleInteractionCommand } from "./bridge/command_interactions.js";
 import { handleMcpCommand } from "./bridge/command_mcp.js";
-import { handleSessionControlCommand } from "./bridge/command_session_control.js";
+import {
+  commandQueueDeadline,
+  handleSessionControlCommand,
+} from "./bridge/command_session_control.js";
 import { handleSessionDataCommand } from "./bridge/command_session_data.js";
+import { handleSubagentCommand } from "./bridge/subagents.js";
 import { dispatchSideQuestion } from "./bridge/side_questions.js";
 import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentConfigOptionUpdate } from "./bridge/session_preferences.js";
 
@@ -996,6 +1001,7 @@ async function handleCommand(
     case "refresh_ultracode":
     case "set_fast_mode":
     case "reload_plugins":
+    case "reload_skills_and_styles":
       await handleSessionControlCommand(command, requestId, {
         buildPromptUserMessage,
         applySessionEffort,
@@ -1011,6 +1017,7 @@ async function handleCommand(
     case "get_context_usage":
     case "get_usage":
     case "get_rewind_targets":
+    case "export_session_history":
     case "rewind":
       await handleSessionDataCommand(command, requestId, {
         generatePersistedSessionTitle,
@@ -1018,6 +1025,11 @@ async function handleCommand(
         rewindTargetsFromSessionMessages,
         handleRewind,
       });
+      return;
+    case "list_subagents":
+    case "get_subagent_messages":
+    case "stop_subagent":
+      await handleSubagentCommand(command, requestId);
       return;
     case "mcp_status":
     case "mcp_reconnect":
@@ -1054,6 +1066,41 @@ async function handleCommand(
   }
 }
 
+/** Schedules one decoded command in its lane, with the queue deadline the command carries. */
+export function scheduleBridgeCommand(
+  scheduler: BridgeCommandScheduler,
+  parsed: { requestId?: string; command: BridgeCommand },
+): Promise<void> | undefined {
+  return scheduler.schedule(parsed.command, async () => {
+    try {
+      await handleCommand(parsed.command, parsed.requestId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      bridgeLogger.error({
+        target: LOG_TARGETS.BRIDGE_PROTOCOL,
+        eventName: "bridge_command_failed",
+        message: "bridge command handler failed",
+        outcome: "failure",
+        ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
+        ...(parsed.command.command === "create_session" ||
+        parsed.command.command === "new_session"
+          ? {}
+          : "session_id" in parsed.command
+            ? { sessionId: parsed.command.session_id }
+            : {}),
+        fields: {
+          bridge_command: parsed.command.command,
+          error_message: message,
+        },
+      });
+      failConnection(
+        `bridge command failed (${parsed.command.command}): ${message}`,
+        parsed.requestId,
+      );
+    }
+  }, commandQueueDeadline(parsed.command, parsed.requestId));
+}
+
 function main(): void {
   bridgeLogger.info({
     target: LOG_TARGETS.BRIDGE_LIFECYCLE,
@@ -1077,7 +1124,16 @@ function main(): void {
     try {
       parsed = parseCommandEnvelope(line);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const detailed = detailedDiagnosticsEnabled();
+      // JSON.parse quotes the start of the text in its message, and the line may
+      // be a prompt, so only a detailed log or the validation text of our own
+      // errors (field names, never values) carries the message.
+      const message =
+        error instanceof SyntaxError && !detailed
+          ? "malformed JSON"
+          : error instanceof Error
+            ? error.message
+            : String(error);
       const requestId = requestIdFromCommandLine(line);
       bridgeLogger.error({
         target: LOG_TARGETS.BRIDGE_PROTOCOL,
@@ -1087,43 +1143,17 @@ function main(): void {
         ...(requestId ? { requestId } : {}),
         sizeBytes: Buffer.byteLength(line),
         fields: {
-          preview: line.slice(0, 240),
-          preview_chars: Math.min(line.length, 240),
           error_message: message,
+          ...(detailed
+            ? { preview: line.slice(0, 240), preview_chars: Math.min(line.length, 240) }
+            : {}),
         },
       });
       failConnection(`invalid command envelope: ${message}`, requestId);
       return;
     }
 
-    commandScheduler.schedule(parsed.command, async () => {
-      try {
-        await handleCommand(parsed.command, parsed.requestId);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        bridgeLogger.error({
-          target: LOG_TARGETS.BRIDGE_PROTOCOL,
-          eventName: "bridge_command_failed",
-          message: "bridge command handler failed",
-          outcome: "failure",
-          ...(parsed.requestId ? { requestId: parsed.requestId } : {}),
-          ...(parsed.command.command === "create_session" ||
-          parsed.command.command === "new_session"
-            ? {}
-            : "session_id" in parsed.command
-              ? { sessionId: parsed.command.session_id }
-              : {}),
-          fields: {
-            bridge_command: parsed.command.command,
-            error_message: message,
-          },
-        });
-        failConnection(
-          `bridge command failed (${parsed.command.command}): ${message}`,
-          parsed.requestId,
-        );
-      }
-    });
+    scheduleBridgeCommand(commandScheduler, parsed);
   });
 
   rl.on("close", () => {

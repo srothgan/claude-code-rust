@@ -15,6 +15,7 @@ pub(crate) enum FooterFieldId {
     Effort,
     Ultracode,
     FastMode,
+    RunningSubagents,
     Directory,
     GitBranch,
     ContextRemaining,
@@ -35,6 +36,7 @@ impl FooterFieldId {
             Self::Effort => "Effort",
             Self::Ultracode => "Ultracode",
             Self::FastMode => "Fast mode",
+            Self::RunningSubagents => "Running subagents",
             Self::Directory => "Working directory",
             Self::GitBranch => "Git branch",
             Self::ContextRemaining => "Context remaining",
@@ -111,6 +113,7 @@ impl Default for FooterLayout {
                 (Id::Effort, Left),
                 (Id::Ultracode, Left),
                 (Id::FastMode, Left),
+                (Id::RunningSubagents, Left),
                 (Id::Directory, Right),
                 (Id::GitBranch, Right),
                 (Id::ContextRemaining, Right),
@@ -287,6 +290,7 @@ mod tests {
             FooterFieldId::Effort,
             FooterFieldId::Ultracode,
             FooterFieldId::FastMode,
+            FooterFieldId::RunningSubagents,
             FooterFieldId::Directory,
             FooterFieldId::GitBranch,
             FooterFieldId::ContextRemaining,
@@ -320,18 +324,18 @@ mod tests {
     fn reordering_stays_within_side_and_switching_appends_to_destination() {
         let mut layout = FooterLayout::default();
         assert_eq!(layout.move_field(0, false), 0);
-        assert_eq!(layout.move_field(4, true), 4);
-        assert_eq!(layout.move_field(7, true), 7);
+        assert_eq!(layout.move_field(5, true), 5);
+        assert_eq!(layout.move_field(8, true), 8);
         let moved = layout.move_field(1, true);
         assert_eq!(moved, 2);
         assert_eq!(layout.fields()[moved].id, FooterFieldId::Model);
         layout.toggle(moved);
         let moved = layout.switch_side(moved);
-        assert_eq!(moved, 7);
+        assert_eq!(moved, 8);
         assert_eq!(layout.fields()[moved].id, FooterFieldId::Model);
         assert!(!layout.fields()[moved].visible);
         let moved = layout.switch_side(moved);
-        assert_eq!(moved, 4);
+        assert_eq!(moved, 5);
         assert_eq!(layout.fields()[moved].side, FooterSide::Left);
     }
 }

@@ -47,7 +47,7 @@ fn write_path_with_home_override(
     style: HumanStyle,
 ) -> anyhow::Result<i32> {
     let project_root = project_root(cli)?;
-    let inspection = inspect_config(cli, &project_root, home_override)?;
+    let inspection = inspect_config(&project_root, home_override)?;
 
     if let Some(which) = args.which {
         let Some(file) = selected_file(&inspection, which) else {
@@ -78,7 +78,7 @@ fn write_show_with_home_override(
     style: HumanStyle,
 ) -> anyhow::Result<i32> {
     let project_root = project_root(cli)?;
-    let inspection = inspect_config(cli, &project_root, home_override)?;
+    let inspection = inspect_config(&project_root, home_override)?;
     let report = ShowReport::from_inspection(&inspection, &project_root);
 
     if args.json {
@@ -107,7 +107,7 @@ fn write_export_with_home_override(
     stderr: &mut impl Write,
 ) -> anyhow::Result<i32> {
     let project_root = project_root(cli)?;
-    let inspection = inspect_config(cli, &project_root, home_override)?;
+    let inspection = inspect_config(&project_root, home_override)?;
     let report = ExportReport::from_inspection(&inspection, &project_root);
     if report.has_failures() {
         writeln!(
@@ -133,20 +133,14 @@ fn write_export_with_home_override(
 }
 
 fn inspect_config(
-    cli: &Cli,
     project_root: &Path,
     home_override: Option<&Path>,
 ) -> anyhow::Result<InspectedConfigDocuments> {
-    inspect_read_only(home_override, Some(cli.dir.as_deref().unwrap_or(project_root)))
-        .map_err(anyhow::Error::msg)
+    inspect_read_only(home_override, Some(project_root)).map_err(anyhow::Error::msg)
 }
 
 fn project_root(cli: &Cli) -> anyhow::Result<PathBuf> {
-    if let Some(path) = &cli.dir {
-        Ok(path.clone())
-    } else {
-        std::env::current_dir().context("failed to resolve current directory")
-    }
+    cli.working_dir().context("failed to resolve current directory")
 }
 
 fn write_path_human(
@@ -505,7 +499,8 @@ fn write_json<T: Serialize>(stdout: &mut impl Write, value: &T) -> anyhow::Resul
 
 fn json_text<T: Serialize>(value: &T) -> anyhow::Result<String> {
     let text = serde_json::to_string_pretty(value)?;
-    Ok(redaction::redact_text(&text))
+    // Paths are the answer to `config path`, so only credentials are redacted here.
+    Ok(redaction::redact_credentials(&text))
 }
 
 fn write_new_file_atomically(path: &Path, text: &str) -> anyhow::Result<()> {
@@ -836,6 +831,7 @@ mod tests {
             resume: None,
             continue_session: false,
             session_options: crate::SessionOptions::default(),
+            session_config: crate::SessionConfigArgs::default(),
             command: None,
             no_update_check: false,
             dir: Some(project_root.to_path_buf()),

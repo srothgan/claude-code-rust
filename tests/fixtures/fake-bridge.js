@@ -18,6 +18,7 @@ const activityScenario = SCENARIO.startsWith('hold-activity');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
+let reloads = 0;
 let active = null;
 const pending = [];
 
@@ -327,6 +328,20 @@ function streamReply(messageUuid) {
   }
 }
 
+let subagentReads = 0;
+
+// Subagent rows as the bridge normalizes SDK task lifecycle messages.
+function agentTask(task_id, subject, status, terminal_status, extra = {}) {
+  return { task_id, subject, status, blocks: [], blocked_by: [], metadata: {
+    task_type: 'local_agent', subagent_type: 'general-purpose', ...(terminal_status ? { terminal_status } : {}), ...extra,
+  } };
+}
+function sendTasks(tasks) {
+  send({ event: 'session_update', session_id: SESSION, update: {
+    type: 'task_state_update', source: 'task_lifecycle', tasks, removed_task_ids: [], is_complete_snapshot: false,
+  } });
+}
+
 // The bridge's translation of a /rename turn: the reply, the result, then
 // the title it reads back once the result is in.
 function sessionNameReply(message) {
@@ -339,6 +354,48 @@ function sessionNameReply(message) {
   }
   send({ event: 'turn_complete', session_id: SESSION });
   if (command === '/rename') update({ type: 'session_title_update', title: args.join(' ') });
+}
+
+// The Status rename's prerequisite: Claude Code saves a session's transcript
+// once it runs a command or a message, at the path the Agent SDK derives from
+// the resolved working directory. The SDK resolves it with the native realpath,
+// which on Windows also expands 8.3 short names such as RUNNER~1 in temp paths.
+function transcriptPath() {
+  const project = fs.realpathSync.native(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+  return path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', project, `${SESSION}.jsonl`);
+}
+
+const listedSession = fields => ({
+  session_id: SESSION, summary: '', last_modified_ms: 1, file_size_bytes: 1, cwd,
+  git_branch: null, custom_title: null, first_prompt: null, ...fields,
+});
+
+// A message saves the session; `/clear` starts an unsaved session whose
+// listing names it after the command, as Claude Code's does.
+function statusRenameReply(message) {
+  const text = message.chunks.map(chunk => chunk.value).join('').trim();
+  send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+  if (text === '/clear') {
+    SESSION = 'fake-session-cleared';
+    send({ event: 'session_replaced', session_id: SESSION, cwd, current_model: model, available_models: [], mode: null, fast_mode_state: 'off', fast_mode_disabled_reason: null, history_updates: null, restored_input: null });
+    send({ event: 'sessions_listed', sessions: [listedSession({ summary: '/clear', first_prompt: '/clear' })] });
+  } else {
+    fs.mkdirSync(path.dirname(transcriptPath()), { recursive: true });
+    fs.appendFileSync(transcriptPath(), `${JSON.stringify({ type: 'user', text })}\n`);
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: 'Saved reply' } } });
+  }
+  send({ event: 'turn_complete', session_id: SESSION });
+}
+
+// renameSession() appends to the saved transcript and fails without one;
+// the title `fail-me` injects an SDK failure.
+function renameSession(message) {
+  if (message.title === 'fail-me' || !fs.existsSync(transcriptPath())) {
+    send({ event: 'slash_error', session_id: SESSION, message: `failed to rename session: Session ${SESSION} not found` });
+    return;
+  }
+  send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title: message.title } });
+  send({ event: 'sessions_listed', sessions: [listedSession({ custom_title: message.title })] });
 }
 
 readline
@@ -373,7 +430,8 @@ readline
       case 'new_session':
       case 'resume_session':
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
-        if (message.command === 'resume_session') SESSION = message.session_id;
+        // Like the SDK's forkSession, a forked resume continues under a new session ID.
+        if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;
         if (message.continue_session) SESSION = 'fake-recent-session';
         send({
           event: message.command === 'new_session' ? 'session_replaced' : 'connected',
@@ -392,11 +450,23 @@ readline
           restored_input: null,
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO === 'status-rename') {
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
+            { name: 'clear', description: 'Clear conversation history', input_hint: null },
+          ] } });
+        }
         if (SCENARIO === 'session-name') {
           // As the real bridge does after connect: the SDK-advertised commands.
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
+        }
+        if (SCENARIO === 'agents') {
+          sendTasks([
+            agentTask('agent-running', 'Review parser', 'in_progress', null, { prompt: 'Check the parser for edge cases' }),
+            agentTask('agent-done', 'Inspect docs', 'completed', 'completed'),
+            { task_id: 'shell-1', subject: 'Watch logs', status: 'in_progress', blocks: [], blocked_by: [], metadata: { task_type: 'local_bash' } },
+          ]);
         }
         if (SCENARIO === 'disconnect-during-auth' && message.command === 'create_session') {
           const timer = setInterval(() => {
@@ -408,15 +478,55 @@ readline
           }, INTERVAL_MS);
         }
         break;
+      case 'list_subagents':
+        send({ event: 'subagents_listed', session_id: SESSION, agent_ids: ['agent-done'] });
+        break;
+      case 'get_subagent_messages':
+        subagentReads += 1;
+        send({ event: 'subagent_messages', session_id: SESSION, request_id: message.request_id, agent_id: message.agent_id, messages: [
+          { role: 'user', text: 'Inspect the docs' },
+          { role: 'system_reminder', text: 'Hand the report back when done.' },
+          { role: 'tool', text: 'ls docs' },
+          { role: 'assistant', text: 'Docs path checked' },
+          // Each read finds one more step, as a transcript that is still being written grows.
+          ...Array.from({ length: subagentReads }, (_, index) => ({ role: 'tool', text: `step ${index + 1}` })),
+        ] });
+        break;
+      case 'stop_subagent':
+        // The acknowledgement first; the lifecycle reports the outcome after it.
+        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id });
+        sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
+        break;
       case 'prompt':
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
+          break;
+        }
+        if (SCENARIO === 'status-rename') {
+          statusRenameReply(message);
           break;
         }
         if (active) {
           pending.push(message.message_uuid);
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
+        break;
+      case 'reload_skills_and_styles':
+        if (SCENARIO === 'reload-expired') {
+          // The bridge's answer when an earlier request for the session held the reload too long.
+          send({ event: 'skills_and_styles_reload_expired', session_id: SESSION, after_ms: 10000 });
+          break;
+        }
+        // First reload succeeds; the second reloads skills and fails the output styles half.
+        reloads++;
+        send({
+          event: 'skills_and_styles_reloaded',
+          session_id: SESSION,
+          skills: { status: 'reloaded', names: ['deploy', 'lint'] },
+          output_styles: reloads === 1
+            ? { status: 'reloaded', names: ['default', 'Explanatory', 'mine'] }
+            : { status: 'failed', message: 'style directory unreadable' },
+        });
         break;
       case 'inspect_settings':
         if (notificationScenario) {
@@ -450,6 +560,29 @@ readline
         } });
         break;
       }
+      case 'export_session_history': {
+        // The bridge's resume translation of a saved session, split into two chunks.
+        const tool = { tool_call_id: 'bash-1', title: 'ls', kind: 'execute', status: 'in_progress', content: [], raw_input: { command: 'ls -la' }, locations: [], meta: { claudeCode: { toolName: 'Bash' } } };
+        const edit = { tool_call_id: 'edit-1', title: 'Edit', kind: 'edit', status: 'in_progress', content: [{ type: 'diff', old_path: 'notes.txt', new_path: 'notes.txt', old: 'keep\nold\n', new: 'keep\nnew\n' }], raw_input: { file_path: 'notes.txt' }, locations: [], meta: { claudeCode: { toolName: 'Edit' } } };
+        const chunks = [
+          [
+            { type: 'user_message_chunk', content: { type: 'text', text: 'List the files' }, source_message_uuid: 'u1' },
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Listing now.' }, source_message_uuid: 'a1' },
+            { type: 'tool_call', tool_call: tool },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'bash-1', fields: { status: 'completed', raw_output: '\u001b[32mREADME.md\u001b[0m\nsrc', content: [{ type: 'content', content: { type: 'text', text: '\u001b[32mREADME.md\u001b[0m\nsrc' } }] } } },
+          ],
+          [
+            { type: 'agent_message_chunk', content: { type: 'text', text: 'Fixing the note.' }, source_message_uuid: 'a2' },
+            { type: 'tool_call', tool_call: edit },
+            { type: 'tool_call_update', tool_call_update: { tool_call_id: 'edit-1', fields: { status: 'completed' } } },
+          ],
+        ];
+        chunks.forEach((updates, index) => send({ event: 'session_history_export', session_id: SESSION, request_id: message.request_id, updates, last: index === chunks.length - 1, omitted_updates: 0 }));
+        break;
+      }
+      case 'rename_session':
+        renameSession(message);
+        break;
       case 'cancel_turn':
         send({ event: 'turn_interrupt_receipt', session_id: SESSION, still_queued: pending.slice(), request_id: message.request_id });
         if (active) finish({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'aborted_streaming', queued_turn_count: pending.length });

@@ -26,6 +26,7 @@ pub(crate) enum AppSlashCommand {
     Plugins,
     Status,
     Usage,
+    Agents,
     Login,
     Logout,
     Mode,
@@ -33,6 +34,8 @@ pub(crate) enum AppSlashCommand {
     NewSession,
     Resume,
     Rewind,
+    Reload,
+    Export,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +266,14 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         args: NO_ARGS,
     },
     AppSlashCommandSpec {
+        command: AppSlashCommand::Agents,
+        name: "/agents",
+        usage: "Usage: /agents",
+        short_description: "Show this session's subagents",
+        long_description: "Open the fullscreen list of this session's subagents with their live status and saved transcripts.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
         command: AppSlashCommand::Login,
         name: "/login",
         usage: "Usage: /login",
@@ -318,6 +329,22 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         long_description: "Restore conversation, code, or both to a previous user message.",
         args: NO_ARGS,
     },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Reload,
+        name: "/reload",
+        usage: "Usage: /reload",
+        short_description: "Reload skills and output styles",
+        long_description: "Re-read skills and output styles from disk for the active session, so edits apply without restarting.",
+        args: NO_ARGS,
+    },
+    AppSlashCommandSpec {
+        command: AppSlashCommand::Export,
+        name: "/export",
+        usage: "Usage: /export [path]",
+        short_description: "Save the conversation as Markdown",
+        long_description: "Write the session's complete saved history to a Markdown file. Without a path it is created in the session directory; an existing file is never overwritten.",
+        args: NO_ARGS,
+    },
 ];
 
 impl AppSlashCommand {
@@ -349,6 +376,7 @@ impl AppSlashCommand {
             Self::Plugins => "/plugins",
             Self::Status => "/status",
             Self::Usage => "/usage",
+            Self::Agents => "/agents",
             Self::Login => "/login",
             Self::Logout => "/logout",
             Self::Mode => "/mode",
@@ -356,6 +384,8 @@ impl AppSlashCommand {
             Self::NewSession => "/new-session",
             Self::Resume => "/resume",
             Self::Rewind => "/rewind",
+            Self::Reload => "/reload",
+            Self::Export => "/export",
         }
     }
 
@@ -384,7 +414,8 @@ impl AppSlashCommand {
             | Self::Mcp
             | Self::Plugins
             | Self::Status
-            | Self::Usage => {
+            | Self::Usage
+            | Self::Agents => {
                 if args.is_empty() {
                     SubmissionClass::Fullscreen
                 } else {
@@ -405,7 +436,12 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
-            Self::Compact | Self::Login | Self::Logout | Self::NewSession | Self::Resume => {
+            Self::Compact
+            | Self::Login
+            | Self::Logout
+            | Self::NewSession
+            | Self::Resume
+            | Self::Reload => {
                 if args.is_empty() {
                     SubmissionClass::TurnExclusive
                 } else {
@@ -452,6 +488,8 @@ impl AppSlashCommand {
                     SubmissionClass::Invalid
                 }
             }
+            // The optional path is read from the raw text, so any number of words is valid.
+            Self::Export => SubmissionClass::TurnExclusive,
         }
     }
 }

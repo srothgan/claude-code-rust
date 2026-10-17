@@ -91,7 +91,7 @@ function inputBoolean(
   return typeof input[key] === "boolean" ? input[key] : undefined;
 }
 
-function isAgentLikeToolName(name: string): boolean {
+export function isAgentLikeToolName(name: string): boolean {
   return name === "Agent" || name === "Task";
 }
 

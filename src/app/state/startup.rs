@@ -17,6 +17,9 @@ pub struct StartupState {
     launch: StartupLaunch,
     phase: StartupPhase,
     session_options: Option<crate::SessionOptions>,
+    /// Unlike `session_options`, kept for every session the process starts. Boxed as in
+    /// the launch settings it is copied into, which keeps `App` small as well.
+    session_config: Box<crate::agent::wire::SessionConfig>,
     initial_prompt: Option<String>,
     /// When the first session of the process connected. Later sessions
     /// (`/new`, resume) never move it.
@@ -67,8 +70,18 @@ impl StartupState {
         self.first_connected_at
     }
 
+    /// Keeps the resolved session configuration flags for every session of the process.
+    #[must_use]
+    pub fn with_session_config(self, session_config: crate::agent::wire::SessionConfig) -> Self {
+        Self { session_config: Box::new(session_config), ..self }
+    }
+
     pub fn session_options(&self) -> Option<&crate::SessionOptions> {
         self.session_options.as_ref()
+    }
+
+    pub fn session_config(&self) -> &crate::agent::wire::SessionConfig {
+        &self.session_config
     }
 
     /// Release launch overrides once the initially selected session is ready.

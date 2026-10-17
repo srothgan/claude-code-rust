@@ -258,6 +258,10 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
             super::diff_view::handle_key(app, key);
             TerminalEventOutcome::handled(true)
         }
+        SurfaceMode::Fullscreen(FullscreenView::Agents) => {
+            super::agents::handle_key(app, key);
+            TerminalEventOutcome::handled(true)
+        }
         SurfaceMode::Fullscreen(FullscreenView::Config) => {
             super::config::handle_key(app, key);
             TerminalEventOutcome::handled(true)
@@ -317,7 +321,8 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
             FullscreenView::Trusted
             | FullscreenView::Update
             | FullscreenView::Copy
-            | FullscreenView::Diff,
+            | FullscreenView::Diff
+            | FullscreenView::Agents,
         ) => false,
     }
 }
@@ -382,6 +387,7 @@ fn handle_session_update(
                 complete_snapshot = update.is_complete_snapshot,
             );
             apply_task_state_update(app, update);
+            super::agents::tasks_changed(app);
         }
         model::SessionUpdate::UserMessageChunk(_) | model::SessionUpdate::AgentResponseStarted => {}
         model::SessionUpdate::MessageMetadata { role, timestamp, source_message_uuid } => {
@@ -637,6 +643,14 @@ fn handle_settings_parse_error(app: &mut App, file: Option<&str>, path: &str, me
         (None, "") => format!("Settings parse error: {trimmed}"),
         (None, path) => format!("Settings parse error at {path}: {trimmed}"),
     };
+    // The transcript row scrolls away, and the default log is where a later report starts.
+    tracing::warn!(
+        target: crate::logging::targets::APP_CONFIG,
+        event_name = "settings_parse_error",
+        message = "settings file could not be parsed",
+        outcome = "failure",
+        error_message = %rendered,
+    );
     push_system_message_with_severity(app, Some(SystemSeverity::Error), &rendered);
 }
 
