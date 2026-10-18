@@ -176,9 +176,6 @@ pub(crate) fn apply_settings_result(
     let clock = clock_preferences(app);
     if previous_clock != clock {
         crate::app::presentation::invalidate_tool_clocks(app);
-        app.request_chat_purge_replay_rebuild(
-            crate::app::ChatPurgeReplayOptions::terminal_history_out_of_sync(),
-        );
     }
     if previous_gitignore != app.config.respect_gitignore_effective() {
         crate::app::file_index::restart(app);

@@ -233,7 +233,6 @@ impl ClockFormat<'_> {
     }
 }
 
-/// Clock preference changes already own transcript replay; invalidate the affected body caches there too.
 pub(crate) fn invalidate_tool_clocks(app: &mut App) {
     for message in &mut app.transcript.messages {
         for block in &mut message.blocks {
