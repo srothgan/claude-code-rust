@@ -11,11 +11,15 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
         ClientEvent::McpElicitationRequest { session_id: _, request } => {
             crate::app::config::present_mcp_elicitation_request(app, request);
         }
-        ClientEvent::McpElicitationCompleted { session_id: _, elicitation_id, server_name } => {
-            crate::app::config::handle_mcp_elicitation_completed(app, &elicitation_id, server_name);
+        ClientEvent::McpElicitationSettled { session_id: _, request_id, session_closing } => {
+            crate::app::config::handle_mcp_elicitation_settled(app, &request_id, session_closing);
         }
-        ClientEvent::McpElicitationResponseQueued { session_id: _, request_id } => {
-            crate::app::config::handle_mcp_elicitation_response_queued(app, &request_id);
+        ClientEvent::McpElicitationResponseQueued { .. } => {}
+        ClientEvent::McpElicitationResponseFailed { session_id: _, request_id } => {
+            if let Some(entry) = app.mcp.elicitations.get_mut(&request_id) {
+                entry.sending = false;
+                entry.error = Some("Could not send the response. Retry when connected.".to_owned());
+            }
         }
         ClientEvent::McpAuthRedirect { session_id: _, redirect } => {
             crate::app::config::present_mcp_auth_redirect(app, redirect);

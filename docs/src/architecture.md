@@ -12,6 +12,12 @@ Interactive startup arguments resolve into one launch intent: a new session, a s
 
 Support commands run before bridge resolution. Shell completions and manual pages are generated from the same Clap command definitions as CLI help, so neither requires the bridge or authentication.
 
+### MCP elicitation ownership
+
+The SDK `onElicitation` callback registers one resolver per original control request ID in the bridge. Public `requestedSchema.properties` key order is captured before JSON reaches Rust's sorted maps; the private SDK `property_order` hint is not part of this contract. The bridge emits `elicitation_settled` with the original session and callback request ID on response, SDK abort, matching URL completion or teardown. URL completion matches both MCP server and elicitation ID. Teardown settlements carry the bridge session's closing state so Rust drops the entire queue without promoting a queued URL. Outbound transport admission is not callback settlement.
+
+Rust's session-scoped `ElicitationQueue` owns each request, parsed schema, answers, omission flags, focus, errors and pending-send state. The Config overlay is only a marker projecting its active entry; schema support and typed validation belong to the form model, not the renderer or settings persistence. Requests activate FIFO and only active URL requests open a browser. Settlement removes the matching draft and retains only its ID to suppress redelivery; session reset clears the store. Correlated transport errors retain drafts for retry, and session fencing rejects old events. Neither bridge diagnostics nor Rust interaction diagnostics record answers.
+
 ## Rust Terminal App
 
 Important Rust areas:

@@ -510,10 +510,9 @@ pub enum BridgeEvent {
         session_id: String,
         request: types::ElicitationRequest,
     },
-    ElicitationComplete {
+    ElicitationSettled {
         session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
+        settlement: ElicitationSettlement,
     },
     McpAuthRedirect {
         session_id: String,
@@ -703,7 +702,7 @@ impl BridgeEvent {
             Self::UserDialogRequest { .. } => "user_dialog_request",
             Self::InteractionCancelled { .. } => "interaction_cancelled",
             Self::ElicitationRequest { .. } => "elicitation_request",
-            Self::ElicitationComplete { .. } => "elicitation_complete",
+            Self::ElicitationSettled { .. } => "elicitation_settled",
             Self::McpAuthRedirect { .. } => "mcp_auth_redirect",
             Self::McpOperationError { .. } => "mcp_operation_error",
             Self::McpSetServersResult { .. } => "mcp_set_servers_result",
@@ -750,7 +749,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::InteractionCancelled { session_id, .. }
             | Self::ElicitationRequest { session_id, .. }
-            | Self::ElicitationComplete { session_id, .. }
+            | Self::ElicitationSettled { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
             | Self::McpSetServersResult { session_id, .. }
@@ -803,7 +802,7 @@ impl BridgeEvent {
             | Self::UserDialogRequest { .. }
             | Self::InteractionCancelled { .. }
             | Self::ElicitationRequest { .. }
-            | Self::ElicitationComplete { .. }
+            | Self::ElicitationSettled { .. }
             | Self::McpAuthRedirect { .. }
             | Self::McpOperationError { .. }
             | Self::McpSetServersResult { .. }
@@ -837,6 +836,14 @@ impl BridgeEvent {
             | Self::McpSnapshot { .. } => None,
         }
     }
+}
+
+/// Correlates SDK callback settlement with its original host request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElicitationSettlement {
+    pub request_id: String,
+    #[serde(default)]
+    pub session_closing: bool,
 }
 
 #[cfg(test)]

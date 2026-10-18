@@ -482,7 +482,7 @@ fn log_bridge_event_received(envelope: &EventEnvelope, size_bytes: usize) {
         | "permission_request"
         | "question_request"
         | "elicitation_request"
-        | "elicitation_complete"
+        | "elicitation_settled"
         | "mcp_auth_redirect"
         | "turn_complete" => tracing::trace!(
             target: crate::logging::targets::BRIDGE_PROTOCOL,

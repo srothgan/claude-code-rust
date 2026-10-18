@@ -92,7 +92,7 @@ impl App {
                     Some(RuntimeSessionState::Idle | RuntimeSessionState::RequiresAction)
                 )
                 || !self.pending_interaction_ids.is_empty()
-                || self.mcp.pending_elicitation.is_some()
+                || !self.mcp.elicitations.is_empty()
             {
                 return None;
             }

@@ -9,7 +9,7 @@ use super::overlay::{
 };
 use super::theme;
 use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
-use crate::agent::types::{ElicitationAction, ElicitationMode};
+use crate::agent::types::ElicitationAction;
 use crate::app::App;
 use crate::app::config::{
     available_mcp_actions, is_mcp_action_available, mcp_server_owner_summary,
@@ -185,52 +185,175 @@ pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &A
 }
 
 pub(super) fn render_elicitation_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(overlay) = app.config.mcp_elicitation_overlay() else {
+    let Some(entry) = app.mcp.elicitations.active() else {
         return;
     };
-    let action_lines = elicitation_action_lines(overlay);
+    let subtitle = format!(
+        "{} - {} waiting",
+        entry.request.server_name,
+        app.mcp.elicitations.len().saturating_sub(1)
+    );
+    let message = if entry.sending {
+        Some(crate::app::config::OverlayMessage::info("Waiting for SDK confirmation..."))
+    } else {
+        entry.error.as_ref().map(crate::app::config::OverlayMessage::error)
+    };
+    let help = if entry.field_count() > 0 {
+        "Tab/Up/Down move | Left/Right choice | Space toggle | Ctrl+O omit | Enter next/action | Esc cancel"
+    } else {
+        "Up/Down select | Enter respond | Esc cancel"
+    };
     let rendered = render_overlay_shell(
         frame,
         area,
         OverlayLayoutSpec {
-            min_width: 72,
+            min_width: 60,
             min_height: 16,
-            width_percent: 80,
-            height_percent: 78,
-            preferred_height: 22,
+            width_percent: 85,
+            height_percent: 85,
+            preferred_height: 30,
             fullscreen_below: Some((90, 20)),
             inner_margin: Margin { vertical: 1, horizontal: 2 },
         },
         OverlayChrome {
-            title: "MCP authentication",
-            subtitle: Some(overlay.request.server_name.as_str()),
-            help: Some("Up/Down select | Enter respond | Esc cancel"),
-            message: app.config.overlay_message.as_ref(),
+            title: "MCP request",
+            subtitle: Some(&subtitle),
+            help: Some(help),
+            message: message.as_ref(),
         },
     );
-    let action_height = action_area_height(
-        action_lines.clone(),
-        rendered.body_area.width,
-        rendered.body_area.height,
-    );
+    let heading = Paragraph::new(entry.request.message.as_str()).wrap(Wrap { trim: false });
+    let heading_height = u16::try_from(heading.line_count(rendered.body_area.width.max(1)))
+        .unwrap_or(u16::MAX)
+        .saturating_add(1)
+        .min(rendered.body_area.height.saturating_sub(2));
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(action_height)])
+        .constraints([Constraint::Length(heading_height), Constraint::Min(0)])
         .split(rendered.body_area);
-    frame.render_widget(
-        Paragraph::new(elicitation_body_lines(overlay)).wrap(Wrap { trim: false }),
-        sections[0],
-    );
-    render_overlay_separator(frame, sections[1]);
-    let action_scroll = selected_scroll(
-        2usize.saturating_add(overlay.selected_index.saturating_mul(2)),
-        1,
-        sections[2].height,
-    );
-    frame.render_widget(
-        Paragraph::new(action_lines).scroll((action_scroll, 0)).wrap(Wrap { trim: false }),
-        sections[2],
-    );
+    frame.render_widget(heading, sections[0]);
+    render_elicitation_fields(frame, sections[1], entry);
+}
+
+fn render_elicitation_fields(
+    frame: &mut Frame,
+    fields_area: Rect,
+    entry: &crate::app::config::mcp::form::ElicitationEntry,
+) {
+    let mut lines = Vec::new();
+    if let Some(url) = &entry.request.url {
+        lines.push(detail_value(url, Color::White));
+    }
+    if entry.browser_opened {
+        lines.push(detail_value("Browser opened. Finish there, then accept.", theme::DIM));
+    }
+    if let Some(error) = &entry.browser_open_error {
+        lines.push(detail_value(error, theme::STATUS_ERROR));
+    }
+
+    let mut selected_end = 0;
+    match &entry.form {
+        Err(reason) => lines
+            .push(detail_value(&format!("Cannot edit this form: {reason}"), theme::STATUS_WARNING)),
+        Ok(form) => {
+            for (index, field) in form.fields.iter().enumerate() {
+                let selected = entry.focus == index;
+                lines.push(Line::from(Span::styled(
+                    elicitation_field_title(field, selected),
+                    overlay_line_style(selected, true),
+                )));
+                lines.push(detail_value(
+                    &elicitation_field_value(field, selected && !entry.sending, fields_area.width),
+                    Color::White,
+                ));
+                if selected {
+                    selected_end = lines.len();
+                }
+                if let Some(description) = &field.description {
+                    lines.push(detail_value(description, theme::DIM));
+                }
+                lines.push(Line::default());
+            }
+        }
+    }
+    for (index, action) in entry.actions().iter().enumerate() {
+        let selected = entry.focus == entry.field_count() + index;
+        lines.push(Line::from(Span::styled(
+            format!("{} {}", selection_marker(selected), elicitation_action_label(*action)),
+            overlay_line_style(selected, !entry.sending),
+        )));
+        if selected {
+            selected_end = lines.len();
+        }
+    }
+    let selected_bottom = Paragraph::new(lines[..selected_end].to_vec())
+        .wrap(Wrap { trim: false })
+        .line_count(fields_area.width.max(1));
+    let content = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let max_scroll = content
+        .line_count(fields_area.width.max(1))
+        .saturating_sub(usize::from(fields_area.height));
+    let scroll = u16::try_from(
+        selected_bottom.saturating_sub(usize::from(fields_area.height)).min(max_scroll),
+    )
+    .unwrap_or(u16::MAX);
+    frame.render_widget(content.scroll((scroll, 0)), fields_area);
+}
+
+fn elicitation_field_title(field: &crate::app::config::mcp::form::Field, selected: bool) -> String {
+    let state = if field.required {
+        "required"
+    } else if field.present {
+        "optional, included"
+    } else {
+        "optional, omitted"
+    };
+    format!("{} {} ({state})", selection_marker(selected), field.title)
+}
+
+fn elicitation_field_value(
+    field: &crate::app::config::mcp::form::Field,
+    editing: bool,
+    width: u16,
+) -> String {
+    use crate::app::config::mcp::form::Draft;
+    match &field.draft {
+        Draft::Text(text) => {
+            // Keep the insertion point visible without changing the saved answer.
+            // Escaped line breaks let multiline pastes remain editable in this row.
+            let mut chars: Vec<char> = text.text.chars().collect();
+            let cursor = text.cursor.min(chars.len());
+            if editing {
+                chars.insert(cursor, '|');
+            }
+            let limit = usize::from(width.saturating_sub(8)).max(1);
+            let start = if editing { cursor.saturating_sub(limit / 2) } else { 0 };
+            let display: String = chars.iter().skip(start).take(limit).collect();
+            format!(
+                "  [{}{}{}]",
+                if start > 0 { "..." } else { "" },
+                display.replace('\n', "\\n").replace('\r', "\\r"),
+                if start + limit < chars.len() { "..." } else { "" }
+            )
+        }
+        Draft::Boolean(value) => format!("  [{}] {}", if *value { "x" } else { " " }, value),
+        Draft::Choice { options, selected } => format!(
+            "  < {} >",
+            selected
+                .and_then(|index| options.get(index))
+                .map_or("Choose...", |item| item.1.as_str())
+        ),
+        Draft::Multi { options, selected, cursor } => {
+            let label = options.get(*cursor).map_or("", |item| item.1.as_str());
+            format!(
+                "  < [{}] {label} ({}/{}) >  {} selected",
+                if selected.contains(cursor) { "x" } else { " " },
+                cursor + 1,
+                options.len(),
+                selected.len()
+            )
+        }
+    }
 }
 
 pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -440,71 +563,6 @@ fn mcp_action_lines(
             spans.push(badge_span("not available", Color::Black, theme::STATUS_WARNING));
         }
         lines.push(Line::from(spans));
-    }
-    lines
-}
-
-fn elicitation_body_lines(
-    overlay: &crate::app::config::McpElicitationOverlayState,
-) -> Vec<Line<'static>> {
-    let request = &overlay.request;
-    let mut lines = vec![
-        section_heading("Request"),
-        detail_kv("Mode", elicitation_mode_label(request.mode), Color::White),
-        Line::from(Span::styled(request.message.clone(), Style::default().fg(Color::White))),
-    ];
-    if let Some(url) = request.url.as_deref() {
-        lines.push(Line::default());
-        lines.push(section_heading("URL"));
-        lines.push(detail_value(url, Color::White));
-    }
-    if overlay.browser_opened {
-        lines.push(Line::default());
-        lines.push(detail_value(
-            "Opened your browser automatically. Finish auth there, then accept below.",
-            theme::DIM,
-        ));
-    }
-    if let Some(error) = overlay.browser_open_error.as_deref() {
-        lines.push(Line::default());
-        lines.push(detail_value(error, theme::STATUS_ERROR));
-    }
-    if matches!(request.mode, ElicitationMode::Form) {
-        lines.push(Line::default());
-        lines.push(section_heading("Form"));
-        lines.push(detail_value(
-            "Structured MCP forms are not editable yet in claude-rs.",
-            theme::DIM,
-        ));
-        if let Some(schema) = request.requested_schema.as_ref() {
-            let schema_text =
-                serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
-            for line in schema_text.lines() {
-                lines.push(detail_value(line, theme::DIM));
-            }
-        }
-    }
-    lines
-}
-
-fn elicitation_action_lines(
-    overlay: &crate::app::config::McpElicitationOverlayState,
-) -> Vec<Line<'static>> {
-    let actions = elicitation_actions(&overlay.request);
-    let mut lines = vec![section_heading("Actions"), Line::default()];
-    let last_index = actions.len().saturating_sub(1);
-    for (index, action) in actions.iter().enumerate() {
-        let selected = index == overlay.selected_index;
-        lines.push(Line::from(Span::styled(
-            format!("{} {}", selection_marker(selected), elicitation_action_label(*action)),
-            overlay_line_style(selected, true),
-        )));
-        if index < last_index {
-            lines.push(Line::default());
-        }
-    }
-    if !lines.is_empty() {
-        lines.push(Line::default());
     }
     lines
 }
@@ -773,24 +831,6 @@ fn status_counts(app: &App) -> StatusCounts {
     })
 }
 
-fn elicitation_actions(
-    request: &crate::agent::types::ElicitationRequest,
-) -> Vec<ElicitationAction> {
-    match request.mode {
-        ElicitationMode::Url => {
-            vec![ElicitationAction::Accept, ElicitationAction::Decline, ElicitationAction::Cancel]
-        }
-        ElicitationMode::Form => vec![ElicitationAction::Decline, ElicitationAction::Cancel],
-    }
-}
-
-fn elicitation_mode_label(mode: ElicitationMode) -> &'static str {
-    match mode {
-        ElicitationMode::Form => "form",
-        ElicitationMode::Url => "url",
-    }
-}
-
 fn elicitation_action_label(action: ElicitationAction) -> &'static str {
     match action {
         ElicitationAction::Accept => "Accept",
@@ -814,6 +854,165 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::collections::BTreeMap;
+
+    fn render_form(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| super::render_elicitation_overlay(frame, frame.area(), app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect()
+    }
+    fn form_request(
+        schema: serde_json::Value,
+        order: Vec<String>,
+    ) -> crate::agent::types::ElicitationRequest {
+        crate::agent::types::ElicitationRequest {
+            request_id: "ui-form".into(),
+            server_name: "form-server".into(),
+            message: "UI form request".into(),
+            mode: crate::agent::types::ElicitationMode::Form,
+            url: None,
+            elicitation_id: None,
+            requested_schema: Some(schema),
+            field_order: order,
+        }
+    }
+    #[test]
+    fn elicitation_fields_keep_order_value_association_and_focus_at_narrow_widths() {
+        let mut app = App::test_default();
+        let schema = serde_json::json!({"type":"object","properties":{
+            "zulu":{"type":"boolean","default":false},"alpha":{"type":"string","default":"alpha-answer"}
+        },"required":["zulu","alpha"]});
+        app.mcp.elicitations.insert(form_request(schema, vec!["zulu".into(), "alpha".into()]));
+        for (width, height) in [(120, 32), (61, 25), (35, 18)] {
+            let rows = render_form(&app, width, height);
+            let zulu = rows.iter().position(|row| row.contains("zulu (required)")).unwrap();
+            let alpha = rows.iter().position(|row| row.contains("alpha (required)")).unwrap();
+            assert!(zulu < alpha);
+            assert!(rows[zulu].contains('\u{203a}'));
+            assert!(rows[zulu + 1].contains("[ ] false"));
+            assert!(rows[alpha + 1].contains("alpha-answer"));
+            let footer = rows.iter().rev().take(6).collect::<Vec<_>>();
+            assert!(
+                footer.iter().any(|row| row.contains("Esc"))
+                    && footer.iter().any(|row| row.contains("cancel")),
+                "{}",
+                rows.join("\n")
+            );
+        }
+    }
+    #[test]
+    fn a_form_that_fits_keeps_every_field_stationary_through_action_navigation() {
+        let mut app = App::test_default();
+        let properties = (0..5)
+            .map(|index| {
+                (
+                    format!("field-{index}"),
+                    serde_json::json!({"type":"string","default":format!("answer-{index}")}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        app.mcp.elicitations.insert(form_request(
+            serde_json::json!({"type":"object","properties":properties}),
+            vec![],
+        ));
+        let original = render_form(&app, 120, 40);
+        let heading = original.iter().position(|row| row.contains("UI form request")).unwrap();
+        let field_rows = (0..5)
+            .map(|index| {
+                original.iter().position(|row| row.contains(&format!("field-{index} ("))).unwrap()
+            })
+            .collect::<Vec<_>>();
+        for focus in (0..8).chain((0..8).rev()) {
+            app.mcp.elicitations.active_mut().unwrap().focus = focus;
+            let rows = render_form(&app, 120, 40);
+            assert!(rows[heading].contains("UI form request"));
+            for (index, row) in field_rows.iter().copied().enumerate() {
+                assert!(rows[row].contains(&format!("field-{index} (")), "{}", rows.join("\n"));
+                assert!(rows[row + 1].contains(&format!("answer-{index}")));
+                assert_eq!(rows[row].contains('\u{203a}'), focus == index);
+            }
+            for (index, action) in ["Accept", "Decline", "Cancel"].iter().enumerate() {
+                let row = rows.iter().find(|row| row.contains(action)).unwrap();
+                assert_eq!(row.contains('\u{203a}'), focus == 5 + index);
+            }
+        }
+    }
+
+    #[test]
+    fn elicitation_scroll_keeps_the_focused_field_and_validation_visible() {
+        let mut app = App::test_default();
+        let properties = (0..20)
+            .map(|index| {
+                (
+                    format!("field-{index:02}"),
+                    serde_json::json!({"type":"string","default":format!("answer-{index:02}")}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        app.mcp.elicitations.insert(form_request(
+            serde_json::json!({"type":"object","properties":properties}),
+            vec![],
+        ));
+        let original = render_form(&app, 61, 25);
+        let heading = original.iter().position(|row| row.contains("UI form request")).unwrap();
+        let first = original.iter().position(|row| row.contains("field-00")).unwrap();
+        let entry = app.mcp.elicitations.active_mut().unwrap();
+        entry.focus = 19;
+        entry.error = Some("Correct the selected field.".into());
+        let rows = render_form(&app, 61, 25);
+        assert!(rows[heading].contains("UI form request"));
+        assert!(!rows[first].contains("field-00"));
+        let selected = rows.iter().position(|row| row.contains("field-19")).unwrap();
+        assert!(selected > heading);
+        assert!(rows[selected].contains('\u{203a}'));
+        assert!(rows[selected + 1].contains("answer-19"));
+        assert!(rows.iter().any(|row| row.contains("Correct the selected field.")));
+        app.mcp.elicitations.active_mut().unwrap().focus = 20;
+        let rows = render_form(&app, 61, 25);
+        assert!(rows[heading].contains("UI form request"));
+        assert!(rows.iter().any(|row| row.contains('\u{203a}') && row.contains("Accept")));
+        app.mcp.elicitations.active_mut().unwrap().focus = 19;
+        let rows = render_form(&app, 35, 18);
+        let narrow_heading = rows.iter().position(|row| row.contains("UI form request")).unwrap();
+        let selected = rows.iter().position(|row| row.contains("field-19")).unwrap();
+        assert!(selected > narrow_heading);
+        assert!(rows[selected].contains('\u{203a}'));
+        assert!(rows.iter().skip(selected + 1).any(|row| row.contains("answer-19")));
+        app.mcp.elicitations.active_mut().unwrap().focus = 0;
+        let rows = render_form(&app, 61, 25);
+        assert!(rows[heading].contains("UI form request"));
+        assert!(rows[first].contains("field-00"));
+    }
+    #[test]
+    fn a_long_field_description_does_not_push_the_editable_answer_off_screen() {
+        let mut app = App::test_default();
+        app.mcp.elicitations.insert(form_request(serde_json::json!({"type":"object","properties":{
+            "answer":{"type":"string","title":"Editable answer","default":"visible-value","description":"Long help text. ".repeat(200)}
+        }}),vec![]));
+        let rows = render_form(&app, 61, 25);
+        let selected = rows.iter().position(|row| row.contains("Editable answer")).unwrap();
+        assert!(rows[selected].contains('\u{203a}'));
+        assert!(rows[selected + 1].contains("visible-value"));
+    }
+
+    #[test]
+    fn unsupported_elicitation_forms_explain_why_and_offer_only_decline_and_cancel() {
+        let mut app = App::test_default();
+        app.mcp.elicitations.insert(form_request(
+            serde_json::json!({"type":"object","properties":{"nested":{"type":"object"}}}),
+            vec![],
+        ));
+        let rows = render_form(&app, 87, 30);
+        assert!(rows.iter().any(|row| row.contains("Unsupported field type")));
+        assert!(rows.iter().any(|row| row.contains("Decline")));
+        assert!(rows.iter().any(|row| row.contains("Cancel")));
+        assert!(!rows.iter().any(|row| row.contains("Accept")));
+    }
 
     fn render_mcp(app: &App, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::edit::{
     TextInputOverlay, accepts_text_input, delete_text_at_cursor, delete_text_before_cursor,
-    insert_text_char, insert_text_str, move_text_cursor_left, move_text_cursor_right,
-    move_text_cursor_to_end, set_text_cursor, step_index_clamped,
+    insert_multiline_text, insert_text_char, insert_text_str, move_text_cursor_left,
+    move_text_cursor_right, move_text_cursor_to_end, set_text_cursor, step_index_clamped,
 };
 use super::mcp::{
     McpCallbackUrlOverlayState, McpServerActionKind, authenticate_mcp_server,
@@ -41,6 +41,17 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
     match app.config.overlay {
         Some(ConfigOverlayState::McpCallbackUrl(_)) => {
             insert_text_str(app.config.mcp_callback_url_overlay_mut(), text);
+            true
+        }
+        Some(ConfigOverlayState::McpElicitation(_)) => {
+            if let Some(entry) = app.mcp.elicitations.active_mut()
+                && !entry.sending
+                && let Some(field) = entry.field_mut()
+                && let Some(input) = field.text_mut()
+            {
+                insert_multiline_text(Some(input), text);
+                field.present = true;
+            }
             true
         }
         _ => false,
@@ -254,29 +265,69 @@ fn confirm_mcp_callback_url_overlay(app: &mut App) {
 }
 
 fn handle_mcp_elicitation_overlay_key(app: &mut App, key: KeyEvent) {
-    match (key.code, key.modifiers) {
-        (KeyCode::Esc, KeyModifiers::NONE) => cancel_mcp_elicitation_overlay(app),
-        (KeyCode::Up, KeyModifiers::NONE) => move_mcp_elicitation_overlay_selection(app, -1),
-        (KeyCode::Down, KeyModifiers::NONE) => move_mcp_elicitation_overlay_selection(app, 1),
-        (KeyCode::Enter, KeyModifiers::NONE) => execute_mcp_elicitation_overlay_action(app),
-        _ => {}
-    }
-}
-
-fn cancel_mcp_elicitation_overlay(app: &mut App) {
-    let Some(request_id) =
-        app.config.mcp_elicitation_overlay().map(|overlay| overlay.request.request_id.clone())
-    else {
+    use crate::agent::types::ElicitationAction;
+    let Some(entry) = app.mcp.elicitations.active_mut() else {
         app.config.clear_overlay();
         return;
     };
-    send_mcp_elicitation_response(
-        app,
-        &request_id,
-        crate::agent::types::ElicitationAction::Cancel,
-        None,
-    );
-    app.config.clear_overlay();
+    if entry.sending {
+        return;
+    }
+    let mut action = None;
+    match (key.code, key.modifiers) {
+        (KeyCode::Esc, _) => action = Some(ElicitationAction::Cancel),
+        (KeyCode::Enter, KeyModifiers::CONTROL) => action = Some(ElicitationAction::Accept),
+        (KeyCode::Up | KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
+            entry.move_focus(-1);
+        }
+        (KeyCode::Down | KeyCode::Tab, _) => entry.move_focus(1),
+        (KeyCode::Enter, _) => {
+            if entry.focus < entry.field_count() {
+                entry.move_focus(1);
+            } else {
+                action = entry.actions().get(entry.focus - entry.field_count()).copied();
+            }
+        }
+        (KeyCode::Char('o'), KeyModifiers::CONTROL) => {
+            if let Some(field) = entry.field_mut()
+                && !field.required
+            {
+                field.present = !field.present;
+            }
+        }
+        _ => {
+            if let Some(field) = entry.field_mut() {
+                if let Some(text) = field.text_mut() {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Left, _) => move_text_cursor_left(Some(text)),
+                        (KeyCode::Right, _) => move_text_cursor_right(Some(text)),
+                        (KeyCode::Home, _) => set_text_cursor(Some(text), 0),
+                        (KeyCode::End, _) => move_text_cursor_to_end(Some(text)),
+                        (KeyCode::Backspace, _) => delete_text_before_cursor(Some(text)),
+                        (KeyCode::Delete, _) => delete_text_at_cursor(Some(text)),
+                        (KeyCode::Char(ch), mods) if accepts_text_input(mods) => {
+                            insert_text_char(Some(text), ch);
+                        }
+                        _ => return,
+                    }
+                    if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete) {
+                        field.present = true;
+                    }
+                } else {
+                    match key.code {
+                        KeyCode::Left => field.adjust(-1, false),
+                        KeyCode::Right => field.adjust(1, false),
+                        KeyCode::Char(' ') => field.adjust(0, true),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if let Some(action) = action {
+        let request_id = entry.request.request_id.clone();
+        send_mcp_elicitation_response(app, &request_id, action);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -338,48 +389,6 @@ fn execute_mcp_auth_redirect_overlay_action(app: &mut App) {
         McpAuthRedirectAction::Close => {
             app.config.clear_overlay();
         }
-    }
-}
-
-fn move_mcp_elicitation_overlay_selection(app: &mut App, delta: isize) {
-    let Some(overlay) = app.config.mcp_elicitation_overlay().cloned() else {
-        return;
-    };
-    let actions = mcp_elicitation_actions(&overlay.request);
-    if actions.is_empty() {
-        return;
-    }
-    let next_index = step_index_clamped(overlay.selected_index, delta, actions.len());
-    if let Some(state) = app.config.mcp_elicitation_overlay_mut() {
-        state.selected_index = next_index;
-    }
-}
-
-fn execute_mcp_elicitation_overlay_action(app: &mut App) {
-    let Some(overlay) = app.config.mcp_elicitation_overlay().cloned() else {
-        return;
-    };
-    let actions = mcp_elicitation_actions(&overlay.request);
-    let Some(action) = actions.get(overlay.selected_index).copied() else {
-        return;
-    };
-    send_mcp_elicitation_response(app, &overlay.request.request_id, action, None);
-    app.config.clear_overlay();
-}
-
-fn mcp_elicitation_actions(
-    request: &crate::agent::types::ElicitationRequest,
-) -> Vec<crate::agent::types::ElicitationAction> {
-    match request.mode {
-        crate::agent::types::ElicitationMode::Url => vec![
-            crate::agent::types::ElicitationAction::Accept,
-            crate::agent::types::ElicitationAction::Decline,
-            crate::agent::types::ElicitationAction::Cancel,
-        ],
-        crate::agent::types::ElicitationMode::Form => vec![
-            crate::agent::types::ElicitationAction::Decline,
-            crate::agent::types::ElicitationAction::Cancel,
-        ],
     }
 }
 

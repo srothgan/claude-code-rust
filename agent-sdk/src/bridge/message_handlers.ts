@@ -2334,16 +2334,14 @@ export function handleSdkMessage(
       if (!elicitationId) {
         return;
       }
-      writeEvent({
-        event: "elicitation_complete",
-        session_id: session.sessionId,
-        completion: {
-          elicitation_id: elicitationId,
-          ...(typeof msg.mcp_server_name === "string"
-            ? { server_name: msg.mcp_server_name }
-            : {}),
-        },
-      });
+      // URL completion identity is server + elicitation ID, never the callback ID.
+      if (typeof msg.mcp_server_name === "string") {
+        for (const pending of session.pendingElicitations.values()) {
+          if (pending.serverName === msg.mcp_server_name && pending.elicitationId === elicitationId) {
+            pending.resolve({ action: "accept" });
+          }
+        }
+      }
       return;
     }
 

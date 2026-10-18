@@ -551,11 +551,12 @@ export interface ElicitationRequest {
   url?: string;
   elicitation_id?: string;
   requested_schema?: Record<string, Json>;
+  field_order: string[];
 }
 
-export interface ElicitationComplete {
-  elicitation_id: string;
-  server_name?: string;
+export interface ElicitationSettlement {
+  request_id: string;
+  session_closing: boolean;
 }
 
 export interface McpAuthRedirect {
@@ -1227,9 +1228,9 @@ export type BridgeEvent =
       request: ElicitationRequest;
     }
   | {
-      event: "elicitation_complete";
+      event: "elicitation_settled";
       session_id: string;
-      completion: ElicitationComplete;
+      settlement: ElicitationSettlement;
     }
   | {
       event: "mcp_auth_redirect";

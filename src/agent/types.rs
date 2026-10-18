@@ -951,6 +951,8 @@ pub struct ElicitationRequest {
     pub url: Option<String>,
     pub elicitation_id: Option<String>,
     pub requested_schema: Option<serde_json::Value>,
+    #[serde(default)]
+    pub field_order: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

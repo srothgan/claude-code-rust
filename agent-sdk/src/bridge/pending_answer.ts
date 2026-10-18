@@ -5,6 +5,7 @@ export function waitForAnswer<T, P>(
   publish: () => void,
   signal: AbortSignal | undefined,
   cancelled: () => T,
+  onSettled?: () => void,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -18,6 +19,7 @@ export function waitForAnswer<T, P>(
       settled = true;
       cleanup();
       resolve(value);
+      onSettled?.();
     };
     const abort = () => settle(cancelled());
     registered = entry(settle);

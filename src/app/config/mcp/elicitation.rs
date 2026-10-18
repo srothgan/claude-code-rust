@@ -1,169 +1,105 @@
 // SPDX-License-Identifier: Apache-2.0
-
 use super::prelude::*;
 
 pub(crate) fn send_mcp_elicitation_response(
     app: &mut App,
     request_id: &str,
-    action: crate::agent::types::ElicitationAction,
-    content: Option<serde_json::Value>,
+    action: types::ElicitationAction,
 ) {
-    let Some(conn) = app.session_runtime.conn.clone() else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_PERMISSION,
-            event_name = "elicitation_response_blocked",
-            message = "elicitation response blocked without an active bridge connection",
-            outcome = "blocked",
-            request_id = %request_id,
-            action = ?action,
-            reason = "missing_connection",
-        );
+    let Some(entry) =
+        app.mcp.elicitations.active_mut().filter(|entry| entry.request.request_id == request_id)
+    else {
         return;
     };
-    let Some(ref sid) = app.session_runtime.session_id else {
-        tracing::warn!(
-            target: crate::logging::targets::APP_PERMISSION,
-            event_name = "elicitation_response_blocked",
-            message = "elicitation response blocked without an active session",
-            outcome = "blocked",
-            request_id = %request_id,
-            action = ?action,
-            reason = "missing_session",
-        );
+    let Some(response) = entry.response(action) else {
         return;
     };
+    let (Some(conn), Some(sid)) =
+        (app.session_runtime.conn.clone(), app.session_runtime.session_id.as_ref())
+    else {
+        entry.error = Some("No active connection. Your answers are retained.".to_owned());
+        return;
+    };
+    entry.sending = true;
+    entry.error = None;
     let session_id = sid.to_string();
     let request_id = request_id.to_owned();
-    let has_content = content.is_some();
     let event_tx = app.event_tx.clone();
     tokio::task::spawn_local(async move {
-        match conn
-            .respond_to_elicitation(session_id.clone(), request_id.clone(), action, content)
-            .await
-        {
-            Ok(()) => {
-                tracing::info!(
-                    target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "elicitation_response_sent",
-                    message = "elicitation response sent to bridge",
-                    outcome = "success",
-                    session_id = %session_id,
-                    request_id = %request_id,
-                    action = ?action,
-                    has_content,
-                );
-                let _ = event_tx
-                    .send(ClientEvent::McpElicitationResponseQueued { session_id, request_id })
-                    .await;
-            }
-            Err(err) => {
-                tracing::error!(
-                    target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "elicitation_response_failed",
-                    message = "failed to send elicitation response to bridge",
-                    outcome = "failure",
-                    session_id = %session_id,
-                    request_id = %request_id,
-                    action = ?action,
-                    has_content,
-                    error = %err,
-                );
-                let _ = event_tx
-                    .send(ClientEvent::McpOperationError {
-                        session_id,
-                        error: crate::agent::types::McpOperationError {
-                            server_name: None,
-                            operation: "elicitation-response".to_owned(),
-                            message: err.to_string(),
-                        },
-                    })
-                    .await;
-            }
-        }
+        let result = conn
+            .respond_to_elicitation(
+                session_id.clone(),
+                request_id.clone(),
+                response.action,
+                response.content,
+            )
+            .await;
+        // Neither answers nor possibly answer-bearing errors belong in diagnostics.
+        tracing::info!(target: crate::logging::targets::APP_PERMISSION,
+            event_name = "elicitation_response_transport", session_id = %session_id,
+            request_id = %request_id, success = result.is_ok());
+        let event = if result.is_ok() {
+            ClientEvent::McpElicitationResponseQueued { session_id, request_id }
+        } else {
+            ClientEvent::McpElicitationResponseFailed { session_id, request_id }
+        };
+        let _ = event_tx.send(event).await;
     });
 }
 
-pub(crate) fn handle_mcp_elicitation_response_queued(app: &mut App, request_id: &str) {
-    let matches_pending = app
-        .mcp
-        .pending_elicitation
-        .as_ref()
-        .is_some_and(|request| request.request_id == request_id);
-    if !matches_pending {
-        return;
-    }
-    app.mcp.pending_elicitation = None;
-    refresh_mcp_snapshot(app);
-}
-
-pub(crate) fn present_mcp_elicitation_request(
-    app: &mut App,
-    request: crate::agent::types::ElicitationRequest,
-) {
-    let request_id_for_log = request.request_id.clone();
-    let server_name_for_log = request.server_name.clone();
-    let mode_for_log = format!("{:?}", request.mode);
-    let has_url = request.url.is_some();
-    let has_requested_schema = request.requested_schema.is_some();
-    app.mcp.pending_elicitation = Some(request.clone());
-    view::set_fullscreen_view(app, FullscreenView::Config);
-    app.config.active_tab = ConfigTab::Mcp;
-    refresh_mcp_snapshot(app);
-    let (browser_opened, browser_open_error) =
-        if matches!(request.mode, crate::agent::types::ElicitationMode::Url) {
-            request.url.as_deref().map_or(
-                (false, Some("SDK did not provide an auth URL".to_owned())),
-                |url| match open_url_in_browser(url) {
-                    Ok(()) => (true, None),
-                    Err(error) => (false, Some(error)),
-                },
-            )
-        } else {
-            (false, None)
-        };
-    app.config.replace_overlay(ConfigOverlayState::McpElicitation(McpElicitationOverlayState {
-        request,
-        selected_index: 0,
-        browser_opened,
-        browser_open_error,
-    }));
-    tracing::info!(
-        target: crate::logging::targets::APP_PERMISSION,
-        event_name = "elicitation_request_presented",
-        message = "elicitation request presented in MCP config view",
-        outcome = "success",
-        request_id = %request_id_for_log,
-        server_name = %server_name_for_log,
-        mode = %mode_for_log,
-        browser_opened,
-        has_url,
-        has_requested_schema,
-    );
-}
-
-pub(crate) fn handle_mcp_elicitation_completed(
-    app: &mut App,
-    elicitation_id: &str,
-    _server_name: Option<String>,
-) {
-    let should_clear = app
-        .mcp
-        .pending_elicitation
-        .as_ref()
-        .and_then(|request| request.elicitation_id.as_deref())
-        .is_some_and(|current| current == elicitation_id);
-    if should_clear {
-        app.mcp.pending_elicitation = None;
+fn activate(app: &mut App) {
+    let Some(entry) = app.mcp.elicitations.active_mut() else {
         if matches!(app.config.overlay, Some(ConfigOverlayState::McpElicitation(_))) {
             app.config.clear_overlay();
         }
-        refresh_mcp_snapshot(app);
-        tracing::info!(
-            target: crate::logging::targets::APP_PERMISSION,
-            event_name = "elicitation_completed_applied",
-            message = "elicitation completion applied",
-            outcome = "success",
-            request_id = %elicitation_id,
-        );
+        return;
+    };
+    if entry.request.mode == types::ElicitationMode::Url {
+        let result = entry
+            .request
+            .url
+            .as_deref()
+            .ok_or_else(|| "SDK did not provide a URL.".to_owned())
+            .and_then(open_url_in_browser);
+        entry.browser_opened = result.is_ok();
+        entry.browser_open_error = result.err();
+    }
+    view::set_fullscreen_view(app, FullscreenView::Config);
+    app.config.active_tab = ConfigTab::Mcp;
+    app.config.replace_overlay(ConfigOverlayState::McpElicitation(McpElicitationOverlayState));
+}
+
+pub(crate) fn present_mcp_elicitation_request(app: &mut App, request: types::ElicitationRequest) {
+    let was_empty = app.mcp.elicitations.is_empty();
+    if app.mcp.elicitations.insert(request) && was_empty {
+        activate(app);
     }
 }
+
+pub(crate) fn handle_mcp_elicitation_settled(
+    app: &mut App,
+    request_id: &str,
+    session_closing: bool,
+) {
+    let active =
+        app.mcp.elicitations.active().is_some_and(|entry| entry.request.request_id == request_id);
+    if !app.mcp.elicitations.remove(request_id) {
+        return;
+    }
+    if session_closing {
+        // The bridge is cancelling every callback. Never promote a queued URL
+        // between individual settlements during teardown.
+        app.mcp.elicitations = super::form::ElicitationQueue::default();
+        if matches!(app.config.overlay, Some(ConfigOverlayState::McpElicitation(_))) {
+            app.config.clear_overlay();
+        }
+        return;
+    }
+    if active {
+        activate(app);
+        refresh_mcp_snapshot(app);
+    }
+}
+
+#[cfg(test)]
+mod tests;

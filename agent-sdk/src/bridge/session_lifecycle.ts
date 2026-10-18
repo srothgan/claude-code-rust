@@ -64,6 +64,7 @@ import {
   emitElicitationRequestEvent,
   emitUserDialogRequestEvent,
   emitInteractionCancelled,
+  writeEvent,
 } from "./events.js";
 import { ensureToolCallVisible, setToolCallStatus } from "./tool_calls.js";
 import { isToolSearchToolName } from "./tooling.js";
@@ -247,32 +248,6 @@ export const sessions = new Map<string, SessionState>();
 const pendingSessionCloseTasks = new Set<Promise<void>>();
 
 const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project", "local"];
-
-function isSdkElicitationContentValue(
-  value: Json,
-): value is string | number | boolean | string[] {
-  return (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    (Array.isArray(value) && value.every((entry) => typeof entry === "string"))
-  );
-}
-
-function normalizeSdkElicitationContent(
-  content: Record<string, Json> | undefined,
-): Record<string, string | number | boolean | string[]> | undefined {
-  if (!content) {
-    return undefined;
-  }
-  const normalized: Record<string, string | number | boolean | string[]> = {};
-  for (const [key, value] of Object.entries(content)) {
-    if (isSdkElicitationContentValue(value)) {
-      normalized[key] = value;
-    }
-  }
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
-}
 
 const REFUSAL_FALLBACK_DIALOG_KIND = "refusal_fallback_prompt";
 
@@ -1253,6 +1228,8 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
             : "form";
       const normalized: ElicitationRequest = {
         request_id: requestId,
+        field_order: request.requestedSchema?.properties && typeof request.requestedSchema.properties === "object" && !Array.isArray(request.requestedSchema.properties)
+          ? Object.keys(request.requestedSchema.properties) : [],
         server_name:
           typeof request.serverName === "string" &&
           request.serverName.trim().length > 0
@@ -1292,11 +1269,17 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
       });
       const currentSession = sessions.get(params.sessionIdForLogs());
       if (!currentSession || currentSession.closing || currentSession.pendingElicitations.has(requestId)) return { action: "cancel" as const };
+      const sessionId = currentSession.sessionId;
+      let published = false;
       return await waitForAnswer<{ action: ElicitationAction; content?: Record<string, string | number | boolean | string[]> }, PendingElicitation>(
         currentSession.pendingElicitations, requestId,
         resolve => ({ resolve, serverName: normalized.server_name, elicitationId: normalized.elicitation_id }),
-        () => emitElicitationRequestEvent(params.sessionIdForLogs(), normalized), options.signal,
-        () => ({ action: "cancel" }));
+        () => { published = true; emitElicitationRequestEvent(sessionId, normalized); }, options.signal,
+        () => ({ action: "cancel" }),
+        () => {
+          if (published) writeEvent({ event: "elicitation_settled", session_id: sessionId,
+            settlement: { request_id: requestId, session_closing: currentSession.closing } });
+        });
     },
     // The SDK "fails closed" and never emits a dialog kind unless it is declared
     // here. We declare the one refusal-related kind we render: when the API
@@ -1671,14 +1654,18 @@ export function handleElicitationResponse(
       has_content: command.content !== undefined,
     },
   });
-  pending.resolve({
-    action: command.action,
-    ...(normalizeSdkElicitationContent(command.content)
-      ? {
-          content: normalizeSdkElicitationContent(command.content),
-        }
-      : {}),
-  });
+  const content = command.action === "accept" ? command.content : undefined;
+  if (content !== undefined && Object.values(content).some(value =>
+    !(typeof value === "string" || typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value)) ||
+      (Array.isArray(value) && value.every(item => typeof item === "string"))))) {
+    // Fail closed; never silently discard answers or log their values.
+    pending.resolve({ action: "cancel" });
+    return;
+  }
+  pending.resolve({ action: command.action, ...(content !== undefined ? {
+    content: content as Record<string, string | number | boolean | string[]>,
+  } : {}) });
 }
 export function emitCurrentModelUpdate(session: SessionState): boolean {
   if (!session.connected || !session.currentModel) {

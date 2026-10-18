@@ -243,7 +243,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "btw_failed":
     case "user_dialog_request":
     case "elicitation_request":
-    case "elicitation_complete":
+    case "elicitation_settled":
     case "mcp_auth_redirect":
     case "mcp_operation_error":
     case "mcp_set_servers_result":
@@ -324,7 +324,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "interaction_cancelled":
     case "user_dialog_request":
     case "elicitation_request":
-    case "elicitation_complete":
+    case "elicitation_settled":
     case "mcp_auth_redirect":
     case "user_message_started":
     case "turn_complete":

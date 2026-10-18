@@ -125,3 +125,18 @@ Letter shortcuts such as `Ctrl+A`, `Ctrl+Y`, or `Ctrl+N` are not permission shor
 | `Esc` | Cancel. |
 | `Tab` | Toggle notes or move focus. |
 | `Shift+Tab` | Move focus backward. |
+
+## MCP input forms
+
+| Shortcut | Action |
+| --- | --- |
+| `Tab`, `Down` | Next field or action. |
+| `Shift+Tab`, `Up` | Previous field or action. |
+| `Left`, `Right` | Move the text cursor or change the highlighted choice. |
+| `Space` | Toggle a boolean or multi-choice option; insert a space in text. |
+| `Ctrl+O` | Include or omit the focused optional field. |
+| `Enter` | Advance from a field or activate the selected action. |
+| `Ctrl+Enter` | Validate and accept, if distinguished by the terminal. |
+| `Esc` | Cancel the active request. |
+
+Type or paste into text and numeric fields. `Home`, `End`, `Backspace` and `Delete` edit the focused text. While a response awaits SDK confirmation, editing and repeated submission are disabled. Queued requests retain their own drafts and activate in arrival order.

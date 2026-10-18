@@ -71,6 +71,7 @@ import {
   beginSessionClose,
   closeAllSessions,
   handleUserDialogResponse,
+  handleElicitationResponse,
   handleQuestionResponse,
   closeSession,
   closeSessionsBeforeRegister,
@@ -11062,4 +11063,196 @@ test("failed proactive tool execution remains failed output instead of a local a
   assert.equal(result.type, "tool_call_update");
   assert.equal(result.tool_call_update?.fields?.status, "failed");
   assert.equal(events.length, 2);
+});
+
+function elicitationHandlerForTest(): NonNullable<Options["onElicitation"]> {
+  const session = makeSessionState();
+  sessions.set(session.sessionId, session);
+  const options = buildQueryOptions({
+    resolvedSettings: {}, cwd: "C:/work", launchSettings: {}, provisionalSessionId: session.sessionId,
+    input: session.input, canUseTool: async () => ({ behavior: "deny", message: "not used" }),
+    enableSdkDebug: false, enableSpawnDebug: false, sessionIdForLogs: () => session.sessionId,
+  });
+  assert.ok(options.onElicitation);
+  return options.onElicitation;
+}
+
+const formElicitation = { serverName: "forms", message: "Fill this form", mode: "form" as const,
+  requestedSchema: { type: "object", properties: { zulu: { type: "boolean" }, alpha: { type: "string" } } } };
+
+for (const action of ["accept", "decline", "cancel"] as const) {
+  test(`elicitation ${action} settles its callback once and preserves typed answers`, async () => {
+    try {
+      const handler = elicitationHandlerForTest();
+      const session = sessions.get("session-1");
+    assert.ok(session);
+      const abort = new AbortController();
+      const content = { zero: 0, no: false, blank: "", tags: ["wire-a"] };
+      const events = await captureBridgeEventsAsync(async () => {
+        const result = handler(formElicitation, { requestId: "request-a", signal: abort.signal });
+        assert.equal(session.pendingElicitations.size, 1);
+        const command = { command: "elicitation_response" as const, session_id: session.sessionId,
+          elicitation_request_id: "request-a", action, content };
+        handleElicitationResponse(command);
+        handleElicitationResponse(command);
+        abort.abort();
+        assert.deepEqual(await result, action === "accept" ? { action, content } : { action });
+        assert.equal(session.pendingElicitations.size, 0);
+      });
+      const requestEvent = events.find(e => e.event === "elicitation_request");
+      assert.ok(requestEvent);
+      assert.deepEqual((requestEvent.request as Record<string, unknown>).field_order, ["zulu", "alpha"]);
+      assert.deepEqual(events.filter(e => e.event === "elicitation_settled"), [{event: "elicitation_settled", session_id:"session-1", settlement:{request_id:"request-a",session_closing:false}}]);
+    } finally { sessions.clear(); }
+  });
+}
+
+test("elicitation accepts an empty form object without dropping it", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    await captureBridgeEventsAsync(async () => {
+      const result = handler(formElicitation, { requestId:"empty",signal:new AbortController().signal });
+      handleElicitationResponse({command:"elicitation_response",session_id:"session-1",elicitation_request_id:"empty",action:"accept",content:{}});
+      assert.deepEqual(await result, { action:"accept",content:{} });
+    });
+  } finally { sessions.clear(); }
+});
+
+test("elicitation aborts active or queued callbacks independently and fences old sessions", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    const session = sessions.get("session-1");
+    assert.ok(session);
+    const a = new AbortController(), b = new AbortController();
+    const events = await captureBridgeEventsAsync(async () => {
+      const first = handler(formElicitation,{requestId:"a",signal:a.signal});
+      const second = handler(formElicitation,{requestId:"b",signal:b.signal});
+      const duplicate = handler(formElicitation,{requestId:"a",signal:new AbortController().signal});
+      assert.deepEqual(await duplicate,{action:"cancel"});
+      b.abort();
+      assert.deepEqual(await second,{action:"cancel"});
+      handleElicitationResponse({command:"elicitation_response",session_id:"session-1",elicitation_request_id:"b",action:"accept",content:{late:true}});
+      assert.equal(session.pendingElicitations.has("a"),true);
+      session.sessionId = "replacement";
+      a.abort();
+      assert.deepEqual(await first,{action:"cancel"});
+    });
+    assert.deepEqual(events.filter(e=>e.event === "elicitation_settled").map(e=>[e.session_id,(e.settlement as {request_id:string}).request_id]),[["session-1","b"],["session-1","a"]]);
+  } finally { sessions.clear(); }
+});
+
+test("URL completion correlates server and elicitation ID without clearing unrelated forms", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    const session = sessions.get("session-1");
+    assert.ok(session);
+    const abort = new AbortController();
+    const events = await captureBridgeEventsAsync(async () => {
+      const form = handler(formElicitation,{requestId:"form",signal:abort.signal});
+      const a = handler({serverName:"one",message:"URL one",mode:"url",url:"https://example.test",elicitationId:"same"},{requestId:"url-one",signal:abort.signal});
+      const b = handler({serverName:"two",message:"URL two",mode:"url",url:"https://example.test",elicitationId:"same"},{requestId:"url-two",signal:abort.signal});
+      handleSdkMessage(session,{type:"system",subtype:"elicitation_complete",elicitation_id:"same",mcp_server_name:"two"} as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
+      assert.deepEqual(await b,{action:"accept"});
+      assert.deepEqual([...session.pendingElicitations.keys()],["form","url-one"]);
+      abort.abort();
+      assert.deepEqual(await form,{action:"cancel"});
+      assert.deepEqual(await a,{action:"cancel"});
+    });
+    assert.deepEqual(events.filter(e=>e.event === "elicitation_settled").map(e=>(e.settlement as {request_id:string}).request_id),["url-two","form","url-one"]);
+  } finally { sessions.clear(); }
+});
+
+test("session teardown settles all elicitation callbacks and already-aborted callbacks never publish", async () => {
+  try {
+    const handler = elicitationHandlerForTest();
+    const session = sessions.get("session-1");
+    assert.ok(session);
+    session.query = { close() {} } as import("@anthropic-ai/claude-agent-sdk").Query;
+    const abort = new AbortController(); abort.abort();
+    const events = await captureBridgeEventsAsync(async () => {
+      assert.deepEqual(await handler(formElicitation,{requestId:"gone",signal:abort.signal}),{action:"cancel"});
+      const a = handler(formElicitation,{requestId:"a",signal:new AbortController().signal});
+      const b = handler(formElicitation,{requestId:"b",signal:new AbortController().signal});
+      await closeSession(session);
+      assert.deepEqual(await a,{action:"cancel"});
+      assert.deepEqual(await b,{action:"cancel"});
+      assert.equal(session.pendingElicitations.size,0);
+    });
+    assert.equal(events.filter(e=>e.event === "elicitation_request").length,2);
+    assert.equal(events.filter(e=>e.event === "elicitation_settled").length,2);
+    assert.ok(events.filter(e=>e.event === "elicitation_settled").every(e=>(e.settlement as {session_closing:boolean}).session_closing));
+  } finally { sessions.clear(); }
+});
+
+test("pinned SDK 0.3.302 forwards public elicitation identities, schema order, responses and aborts", { timeout: 15000 }, async (context) => {
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const fixture = fileURLToPath(new URL("../../tests/fixtures/sdk-elicitation-peer.cjs", import.meta.url));
+  const handler = elicitationHandlerForTest();
+  let child: ReturnType<typeof spawn> | undefined;
+  let sdkQuery: ReturnType<typeof query> | undefined;
+  let arrived = 0;
+  let readyResolve: () => void = () => {};
+  const ready = new Promise<void>(resolve => { readyResolve = resolve; });
+  let acceptedResolve: (value: Record<string, unknown>) => void = () => {};
+  const accepted = new Promise<Record<string, unknown>>(resolve => { acceptedResolve = resolve; });
+  const eventsDuringAbort: Array<Record<string, unknown>> = [];
+  context.after(() => { sdkQuery?.close(); child?.kill(); sessions.clear(); });
+  {
+    const events = await captureBridgeEventsAsync(async () => {
+      sdkQuery = query({ prompt: new AsyncQueue<import("@anthropic-ai/claude-agent-sdk").SDKUserMessage>(), options: {
+        onElicitation: (request, options) => {
+          const pending = handler(request, options);
+          if (++arrived === 2) readyResolve();
+          return pending;
+        },
+        spawnClaudeCodeProcess() {
+          child = spawn(process.execPath, [fixture], { stdio: ["pipe","pipe","pipe","ipc"], windowsHide:true });
+          child.on("message", message => {
+            const value = message as { response?: { request_id?:string } };
+            if (value.response?.request_id === "sdk-form-a") acceptedResolve(message as Record<string, unknown>);
+          });
+          return child as ReturnType<NonNullable<Options["spawnClaudeCodeProcess"]>>;
+        },
+      } });
+      await sdkQuery.supportedCommands();
+      await ready;
+      handleElicitationResponse({command:"elicitation_response",session_id:"session-1",elicitation_request_id:"sdk-form-a",action:"accept",content:{flag:false,count:0,tags:["a"],blank:""}});
+      const result = await accepted;
+      assert.deepEqual((result.response as { response:unknown }).response,{ action:"accept",content:{flag:false,count:0,tags:["a"],blank:""} });
+      assert.ok(child);
+      // SDK abort dispatch is asynchronous. Observe the correlated bridge event, not a delay.
+      let aborted: () => void = () => {};
+      const waitForAbort = new Promise<void>(resolve => { aborted = resolve; });
+      const restore = replaceProtocolEventWriter(line => {
+        const event = JSON.parse(line) as import("./types.js").BridgeEvent;
+        eventsDuringAbort.push(event as unknown as Record<string, unknown>);
+        if (event.event === "elicitation_settled" && event.settlement.request_id === "sdk-form-b") aborted();
+      });
+      try { child.send({cancel:"sdk-form-b"}); await waitForAbort; } finally { restore(); }
+    });
+    const requests = events.filter(event => event.event === "elicitation_request");
+    assert.deepEqual(requests.map(event=>(event.request as { request_id:string }).request_id),["sdk-form-a","sdk-form-b"]);
+    assert.deepEqual((requests[0].request as { field_order:string[] }).field_order,["zulu","alpha"]);
+    assert.equal(eventsDuringAbort.filter(event=>event.event === "elicitation_settled").length,1);
+  }
+});
+
+test("elicitation answer values never enter detailed bridge diagnostics", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const lifecycle = new URL("./bridge/session_lifecycle.js", import.meta.url).href;
+  const logger = new URL("./bridge/logger.js", import.meta.url).href;
+  const script = `
+    const { sessions, handleElicitationResponse } = await import(${JSON.stringify(lifecycle)});
+    const { logBridgeCommandReceived } = await import(${JSON.stringify(logger)});
+    const command = { command:"elicitation_response",session_id:"private-session",elicitation_request_id:"private-request",action:"accept",content:{password:"DO-NOT-LOG-THIS-ANSWER",private_array:["DO-NOT-LOG-THIS-CHOICE"]} };
+    sessions.set("private-session",{pendingElicitations:new Map([["private-request",{serverName:"test",resolve(){}}]])});
+    logBridgeCommandReceived(command);
+    handleElicitationResponse(command);
+  `;
+  const result = spawnSync(process.execPath,["--input-type=module","-e",script],{env:{...process.env,CLAUDE_RS_BRIDGE_DIAGNOSTICS:"1"},encoding:"utf8"});
+  assert.equal(result.status,0,result.stderr);
+  assert.ok(result.stderr.includes("elicitation_response_applied"));
+  assert.ok(!result.stderr.includes("DO-NOT-LOG-THIS"));
+  assert.ok(!result.stderr.includes("password"));
 });

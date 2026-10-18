@@ -3,6 +3,8 @@
 mod actions;
 mod auth;
 mod elicitation;
+pub(crate) mod form;
+pub(crate) use form::ElicitationQueue;
 mod errors;
 mod overlays;
 mod ownership;
@@ -18,8 +20,7 @@ pub(crate) use auth::{
     open_url_in_browser, present_mcp_auth_redirect, submit_mcp_oauth_callback_url,
 };
 pub(crate) use elicitation::{
-    handle_mcp_elicitation_completed, handle_mcp_elicitation_response_queued,
-    present_mcp_elicitation_request, send_mcp_elicitation_response,
+    handle_mcp_elicitation_settled, present_mcp_elicitation_request, send_mcp_elicitation_response,
 };
 pub(crate) use errors::handle_mcp_operation_error;
 pub(crate) use overlays::{

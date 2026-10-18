@@ -122,11 +122,9 @@ fn clear_missing_mcp_server_overlays(app: &mut App) {
         Some(ConfigOverlayState::McpAuthRedirect(overlay)) => {
             Some(overlay.redirect.server_name.as_str())
         }
-        Some(ConfigOverlayState::McpElicitation(overlay)) => {
-            Some(overlay.request.server_name.as_str())
-        }
         Some(
-            ConfigOverlayState::Setting(_)
+            ConfigOverlayState::McpElicitation(_)
+            | ConfigOverlayState::Setting(_)
             | ConfigOverlayState::Footer(_)
             | ConfigOverlayState::SessionRename(_)
             | ConfigOverlayState::Confirmation(_)

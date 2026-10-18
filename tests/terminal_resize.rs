@@ -3170,3 +3170,51 @@ fn a_relative_dir_starts_the_session_in_the_absolute_directory_it_names() {
     assert!(location.ends_with("project"), "Loc: {location}");
     test.shutdown();
 }
+
+#[test]
+fn mcp_elicitation_forms_preserve_typed_answers_queue_focus_and_resize_controls() {
+    let mut test = TerminalTest::start("elicitation", 3);
+    test.submit("start forms", "start forms");
+    test.wait_screen_with("FIRST-FORM", &["fixture-forms", "1 waiting", "amount (required)"]);
+    test.send(b"0");
+    test.wait_screen("[0|]");
+    test.send(b"\t");
+    test.wait_screen("\u{203a} confirm (required)");
+    test.send(b"\t"); // Optional note.
+    test.wait_screen("\u{203a} note (optional, omitted)");
+    test.send(b"\x0f"); // Ctrl+O: include an explicitly empty string.
+    test.wait_screen("note (optional, included)");
+    test.send(b"\t"); // Multi-select.
+    test.wait_screen("\u{203a} tags (required)");
+    test.send(b" ");
+    test.wait_screen("[x] red");
+    test.resize_keeping(25, 61, &["tags (required)", "red"]);
+    test.resize_keeping(38, 87, &["tags (required)"]);
+    test.send(b"\t");
+    test.wait_screen("\u{203a} Accept");
+    test.send(b"\r");
+    test.wait_screen_with("SECOND-FORM", &["0 waiting", "label (required)"]);
+    let responses = test.commands("elicitation_response");
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0]["elicitation_request_id"], "form-a");
+    assert_eq!(responses[0]["action"], "accept");
+    assert_eq!(
+        responses[0]["content"],
+        serde_json::json!({"amount":0,"confirm":false,"note":"","tags":["red"]})
+    );
+    test.send(b"\x1b");
+    test.wait_until("second form cancelled", |test| {
+        test.commands("elicitation_response").len() == 2
+    });
+    let responses = test.commands("elicitation_response");
+    assert_eq!(responses[1]["elicitation_request_id"], "form-b");
+    assert_eq!(responses[1]["action"], "cancel");
+    assert!(responses[1].get("content").is_none());
+    assert!(
+        !std::fs::read_to_string(test.temp.path().join("runtime.log"))
+            .unwrap()
+            .contains("FIRST-FORM"),
+        "request content is not diagnostic metadata"
+    );
+    test.shutdown();
+}

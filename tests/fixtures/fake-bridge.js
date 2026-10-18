@@ -488,6 +488,12 @@ readline
           }, INTERVAL_MS);
         }
         break;
+      case 'elicitation_response':
+        send({ event: 'elicitation_settled', session_id: SESSION, settlement: { request_id: message.elicitation_request_id } });
+        if (message.elicitation_request_id === 'form-a') {
+          send({ event: 'elicitation_settled', session_id: SESSION, settlement: { request_id: 'form-a' } });
+        }
+        break;
       case 'list_subagents':
         send({ event: 'subagents_listed', session_id: SESSION, agent_ids: ['agent-done'] });
         break;
@@ -508,6 +514,15 @@ readline
         sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
         break;
       case 'prompt':
+        if (SCENARIO === 'elicitation') {
+          send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          const form = (id, message, properties, required, field_order) => send({ event: 'elicitation_request', session_id: SESSION,
+            request: { request_id: id, server_name: 'fixture-forms', message, mode: 'form', requested_schema: { type: 'object', properties, required }, field_order } });
+          form('form-a', 'FIRST-FORM', { amount: { type: 'integer', minimum: 0 }, confirm: { type: 'boolean' }, note: { type: 'string' }, tags: { type: 'array', items: { type: 'string', enum: ['red', 'blue'] } } }, ['amount', 'confirm', 'tags'], ['amount', 'confirm', 'note', 'tags']);
+          form('form-b', 'SECOND-FORM', { label: { type: 'string', minLength: 2 } }, ['label'], ['label']);
+          break;
+        }
         if (SCENARIO === 'session-name') {
           sessionNameReply(message);
           break;

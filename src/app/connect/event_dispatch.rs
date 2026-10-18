@@ -119,16 +119,12 @@ pub(super) async fn handle_bridge_event(
         crate::agent::wire::BridgeEvent::ElicitationRequest { session_id, request } => {
             handle_elicitation_request_event(event_tx, &session_id, request).await;
         }
-        crate::agent::wire::BridgeEvent::ElicitationComplete {
-            session_id,
-            elicitation_id,
-            server_name,
-        } => {
+        crate::agent::wire::BridgeEvent::ElicitationSettled { session_id, settlement } => {
             let _ = event_tx
-                .send(ClientEvent::McpElicitationCompleted {
+                .send(ClientEvent::McpElicitationSettled {
                     session_id,
-                    elicitation_id,
-                    server_name,
+                    request_id: settlement.request_id,
+                    session_closing: settlement.session_closing,
                 })
                 .await;
         }

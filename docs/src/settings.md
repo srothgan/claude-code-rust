@@ -423,6 +423,12 @@ The MCP tab shows live session-backed MCP state. Use `/mcp` to inspect servers, 
 
 If no session is active, the tab asks you to open or resume a session first. If the active session reports no MCP servers, the tab shows an empty state rather than editing raw config files.
 
+MCP input requests open a dialog over this tab. Supported forms edit strings, numbers, whole numbers, booleans, single choices, and arrays of string choices, including titled choices and defaults. Required fields and supported length, numeric range, choice-count and date/email/URI/date-time constraints are validated before Accept. `false` and `0` are answers. Optional fields start omitted unless the server supplies a default; `Ctrl+O` includes or omits the focused optional field, so an included empty string differs from omission. Unsupported schemas show a reason and allow Decline or Cancel without offering Accept.
+
+Use `Tab`/`Shift+Tab` or `Up`/`Down` to move between fields and actions. Type or paste into text and numeric fields, use `Left`/`Right` for choices, and `Space` to toggle a boolean or the highlighted multi-choice option. `Enter` advances from a field or activates the selected action. `Ctrl+Enter` accepts when the terminal distinguishes it; navigating to Accept works in every terminal. `Esc` cancels. A validation or send error retains the draft for correction or retry.
+
+Overlapping requests wait in arrival order; the dialog shows the waiting count. A new request does not replace the form being edited. Only the active URL request opens a browser. SDK cancellation removes its matching request, including one still queued. A submitted dialog stays pending until its SDK callback settles, and prevents duplicate submission. Drafts remain in memory for the active session and are discarded on settlement or session teardown; form answers are not written as settings or diagnostic fields.
+
 ## Plugins
 
 The Plugins tab is available through `/plugins`. It shows installed plugins, marketplace plugins, configured marketplaces, and Session attachments.

@@ -227,7 +227,7 @@ pub struct McpState {
     pub removed_config_servers:
         std::collections::BTreeMap<RemovedMcpServerKey, RemovedMcpServerGuard>,
     pub pending_dynamic_config_removal: Option<String>,
-    pub pending_elicitation: Option<crate::agent::types::ElicitationRequest>,
+    pub elicitations: crate::app::config::ElicitationQueue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

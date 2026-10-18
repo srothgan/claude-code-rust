@@ -2104,13 +2104,13 @@ fn mcp_auth_actions_follow_bridge_capabilities() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
+async fn elicitation_transport_ack_keeps_the_request_until_sdk_settlement() {
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let mut app = App::test_default();
             let mut commands = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-            app.mcp.pending_elicitation = Some(crate::agent::types::ElicitationRequest {
+            app.mcp.elicitations.insert(crate::agent::types::ElicitationRequest {
                 request_id: "request-1".to_owned(),
                 server_name: "server-1".to_owned(),
                 message: "Continue?".to_owned(),
@@ -2118,16 +2118,16 @@ async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
                 url: None,
                 elicitation_id: None,
                 requested_schema: None,
+                field_order: vec![],
             });
 
             super::mcp::send_mcp_elicitation_response(
                 &mut app,
                 "request-1",
                 crate::agent::types::ElicitationAction::Decline,
-                None,
             );
 
-            assert!(app.mcp.pending_elicitation.is_some());
+            assert!(!app.mcp.elicitations.is_empty());
             let response = commands.recv_envelope().await.expect("elicitation response");
             assert!(matches!(
                 response.command,
@@ -2148,7 +2148,18 @@ async fn elicitation_response_precedes_the_follow_up_snapshot_request() {
             ));
             crate::app::events::handle_client_event(&mut app, queued);
 
-            assert!(app.mcp.pending_elicitation.is_none());
+            assert!(!app.mcp.elicitations.is_empty());
+            assert!(app.mcp.elicitations.active().unwrap().sending);
+            assert!(commands.try_recv().is_err());
+            crate::app::events::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::McpElicitationSettled {
+                    session_id: "session-1".to_owned(),
+                    request_id: "request-1".to_owned(),
+                    session_closing: false,
+                },
+            );
+            assert!(app.mcp.elicitations.is_empty());
             let snapshot = commands.recv_envelope().await.expect("follow-up snapshot");
             assert!(matches!(snapshot.command, BridgeCommand::GetMcpSnapshot { .. }));
         }))

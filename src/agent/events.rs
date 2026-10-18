@@ -84,11 +84,9 @@ pub enum ClientEvent {
     /// MCP elicitation request that needs auth or other MCP input.
     McpElicitationRequest { session_id: String, request: crate::agent::types::ElicitationRequest },
     /// MCP elicitation completed in the SDK.
-    McpElicitationCompleted {
-        session_id: String,
-        elicitation_id: String,
-        server_name: Option<String>,
-    },
+    McpElicitationSettled { session_id: String, request_id: String, session_closing: bool },
+    /// Transport failed before the SDK could receive this request's response.
+    McpElicitationResponseFailed { session_id: String, request_id: String },
     /// The app's elicitation response entered the outbound bridge FIFO.
     McpElicitationResponseQueued { session_id: String, request_id: String },
     /// MCP auth redirect returned directly by the SDK auth call.
@@ -302,7 +300,8 @@ impl ClientEvent {
             | Self::UserDialogRequest { session_id, .. }
             | Self::InteractionCancelled { session_id, .. }
             | Self::McpElicitationRequest { session_id, .. }
-            | Self::McpElicitationCompleted { session_id, .. }
+            | Self::McpElicitationSettled { session_id, .. }
+            | Self::McpElicitationResponseFailed { session_id, .. }
             | Self::McpElicitationResponseQueued { session_id, .. }
             | Self::McpAuthRedirect { session_id, .. }
             | Self::McpOperationError { session_id, .. }
