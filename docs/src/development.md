@@ -8,6 +8,8 @@ Use this path when developing the project or testing a fork without installing a
 
 Source development requires Rust 1.88.0 or newer, Node.js 24 with npm, and Bun. These are developer toolchain requirements, not requirements for script-installed users.
 
+Rust dependencies also require a C/C++ build toolchain: Visual Studio Build Tools with the C++ workload and Windows SDK on Windows, Xcode Command Line Tools on macOS, or GCC/Clang with the platform development headers on Linux. Syntect uses Oniguruma, whose bundled C sources are compiled and statically linked by `onig_sys` by default; no separate Oniguruma runtime installation is needed.
+
 ```bash
 git clone https://github.com/srothgan/claude-code-rust.git
 cd claude-code-rust

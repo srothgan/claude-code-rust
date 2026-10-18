@@ -32,6 +32,8 @@ Important Rust areas:
 
 The current runtime uses inline terminal-owned rendering rather than an older fullscreen-only model. Fullscreen views are still used for config, help, status, usage, MCP, plugin and subagent surfaces. The reasons for that change are described in [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
+Syntax highlighting uses Syntect with the Oniguruma backend and the matching two-face syntax bundle. `SourceHighlighter` owns parser and scope state for one traversal. Collapsed Read previews parse every returned source line to preserve context through the hidden middle, but resolve theme styles and construct spans only for visible lines. Each Read result starts its own traversal; a file line number does not reconstruct syntax context preceding that result. Parsing remains synchronous, and layout cancellation is checked between source lines.
+
 ## Agent SDK Bridge
 
 In packaged npm installs, the Rust process resolves a private Bun runtime named `claude-rs-bridge-bun` or `claude-rs-bridge-bun.exe` from the installed package layout. That runtime runs:

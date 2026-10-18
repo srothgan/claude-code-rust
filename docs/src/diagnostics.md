@@ -81,6 +81,8 @@ Available presets:
 | `bridge` | Debugging Agent SDK bridge lifecycle, protocol, SDK, permission, and MCP behavior. |
 | `full` | Capturing the broadest diagnostic trace. |
 
+The `render` preset includes Read preview timings. `read_preview_started` records the source path, starting line, size, width and initialization time. `read_preview_prepared` reports cumulative `parse_us`, `hidden_scope_us`, `visible_style_us`, line counts and `max_line_us` across preparation polls. Parsing includes lazy regex compilation and scope-operation generation; visible styling includes rebuilding style state and constructing spans. These phase totals exclude source normalization, wrapping, scheduling delays and terminal drawing. `syntax_highlight_slow_line` reports the same phases for calls taking at least 50 ms, with visibility and a one-based line number within the returned source. Canceled preparations do not emit a completion summary.
+
 Use an explicit log path when you want the file somewhere predictable:
 
 ```bash

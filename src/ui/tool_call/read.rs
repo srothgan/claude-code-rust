@@ -51,12 +51,13 @@ pub(super) struct ReadCursor {
 
 impl ReadCursor {
     pub(super) fn new(source: &ReadSource<'_>, width: u16) -> Self {
+        let started = std::time::Instant::now();
         let total_lines = source.text.lines().count();
         let number_width = source.start_line.map_or(0, |start| {
             start.saturating_add(total_lines.saturating_sub(1)).to_string().len()
         });
         let gutter_width = if source.start_line.is_some() { number_width + GUTTER_GAP } else { 0 };
-        Self {
+        let cursor = Self {
             highlighter: highlight::SourceHighlighter::new(
                 source.path,
                 source.language_fallback,
@@ -75,7 +76,18 @@ impl ReadCursor {
             number_width,
             gutter_width,
             text_width: usize::from(width).saturating_sub(gutter_width).max(1),
-        }
+        };
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "read_preview_started",
+            path = ?source.path,
+            start_line = ?source.start_line,
+            width,
+            source_bytes = source.text.len(),
+            source_lines = total_lines,
+            initialization_us = started.elapsed().as_micros(),
+        );
+        cursor
     }
 
     pub(super) fn poll(
@@ -158,6 +170,22 @@ impl ReadCursor {
                 }
             }
         }
+        let timings = self.highlighter.timings();
+        tracing::debug!(
+            target: crate::logging::targets::APP_RENDER,
+            event_name = "read_preview_prepared",
+            path = ?source.path,
+            start_line = ?source.start_line,
+            width = self.width,
+            parsed_lines = timings.lines,
+            visible_lines = timings.visible_lines,
+            hidden_lines = timings.lines - timings.visible_lines,
+            parse_us = timings.parse.as_micros(),
+            hidden_scope_us = timings.hidden_scope.as_micros(),
+            visible_style_us = timings.visible_style.as_micros(),
+            max_line_us = timings.max_line.as_micros(),
+            output_rows = out.len(),
+        );
         std::task::Poll::Ready(out)
     }
 }
