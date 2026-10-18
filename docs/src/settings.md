@@ -206,6 +206,10 @@ Hook actions are command, prompt, agent, HTTP and MCP tool. Event names come fro
 
 Saving replaces the `hooks` object at the selected scope. Hooks from other scopes keep merging in. Disable all is a separate On/Off setting.
 
+Command and HTTP actions offer **Failure policy** (`onFailure`): `continue` reports a failed hook and lets the guarded action proceed; `block` treats the failure as exit code 2. Failures include startup errors, timeouts, exit codes other than 0 or 2, and invalid JSON or JSON that does not match the hook schema. Unset uses `continue`. Select the field and press `Delete` to remove only that handler's override, then `Ctrl+S` to save.
+
+The SDK ignores this policy for asynchronous hooks and the Stop, SubagentStop, TaskCompleted and TeammateIdle events. It decides whether an event can block an action. Editing or validating the policy never executes a hook.
+
 ### Editing sandbox settings
 
 Path, domain and command lists use the list editor. Credential protection, TLS termination, Ignored violations and Ripgrep command open forms:
@@ -249,11 +253,14 @@ General also holds the settings described under [Presentation and scrolling](#pr
 | Setting | Key | Notes |
 | --- | --- | --- |
 | Auto compact | `autoCompactEnabled` | Compacts context automatically. |
+| Idle compaction | `idleCompaction` | Off stops compaction while idle. On or Default does not enable the feature. User, Project and Local scopes; saved for the next session. |
 | File checkpoints | `fileCheckpointingEnabled` | Records file snapshots for code rewind. |
 | Automatic memory | `autoMemoryEnabled` | Reads and writes automatic memory for the project. |
 | Directory | `autoMemoryDirectory` | User and Local only; shared Project settings cannot redirect memory. Supports `~/`. |
 | Excluded instructions | `claudeMdExcludes` | One glob or absolute path per entry. Managed instructions cannot be excluded. |
 | Plans directory | `plansDirectory` | Relative paths are relative to the project root. |
+
+Idle compaction follows the SDK's settings cascade. Reset removes the preference at the selected scope and exposes the remaining scope or Default. Its saved On/Off value is a preference, not evidence that idle compaction is available or running; availability remains under SDK control.
 
 ### Permissions
 

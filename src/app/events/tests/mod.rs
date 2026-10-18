@@ -2208,6 +2208,7 @@ fn auto_compaction_boundary_enriches_started_state_without_manual_success_pendin
 #[test]
 fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
     let mut app = make_test_app();
+    app.status = AppStatus::Ready;
 
     for _ in 0..2 {
         handle_client_event(
@@ -2218,6 +2219,9 @@ fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
         );
     }
     assert!(app.turn.compaction.is_active());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    assert!(app.transcript.messages.is_empty());
 
     for _ in 0..2 {
         handle_client_event(
@@ -2234,6 +2238,9 @@ fn duplicate_compaction_updates_share_one_idempotent_lifecycle() {
 
     assert!(!app.turn.compaction.is_active());
     assert!(app.transcript.messages.is_empty());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.active_turn_assistant_idx(), None);
+    assert!(app.turn.activity.is_none());
 }
 
 #[test]

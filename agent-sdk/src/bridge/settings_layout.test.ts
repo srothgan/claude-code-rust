@@ -33,6 +33,39 @@ test("all offered hook action forms validate through the pinned SDK without exec
   for (const handler of handlers) await validateSettingValue(setting, { PreToolUse: [{ matcher: "", hooks: [handler] }], Stop: [] });
 });
 
+test("failure policy is editable only on command and HTTP hooks and validated by the SDK", async () => {
+  const setting = settingsCatalog().find(setting => setting.id === "hooks");
+  const variants = setting?.editor?.item?.item?.fields?.find(field => field.key === "hooks")?.schema.item?.variants;
+  assert.ok(setting && variants);
+  for (const [type, schema] of Object.entries(variants)) {
+    const policy = schema.fields?.find(field => field.key === "onFailure");
+    if (type !== "command" && type !== "http") {
+      assert.equal(policy, undefined, type);
+      continue;
+    }
+    assert.deepEqual(policy?.schema.options, ["continue", "block"]);
+    assert.equal(policy?.required, undefined);
+    const action: Record<string, Json> = type === "command"
+      ? { type, command: "never-execute" } : { type, url: "https://example.com/hook" };
+    for (const onFailure of [undefined, "continue", "block"]) {
+      await validateSettingValue(setting, { PreToolUse: [{ hooks: [{ ...action, ...(onFailure ? { onFailure } : {}) }] }] });
+    }
+    for (const onFailure of ["ignore", true, 2, null]) {
+      await assert.rejects(validateSettingValue(setting, { PreToolUse: [{ hooks: [{ ...action, onFailure }] }] }), /cannot load/, type);
+    }
+  }
+});
+
+test("idle compaction is an optional scoped preference in Memory with next-session application", () => {
+  const setting = settingsCatalog().find(setting => setting.id === "idleCompaction");
+  assert.ok(setting);
+  assert.equal(setting.category, "memory");
+  assert.equal(setting.kind, "boolean");
+  assert.deepEqual(setting.options, [true, false]);
+  assert.deepEqual(setting.writable_scopes, ["user", "project", "local"]);
+  assert.equal(setting.application, "next_session");
+});
+
 test("sandbox forms expose the supported native fields and their candidate values validate", async () => {
   const values: Array<[string, Json]> = [
     ["sandbox.ripgrep", { command: "never-execute-this", args: ["--literal"] }],

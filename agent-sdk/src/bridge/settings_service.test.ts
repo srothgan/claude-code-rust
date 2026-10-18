@@ -367,6 +367,70 @@ test("files containing only ignored entries can acquire and reset supported sett
   assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { hooks: "invalid" });
 });
 
+test("failure policy saves and field resets preserve sibling hooks and unknown fields in every scope", async () => {
+  for (const scope of ["user", "project", "local"] as const) {
+    for (const type of ["command", "http"]) {
+      const action: Record<string, Json> = type === "command"
+        ? { type, command: "never-execute", futureAction: { keep: true } }
+        : { type, url: "https://example.com/hook", futureAction: { keep: true } };
+      const original = { PreToolUse: [{ matcher: "Write", futureGroup: 42, hooks: [action, { type: "prompt", prompt: "Keep this" }] }], Stop: [{ hooks: [{ type: "command", command: "never-execute-either" }] }] };
+      await write(scope, { hooks: original, unrelated: "keep" });
+      for (const policy of ["continue", "block", undefined]) {
+        const edited = structuredClone(original);
+        if (policy) edited.PreToolUse[0].hooks[0].onFailure = policy;
+        const saved = await mutateSetting(cwd, mutation(await inspectSettings(cwd), "hooks", scope, edited));
+        assert.equal(saved.persistence, "saved", saved.error ?? "save");
+        assert.equal(saved.application, "next_session", saved.error ?? "save");
+        assert.ok(saved.snapshot);
+        const source = saved.snapshot.sources.find(source => source.scope === scope);
+        assert.ok(source);
+        assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { hooks: edited, unrelated: "keep" });
+        const invalid = structuredClone(edited);
+        invalid.PreToolUse[0].hooks[0].onFailure = "ignore";
+        const rejected = await mutateSetting(cwd, mutation(saved.snapshot, "hooks", scope, invalid));
+        assert.equal(rejected.persistence, "failure");
+        assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { hooks: edited, unrelated: "keep" });
+      }
+      await write(scope, {});
+    }
+  }
+});
+
+test("idle compaction saves both boolean preferences and reset exposes the remaining scope", async () => {
+  for (const scope of ["user", "project", "local"] as const) {
+    await write(scope, { future: { keep: true } });
+    for (const value of [false, true]) {
+      const saved = await mutateSetting(cwd, mutation(await inspectSettings(cwd), "idleCompaction", scope, value));
+      assert.equal(saved.persistence, "saved", saved.error ?? "save");
+      assert.equal(saved.application, "next_session", saved.error ?? "save");
+      assert.equal(saved.snapshot?.values.find(value => value.id === "idleCompaction")?.value, value);
+      assert.ok(saved.snapshot);
+      const source = saved.snapshot.sources.find(source => source.scope === scope);
+      assert.ok(source);
+      assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { future: { keep: true }, idleCompaction: value });
+      const invalid = await mutateSetting(cwd, mutation(saved.snapshot, "idleCompaction", scope, "false"));
+      assert.equal(invalid.persistence, "failure");
+      assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { future: { keep: true }, idleCompaction: value });
+    }
+    const reset = await mutateSetting(cwd, mutation(await inspectSettings(cwd), "idleCompaction", scope));
+    assert.equal(reset.persistence, "saved", reset.error ?? "reset");
+    assert.equal(reset.snapshot?.values.find(value => value.id === "idleCompaction")?.value, undefined);
+    const source = reset.snapshot?.sources.find(source => source.scope === scope);
+    assert.ok(source);
+    assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { future: { keep: true } });
+  }
+  await write("user", { idleCompaction: false });
+  await write("project", { idleCompaction: true });
+  await write("local", { idleCompaction: false, future: "keep" });
+  const initial = await inspectSettings(cwd);
+  assert.equal(initial.values.find(value => value.id === "idleCompaction")?.value, false);
+  const localReset = await mutateSetting(cwd, mutation(initial, "idleCompaction", "local"));
+  assert.ok(localReset.snapshot);
+  assert.equal(localReset.snapshot?.values.find(value => value.id === "idleCompaction")?.value, true);
+  const projectReset = await mutateSetting(cwd, mutation(localReset.snapshot, "idleCompaction", "project"));
+  assert.equal(projectReset.snapshot?.values.find(value => value.id === "idleCompaction")?.value, false);
+});
+
 const effortModels: AvailableModel[] = [
   { id: "default", display_name: "Default", resolved_model: "claude-opus-5-5", supports_effort: true, supported_effort_levels: ["low", "medium", "high", "xhigh", "max"] },
   { id: "opus", display_name: "Opus", resolved_model: "claude-opus-5-5", supports_effort: true, supported_effort_levels: ["low", "medium", "high", "xhigh", "max"] },

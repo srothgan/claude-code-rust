@@ -43,6 +43,7 @@ const CATEGORY_SETTINGS: Record<string, string[]> = {
   ],
   "memory": [
     "autoCompactEnabled",
+    "idleCompaction",
     "fileCheckpointingEnabled",
     "autoMemoryEnabled",
     "autoMemoryDirectory",
@@ -117,7 +118,7 @@ const rule = help(text, "Enter one tool permission rule, for example Read(./src/
 const argument = help(text, "Enter one literal command argument. Add a separate entry for each argument; do not enter a shell-quoted argument list.");
 const FIELD_LABELS: Record<string, string> = {
   args: "Arguments", if: "Tool rule filter", statusMessage: "Status message", async: "Run in background", asyncRewake: "Wake model on blocking exit", once: "Run once", continueOnBlock: "Continue after a block", timeout: "Timeout (seconds)", mode: "Protection mode", files: "Credential files", path: "File path", name: "Variable name", streaming: "Streaming requests", presigned: "Presigned requests",
-  hooks: "Handlers", caCertPath: "CA certificate path", caKeyPath: "CA private key path", envVars: "Environment variables", awsPairs: "AWS credential pairs", sigv4: "AWS request policies",
+  hooks: "Handlers", onFailure: "Failure policy", caCertPath: "CA certificate path", caKeyPath: "CA private key path", envVars: "Environment variables", awsPairs: "AWS credential pairs", sigv4: "AWS request policies",
   extract: "Extraction pattern", onExtractNoMatch: "If extraction finds nothing", decode: "Encoded credential format", maskClaims: "JWT claims to mask", maskDuplicates: "Mask repeated values", injectHosts: "Injection hosts", allowPlaintextInject: "Allow plain HTTP injection",
   accessKeyIdVar: "Access key variable", secretAccessKeyVar: "Secret key variable", sessionTokenVar: "Session token variable", allowedEnvVars: "Allowed environment variables", input: "Tool arguments",
 };
@@ -125,11 +126,12 @@ const fields = (entries: Record<string, Schema>, required: string[] = []): Schem
 
 // Affordances for the pinned public Settings contract. SDK validation stays authoritative.
 const hookCommon = { if: rule, timeout: help(number, "Enter a timeout in seconds."), statusMessage: text, once: boolean };
+const hookFailure = help(choice("continue", "block"), "continue (default) reports a failed hook and lets the action proceed; block treats failure as exit code 2. The SDK ignores this policy for async hooks and Stop, SubagentStop, TaskCompleted and TeammateIdle. Reset removes this handler's override.");
 const hook: Schema = { type: "variant", options: ["command", "prompt", "agent", "http", "mcp_tool"], variants: {
-  command: fields({ command: help(text, "Enter the command to run, for example npm run lint. Editing does not execute it."), args: list(argument), shell: choice("bash", "powershell"), ...hookCommon, async: boolean, asyncRewake: boolean }, ["command"]),
+  command: fields({ command: help(text, "Enter the command to run, for example npm run lint. Editing does not execute it."), args: list(argument), shell: choice("bash", "powershell"), ...hookCommon, onFailure: hookFailure, async: boolean, asyncRewake: boolean }, ["command"]),
   prompt: fields({ prompt: help(text, "Enter the hook's evaluation prompt. Ctrl+J inserts a new line."), ...hookCommon, model: text, continueOnBlock: boolean }, ["prompt"]),
   agent: fields({ prompt: help(text, "Enter the task for the hook agent. Ctrl+J inserts a new line."), ...hookCommon, model: text }, ["prompt"]),
-  http: fields({ url: help(text, "Enter the hook endpoint URL, for example https://example.com/hook."), ...hookCommon, headers: help(map(text), "Add a header name, then its value. Values appear only while editing that header."), allowedEnvVars: list(envName) }, ["url"]),
+  http: fields({ url: help(text, "Enter the hook endpoint URL, for example https://example.com/hook."), ...hookCommon, onFailure: hookFailure, headers: help(map(text), "Add a header name, then its value. Values appear only while editing that header."), allowedEnvVars: list(envName) }, ["url"]),
   mcp_tool: fields({ server: help(text, "Enter the exact name of an already configured MCP server."), tool: help(text, "Enter the exact tool name exposed by that server."), input: help(map({ type: "json" }), "Add an argument name, then enter its JSON value."), ...hookCommon }, ["server", "tool"]),
 } };
 const mask = { mode: help(choice("deny", "mask"), "deny blocks access to the credential; mask substitutes a sentinel inside the sandbox."), extract: help(text, "Optional regular expression for mask mode: capture group 1 contains the credential."), onExtractNoMatch: help(choice("warn", "deny", "error"), "When extraction finds nothing: warn leaves it readable, deny blocks access, error stops sandbox setup. Native restrictions apply for JWT decoding."), decode: help(choice("jwt"), "Mask a JWT with a structurally valid substitute. Reset this field to use ordinary masking."), maskClaims: list(text), injectHosts: help(list(text), "Add one allowed injection host per entry, for example api.example.com." ) };

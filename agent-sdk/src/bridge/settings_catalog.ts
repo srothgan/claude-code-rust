@@ -17,6 +17,7 @@ const DEFINITIONS: Definition[] = [
   ["notifications.modelDirected", "Notify when Claude requests it", "Allow local alerts from proactive PushNotification tool results when available. Only while this terminal is unfocused. Default: On. Mobile push is configured separately.", "boolean", undefined, ["user"]],
   ["notifications.turnComplete", "Notify when a turn finishes", "Alert after an active turn finishes successfully. Only while this terminal is unfocused. Default: On.", "boolean", undefined, ["user"]],
   ["autoCompactEnabled", "Auto compact", "Compact context automatically.", "boolean"],
+  ["idleCompaction", "Idle compaction", "Off stops compaction while the session is idle. On or Default does not enable the feature; SDK availability still applies. Saved for the next session.", "boolean"],
   ["autoContinueAtUsageLimit", "Continue at usage limit", "Wait for a subscription usage limit to reset and continue automatically when available for your account.", "boolean", undefined, ["user"], "Automatic continuation at usage limits is not available yet."],
   ["switchModelsOnFlag", "Switch models on flagged messages", "Allow automatic alternate-model handling.", "boolean"],
   ["alwaysThinkingEnabled", "Thinking", "Thinking preference for new sessions; model restrictions still apply. Use /thinking for the current session.", "boolean"],

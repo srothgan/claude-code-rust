@@ -2,6 +2,8 @@
 
 `fake-bridge.js` is a local NDJSON peer for the real `claude-rs` binary. The PTY tests exercise terminal rendering, resizing, input delivery, and shutdown without calling a model or using credentials. They do not validate the real SDK or terminal font rendering.
 
+`sdk-settings-runtime.mjs` is a separate fixture for the bridge's native settings contract tests. Each invocation uses a temporary project and profile with provider credentials removed. Command hooks fail harmlessly with exit code 7; HTTP hooks return 500 from a loopback server. The same server supplies model responses, allowing the tests to prove whether a failure blocks the guarded request. Idle-preference probes initialize the SDK without submitting a model prompt.
+
 Run the suite with `cargo test --all-features --test terminal_resize -- --test-threads=1`. Bun or Node and `rustc` must be available on `PATH`; the auth tests compile a small native fake CLI into their temporary directory.
 
 The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all three platform jobs to pass. Windows uses ConPTY; Linux and macOS use native Unix PTYs. Windows receives complete paste actions; Unix additionally exercises fragmented control sequences and UTF-8 scalars. Exact Unicode payloads, including combining accents, are checked in the journal on every platform. Submission waits out the application's existing paste Enter suppression window.

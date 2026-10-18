@@ -477,6 +477,18 @@
                             }
                           },
                           {
+                            "key": "onFailure",
+                            "label": "Failure policy",
+                            "schema": {
+                              "type": "string",
+                              "options": [
+                                "continue",
+                                "block"
+                              ],
+                              "description": "continue (default) reports a failed hook and lets the action proceed; block treats failure as exit code 2. The SDK ignores this policy for async hooks and Stop, SubagentStop, TaskCompleted and TeammateIdle. Reset removes this handler's override."
+                            }
+                          },
+                          {
                             "key": "async",
                             "label": "Run in background",
                             "schema": {
@@ -641,6 +653,18 @@
                             "label": "Run once",
                             "schema": {
                               "type": "boolean"
+                            }
+                          },
+                          {
+                            "key": "onFailure",
+                            "label": "Failure policy",
+                            "schema": {
+                              "type": "string",
+                              "options": [
+                                "continue",
+                                "block"
+                              ],
+                              "description": "continue (default) reports a failed hook and lets the action proceed; block treats failure as exit code 2. The SDK ignores this policy for async hooks and Stop, SubagentStop, TaskCompleted and TeammateIdle. Reset removes this handler's override."
                             }
                           },
                           {
@@ -918,6 +942,28 @@
       "allows_custom": false,
       "reset": "Reset clears this scope's value and uses the other scopes or Default.",
       "application": "host"
+    },
+    {
+      "id": "idleCompaction",
+      "label": "Idle compaction",
+      "description": "Off stops compaction while the session is idle. On or Default does not enable the feature; SDK availability still applies. Saved for the next session.",
+      "key_path": [
+        "idleCompaction"
+      ],
+      "kind": "boolean",
+      "category": "memory",
+      "options": [
+        true,
+        false
+      ],
+      "writable_scopes": [
+        "user",
+        "project",
+        "local"
+      ],
+      "allows_custom": false,
+      "reset": "Reset clears this scope's value and uses the other scopes or Default.",
+      "application": "next_session"
     }
   ]
 }

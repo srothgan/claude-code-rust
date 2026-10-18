@@ -423,6 +423,106 @@ fn choose(app: &mut App, value: &str) {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn hook_failure_policy_choices_and_reset_save_only_the_selected_handler() {
+    for kind in ["command", "http"] {
+        for policy in [Some("block"), Some("continue"), None] {
+            let mut app = app();
+            let (connection, mut commands) = AgentConnection::test_channel();
+            app.session_runtime.conn = Some(Rc::new(connection));
+            app.session_runtime.session_id = Some("session".into());
+            let handler = if kind == "command" {
+                json!({"type":"command","command":"never-execute","onFailure":"block","future":42})
+            } else {
+                json!({"type":"http","url":"https://example.com/hook","onFailure":"block","future":42})
+            };
+            let mut expected = json!({"PreToolUse":[{"matcher":"Write","hooks":[handler,{"type":"prompt","prompt":"Keep this"}]}]});
+            set_saved(&mut app, "hooks", expected.clone());
+            app.config.settings.open_category("hooks");
+            app.config.settings.select("hooks".into());
+            key(&mut app, KeyCode::Enter);
+            key(&mut app, KeyCode::Enter);
+            field(&mut app, "Failure policy");
+            if let Some(policy) = policy {
+                choose(&mut app, policy);
+                expected["PreToolUse"][0]["hooks"][0]["onFailure"] = json!(policy);
+            } else {
+                key(&mut app, KeyCode::Esc);
+                key(&mut app, KeyCode::Delete);
+                expected["PreToolUse"][0]["hooks"][0]
+                    .as_object_mut()
+                    .expect("handler")
+                    .remove("onFailure");
+            }
+            ctrl(&mut app, 's');
+            let save = commands.recv_envelope().await.expect("save");
+            let BridgeCommand::MutateSetting { mutation, .. } = save.command else {
+                panic!("mutation");
+            };
+            assert_eq!(mutation.id, "hooks");
+            assert_eq!(mutation.scope, SettingsScope::User);
+            assert_eq!(mutation.value, Some(expected));
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn idle_compaction_shows_saved_preference_and_resets_the_selected_scope() {
+    let mut app = app();
+    let (connection, mut commands) = AgentConnection::test_channel();
+    app.session_runtime.conn = Some(Rc::new(connection));
+    app.session_runtime.session_id = Some("session".into());
+    set_saved(&mut app, "idleCompaction", json!(false));
+    app.config.settings.open_category("memory");
+    app.config.settings.select("idleCompaction".into());
+    let text = render(&mut app, 100, 32);
+    let (row, details) = settings_regions(&text, "Idle compaction");
+    assert!(row.contains("Off"), "{row}");
+    assert!(details.contains("does not enable"), "{details}");
+    assert!(details.contains("next session"), "{details}");
+    key(&mut app, KeyCode::Right);
+    let save = commands.recv_envelope().await.expect("save");
+    let BridgeCommand::MutateSetting { mutation, .. } = save.command else {
+        panic!("mutation");
+    };
+    assert_eq!(mutation.id, "idleCompaction");
+    assert_eq!(mutation.value, Some(json!(true)));
+    let mut snapshot = app.config.snapshot.clone().expect("snapshot");
+    snapshot.sources[0]
+        .values
+        .iter_mut()
+        .find(|value| value.id == "idleCompaction")
+        .expect("scoped preference")
+        .value = Some(json!(true));
+    snapshot
+        .values
+        .iter_mut()
+        .find(|value| value.id == "idleCompaction")
+        .expect("preference")
+        .value = Some(json!(true));
+    apply_settings_result(
+        &mut app,
+        save.request_id.as_deref(),
+        SettingsResult {
+            persistence: SettingsPersistence::Saved,
+            application: SettingsApplication::NextSession,
+            snapshot: Some(snapshot),
+            error: None,
+        },
+    );
+    let text = render(&mut app, 100, 32);
+    let (row, _) = settings_regions(&text, "Idle compaction");
+    assert!(row.contains("On"), "{row}");
+    key(&mut app, KeyCode::Delete);
+    let reset = commands.recv_envelope().await.expect("reset");
+    let BridgeCommand::MutateSetting { mutation, .. } = reset.command else {
+        panic!("mutation");
+    };
+    assert_eq!(mutation.id, "idleCompaction");
+    assert_eq!(mutation.scope, SettingsScope::User);
+    assert_eq!(mutation.operation, SettingsOperation::Remove);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn guided_hook_creation_offers_every_action_and_saves_complete_hooks_without_changing_siblings()
  {
     let mut app = app();
