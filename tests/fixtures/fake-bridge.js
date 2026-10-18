@@ -226,6 +226,16 @@ function streamReply(messageUuid) {
     alert({ ...proactive, tool_use_id: `upstream-${replyNumber}`, local_sent: true });
     send({ event: 'session_update', session_id: SESSION, update: { type: 'notification_update', notification: { ...proactive, tool_use_id: `replay-${replyNumber}` }, replay: true } });
   }
+  if (SCENARIO === 'tool-times-presentation') {
+    const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, 'tool-result-times.json'), 'utf8'));
+    for (const item of [fixtures[0], fixtures[2]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call: {
+      tool_call_id: item.name, title: item.tool, kind: 'other', status: 'completed', content: [],
+      raw_input: item.input, locations: [], output_metadata: { presentation: item.presentation },
+      meta: { claudeCode: { toolName: item.tool } },
+    } } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
   if (SCENARIO === 'resize-replay') {
     const text = Array.from({ length: LINES }, (_, index) => `${index + 1}. streamed line ${index + 1}\n`).join('');
     send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text }, source_message_uuid: null } });

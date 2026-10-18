@@ -177,37 +177,76 @@ pub(crate) fn elapsed(duration: Duration) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClockFormat<'a> {
+    pub format: &'a str,
+    pub zone: Option<&'a str>,
+}
+
 pub(crate) fn clock(app: &App, timestamp: DateTime<Utc>) -> String {
-    let format = app.config.time_format();
-    let locale = sys_locale::get_locale()
-        .and_then(|locale| locale.replace('-', "_").parse::<chrono::Locale>().ok())
-        .unwrap_or(chrono::Locale::POSIX);
-    // Explicit 12-hour clocks require an AM/PM marker even in locales whose
-    // ordinary clocks use 24-hour time and leave %p empty.
-    let locale = if format == "12-hour" { chrono::Locale::POSIX } else { locale };
-    let pattern = match format {
-        "12-hour" => "%-I:%M %p",
-        "24-hour" => "%H:%M",
-        "24-hour-utc" => "%H:%MZ",
-        custom
-            if custom.contains('%')
-                && !chrono::format::StrftimeItems::new(custom)
-                    .any(|item| matches!(item, chrono::format::Item::Error)) =>
-        {
+    ClockFormat { format: app.config.time_format(), zone: app.config.time_zone() }
+        .format(timestamp, false)
+}
+
+impl ClockFormat<'_> {
+    pub(crate) fn timestamp(self, value: &str) -> Option<String> {
+        DateTime::parse_from_rfc3339(value).ok().map(|time| self.format(time.to_utc(), true))
+    }
+
+    fn format(self, timestamp: DateTime<Utc>, with_date: bool) -> String {
+        let format = self.format;
+        let locale = sys_locale::get_locale()
+            .and_then(|locale| locale.replace('-', "_").parse::<chrono::Locale>().ok())
+            .unwrap_or(chrono::Locale::POSIX);
+        // Explicit 12-hour clocks require an AM/PM marker even in locales whose
+        // ordinary clocks use 24-hour time and leave %p empty.
+        let locale = if format == "12-hour" { chrono::Locale::POSIX } else { locale };
+        let pattern = match format {
+            "12-hour" => "%-I:%M %p",
+            "24-hour" => "%H:%M",
+            "24-hour-utc" => "%H:%MZ",
             custom
+                if custom.contains('%')
+                    && !chrono::format::StrftimeItems::new(custom)
+                        .any(|item| matches!(item, chrono::format::Item::Error)) =>
+            {
+                custom
+            }
+            _ => "%X",
+        };
+        // Presets add a calendar date for tool results; explicit custom patterns stay verbatim.
+        let pattern = if with_date && pattern != format {
+            format!("%Y-%m-%d {pattern}")
+        } else {
+            pattern.to_owned()
+        };
+        let zone = self.zone.and_then(|zone| zone.parse::<chrono_tz::Tz>().ok());
+        let formatted = if format == "24-hour-utc" {
+            timestamp.format_localized(&pattern, locale).to_string()
+        } else if let Some(zone) = zone {
+            timestamp.with_timezone(&zone).format_localized(&pattern, locale).to_string()
+        } else {
+            timestamp.with_timezone(&Local).format_localized(&pattern, locale).to_string()
+        };
+        // Custom patterns must not inject terminal controls or change label row structure.
+        formatted.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect()
+    }
+}
+
+/// Clock preference changes already own transcript replay; invalidate the affected body caches there too.
+pub(crate) fn invalidate_tool_clocks(app: &mut App) {
+    for message in &mut app.transcript.messages {
+        for block in &mut message.blocks {
+            if let MessageBlock::ToolCall(tool) = block
+                && tool
+                    .output_metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.presentation.is_some())
+            {
+                tool.cache.invalidate();
+            }
         }
-        _ => "%X",
-    };
-    let zone = app.config.time_zone().and_then(|zone| zone.parse::<chrono_tz::Tz>().ok());
-    let formatted = if format == "24-hour-utc" {
-        timestamp.format_localized(pattern, locale).to_string()
-    } else if let Some(zone) = zone {
-        timestamp.with_timezone(&zone).format_localized(pattern, locale).to_string()
-    } else {
-        timestamp.with_timezone(&Local).format_localized(pattern, locale).to_string()
-    };
-    // Custom patterns must not inject terminal controls or change label row structure.
-    formatted.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect()
+    }
 }
 
 #[cfg(test)]

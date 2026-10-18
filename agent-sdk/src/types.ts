@@ -240,7 +240,16 @@ export interface ToolNonExecutionMetadata {
   user_feedback?: string;
 }
 
+/** Canonical result sections; timestamps stay typed until the host applies its clock policy. */
+export interface ToolResultPresentation {
+  sections: Array<{
+    fields: Array<{ label: string; value: { type: "text" | "timestamp"; value: string } }>;
+    text?: string;
+  }>;
+}
+
 export interface ToolOutputMetadata {
+  presentation?: ToolResultPresentation;
   timing?: { duration_ms: number; source: "progress" | "task" };
   staged?: boolean;
   structured_content_omitted?: boolean;

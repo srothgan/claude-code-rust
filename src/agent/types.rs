@@ -484,6 +484,7 @@ pub struct BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub presentation: Option<Box<super::model::ToolResultPresentation>>,
     pub timing: Option<super::model::ToolTiming>,
     #[serde(default)]
     pub staged: bool,

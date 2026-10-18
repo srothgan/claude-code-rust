@@ -138,6 +138,19 @@ impl ToolBodyCursor {
     }
 }
 
+pub(super) fn render_result_presentation(
+    tc: &ToolCallInfo,
+    result: &model::ToolResultPresentation,
+    clock: crate::app::presentation::ClockFormat<'_>,
+    width: u16,
+    control: &LayoutControl<'_>,
+) -> Vec<Line<'static>> {
+    let content = super::result_presentation::render(result, clock);
+    let mut lines = Vec::new();
+    finish_standard_body(tc, width, content, &mut lines, control);
+    lines
+}
+
 #[must_use]
 pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
     tool_call_has_body(tc)
@@ -145,6 +158,9 @@ pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
 
 #[must_use]
 pub(super) fn tool_call_has_body(tc: &ToolCallInfo) -> bool {
+    if tc.output_metadata.as_ref().is_some_and(|metadata| metadata.presentation.is_some()) {
+        return true;
+    }
     if let Some(renderer) = typed::renderer_for(tc) {
         return (renderer.has_structured_body)(tc)
             || tc.pending_permission.is_some()
@@ -653,6 +669,11 @@ fn is_read_tool(tc: &ToolCallInfo) -> bool {
 }
 
 fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) -> usize {
+    if tc.output_metadata.as_ref().is_some_and(|metadata| metadata.presentation.is_some()) {
+        // Structured records begin with identity and timestamps. Keep that prefix
+        // within the existing preview budget rather than showing an unlabelled tail.
+        return lines.len().min(TOOL_BODY_MAX_LINES.saturating_sub(1));
+    }
     let mut count =
         if matches!(tc.content.first(), Some(model::ToolCallContent::ResourceLink(_))) {
             2

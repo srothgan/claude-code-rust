@@ -50,6 +50,7 @@ impl<'a> MessageRenderContext<'a> {
         Self {
             tool_render_context: tool_call::ToolCallRenderContext {
                 current_mode_id,
+                clock: crate::app::presentation::ClockFormat::default(),
                 control: None,
             },
             width,
@@ -64,6 +65,7 @@ impl<'a> MessageRenderContext<'a> {
         Self {
             tool_render_context: tool_call::ToolCallRenderContext {
                 current_mode_id,
+                clock: crate::app::presentation::ClockFormat::default(),
                 control: Some(control),
             },
             width,

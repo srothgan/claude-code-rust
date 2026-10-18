@@ -1458,6 +1458,17 @@ fn render_canonical_tool_rows(
     interaction: bool,
     cursor: Option<&mut tool_call::ToolRowsCursor>,
 ) -> Vec<Line<'static>> {
+    let render_context = MessageRenderContext {
+        tool_render_context: tool_call::ToolCallRenderContext {
+            current_mode_id: render_context.tool_render_context.current_mode_id,
+            control: render_context.tool_render_context.control,
+            clock: crate::app::presentation::ClockFormat {
+                format: app.config.time_format(),
+                zone: app.config.time_zone(),
+            },
+        },
+        width: render_context.width,
+    };
     let unavailable = || {
         if cursor.is_some()
             && let Some(control) = render_context.tool_render_context.control

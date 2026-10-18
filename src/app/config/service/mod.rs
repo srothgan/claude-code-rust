@@ -175,6 +175,7 @@ pub(crate) fn apply_settings_result(
     }
     let clock = clock_preferences(app);
     if previous_clock != clock {
+        crate::app::presentation::invalidate_tool_clocks(app);
         app.request_chat_purge_replay_rebuild(
             crate::app::ChatPurgeReplayOptions::terminal_history_out_of_sync(),
         );

@@ -365,6 +365,7 @@ impl BashOutputMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolOutputMetadata {
+    pub presentation: Option<Box<ToolResultPresentation>>,
     pub timing: Option<ToolTiming>,
     pub staged: bool,
     #[serde(default)]
@@ -376,6 +377,32 @@ pub struct ToolOutputMetadata {
     /// Set when the text content is the file source of a Read, without line numbers.
     pub read: Option<ReadOutputMetadata>,
     pub non_execution: Option<ToolNonExecutionMetadata>,
+}
+
+/// Normalized SDK result sections. Each timestamp belongs to its section, never to a chat receive time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultPresentation {
+    pub sections: Vec<ToolResultSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultSection {
+    pub fields: Vec<ToolResultField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultField {
+    pub label: String,
+    pub value: ToolResultValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ToolResultValue {
+    Text(String),
+    Timestamp(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,6 +454,12 @@ pub struct ToolNonExecutionMetadata {
 }
 
 impl ToolOutputMetadata {
+    #[must_use]
+    pub fn presentation(mut self, presentation: Option<Box<ToolResultPresentation>>) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
     #[must_use]
     pub fn timing(mut self, timing: Option<ToolTiming>) -> Self {
         self.timing = timing;

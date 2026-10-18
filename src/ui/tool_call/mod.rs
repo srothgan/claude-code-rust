@@ -19,6 +19,7 @@ mod push_notification;
 mod read;
 mod remote_trigger;
 mod repl;
+mod result_presentation;
 mod schedule_wakeup;
 mod skill;
 mod standard;
@@ -53,6 +54,7 @@ pub(super) const TOOL_BODY_MAX_LINES: usize = TOOL_MAX_RENDER_LINES - 1;
 
 #[derive(Clone, Copy, Default)]
 pub struct ToolCallRenderContext<'a> {
+    pub clock: crate::app::presentation::ClockFormat<'a>,
     pub current_mode_id: Option<&'a str>,
     pub control: Option<&'a crate::ui::layout_control::LayoutControl<'a>>,
 }
@@ -120,7 +122,17 @@ impl ToolRowsCursor {
             self.finished = true;
             return cached.clone();
         }
-        let body = if control.can_yield() {
+        let body = if let Some(result) =
+            tc.output_metadata.as_ref().and_then(|metadata| metadata.presentation.as_deref())
+        {
+            std::task::Poll::Ready(standard::render_result_presentation(
+                tc,
+                result,
+                context.clock,
+                width,
+                control,
+            ))
+        } else if control.can_yield() {
             self.body.poll(tc, width, control)
         } else {
             std::task::Poll::Ready(self.body.render(tc, width, control))

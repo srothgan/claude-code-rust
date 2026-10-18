@@ -2351,6 +2351,35 @@ fn a_stream_error_preserves_the_next_unsent_draft_through_resize() {
 }
 
 #[test]
+fn scheduler_and_queue_times_stay_in_their_tool_cards_after_terminal_replay() {
+    let mut test = TerminalTest::start("tool-times-presentation", 0);
+    test.submit("Show saved tool times", "Show saved tool times");
+    test.wait_turn_finished("Notification ID: delivery-a");
+    for dimensions in [None, Some((28, 65)), Some((55, 100))] {
+        if let Some((rows, cols)) = dimensions {
+            test.resize_and_wait_for_draw(rows, cols);
+        }
+        test.wait_until("timestamped tool cards in terminal history", |test| {
+            let rows = test.transcript_rows();
+            let Some(create) = rows.iter().position(|row| row.contains("CronCreate")) else {
+                return false;
+            };
+            let Some(drain) = rows.iter().position(|row| row.contains("ReadNotifications")) else {
+                return false;
+            };
+            create < drain
+                && rows[create..drain].iter().any(|row| row.contains("Next run: 2026-03-29 01:30Z"))
+                && rows[create..drain].iter().any(|row| row.contains("Schedule ID: create-a"))
+                && rows[drain..].iter().any(|row| row.contains("Remaining: 4"))
+                && rows[drain..].iter().any(|row| row.contains("Read at: 2026-03-29 01:10Z"))
+                && rows[drain..].iter().any(|row| row.contains("Notification ID: delivery-a"))
+                && rows[drain..].iter().any(|row| row.contains("Arrived at: 2026-03-29 01:00Z"))
+        });
+    }
+    test.shutdown();
+}
+
+#[test]
 fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
     let mut test = TerminalTest::start("presentation", 3);
     test.submit("Clock test", "Clock test");

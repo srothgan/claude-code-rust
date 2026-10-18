@@ -848,6 +848,29 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn saved_scheduler_and_queue_sections_survive_the_wire_without_losing_item_identity() {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/tool-result-times.json"))
+                .expect("independent SDK result fixtures");
+        for fixture in fixtures.as_array().expect("fixtures") {
+            let event: EventEnvelope = serde_json::from_value(serde_json::json!({
+                "event": "session_update", "session_id": "times",
+                "update": {"type": "tool_call_update", "tool_call_update": {
+                    "tool_call_id": fixture["name"], "fields": {
+                        "output_metadata": {"presentation": fixture["presentation"]}
+                    }
+                }}
+            }))
+            .expect("typed result wire event");
+            let encoded = serde_json::to_value(event).expect("wire round trip");
+            assert_eq!(
+                encoded["update"]["tool_call_update"]["fields"]["output_metadata"]["presentation"],
+                fixture["presentation"]
+            );
+        }
+    }
+
+    #[test]
     fn notification_payload_round_trips_original_sdk_metadata_and_replay_provenance() {
         let payload = serde_json::json!({
             "event": "session_update", "session_id": "s1",

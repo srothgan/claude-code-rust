@@ -215,6 +215,14 @@ Common surfaces:
 
 Use `/help` for the fullscreen help tab, `/config` for settings, and `/docs <topic>` for live in-chat help generated from the running app state.
 
+## Scheduled jobs and notification reads
+
+`CronCreate` and `CronList` tool cards show **Next run** beside the corresponding schedule ID when the SDK supplies it. This is the scheduler's timestamp, including its scheduling offset; the app does not calculate another time from the cron expression. Dates and clock times use your [time format and time zone](settings.md#presentation-and-scrolling). Preset formats include the calendar date; custom strftime formats are used as written. Older saved results without a next-run timestamp leave it unknown.
+
+`ReadNotifications` cards show the queue's **Remaining** count and optional **Read at** timestamp for that drain. Each item keeps its notification ID, origin and literal content, with **Queued at** for the backend queue timestamp and optional **Arrived at** for arrival in the local queue. These times describe separate stages; they do not indicate PushNotification delivery. Missing or invalid timestamps are omitted.
+
+Saved conversations preserve these fields when the SDK saved them. Replaying a queue result displays its saved data without sending another desktop notification. These cards retain the normal tool preview limit and hidden-line indicator, keeping the leading IDs and timestamps visible when results are clipped. Full saved content remains available in transcript exports.
+
 ## More Usage Topics
 
 - [Slash Commands](commands.md)

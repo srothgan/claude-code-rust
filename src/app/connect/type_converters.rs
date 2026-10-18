@@ -931,6 +931,7 @@ fn convert_tool_output_metadata(
     output_metadata: types::ToolOutputMetadata,
 ) -> model::ToolOutputMetadata {
     model::ToolOutputMetadata::new()
+        .presentation(output_metadata.presentation)
         .timing(output_metadata.timing)
         .staged(output_metadata.staged)
         .structured_content_omitted(output_metadata.structured_content_omitted)
@@ -1238,6 +1239,107 @@ mod tests {
                     assert_eq!(tc.read_output_metadata().expect("Read metadata").start_line, 60);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn completed_result_cards_follow_acknowledged_clock_changes_through_cached_live_layout() {
+        use crate::agent::events::ClientEvent;
+        use crate::agent::settings::{
+            SettingsApplication, SettingsPersistence, SettingsResult, SettingsSnapshot,
+        };
+        use crate::agent::wire::{BridgeEvent, EventEnvelope};
+        use crate::app::{App, HistoryOutputId};
+        use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
+        use serde_json::json;
+
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/tool-result-times.json"))
+                .expect("SDK result fixture");
+        let fixture = &fixtures[0];
+        let mut app = App::test_default();
+        app.session_runtime.activate_session("times".into());
+        let updates = [
+            json!({"type":"tool_call", "tool_call": {
+                "tool_call_id":"timed-job", "title":"CronCreate", "kind":"other", "status":"in_progress", "content":[],
+                "raw_input": fixture["input"], "locations":[], "meta":{"claudeCode":{"toolName":"CronCreate"}}
+            }}),
+            json!({"type":"tool_call_update", "tool_call_update":{
+                "tool_call_id":"timed-job", "fields":{
+                    "status":"completed", "content":[], "output_metadata":{"presentation": fixture["presentation"]}
+                }
+            }}),
+        ];
+        for update in updates {
+            let event: EventEnvelope = serde_json::from_value(json!({
+                "event":"session_update", "session_id":"times", "update":update
+            }))
+            .expect("live result wire event");
+            let BridgeEvent::SessionUpdate { session_id, update } = event.event else {
+                panic!("session update")
+            };
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::SessionUpdate {
+                    session_id,
+                    update: map_session_update(update).expect("domain update"),
+                },
+            );
+            // Seed the real body cache before the completed result and before each preference change.
+            let _ = serialize_live_rows_with_boundaries_excluding(
+                &mut app,
+                120,
+                &std::collections::BTreeSet::default(),
+                None,
+            );
+        }
+        for (format, zone, expected) in [
+            ("%F %T.%3f %z", "Europe/Berlin", "Next run: 2026-03-29 03:30:07.123 +0200"),
+            ("%F %T.%3f %z", "UTC", "Next run: 2026-03-29 01:30:07.123 +0000"),
+            ("24-hour-utc", "Europe/Berlin", "Next run: 2026-03-29 01:30Z"),
+            ("12-hour", "Europe/Berlin", "Next run: 2026-03-29 3:30 AM"),
+        ] {
+            let mut snapshot = SettingsSnapshot::test_value("timeFormat", json!(format));
+            snapshot.time_zone = Some(zone.into());
+            snapshot.cwd.clone_from(&app.cwd_raw);
+            app.config.pending_settings_request =
+                Some(crate::app::config::PendingSettingsRequest::Inspection("clock".into()));
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::SettingsResultReceived {
+                    session_id: "times".into(),
+                    request_id: Some("clock".into()),
+                    result: SettingsResult {
+                        persistence: SettingsPersistence::NotRequested,
+                        application: SettingsApplication::Host,
+                        snapshot: Some(snapshot),
+                        error: None,
+                    },
+                },
+            );
+            let rendered = serialize_live_rows_with_boundaries_excluding(
+                &mut app,
+                120,
+                &std::collections::BTreeSet::default(),
+                None,
+            );
+            let segment = rendered
+                .segments()
+                .iter()
+                .find(|segment| {
+                    segment.ids.contains(&HistoryOutputId::ToolCall("timed-job".into()))
+                })
+                .expect("completed job region");
+            let rows: Vec<String> = rendered
+                .segment_rows(segment)
+                .expect("card rows")
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert!(rows.iter().any(|row| row.contains("Schedule ID: create-a")), "{rows:?}");
+            assert!(rows.iter().any(|row| row.contains(expected)), "{rows:?}");
+            assert!(rows.iter().any(|row| row.contains("Prompt: Inspect the build")), "{rows:?}");
+            assert_eq!(rows.iter().filter(|row| row.contains("Next run:")).count(), 1);
         }
     }
 
@@ -1789,6 +1891,7 @@ mod tests {
         let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
             status: Some("completed".to_owned()),
             output_metadata: Some(types::ToolOutputMetadata {
+                presentation: None,
                 timing: None,
                 staged: false,
                 structured_content_omitted: true,

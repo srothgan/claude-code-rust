@@ -2011,14 +2011,14 @@ test("buildToolResultFields renders cron outputs as structured text without raw 
   );
   assert.equal(
     createFields.raw_output,
-    "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+    "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nPrompt: Send weekly status\nRecurring: yes\nDurable: no",
   );
   assert.deepEqual(createFields.content, [
     {
       type: "content",
       content: {
         type: "text",
-        text: "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nRecurring: yes\nDurable: no",
+        text: "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nPrompt: Send weekly status\nRecurring: yes\nDurable: no",
       },
     },
   ]);

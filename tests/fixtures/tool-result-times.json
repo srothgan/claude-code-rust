@@ -1,0 +1,362 @@
+[
+  {
+    "name": "cron-create",
+    "tool": "CronCreate",
+    "input": {
+      "cron": "30 * * * *",
+      "prompt": "Inspect the build"
+    },
+    "result": {
+      "id": "create-a",
+      "humanSchedule": "Every hour at minute 30",
+      "recurring": true,
+      "durable": false,
+      "nextFireAt": 1774747807123.7246
+    },
+    "presentation": {
+      "sections": [
+        {
+          "fields": [
+            {
+              "label": "Schedule ID",
+              "value": {
+                "type": "text",
+                "value": "create-a"
+              }
+            },
+            {
+              "label": "Schedule",
+              "value": {
+                "type": "text",
+                "value": "Every hour at minute 30"
+              }
+            },
+            {
+              "label": "Next run",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-03-29T01:30:07.123Z"
+              }
+            },
+            {
+              "label": "Prompt",
+              "value": {
+                "type": "text",
+                "value": "Inspect the build"
+              }
+            },
+            {
+              "label": "Recurring",
+              "value": {
+                "type": "text",
+                "value": "yes"
+              }
+            },
+            {
+              "label": "Durable",
+              "value": {
+                "type": "text",
+                "value": "no"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "cron-list",
+    "tool": "CronList",
+    "input": {},
+    "result": {
+      "jobs": [
+        {
+          "id": "job-a",
+          "cron": "30 2 * * *",
+          "humanSchedule": "Every day at 02:30",
+          "prompt": "First job",
+          "recurring": true,
+          "nextFireAt": 1792888211321
+        },
+        {
+          "id": "job-b",
+          "cron": "30 2 * * *",
+          "humanSchedule": "Every day at 02:30",
+          "prompt": "Second job",
+          "recurring": true,
+          "nextFireAt": 1792891823456
+        },
+        {
+          "id": "job-old",
+          "cron": "30 2 * * *",
+          "humanSchedule": "Every day at 02:30",
+          "prompt": "Old job",
+          "recurring": true
+        }
+      ]
+    },
+    "presentation": {
+      "sections": [
+        {
+          "fields": [
+            {
+              "label": "Schedule ID",
+              "value": {
+                "type": "text",
+                "value": "job-a"
+              }
+            },
+            {
+              "label": "Schedule",
+              "value": {
+                "type": "text",
+                "value": "Every day at 02:30"
+              }
+            },
+            {
+              "label": "Next run",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-10-25T00:30:11.321Z"
+              }
+            },
+            {
+              "label": "Prompt",
+              "value": {
+                "type": "text",
+                "value": "First job"
+              }
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "label": "Schedule ID",
+              "value": {
+                "type": "text",
+                "value": "job-b"
+              }
+            },
+            {
+              "label": "Schedule",
+              "value": {
+                "type": "text",
+                "value": "Every day at 02:30"
+              }
+            },
+            {
+              "label": "Next run",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-10-25T01:30:23.456Z"
+              }
+            },
+            {
+              "label": "Prompt",
+              "value": {
+                "type": "text",
+                "value": "Second job"
+              }
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "label": "Schedule ID",
+              "value": {
+                "type": "text",
+                "value": "job-old"
+              }
+            },
+            {
+              "label": "Schedule",
+              "value": {
+                "type": "text",
+                "value": "Every day at 02:30"
+              }
+            },
+            {
+              "label": "Prompt",
+              "value": {
+                "type": "text",
+                "value": "Old job"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "notification-drain",
+    "tool": "ReadNotifications",
+    "input": {},
+    "result": {
+      "notifications": [
+        {
+          "notification_id": "delivery-a",
+          "origin": "github_webhook",
+          "queued_at": "2026-03-29T00:59:30Z",
+          "arrived_at": "2026-03-29T01:00:01.250Z",
+          "content": "<user-tag>\nKeep this **literal**\n</user-tag>"
+        },
+        {
+          "notification_id": "delivery-b",
+          "origin": "future_origin",
+          "queued_at": "2026-03-29T01:05:00+00:00",
+          "arrived_at": "2026-03-29T01:09:02.500Z",
+          "content": "Second payload"
+        }
+      ],
+      "remaining": 4,
+      "read_at": "2026-03-29T02:10:12.345+01:00"
+    },
+    "presentation": {
+      "sections": [
+        {
+          "fields": [
+            {
+              "label": "Remaining",
+              "value": {
+                "type": "text",
+                "value": "4"
+              }
+            },
+            {
+              "label": "Read at",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-03-29T02:10:12.345+01:00"
+              }
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "label": "Notification ID",
+              "value": {
+                "type": "text",
+                "value": "delivery-a"
+              }
+            },
+            {
+              "label": "Origin",
+              "value": {
+                "type": "text",
+                "value": "github_webhook"
+              }
+            },
+            {
+              "label": "Queued at",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-03-29T00:59:30Z"
+              }
+            },
+            {
+              "label": "Arrived at",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-03-29T01:00:01.250Z"
+              }
+            }
+          ],
+          "text": "<user-tag>\nKeep this **literal**\n</user-tag>"
+        },
+        {
+          "fields": [
+            {
+              "label": "Notification ID",
+              "value": {
+                "type": "text",
+                "value": "delivery-b"
+              }
+            },
+            {
+              "label": "Origin",
+              "value": {
+                "type": "text",
+                "value": "future_origin"
+              }
+            },
+            {
+              "label": "Queued at",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-03-29T01:05:00+00:00"
+              }
+            },
+            {
+              "label": "Arrived at",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-03-29T01:09:02.500Z"
+              }
+            }
+          ],
+          "text": "Second payload"
+        }
+      ]
+    }
+  },
+  {
+    "name": "old-notification-drain",
+    "tool": "ReadNotifications",
+    "input": {},
+    "result": {
+      "notifications": [
+        {
+          "notification_id": "delivery-old",
+          "origin": "trigger_fire",
+          "queued_at": "2026-01-01T12:00:00Z",
+          "content": "Saved old payload"
+        }
+      ],
+      "remaining": 0
+    },
+    "presentation": {
+      "sections": [
+        {
+          "fields": [
+            {
+              "label": "Remaining",
+              "value": {
+                "type": "text",
+                "value": "0"
+              }
+            }
+          ]
+        },
+        {
+          "fields": [
+            {
+              "label": "Notification ID",
+              "value": {
+                "type": "text",
+                "value": "delivery-old"
+              }
+            },
+            {
+              "label": "Origin",
+              "value": {
+                "type": "text",
+                "value": "trigger_fire"
+              }
+            },
+            {
+              "label": "Queued at",
+              "value": {
+                "type": "timestamp",
+                "value": "2026-01-01T12:00:00Z"
+              }
+            }
+          ],
+          "text": "Saved old payload"
+        }
+      ]
+    }
+  }
+]
