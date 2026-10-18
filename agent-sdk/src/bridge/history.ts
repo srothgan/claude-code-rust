@@ -22,11 +22,11 @@ import type { SessionState } from "./session_lifecycle.js";
 import { taskSystemToolFields } from "./message_handlers.js";
 import {
   applyToolNonExecutionMetadata,
+  agentTaskLaunchFields,
   TOOL_RESULT_TYPES,
   buildToolResultFields,
   backgroundToolLaunchTaskIdFromResult,
   createToolCall,
-  isAgentLikeToolName,
   isToolSearchToolName,
   isToolSearchToolResultType,
   isToolUseBlockType,
@@ -78,24 +78,6 @@ function nonEmptyTrimmed(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * What a subagent's task_started record would have said, read from the Agent
- * call that launched it. Claude Code 2.1.300 saves no task_started record for a
- * background Agent call, only the call and a task notification, so on resume
- * this call is the only source of the row's type, subagent type and title.
- */
-function agentLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
-  if (!isAgentLikeToolName(toolNameFromMeta(tool?.meta) ?? "")) return {};
-  const input = asRecordOrNull(tool?.raw_input);
-  const subagentType = nonEmptyTrimmed(input?.subagent_type);
-  const description = nonEmptyTrimmed(input?.description);
-  return {
-    task_type: "local_agent",
-    ...(subagentType ? { subagent_type: subagentType } : {}),
-    ...(description ? { task_description: description } : {}),
-  };
-}
-
 /** A saved SDK reminder. A subagent transcript shows it; the chat has no place for one. */
 interface SystemReminderEntry {
   type: "system_reminder";
@@ -129,7 +111,7 @@ function pushResumeTaskSystemUpdate(
   const toolUseId = explicitToolUseId ?? taskToolUseIds.get(taskId);
   const tool = toolUseId ? toolCalls.get(toolUseId) : undefined;
   // The record's own fields win over what the launching call implies.
-  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, { ...agentLaunchFields(tool), ...msg }, toolUseId);
+  const patch = taskLifecyclePatch(tasksById.get(taskId), subtype, { ...agentTaskLaunchFields(tool), ...msg }, toolUseId);
   if (!patch) return true;
   if (patch.resetExecution) taskToolUseIds.delete(taskId);
   if (explicitToolUseId) taskToolUseIds.set(taskId, explicitToolUseId);
@@ -237,7 +219,7 @@ function pushResumeToolResult(
   ) : undefined;
   if (taskId) {
     const patch = taskLifecyclePatch(tasksById.get(taskId), "task_started", {
-      ...agentLaunchFields(base), task_id: taskId, tool_use_id: toolUseId, description: base?.title, is_backgrounded: true, synthesized_launch: true,
+      ...agentTaskLaunchFields(base), task_id: taskId, tool_use_id: toolUseId, description: base?.title, is_backgrounded: true, synthesized_launch: true,
     }, toolUseId);
     if (!patch) return;
     taskToolUseIds.set(taskId, toolUseId);

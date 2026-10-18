@@ -5,6 +5,7 @@ import { mapSessionMessagesToEntries } from "./history.js";
 import { sessionById, type SessionState } from "./session_lifecycle.js";
 import { asRecordOrNull } from "./shared.js";
 import { toolNameFromMeta } from "./tool_calls.js";
+import { restoreSavedSubagents } from "./saved_subagents.js";
 
 type SubagentCommand = Extract<
   BridgeCommand,
@@ -51,6 +52,7 @@ async function listTranscripts(
   try {
     if (!session) throw new Error(NO_SESSION);
     const agentIds = await listSubagents(session.sessionId, { dir: session.cwd });
+    await restoreSavedSubagents(session, agentIds);
     writeEvent({ event: "subagents_listed", session_id: command.session_id, agent_ids: agentIds }, requestId);
   } catch (error) {
     writeEvent(

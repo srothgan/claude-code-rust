@@ -19,7 +19,7 @@ test("replay admits notification origin.runId before replacing links or historic
   assert.equal(row?.run_id, "B");
   assert.equal(row?.parent_task_id, "parent");
   assert.equal(row?.source_tool_call_id, "launch-B");
-  assert.equal((row?.metadata as Record<string, unknown>).summary, "B report");
+  assert.equal((row?.metadata as Record<string, unknown>)?.summary, "B report");
 });
 
 test("history attributes child tools through their producer while a transcript retains the full saved conversation", () => {
@@ -31,7 +31,7 @@ test("history attributes child tools through their producer while a transcript r
   const chat = mapSessionMessagesToUpdates(history);
   assert.ok(!chat.some(update => update.type === "agent_message_chunk"));
   const tool = chat.filter(update => update.type === "tool_call").find(update => update.tool_call.tool_call_id === "nested");
-  assert.equal((tool?.tool_call.meta as { claudeCode: { parentToolUseId: string } }).claudeCode.parentToolUseId, "launch");
+  assert.equal((tool?.tool_call.meta as { claudeCode: { parentToolUseId: string } })?.claudeCode.parentToolUseId, "launch");
   const transcript = mapSessionMessagesToEntries(history, true);
   assert.ok(transcript.some(update => update.type === "agent_message_chunk" && update.content.type === "text" && update.content.text === "Child report"));
 });

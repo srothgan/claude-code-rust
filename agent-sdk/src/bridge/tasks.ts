@@ -476,14 +476,50 @@ function taskOutputResultText(
 
 export function upsertTask(session: Pick<SessionState, "tasksById" | "taskOrder">, patch: TaskPatch): TaskItem {
   const previous = session.tasksById.get(patch.task_id);
-  const existing = patch.resetExecution ? resetTaskExecution(previous) : previous;
-  const task = upsertFromExisting(existing, patch);
+  const task = composeTaskPatch(previous, patch);
 
   session.tasksById.set(task.task_id, task);
-  if (!existing && !session.taskOrder.includes(task.task_id)) {
+  if (!previous && !session.taskOrder.includes(task.task_id)) {
     session.taskOrder.push(task.task_id);
   }
   return cloneTask(task);
+}
+
+function composeTaskPatch(previous: TaskItem | undefined, patch: TaskPatch): TaskItem {
+  return upsertFromExisting(patch.resetExecution ? resetTaskExecution(previous) : previous, patch);
+}
+
+export interface SavedTaskObservation {
+  subtype: string;
+  message: Record<string, unknown>;
+}
+
+/** Saved discovery fills the same inventory without replacing live or recorded outcomes. */
+export function restoreSavedSubagentTask(
+  session: SessionState,
+  taskId: string,
+  parentTaskId: string | undefined,
+  observations: SavedTaskObservation[],
+): void {
+  const existing = session.tasksById.get(taskId);
+  if (existing && !isInterruptedRow(existing)) {
+    if (!existing.parent_task_id && parentTaskId) {
+      emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, { task_id: taskId, parent_task_id: parentTaskId })]);
+    }
+    return;
+  }
+  let task = existing;
+  for (const observation of observations) {
+    const patch = taskLifecyclePatch(task, observation.subtype, {
+      ...observation.message, task_id: taskId, parent_task_id: parentTaskId,
+    }, undefined, session.removedTaskRuns?.get(taskId));
+    if (patch) task = composeTaskPatch(task, patch);
+  }
+  if (!task || task === existing) return;
+  if (task.status !== "completed") task = composeTaskPatch(task, interruptedTaskPatch(task));
+  if (JSON.stringify(task) === JSON.stringify(existing)) return;
+  session.removedTaskRuns?.delete(taskId);
+  emitTaskStateUpdate(session, "task_lifecycle", [upsertTask(session, task)]);
 }
 
 function removeTasks(session: SessionState, taskIds: string[]): string[] {
@@ -1303,7 +1339,10 @@ export function applyBackgroundTasksChanged(
     const task = session.tasksById.get(taskId);
     const metadata = asRecordOrNull(task?.metadata);
     if (metadata?.[BACKGROUND_TASK_METADATA_KEY] === true) {
-      if (task?.run_id) (session.removedTaskRuns ??= new Map()).set(taskId, task.run_id);
+      if (task?.run_id) {
+        session.removedTaskRuns ??= new Map();
+        session.removedTaskRuns.set(taskId, task.run_id);
+      }
       removedTaskIds.push(taskId);
     } else if (task?.status === "in_progress" && metadata?.[LIFECYCLE_TASK_METADATA_KEY] === true && metadata.is_backgrounded === true) {
       unlisted.push(interruptedTaskPatch(task));

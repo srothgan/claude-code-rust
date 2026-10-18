@@ -43,8 +43,8 @@ test("SDK 0.3.302 run ordering rejects late lifecycle and inventory frames befor
       assert.deepEqual(session.toolCalls.get("launch-A"), oldTool);
       assert.deepEqual(session.toolCalls.get("launch-B"), currentTool);
       assert.equal(current?.parent_task_id, "parent");
-      assert.equal((current?.metadata as Record<string, unknown>).error, undefined);
-      assert.equal((current?.metadata as Record<string, unknown>).summary, undefined);
+      assert.equal((current?.metadata as Record<string, unknown>)?.error, undefined);
+      assert.equal((current?.metadata as Record<string, unknown>)?.summary, undefined);
       edge("task_notification", "B", { status: "completed", summary: "B done" });
       edge("task_started", "B", { description: "delayed start" });
       assert.equal(session.tasksById.get("worker")?.status, "completed");
@@ -63,15 +63,15 @@ test("a newer run may first appear completed without reopening a historical term
   assert.equal(task?.run_id, "B");
   assert.equal(task?.source_tool_call_id, "launch");
   assert.equal(task?.source_tool_call_run_id, "A");
-  assert.equal((task?.metadata as Record<string, unknown>).error, undefined);
-  assert.equal((task?.metadata as Record<string, unknown>).summary, "B done");
+  assert.equal((task?.metadata as Record<string, unknown>)?.error, undefined);
+  assert.equal((task?.metadata as Record<string, unknown>)?.summary, "B done");
   assert.deepEqual(session.toolCalls.get("launch"), tool);
   // Messages still identify the task's producer through its established
   // launch, without claiming that invocation executed the newer run.
   emit({ type: "assistant", agent_id: "worker", message: { content: [{ type: "tool_use", id: "child-B", name: "Read", input: { file_path: "notes" } }] } });
-  assert.equal((session.toolCalls.get("child-B")?.meta as { claudeCode: { parentToolUseId: string } }).claudeCode.parentToolUseId, "launch");
+  assert.equal((session.toolCalls.get("child-B")?.meta as { claudeCode: { parentToolUseId: string } })?.claudeCode.parentToolUseId, "launch");
   emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id: "launch", status: "failed", summary: "unversioned A" });
-  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).summary, "B done");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.summary, "B done");
 }));
 
 test("synthesized launch acknowledgements cannot reopen a recorded task outcome", () => {
@@ -82,7 +82,7 @@ test("synthesized launch acknowledgements cannot reopen a recorded task outcome"
     const tool = structuredClone(session.toolCalls.get("launch"));
     emitToolResultUpdate(session, "launch", false, { isAsync: true, status: "async_launched", agentId: "worker", description: "Launch ack", outputFile: "worker.output" });
     assert.equal(session.tasksById.get("worker")?.status, "completed");
-    assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).summary, "Actual report");
+    assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.summary, "Actual report");
     assert.deepEqual(session.toolCalls.get("launch"), tool);
   });
 });
@@ -104,7 +104,7 @@ test("first-known runs enrich unversioned launches and missing runs need matchin
   emit({ type: "system", subtype: "task_started", task_id: "worker", tool_use_id: "launch", task_type: "local_agent", description: "Original launch", prompt: "Original prompt" });
   emit({ type: "system", subtype: "task_progress", task_id: "worker", run_id: "B", description: "Working" });
   assert.equal(session.tasksById.get("worker")?.source_tool_call_id, "launch");
-  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).prompt, "Original prompt");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.prompt, "Original prompt");
   const current = structuredClone(session.tasksById.get("worker"));
   for (const tool_use_id of [undefined, "old-launch"]) emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id, status: "failed", summary: "unidentified" });
   assert.deepEqual(session.tasksById.get("worker"), current);
@@ -123,7 +123,7 @@ test("removed inventory rows remember only their absent run and empty snapshots 
   assert.equal(session.tasksById.get("worker")?.run_id, "C");
   emit({ type: "system", subtype: "task_started", task_id: "worker", run_id: "C", task_type: "local_agent", description: "C" });
   emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
-  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).terminal_status, "interrupted");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.terminal_status, "interrupted");
   listed("C");
   assert.equal(session.tasksById.get("worker")?.status, "in_progress");
 }));
@@ -137,7 +137,7 @@ test("a removed snapshot-only row still accepts its same-run lifecycle outcome",
   emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id: "B", status: "completed", summary: "Actual B report", task_type: "local_agent" });
   assert.equal(session.tasksById.get("worker")?.status, "completed");
   assert.equal(session.tasksById.get("worker")?.run_id, "B");
-  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).summary, "Actual B report");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>)?.summary, "Actual B report");
 }));
 
 test("agent_id attributes nested Agent calls to their producer and keeps child replies and errors out of the main turn", () => taskScenario((session, emit, writes) => {
@@ -146,14 +146,14 @@ test("agent_id attributes nested Agent calls to their producer and keeps child r
   emit({ type: "assistant", agent_id: "B", parent_tool_use_id: null, error: "authentication_failed", context_usage: {}, message: { id: "child", content: [{ type: "text", text: "Private child reply" }, { type: "tool_use", id: "launch-C", name: "Agent", input: { description: "C" } }] } });
   emit({ type: "user", agent_id: "B", message: { content: "Child user prompt" } });
   const child = session.toolCalls.get("launch-C");
-  assert.equal((child?.meta as { claudeCode?: { parentToolUseId?: string } }).claudeCode?.parentToolUseId, "launch-B");
+  assert.equal((child?.meta as { claudeCode?: { parentToolUseId?: string } })?.claudeCode?.parentToolUseId, "launch-B");
   assert.equal(session.tasksById.has("C"), false, "the producer's Agent call does not identify its new child");
   assert.equal(session.lastAssistantError, undefined);
   assert.equal(session.authHintSent, false);
   const updates = writes.slice(before).map(line => JSON.parse(line) as { event: string; update?: { type: string } });
   assert.ok(updates.every(event => event.update?.type === "tool_call"));
   emit({ type: "assistant", agent_id: "B", parent_tool_use_id: "explicit-parent", message: { content: [{ type: "tool_use", id: "nested", name: "Bash", input: { command: "pwd" } }] } });
-  assert.equal((session.toolCalls.get("nested")?.meta as { claudeCode: { parentToolUseId: string } }).claudeCode.parentToolUseId, "explicit-parent");
+  assert.equal((session.toolCalls.get("nested")?.meta as { claudeCode: { parentToolUseId: string } })?.claudeCode.parentToolUseId, "explicit-parent");
 }));
 
 test("stale expected-run stops never call the SDK and responses retain the dispatched operation", async () => {

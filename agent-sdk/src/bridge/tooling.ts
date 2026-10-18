@@ -2476,6 +2476,32 @@ function collectResultCandidates(
   return candidates;
 }
 
+/** Successful SendMessage acknowledgements explicitly identify a resumed task. */
+export function resumedAgentTaskIdFromResult(toolName: string, rawResult: unknown, rawContent: unknown): string | undefined {
+  if (toolName !== "SendMessage") return undefined;
+  const result = collectResultCandidates(rawResult, rawContent).find(candidate => candidate.success === true && nonEmptyString(candidate.resumedAgentId));
+  return nonEmptyString(result?.resumedAgentId);
+}
+
+/** Saved SDK Agent acknowledgements can replace an originally foreground call. */
+export function isDeferredAgentResult(rawResult: unknown, rawContent: unknown): boolean {
+  return collectResultCandidates(rawResult, rawContent).some(candidate => candidate.status === "async_launched" || candidate.isAsync === true)
+    || extractText(rawContent).trimStart().startsWith("Async agent launched successfully");
+}
+
+/** Common task metadata supplied by a saved Agent invocation. */
+export function agentTaskLaunchFields(tool: ToolCall | undefined): Record<string, unknown> {
+  if (!isAgentLikeToolName(resolveToolName(tool))) return {};
+  const input = asRecordOrNull(tool?.raw_input);
+  const subagentType = nonEmptyString(input?.subagent_type);
+  const description = nonEmptyString(input?.description);
+  return {
+    task_type: "local_agent",
+    ...(subagentType ? { subagent_type: subagentType } : {}),
+    ...(description ? { task_description: description } : {}),
+  };
+}
+
 type InlineSkillResult = {
   success: boolean;
   commandName: string;
