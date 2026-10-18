@@ -11,8 +11,8 @@ use super::session_picker::fit_with_ellipsis;
 use super::theme;
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
 use crate::app::agents::{
-    NoticeKind, SubagentRow, SubagentStatus, WrappedTranscript, final_response, launching_call,
-    recent_child_tools, running_subagent_count, subagent_rows,
+    NoticeKind, SubagentRow, SubagentStatus, WrappedTranscript, launching_call, recent_child_tools,
+    running_subagent_count, saved_response, subagent_rows,
 };
 use crate::app::{App, ToolCallInfo};
 use ratatui::Frame;
@@ -220,6 +220,9 @@ fn row_lines(app: &App, row: &SubagentRow<'_>, selected: bool, width: u16) -> Ve
     if let Some(kind) = row.subagent_type() {
         details.push(kind.to_owned());
     }
+    if let Some(parent) = known_parent(app, row) {
+        details.push(format!("from {}", parent.subject));
+    }
     match app.agents.has_transcript(&row.task.task_id) {
         Some(true) => details.push("transcript".to_owned()),
         Some(false) => details.push("no transcript".to_owned()),
@@ -251,16 +254,28 @@ fn tool_activity(tool: &ToolCallInfo) -> String {
     if title.is_empty() { tool.sdk_tool_name.clone() } else { title.to_owned() }
 }
 
-/// The model the Agent call asked for, else the agent definition's default.
-/// Nothing is shown when neither is known: the session's subagent default applies.
+/// Model provenance from this run's invocation, inheritance or agent definition.
 fn model_choice(app: &App, row: &SubagentRow<'_>) -> Option<String> {
-    let input = launching_call(app, row.task).and_then(|tool| tool.raw_input.as_ref());
-    if let Some(model) = input.and_then(|input| input.get("model")?.as_str()) {
-        return Some(format!("{model} (requested)"));
-    }
-    let kind = row.subagent_type()?;
-    let agent = app.sdk_inventory.available_agents.iter().find(|agent| agent.name == kind)?;
-    agent.model.as_deref().map(|model| format!("{model} (agent default)"))
+    let tool = launching_call(app, row.task);
+    let current_invocation = row.task.source_tool_call_run_id == row.task.run_id;
+    let default = row
+        .subagent_type()
+        .and_then(|kind| app.sdk_inventory.available_agents.iter().find(|agent| agent.name == kind))
+        .and_then(|agent| agent.model.as_deref());
+    super::tool_call::agent_model_choice(
+        tool.filter(|_| current_invocation),
+        row.subagent_type(),
+        default,
+    )
+    .map(|(model, source)| format!("{model} ({source})"))
+}
+
+fn known_parent<'a>(
+    app: &'a App,
+    row: &SubagentRow<'_>,
+) -> Option<&'a crate::agent::model::TaskItem> {
+    let id = row.task.parent_task_id.as_deref()?;
+    app.sdk_inventory.tasks.iter().find(|task| task.task_id == id)
 }
 
 fn transcript_state(app: &App, task_id: &str) -> &'static str {
@@ -288,6 +303,16 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
     }
     if let Some(model) = model_choice(app, row) {
         lines.push(detail_kv("Model", &model, value));
+    }
+    if let Some(parent) = known_parent(app, row) {
+        let kind =
+            parent.metadata.as_ref().and_then(|metadata| metadata.get("subagent_type")?.as_str());
+        let label = kind
+            .map_or_else(|| parent.subject.clone(), |kind| format!("{} ({kind})", parent.subject));
+        lines.push(detail_kv("Parent", &label, value));
+    }
+    if let Some(run) = &row.task.run_id {
+        lines.push(detail_kv("Run", run, value));
     }
     lines.push(detail_kv("Transcript", transcript_state(app, &row.task.task_id), value));
 
@@ -324,9 +349,9 @@ fn detail_lines(app: &App, row: &SubagentRow<'_>, width: u16) -> Vec<Line<'stati
         lines.push(section_heading("Prompt"));
         lines.extend(preview_lines(prompt, width));
     }
-    if let Some(response) = final_response(app, row) {
+    if let Some(response) = saved_response(app, row) {
         lines.push(Line::default());
-        lines.push(section_heading("Response"));
+        lines.push(section_heading("Saved response"));
         match response {
             Ok(response) => lines.extend(preview_lines(response, width)),
             Err(error) => lines.push(Line::styled(
@@ -371,7 +396,10 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
         Paragraph::new(Line::from(vec![
             Span::styled(TITLE, title_style().fg(theme::RUST_ORANGE)),
             Span::styled(" › ", Style::default().fg(theme::DIM)),
-            Span::styled(subject, title_style()),
+            Span::styled(
+                if read.saved_snapshot { format!("{subject} (saved snapshot)") } else { subject },
+                title_style(),
+            ),
         ])),
         title_area,
     );
@@ -380,6 +408,15 @@ fn render_transcript(frame: &mut Frame, title_area: Rect, body: Rect, app: &mut 
         return;
     }
     let Some(messages) = &read.messages else {
+        if read.saved_snapshot {
+            render_message(
+                frame,
+                body,
+                "No saved snapshot",
+                "The execution changed before the read completed. Press r to read the saved conversation.",
+            );
+            return;
+        }
         render_message(
             frame,
             body,

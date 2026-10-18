@@ -32,6 +32,30 @@ fn rendered_line_texts(lines: &[Line<'static>]) -> Vec<String> {
     lines.iter().map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect()).collect()
 }
 
+#[test]
+fn fork_cards_show_inheritance_then_observed_models_and_never_ignored_overrides() {
+    let mut tc = test_tool_call("Fork", "Agent", model::ToolCallStatus::InProgress);
+    tc.raw_input = Some(
+        serde_json::json!({ "subagent_type": "fork", "model": "ignored-model", "effort": "max" }),
+    );
+    let render = |tc: &ToolCallInfo| {
+        let line = standard::render_tool_call_title(
+            tc,
+            ToolCallRenderContext::default(),
+            160,
+            crate::ui::SpinnerState::Animated(0),
+        );
+        line.spans.iter().map(|span| span.content.as_ref()).collect::<String>()
+    };
+    let inherited = render(&tc);
+    assert!(inherited.contains("[model: parent model]"));
+    assert!(!inherited.contains("ignored-model") && !inherited.contains("max"));
+    tc.output_metadata = Some(model::ToolOutputMetadata::new().agent(Some(
+        model::AgentOutputMetadata::new().resolved_model(Some("actual-model".to_owned())),
+    )));
+    assert!(render(&tc).contains("[model: actual-model]"));
+}
+
 fn rendered_line_texts_trimmed(lines: &[Line<'static>]) -> Vec<String> {
     rendered_line_texts(lines).into_iter().map(|line| line.trim_end().to_owned()).collect()
 }

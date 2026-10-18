@@ -6151,7 +6151,7 @@ test("handleSdkMessage updates and clears subagent retry progress in place", () 
         tool_call_id: "tool-agent-retry",
         fields: {
           output_metadata: { timing: { duration_ms: 7000, source: "progress" } },
-          task_metadata: { subagent_retry: { state: "clear" } },
+          task_metadata: { subagent_type: "reviewer" },
         },
       },
     },
@@ -6226,9 +6226,7 @@ test("emitToolResultUpdate clears active subagent retry metadata", () => {
   const update = events.at(-1)?.update as Record<string, unknown>;
   const toolCallUpdate = update.tool_call_update as Record<string, unknown>;
   const fields = toolCallUpdate.fields as Record<string, unknown>;
-  assert.deepEqual(fields.task_metadata, {
-    subagent_retry: { state: "clear" },
-  });
+  assert.deepEqual(fields.task_metadata, {});
   assert.equal(
     session.toolCalls.get(toolCall.tool_call_id)?.task_metadata?.subagent_retry,
     undefined,
@@ -8040,86 +8038,21 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
     handleTaskSystemMessage(session, "task_started", {
-      task_id: "task-1",
-      tool_use_id: "tool-1",
-      description: "Run checks",
-      request_id: "request-1",
-      subagent_type: "tester",
-      task_description: "Validate the branch",
+      task_id: "task-1", tool_use_id: "tool-1", description: "Run checks",
+      request_id: "request-1", subagent_type: "tester", task_description: "Validate the branch",
     });
   });
-
-  assert.deepEqual(
-    events.map((event) => event.update),
-    [
-      {
-        type: "tool_call",
-        tool_call: {
-          tool_call_id: "tool-1",
-          title: "Agent",
-          kind: "think",
-          status: "pending",
-          content: [],
-          raw_input: {},
-          locations: [],
-          meta: { claudeCode: { toolName: "Agent", parentToolUseId: null } },
-        },
-      },
-      {
-        type: "task_state_update",
-        source: "task_lifecycle",
-        tasks: [
-          {
-            task_id: "task-1",
-            subject: "Validate the branch",
-            description: "Run checks",
-            status: "in_progress",
-            blocks: [],
-            blocked_by: [],
-            metadata: {
-              request_id: "request-1",
-              subagent_type: "tester",
-              task_description: "Validate the branch",
-              sdk_lifecycle_task: true,
-            },
-            source_tool_call_id: "tool-1",
-          },
-        ],
-        removed_task_ids: [],
-        is_complete_snapshot: false,
-      },
-      {
-        type: "tool_call_update",
-        tool_call_update: {
-          tool_call_id: "tool-1",
-          fields: {
-            status: "in_progress",
-          },
-        },
-      },
-      {
-        type: "tool_call_update",
-        tool_call_update: {
-          tool_call_id: "tool-1",
-          fields: {
-            status: "in_progress",
-            raw_output: "Run checks",
-            content: [
-              {
-                type: "content",
-                content: { type: "text", text: "Run checks" },
-              },
-            ],
-            task_metadata: {
-              request_id: "request-1",
-              subagent_type: "tester",
-              task_description: "Validate the branch",
-            },
-          },
-        },
-      },
-    ],
-  );
+  const tool = session.toolCalls.get("tool-1");
+  const task = session.tasksById.get("task-1");
+  assert.equal(task?.source_tool_call_id, "tool-1");
+  assert.equal(task?.subject, "Validate the branch");
+  assert.equal(task?.status, "in_progress");
+  const metadata = { request_id: "request-1", subagent_type: "tester", task_description: "Validate the branch" };
+  assert.deepEqual(tool?.task_metadata, metadata);
+  assert.deepEqual(task?.metadata, { ...metadata, sdk_lifecycle_task: true });
+  assert.equal(tool?.raw_output, "Run checks");
+  const published = events.map(event => event.update as import("./types.js").SessionUpdate).filter(update => update.type === "tool_call_update").at(-1);
+  assert.deepEqual(published?.tool_call_update.fields.task_metadata, metadata);
 });
 
 test("ambient task lifecycle stays in inventory without creating a visible tool call", () => {

@@ -4,7 +4,37 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { mapSessionMessagesToUpdates } from "./history.js";
+import { mapSessionMessagesToEntries, mapSessionMessagesToUpdates } from "./history.js";
+
+test("replay admits notification origin.runId before replacing links or historical tool output", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const launch = (id: string) => ({ ...base, type: "assistant" as const, uuid: id, message: { role: "assistant", content: [{ type: "tool_use", id, name: "Agent", input: { description: id, prompt: id, subagent_type: "fork" } }] } });
+  const edge = (subtype: string, run_id: string, tool_use_id: string, extra = {}) => ({ ...base, type: "system" as const, uuid: crypto.randomUUID(), message: { subtype, task_id: "worker", run_id, tool_use_id, ...extra } });
+  const notification = (runId: string, tool: string, summary: string) => ({ ...base, type: "user" as const, uuid: crypto.randomUUID(), origin: { kind: "task-notification", producer: "session-task", runId }, message: { role: "user", content: `<task-notification><task-id>worker</task-id><tool-use-id>${tool}</tool-use-id><status>completed</status><summary>${summary}</summary></task-notification>` } });
+  const prefix = [launch("launch-A"), edge("task_started", "A", "launch-A", { parent_task_id: "parent", task_type: "local_agent", description: "A" }), notification("A", "launch-A", "A report"), launch("launch-B"), edge("task_started", "B", "launch-B", { description: "B" }), notification("B", "launch-B", "B report")];
+  const accepted = mapSessionMessagesToUpdates(prefix);
+  const replayed = mapSessionMessagesToUpdates([...prefix, notification("A", "launch-A", "late A"), edge("task_progress", "A", "launch-A", { description: "late progress" })]);
+  assert.deepEqual(replayed, accepted, "old run notifications produce no row or tool changes");
+  const row = replayed.filter(update => update.type === "task_state_update").flatMap(update => update.tasks).at(-1);
+  assert.equal(row?.run_id, "B");
+  assert.equal(row?.parent_task_id, "parent");
+  assert.equal(row?.source_tool_call_id, "launch-B");
+  assert.equal((row?.metadata as Record<string, unknown>).summary, "B report");
+});
+
+test("history attributes child tools through their producer while a transcript retains the full saved conversation", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  const history = [
+    { ...base, type: "system" as const, uuid: "start", message: { subtype: "task_started", task_id: "worker", run_id: "A", tool_use_id: "launch", task_type: "local_agent", description: "Worker" } },
+    { ...base, type: "assistant" as const, uuid: "child", agent_id: "worker", message: { role: "assistant", content: [{ type: "text", text: "Child report" }, { type: "tool_use", id: "nested", name: "Agent", input: { description: "Nested" } }] } },
+  ];
+  const chat = mapSessionMessagesToUpdates(history);
+  assert.ok(!chat.some(update => update.type === "agent_message_chunk"));
+  const tool = chat.filter(update => update.type === "tool_call").find(update => update.tool_call.tool_call_id === "nested");
+  assert.equal((tool?.tool_call.meta as { claudeCode: { parentToolUseId: string } }).claudeCode.parentToolUseId, "launch");
+  const transcript = mapSessionMessagesToEntries(history, true);
+  assert.ok(transcript.some(update => update.type === "agent_message_chunk" && update.content.type === "text" && update.content.text === "Child report"));
+});
 
 test("resume restores compaction segments and Unicode separators with SDK branch filtering", () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-transcript-")));

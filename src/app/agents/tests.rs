@@ -187,16 +187,20 @@ fn stop_is_sent_for_a_running_subagent_and_only_the_lifecycle_reports_it_stopped
         sent(&mut commands),
         vec![BridgeCommand::StopSubagent {
             session_id: SESSION.to_owned(),
-            task_id: "agent-1".to_owned()
+            task_id: "agent-1".to_owned(),
+            expected_run_id: None,
         }],
         "one request per running subagent"
     );
     assert_eq!(statuses(&app)[1].1, SubagentStatus::Stopping);
     assert_eq!(running_subagent_count(&app), 1, "a subagent asked to stop is still running");
 
+    let stop_request = app.agents.stop_requested.get("agent-1").map(|stop| stop.request_id.clone());
     handle_client_event(
         &mut app,
         ClientEvent::SubagentStopResult {
+            request_id: stop_request,
+            run_id: None,
             session_id: SESSION.to_owned(),
             task_id: "agent-1".to_owned(),
             error: None,
@@ -234,12 +238,16 @@ fn a_rejected_stop_reports_the_error_and_leaves_the_row_running() {
     press(&mut app, KeyCode::Char('s'));
     assert!(sent(&mut commands).contains(&BridgeCommand::StopSubagent {
         session_id: SESSION.to_owned(),
-        task_id: "agent-1".to_owned()
+        task_id: "agent-1".to_owned(),
+        expected_run_id: None,
     }));
 
+    let stop_request = app.agents.stop_requested.get("agent-1").map(|stop| stop.request_id.clone());
     handle_client_event(
         &mut app,
         ClientEvent::SubagentStopResult {
+            request_id: stop_request,
+            run_id: None,
             session_id: SESSION.to_owned(),
             task_id: "agent-1".to_owned(),
             error: Some("Query closed before response received".to_owned()),
@@ -387,7 +395,8 @@ fn a_selection_whose_subagent_leaves_is_not_moved_to_another_row() {
         sent(&mut commands),
         vec![BridgeCommand::StopSubagent {
             session_id: SESSION.to_owned(),
-            task_id: "agent-1".to_owned()
+            task_id: "agent-1".to_owned(),
+            expected_run_id: None,
         }]
     );
 }
@@ -413,9 +422,12 @@ fn answers_for_another_session_and_a_stop_that_lost_the_race_change_nothing() {
         &mut app,
         vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("completed"))],
     );
+    let stop_request = app.agents.stop_requested.get("agent-1").map(|stop| stop.request_id.clone());
     handle_client_event(
         &mut app,
         ClientEvent::SubagentStopResult {
+            request_id: stop_request,
+            run_id: None,
             session_id: SESSION.to_owned(),
             task_id: "agent-1".to_owned(),
             error: Some("Task agent-1 is not running".to_owned()),
@@ -513,11 +525,174 @@ fn r_reads_the_open_transcript_again_and_only_the_latest_request_is_applied() {
 fn response(app: &App, task_id: &str) -> Option<Result<String, String>> {
     let rows = subagent_rows(app);
     let row = rows.iter().find(|row| row.task.task_id == task_id)?;
-    super::final_response(app, row).map(|found| found.map(str::to_owned).map_err(str::to_owned))
+    super::saved_response(app, row).map(|found| found.map(str::to_owned).map_err(str::to_owned))
 }
 
 fn completed(id: &str) -> TaskItem {
     task(id, "local_agent", TaskStatus::Completed, Some("completed"))
+}
+
+fn execution(run: &str, status: TaskStatus) -> TaskItem {
+    let mut row = task(
+        "worker",
+        "local_agent",
+        status,
+        (status == TaskStatus::Completed).then_some("completed"),
+    );
+    row.run_id = Some(run.to_owned());
+    row
+}
+
+#[test]
+fn background_snapshots_preserve_lifecycle_order_and_task_selection() {
+    let (mut app, _commands) = connected_app();
+    let mut first = task("first", "local_agent", TaskStatus::InProgress, None);
+    let mut second = task("second", "local_agent", TaskStatus::InProgress, None);
+    for row in [&mut first, &mut second] {
+        row.metadata.as_mut().unwrap()["sdk_background_task"] = serde_json::json!(true);
+    }
+    lifecycle(&mut app, vec![first.clone(), second.clone()]);
+    app.agents.selected_task_id = Some("first".to_owned());
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: SESSION.to_owned(),
+            update: model::SessionUpdate::TaskStateUpdate(
+                model::TaskStateUpdate::new(TaskUpdateSource::BackgroundTasks)
+                    .tasks(vec![second, first])
+                    .complete_snapshot(true),
+            ),
+        },
+    );
+    assert_eq!(
+        subagent_rows(&app).iter().map(|row| row.task.task_id.as_str()).collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(app.agents.selected_task_id.as_deref(), Some("first"));
+}
+
+#[test]
+fn a_new_completed_run_invalidates_the_preview_even_without_a_running_transition() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
+    super::open(&mut app);
+    super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
+    let (_, first) = sent_reads(&mut commands).pop().expect("read A");
+    handle_client_event(&mut app, answer("worker", &first, vec![reply("A report")]));
+    assert_eq!(response(&app, "worker"), Some(Ok("A report".to_owned())));
+    lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
+    assert_eq!(response(&app, "worker"), None);
+    let (_, second) = sent_reads(&mut commands).pop().expect("read B");
+    handle_client_event(&mut app, answer("worker", &first, vec![reply("stale A")]));
+    assert_eq!(response(&app, "worker"), None);
+    // Saved persistence can still contain A. Keep the SDK's conversation
+    // intact, while the row's lifecycle summary owns the current outcome.
+    handle_client_event(&mut app, answer("worker", &second, vec![reply("A report")]));
+    assert_eq!(response(&app, "worker"), Some(Ok("A report".to_owned())));
+    assert_eq!(app.sdk_inventory.tasks[0].run_id.as_deref(), Some("B"));
+}
+
+#[test]
+fn a_run_change_releases_only_its_old_read_and_never_applies_its_content_or_error() {
+    for failed in [false, true] {
+        let (mut app, mut commands) = connected_app();
+        lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
+        super::open(&mut app);
+        super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
+        let (_, first) = sent_reads(&mut commands).pop().expect("read A");
+        lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
+        assert!(sent_reads(&mut commands).is_empty(), "one response-read lane");
+        let mut event = answer("worker", &first, vec![reply("A report")]);
+        if let ClientEvent::SubagentMessagesReceived { error, .. } = &mut event {
+            *error = failed.then(|| "A read failed".to_owned());
+        }
+        handle_client_event(&mut app, event);
+        let (_, second) =
+            sent_reads(&mut commands).pop().expect("read B after A releases its lane");
+        assert_eq!(response(&app, "worker"), None);
+        handle_client_event(&mut app, answer("worker", &second, vec![reply("B report")]));
+        handle_client_event(&mut app, answer("worker", &first, vec![reply("late A")]));
+        assert_eq!(response(&app, "worker"), Some(Ok("B report".to_owned())));
+    }
+}
+
+#[test]
+fn open_transcripts_keep_old_content_and_scroll_across_runs_until_refresh() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
+    super::open(&mut app);
+    super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
+    let (_, first) = sent_reads(&mut commands).pop().expect("read A");
+    handle_client_event(&mut app, answer("worker", &first, vec![reply("A report")]));
+    press(&mut app, KeyCode::Enter);
+    app.agents.transcript.as_mut().unwrap().scroll = 12;
+    lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
+    assert!(app.agents.read.as_ref().unwrap().saved_snapshot);
+    assert_eq!(app.agents.read.as_ref().unwrap().messages, Some(vec![reply("A report")]));
+    assert_eq!(app.agents.transcript.as_ref().unwrap().scroll, 12);
+    assert_eq!(response(&app, "worker"), None);
+    assert!(sent_reads(&mut commands).is_empty());
+    press(&mut app, KeyCode::Char('r'));
+    let (_, second) = sent_reads(&mut commands).pop().expect("explicit refresh reads B");
+    handle_client_event(&mut app, answer("worker", &second, vec![reply("B report")]));
+    assert_eq!(app.agents.read.as_ref().unwrap().run_id.as_deref(), Some("B"));
+    assert_eq!(app.agents.transcript.as_ref().unwrap().scroll, 12);
+}
+
+#[test]
+fn a_run_change_while_the_view_is_closed_invalidates_old_preview_and_stop_state() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(&mut app, vec![execution("A", TaskStatus::InProgress)]);
+    super::open(&mut app);
+    press(&mut app, KeyCode::Char('s'));
+    let stop_a = sent_envelopes(&mut commands)
+        .into_iter()
+        .find(|env| matches!(env.command, BridgeCommand::StopSubagent { .. }))
+        .unwrap();
+    let BridgeCommand::StopSubagent { expected_run_id, .. } = stop_a.command else {
+        unreachable!()
+    };
+    assert_eq!(expected_run_id.as_deref(), Some("A"));
+    lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
+    super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
+    let (_, read_a) = sent_reads(&mut commands).pop().expect("read A");
+    handle_client_event(&mut app, answer("worker", &read_a, vec![reply("A report")]));
+    press(&mut app, KeyCode::Esc);
+    lifecycle(&mut app, vec![execution("B", TaskStatus::InProgress)]);
+    assert_eq!(response(&app, "worker"), None);
+    assert!(sent_envelopes(&mut commands).is_empty());
+    super::open(&mut app);
+    press(&mut app, KeyCode::Char('s'));
+    let stop_b = sent_envelopes(&mut commands)
+        .into_iter()
+        .find(|env| matches!(env.command, BridgeCommand::StopSubagent { .. }))
+        .unwrap();
+    for error in [None, Some("old rejection".to_owned())] {
+        handle_client_event(
+            &mut app,
+            ClientEvent::SubagentStopResult {
+                session_id: SESSION.to_owned(),
+                task_id: "worker".to_owned(),
+                run_id: Some("A".to_owned()),
+                request_id: stop_a.request_id.clone(),
+                error,
+            },
+        );
+        assert!(app.agents.notice.is_none());
+        assert_eq!(statuses(&app), [("worker".to_owned(), SubagentStatus::Stopping)]);
+    }
+    handle_client_event(
+        &mut app,
+        ClientEvent::SubagentStopResult {
+            session_id: SESSION.to_owned(),
+            task_id: "worker".to_owned(),
+            run_id: Some("B".to_owned()),
+            request_id: stop_b.request_id,
+            error: Some("B rejection".to_owned()),
+        },
+    );
+    assert_eq!(statuses(&app), [("worker".to_owned(), SubagentStatus::Running)]);
+    assert!(app.agents.notice.as_ref().unwrap().text.contains("B rejection"));
 }
 
 #[test]

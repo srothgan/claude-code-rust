@@ -39,7 +39,7 @@ The fullscreen settings surface has its own keys for tabs, panes, search and edi
 | `Page Up`, `Page Down` | Scroll the selected subagent's details. |
 | `Esc` | Return to chat with the draft unchanged. |
 
-In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a page, `r` reads the transcript again at the same position (also after a failed read), and `Esc` or `Left` returns to the list.
+In a transcript, `Up` and `Down` scroll, `Page Up` and `Page Down` scroll by a page, `r` reads the whole saved conversation again at the same position (also after a failed read), and `Esc` or `Left` returns to the list. If the agent starts another run, the open transcript stays labeled as a saved snapshot until `r`; returning to the list refreshes the current run's saved-response preview.
 
 ## Chat Input
 

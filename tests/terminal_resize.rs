@@ -177,6 +177,8 @@ struct TerminalTest {
     output: Arc<Mutex<CapturedTerminal>>,
     journal: PathBuf,
     release_file: PathBuf,
+    /// Release the exclusive Windows fixture lock before removing the temp directory.
+    _auth_spawn_lock: Option<std::fs::File>,
     temp: tempfile::TempDir,
     /// The screen when the test last started acting. A needle found here was
     /// not produced by that action.
@@ -284,9 +286,8 @@ impl TerminalTest {
         for name in removed_env {
             command.env_remove(name);
         }
-        if let Some(mode) = auth_mode {
-            Self::install_fake_cli(&mut command, temp.path(), mode);
-        }
+        let auth_spawn_lock =
+            auth_mode.and_then(|mode| Self::install_fake_cli(&mut command, temp.path(), mode));
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
         let process = pair.slave.spawn_command(command).expect("spawn claude-rs");
@@ -303,6 +304,7 @@ impl TerminalTest {
             before_action: String::new(),
             settled: true,
             trust_prompt: String::new(),
+            _auth_spawn_lock: auth_spawn_lock,
         };
         // "> Yes" is drawn after everything above it, so seeing it means the
         // whole prompt, directory included, is on screen.
@@ -323,7 +325,11 @@ impl TerminalTest {
     }
 
     /// Puts a fake `claude` CLI that behaves as `mode` first on the app's PATH.
-    fn install_fake_cli(command: &mut CommandBuilder, temp: &Path, mode: &str) {
+    fn install_fake_cli(
+        command: &mut CommandBuilder,
+        temp: &Path,
+        mode: &str,
+    ) -> Option<std::fs::File> {
         let cli_dir = temp.join("bin");
         std::fs::create_dir(&cli_dir).expect("fake CLI directory");
         let cli = cli_dir.join(if cfg!(windows) { "claude.exe" } else { "claude" });
@@ -362,6 +368,24 @@ impl TerminalTest {
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
         command.env("FAKE_AUTH_MODE", mode);
+        #[cfg(windows)]
+        if mode == "spawn-error" {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Reject image access before Windows inspects an invalid image,
+            // which can invoke machine-specific compatibility/error handling.
+            let lock = std::fs::OpenOptions::new()
+                .write(true)
+                .share_mode(0)
+                .open(&cli)
+                .expect("exclusive fake CLI lock");
+            assert_eq!(
+                which::which_in("claude", Some(cli.parent().expect("CLI directory")), temp)
+                    .expect("locked fixture stays discoverable"),
+                cli
+            );
+            return Some(lock);
+        }
+        None
     }
 
     fn mark_action(&mut self) {
@@ -2963,7 +2987,7 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
 
     // Selecting the completed subagent previews the response it ended with.
     test.send(b"\x1b[B");
-    test.wait_screen_with("Docs path checked", &["Response", "Transcript: saved"]);
+    test.wait_screen_with("Docs path checked", &["Saved response", "Transcript: saved"]);
     // Opening it shows the read the preview came from: the bridge's first answer.
     test.send(b"\r");
     test.wait_screen_with(

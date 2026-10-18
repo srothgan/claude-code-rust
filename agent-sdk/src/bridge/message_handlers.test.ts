@@ -8,6 +8,177 @@ import { emitConnectEvent, replaceProtocolEventWriter } from "./events.js";
 import { bridgeLogger } from "./logger.js";
 import { handleSdkMessage } from "./message_handlers.js";
 import type { SessionState } from "./session_lifecycle.js";
+import { handleSubagentCommand } from "./subagents.js";
+import { sessions } from "./session_lifecycle.js";
+import { createToolCall } from "./tooling.js";
+import { emitToolResultUpdate, finalizeOpenToolCalls } from "./tool_calls.js";
+
+function taskScenario(run: (session: SessionState, emit: (message: Record<string, unknown>) => void, writes: string[]) => void): void {
+  const session = makeSession();
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter(line => { writes.push(line); });
+  try { run(session, message => handleSdkMessage(session, { session_id: session.sessionId, uuid: crypto.randomUUID(), ...message } as unknown as SDKMessage), writes); }
+  finally { restore(); }
+}
+
+test("SDK 0.3.302 run ordering rejects late lifecycle and inventory frames before all mutations", () => {
+  for (const [taskType, toolName] of [["local_agent", "Agent"], ["local_bash", "Bash"], ["local_workflow", "Workflow"], ["local_mcp", "mcp__test__work"]]) {
+    taskScenario((session, emit, writes) => {
+      session.toolCalls.set("launch-A", createToolCall("launch-A", toolName, {}, null));
+      session.toolCalls.set("launch-B", createToolCall("launch-B", toolName, {}, null));
+      const edge = (subtype: string, run_id: string, extra = {}) => emit({ type: "system", subtype, task_id: "worker", run_id, ...extra });
+      edge("task_started", "A", { tool_use_id: "launch-A", task_type: taskType, description: "A", parent_task_id: "parent" });
+      edge("task_notification", "A", { status: "failed", summary: "old failure", error: "old error", end_time: 123 });
+      const oldTool = structuredClone(session.toolCalls.get("launch-A"));
+      edge("task_started", "B", { tool_use_id: "launch-B", description: "B", is_backgrounded: true });
+      const current = structuredClone(session.tasksById.get("worker"));
+      const currentTool = structuredClone(session.toolCalls.get("launch-B"));
+      const before = writes.length;
+      edge("task_progress", "A", { tool_use_id: "launch-A", description: "late A", usage: { duration_ms: 999 } });
+      edge("task_notification", "A", { tool_use_id: "launch-A", status: "stopped", summary: "late outcome" });
+      assert.equal(writes.length, before, "stale edges emit no tool updates or notifications");
+      emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "worker", run_id: "A", task_type: taskType }] });
+      assert.deepEqual(session.tasksById.get("worker"), current);
+      assert.equal(session.taskToolUseIds.get("worker"), "launch-B");
+      assert.deepEqual(session.toolCalls.get("launch-A"), oldTool);
+      assert.deepEqual(session.toolCalls.get("launch-B"), currentTool);
+      assert.equal(current?.parent_task_id, "parent");
+      assert.equal((current?.metadata as Record<string, unknown>).error, undefined);
+      assert.equal((current?.metadata as Record<string, unknown>).summary, undefined);
+      edge("task_notification", "B", { status: "completed", summary: "B done" });
+      edge("task_started", "B", { description: "delayed start" });
+      assert.equal(session.tasksById.get("worker")?.status, "completed");
+    });
+  }
+});
+
+test("a newer run may first appear completed without reopening a historical terminal tool", () => taskScenario((session, emit) => {
+  session.toolCalls.set("launch", createToolCall("launch", "Agent", {}, null));
+  const edge = (run_id: string, extra = {}) => emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id, status: "completed", ...extra });
+  emit({ type: "system", subtype: "task_started", task_id: "worker", tool_use_id: "launch", run_id: "A", task_type: "local_agent", description: "Worker" });
+  edge("A", { status: "stopped", summary: "A stopped", error: "A error" });
+  const tool = structuredClone(session.toolCalls.get("launch"));
+  edge("B", { summary: "B done" });
+  const task = session.tasksById.get("worker");
+  assert.equal(task?.run_id, "B");
+  assert.equal(task?.source_tool_call_id, "launch");
+  assert.equal(task?.source_tool_call_run_id, "A");
+  assert.equal((task?.metadata as Record<string, unknown>).error, undefined);
+  assert.equal((task?.metadata as Record<string, unknown>).summary, "B done");
+  assert.deepEqual(session.toolCalls.get("launch"), tool);
+  // Messages still identify the task's producer through its established
+  // launch, without claiming that invocation executed the newer run.
+  emit({ type: "assistant", agent_id: "worker", message: { content: [{ type: "tool_use", id: "child-B", name: "Read", input: { file_path: "notes" } }] } });
+  assert.equal((session.toolCalls.get("child-B")?.meta as { claudeCode: { parentToolUseId: string } }).claudeCode.parentToolUseId, "launch");
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id: "launch", status: "failed", summary: "unversioned A" });
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).summary, "B done");
+}));
+
+test("synthesized launch acknowledgements cannot reopen a recorded task outcome", () => {
+  for (const run_id of [undefined, "A"]) taskScenario((session, emit) => {
+    session.toolCalls.set("launch", createToolCall("launch", "Agent", {}, null));
+    emit({ type: "system", subtype: "task_started", task_id: "worker", run_id, tool_use_id: "launch", task_type: "local_agent", description: "Worker" });
+    emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id, tool_use_id: "launch", status: "completed", summary: "Actual report" });
+    const tool = structuredClone(session.toolCalls.get("launch"));
+    emitToolResultUpdate(session, "launch", false, { isAsync: true, status: "async_launched", agentId: "worker", description: "Launch ack", outputFile: "worker.output" });
+    assert.equal(session.tasksById.get("worker")?.status, "completed");
+    assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).summary, "Actual report");
+    assert.deepEqual(session.toolCalls.get("launch"), tool);
+  });
+});
+
+test("children of a background resume without a new launch survive parent-turn completion and failure", () => {
+  for (const outcome of ["completed", "failed"] as const) taskScenario((session, emit) => {
+    emit({ type: "system", subtype: "task_started", task_id: "worker", run_id: "A", tool_use_id: "launch", task_type: "local_agent", description: "Worker" });
+    emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id: "A", status: "stopped", summary: "A stopped" });
+    emit({ type: "system", subtype: "task_started", task_id: "worker", run_id: "B", is_backgrounded: true, description: "B resumed" });
+    emit({ type: "assistant", agent_id: "worker", message: { content: [{ type: "tool_use", id: "child", name: "Read", input: { file_path: "notes" } }] } });
+    finalizeOpenToolCalls(session, outcome);
+    assert.equal(session.toolCalls.get("launch")?.status, "killed", "the launch remains historical");
+    assert.equal(session.toolCalls.get("child")?.status, "in_progress", "the task's child is independent of the parent turn");
+    assert.equal(session.tasksById.get("worker")?.run_id, "B");
+  });
+});
+
+test("first-known runs enrich unversioned launches and missing runs need matching invocation evidence", () => taskScenario((session, emit) => {
+  emit({ type: "system", subtype: "task_started", task_id: "worker", tool_use_id: "launch", task_type: "local_agent", description: "Original launch", prompt: "Original prompt" });
+  emit({ type: "system", subtype: "task_progress", task_id: "worker", run_id: "B", description: "Working" });
+  assert.equal(session.tasksById.get("worker")?.source_tool_call_id, "launch");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).prompt, "Original prompt");
+  const current = structuredClone(session.tasksById.get("worker"));
+  for (const tool_use_id of [undefined, "old-launch"]) emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id, status: "failed", summary: "unidentified" });
+  assert.deepEqual(session.tasksById.get("worker"), current);
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", tool_use_id: "launch", status: "completed", summary: "matched" });
+  assert.equal(session.tasksById.get("worker")?.run_id, "B");
+  assert.equal(session.tasksById.get("worker")?.status, "completed");
+}));
+
+test("removed inventory rows remember only their absent run and empty snapshots still interrupt live work", () => taskScenario((session, emit) => {
+  const listed = (run_id: string) => emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "worker", run_id, task_type: "local_agent" }] });
+  listed("B");
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  listed("A");
+  assert.equal(session.tasksById.has("worker"), false);
+  listed("C");
+  assert.equal(session.tasksById.get("worker")?.run_id, "C");
+  emit({ type: "system", subtype: "task_started", task_id: "worker", run_id: "C", task_type: "local_agent", description: "C" });
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).terminal_status, "interrupted");
+  listed("C");
+  assert.equal(session.tasksById.get("worker")?.status, "in_progress");
+}));
+
+test("a removed snapshot-only row still accepts its same-run lifecycle outcome", () => taskScenario((session, emit) => {
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "worker", run_id: "B", task_type: "local_agent" }] });
+  emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+  assert.equal(session.tasksById.has("worker"), false);
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id: "A", status: "completed", summary: "old A" });
+  assert.equal(session.tasksById.has("worker"), false);
+  emit({ type: "system", subtype: "task_notification", task_id: "worker", run_id: "B", status: "completed", summary: "Actual B report", task_type: "local_agent" });
+  assert.equal(session.tasksById.get("worker")?.status, "completed");
+  assert.equal(session.tasksById.get("worker")?.run_id, "B");
+  assert.equal((session.tasksById.get("worker")?.metadata as Record<string, unknown>).summary, "Actual B report");
+}));
+
+test("agent_id attributes nested Agent calls to their producer and keeps child replies and errors out of the main turn", () => taskScenario((session, emit, writes) => {
+  emit({ type: "system", subtype: "task_started", task_id: "B", run_id: "B1", tool_use_id: "launch-B", task_type: "local_agent", description: "B" });
+  const before = writes.length;
+  emit({ type: "assistant", agent_id: "B", parent_tool_use_id: null, error: "authentication_failed", context_usage: {}, message: { id: "child", content: [{ type: "text", text: "Private child reply" }, { type: "tool_use", id: "launch-C", name: "Agent", input: { description: "C" } }] } });
+  emit({ type: "user", agent_id: "B", message: { content: "Child user prompt" } });
+  const child = session.toolCalls.get("launch-C");
+  assert.equal((child?.meta as { claudeCode?: { parentToolUseId?: string } }).claudeCode?.parentToolUseId, "launch-B");
+  assert.equal(session.tasksById.has("C"), false, "the producer's Agent call does not identify its new child");
+  assert.equal(session.lastAssistantError, undefined);
+  assert.equal(session.authHintSent, false);
+  const updates = writes.slice(before).map(line => JSON.parse(line) as { event: string; update?: { type: string } });
+  assert.ok(updates.every(event => event.update?.type === "tool_call"));
+  emit({ type: "assistant", agent_id: "B", parent_tool_use_id: "explicit-parent", message: { content: [{ type: "tool_use", id: "nested", name: "Bash", input: { command: "pwd" } }] } });
+  assert.equal((session.toolCalls.get("nested")?.meta as { claudeCode: { parentToolUseId: string } }).claudeCode.parentToolUseId, "explicit-parent");
+}));
+
+test("stale expected-run stops never call the SDK and responses retain the dispatched operation", async () => {
+  const session = makeSession();
+  session.tasksById.set("worker", { task_id: "worker", run_id: "B", subject: "Worker", status: "in_progress", blocks: [], blocked_by: [], metadata: { task_type: "local_agent" } });
+  let calls = 0;
+  let resolveStop: (() => void) | undefined;
+  session.query = { stopTask: async () => { calls++; await new Promise<void>(resolve => { resolveStop = resolve; }); } } as unknown as SessionState["query"];
+  sessions.set(session.sessionId, session);
+  const writes: string[] = [];
+  const restore = replaceProtocolEventWriter(line => { writes.push(line); });
+  try {
+    for (const expected_run_id of ["A", undefined]) await handleSubagentCommand({ command: "stop_subagent", session_id: session.sessionId, task_id: "worker", expected_run_id }, "stale");
+    assert.equal(calls, 0);
+    const pending = handleSubagentCommand({ command: "stop_subagent", session_id: session.sessionId, task_id: "worker", expected_run_id: "B" }, "stop-B");
+    assert.equal(calls, 1);
+    const task = session.tasksById.get("worker");
+    if (task) task.run_id = "C";
+    resolveStop?.(); await pending;
+    const result = JSON.parse(writes.at(-1) ?? "null") as { request_id: string; run_id: string; error?: string };
+    assert.equal(result.request_id, "stop-B");
+    assert.equal(result.run_id, "B");
+    assert.equal(result.error, undefined);
+  } finally { restore(); sessions.delete(session.sessionId); }
+});
 
 function makeSession(): SessionState {
   return {

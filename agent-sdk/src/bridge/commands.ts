@@ -599,6 +599,7 @@ export function parseCommandEnvelope(line: string): {
           command: "stop_subagent",
           session_id: expectString(raw, "session_id", "stop_subagent"),
           task_id: expectString(raw, "task_id", "stop_subagent"),
+          expected_run_id: optionalString(raw, "expected_run_id", "stop_subagent"),
         };
       case "get_rewind_targets":
         return {

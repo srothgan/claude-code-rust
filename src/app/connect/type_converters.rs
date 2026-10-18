@@ -1115,6 +1115,8 @@ fn convert_task_update_source(source: types::TaskUpdateSource) -> model::TaskUpd
 fn convert_task_item(task: types::TaskItem) -> model::TaskItem {
     model::TaskItem {
         task_id: task.task_id,
+        run_id: task.run_id,
+        parent_task_id: task.parent_task_id,
         subject: task.subject,
         description: task.description,
         active_form: task.active_form,
@@ -1124,6 +1126,7 @@ fn convert_task_item(task: types::TaskItem) -> model::TaskItem {
         blocked_by: task.blocked_by,
         metadata: task.metadata,
         source_tool_call_id: task.source_tool_call_id,
+        source_tool_call_run_id: task.source_tool_call_run_id,
     }
 }
 

@@ -7,6 +7,60 @@ use crate::app::{FullscreenView, SurfaceMode, TerminalLifecycleState};
 use std::cell::Cell;
 use std::rc::Rc;
 
+#[tokio::test]
+async fn subagent_stop_dispatch_preserves_request_and_run_identity() {
+    let (connection, _commands) = crate::agent::client::AgentConnection::test_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let mut connected = true;
+    super::event_dispatch::handle_bridge_event(
+        &tx,
+        &connection,
+        &mut connected,
+        false,
+        crate::agent::wire::EventEnvelope {
+            request_id: Some("stop-A".to_owned()),
+            event: crate::agent::wire::BridgeEvent::SubagentStopResult {
+                session_id: "session".to_owned(),
+                task_id: "worker".to_owned(),
+                run_id: Some("A".to_owned()),
+                error: None,
+            },
+        },
+    )
+    .await;
+    let crate::agent::events::ClientEvent::SubagentStopResult {
+        session_id,
+        task_id,
+        run_id,
+        request_id,
+        error,
+    } = rx.try_recv().expect("stop response")
+    else {
+        panic!("expected stop result")
+    };
+    assert_eq!(
+        (session_id.as_str(), task_id.as_str(), run_id.as_deref(), request_id.as_deref()),
+        ("session", "worker", Some("A"), Some("stop-A"))
+    );
+    assert!(error.is_none());
+}
+
+#[test]
+fn task_transport_preserves_execution_ancestry_and_launch_provenance() {
+    let transport: types::SessionUpdate = serde_json::from_value(serde_json::json!({
+        "type": "task_state_update", "source": "task_lifecycle", "removed_task_ids": [], "is_complete_snapshot": false,
+        "tasks": [{ "task_id": "worker", "run_id": "B", "parent_task_id": "parent", "source_tool_call_id": "launch-A", "source_tool_call_run_id": "A", "subject": "Worker", "status": "in_progress", "blocks": [], "blocked_by": [] }]
+    })).expect("task wire payload");
+    let Some(model::SessionUpdate::TaskStateUpdate(update)) = map_session_update(transport) else {
+        panic!("expected task update")
+    };
+    let row = &update.tasks[0];
+    assert_eq!(row.run_id.as_deref(), Some("B"));
+    assert_eq!(row.parent_task_id.as_deref(), Some("parent"));
+    assert_eq!(row.source_tool_call_id.as_deref(), Some("launch-A"));
+    assert_eq!(row.source_tool_call_run_id.as_deref(), Some("A"));
+}
+
 #[test]
 fn map_session_update_preserves_config_option_update() {
     let mapped = map_session_update(types::SessionUpdate::ConfigOptionUpdate {

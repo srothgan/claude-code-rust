@@ -58,7 +58,7 @@ import {
   applyBackgroundTasksChanged,
   applyTaskLifecycleState,
 } from "./tasks.js";
-import { linkTaskToolUse, unlinkTaskToolUse } from "./task_links.js";
+import { unlinkTaskToolUse } from "./task_links.js";
 import {
   emitAuthRequired,
   classifyTurnErrorKind,
@@ -1000,9 +1000,8 @@ export function handleTaskSystemMessage(
   const taskId = typeof msg.task_id === "string" ? msg.task_id : "";
   const explicitToolUseId =
     typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
-  if (taskId && explicitToolUseId) {
-    linkTaskToolUse(session, taskId, explicitToolUseId);
-  }
+  // Admission precedes every link, output, timing and tool mutation.
+  if (!applyTaskLifecycleState(session, subtype, msg)) return true;
   const toolUseId = resolveTaskToolUseId(session, msg);
   bridgeLogger.debug({
     target: LOG_TARGETS.APP_TOOL,
@@ -1043,7 +1042,6 @@ export function handleTaskSystemMessage(
     });
   }
   if (!toolUseId) {
-    applyTaskLifecycleState(session, subtype, msg);
     if (subtype === "task_updated" && taskId) {
       bridgeLogger.debug({
         target: LOG_TARGETS.APP_TOOL,
@@ -1068,7 +1066,6 @@ export function handleTaskSystemMessage(
   const fields = taskSystemToolFields(toolCall, subtype, msg);
   // The task row is separate state with its own transition rule, so a tool
   // call that already finished does not decide whether its task settles.
-  applyTaskLifecycleState(session, subtype, msg);
   if (!normalizeToolCallUpdateFields(toolCall, fields ?? {}, subtype as "task_started" | "task_progress" | "task_updated" | "task_notification")) return true;
   const taskDuration = elapsedNumber(asRecordOrNull(msg.usage)?.duration_ms);
   if (taskDuration !== undefined && Number.isSafeInteger(Math.round(taskDuration))) {
@@ -1313,6 +1310,7 @@ export function handleContentBlock(
   const blockType = typeof block.type === "string" ? block.type : "";
 
   if (blockType === "text") {
+    if (linkage?.parentToolUseId) return;
     const text = typeof block.text === "string" ? block.text : "";
     if (text) {
       emitSessionUpdate(session.sessionId, {
@@ -1409,6 +1407,7 @@ export function handleStreamEvent(
     const delta = event.delta as Record<string, unknown>;
     const deltaType = typeof delta.type === "string" ? delta.type : "";
     if (deltaType === "text_delta") {
+      if (parentToolUseId) return;
       const text = typeof delta.text === "string" ? delta.text : "";
       if (text) {
         emitSessionUpdate(session.sessionId, {
@@ -1427,6 +1426,16 @@ export function handleAssistantMessage(
   session: SessionState,
   message: Record<string, unknown>,
 ): void {
+  const producer = trimmedStringField(message, "agent_id");
+  const parent = trimmedStringField(message, "parent_tool_use_id") ?? (producer ? session.taskToolUseIds.get(producer) ?? session.tasksById.get(producer)?.source_tool_call_id : undefined);
+  if (producer || parent) {
+    const payload = asRecordOrNull(message.message);
+    for (const item of Array.isArray(payload?.content) ? payload.content : []) {
+      const block = asRecordOrNull(item);
+      if (block && block.type !== "text" && block.type !== "thinking") handleContentBlock(session, block, { source: "assistant", parentToolUseId: parent, metadata: sdkCorrelationMetadata(message), sourceMessageUuid: sourceMessageUuid(message) });
+    }
+    return;
+  }
   const response = session.mainAgentResponse;
   const completed = asRecordOrNull(message.message);
   // The SDK also emits assistant frames for individual completed blocks with
@@ -2585,7 +2594,8 @@ export function handleSdkMessage(
   }
 
   if (type === "user") {
-    const userMetadata = messageMetadata(msg, "user");
+    const child = Boolean(trimmedStringField(msg, "agent_id") || trimmedStringField(msg, "parent_tool_use_id"));
+    const userMetadata = child ? undefined : messageMetadata(msg, "user");
     if (userMetadata) emitSessionUpdate(session.sessionId, userMetadata);
     const notification = parseDetachedToolNotification(msg);
     if (notification && session.toolCalls.has(notification.toolUseId)) {
@@ -2604,7 +2614,7 @@ export function handleSdkMessage(
       }
       return;
     }
-    const externalMessageUpdate = externalMessageUpdateFromSdkUser(msg);
+    const externalMessageUpdate = child ? undefined : externalMessageUpdateFromSdkUser(msg);
     if (externalMessageUpdate) {
       emitSessionUpdate(session.sessionId, externalMessageUpdate);
     }
@@ -2633,13 +2643,14 @@ export function handleSdkMessage(
   }
 
   if (type === "assistant") {
-    if (msg.error === "authentication_failed") {
+    const child = Boolean(trimmedStringField(msg, "agent_id") || trimmedStringField(msg, "parent_tool_use_id"));
+    if (!child && msg.error === "authentication_failed") {
       emitAuthRequired(session);
     }
-    if (
+    if (!child && (
       msg.parent_tool_use_id === null ||
       msg.parent_tool_use_id === undefined
-    ) {
+    )) {
       emitUserMessageStarted(session, msg, "assistant");
     }
     handleAssistantMessage(session, msg);

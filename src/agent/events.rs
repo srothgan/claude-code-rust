@@ -230,7 +230,13 @@ pub enum ClientEvent {
         error: Option<String>,
     },
     /// Acknowledgement or rejection of a subagent stop request; not its outcome.
-    SubagentStopResult { session_id: String, task_id: String, error: Option<String> },
+    SubagentStopResult {
+        session_id: String,
+        task_id: String,
+        run_id: Option<String>,
+        request_id: Option<String>,
+        error: Option<String>,
+    },
     /// Rewind target candidates loaded from persisted SDK session history.
     RewindTargetsReceived {
         session_id: String,

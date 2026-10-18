@@ -494,7 +494,7 @@ readline
         break;
       case 'stop_subagent':
         // The acknowledgement first; the lifecycle reports the outcome after it.
-        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id });
+        send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id, run_id: message.expected_run_id, request_id: message.request_id });
         sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
         break;
       case 'prompt':

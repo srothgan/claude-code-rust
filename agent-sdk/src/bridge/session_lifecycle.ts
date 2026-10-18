@@ -212,6 +212,8 @@ export type SessionState = {
   connectRequestId?: string;
   toolCalls: Map<string, ToolCall>;
   tasksById: Map<string, TaskItem>;
+  /** Last runs of removed inventory-only rows; consulted only while absent. */
+  removedTaskRuns?: Map<string, string>;
   taskOrder: string[];
   taskToolUseIds: Map<string, string>;
   taskIdsByToolUseId: Map<string, string>;

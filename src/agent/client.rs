@@ -793,10 +793,16 @@ impl AgentConnection {
         })
     }
 
-    pub fn stop_subagent(&self, session_id: String, task_id: String) -> anyhow::Result<()> {
+    pub fn stop_subagent(
+        &self,
+        session_id: String,
+        task_id: String,
+        expected_run_id: Option<String>,
+        request_id: String,
+    ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::StopSubagent { session_id, task_id },
+            request_id: Some(request_id),
+            command: BridgeCommand::StopSubagent { session_id, task_id, expected_run_id },
         })
     }
 

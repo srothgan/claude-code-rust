@@ -222,6 +222,8 @@ pub enum BridgeCommand {
     StopSubagent {
         session_id: String,
         task_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_run_id: Option<String>,
     },
     GetRewindTargets {
         session_id: String,
@@ -636,6 +638,7 @@ pub enum BridgeEvent {
     SubagentStopResult {
         session_id: String,
         task_id: String,
+        run_id: Option<String>,
         error: Option<String>,
     },
     RewindTargets {
@@ -1489,7 +1492,11 @@ mod tests {
                 session_id: "s1".to_owned(),
                 agent_id: "a1".to_owned(),
             },
-            BridgeCommand::StopSubagent { session_id: "s1".to_owned(), task_id: "a1".to_owned() },
+            BridgeCommand::StopSubagent {
+                session_id: "s1".to_owned(),
+                task_id: "a1".to_owned(),
+                expected_run_id: None,
+            },
         ];
         let json: Vec<_> = commands
             .into_iter()
@@ -1543,6 +1550,7 @@ mod tests {
             BridgeEvent::SubagentStopResult {
                 session_id: "s1".to_owned(),
                 task_id: "a1".to_owned(),
+                run_id: None,
                 error: None,
             }
         );

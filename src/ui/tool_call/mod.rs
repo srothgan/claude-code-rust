@@ -256,14 +256,10 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
                 Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
             ));
         }
-        if let Some(models) = agent_model_route_badge(tc) {
+        if let Some((model, _)) = agent_model_choice(Some(tc), None, None) {
+            let label = if model.contains(" -> ") { "models" } else { "model" };
             badges.push(Span::styled(
-                format!("  [models: {}]", models.join(" -> ")),
-                Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
-            ));
-        } else if let Some(model) = agent_display_model_badge(tc) {
-            badges.push(Span::styled(
-                format!("  [model: {model}]"),
+                format!("  [{label}: {model}]"),
                 Style::default().fg(Color::LightBlue).add_modifier(Modifier::BOLD),
             ));
         }
@@ -336,23 +332,32 @@ fn agent_requested_type_badge(tc: &ToolCallInfo) -> Option<String> {
     Some(subagent_type.to_owned())
 }
 
-fn agent_model_route_badge(tc: &ToolCallInfo) -> Option<&[String]> {
-    tc.output_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.agent.as_ref())
-        .and_then(|agent| agent.models_used.as_deref())
-        .filter(|models| models.len() >= 2)
-}
-
-fn agent_display_model_badge(tc: &ToolCallInfo) -> Option<String> {
-    tc.output_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.agent.as_ref())
-        .and_then(|agent| agent.resolved_model.as_deref())
+pub(crate) fn agent_model_choice(
+    tc: Option<&ToolCallInfo>,
+    kind: Option<&str>,
+    default: Option<&str>,
+) -> Option<(String, &'static str)> {
+    let metadata = tc.and_then(|tc| tc.output_metadata.as_ref()?.agent.as_ref());
+    if let Some(models) =
+        metadata.and_then(|meta| meta.models_used.as_ref()).filter(|models| models.len() >= 2)
+    {
+        return Some((models.join(" -> "), "observed"));
+    }
+    if let Some(model) = metadata
+        .and_then(|meta| meta.resolved_model.as_deref())
         .map(str::trim)
-        .filter(|resolved_model| !resolved_model.is_empty())
-        .or_else(|| tool_raw_input_string(tc, "model"))
-        .map(str::to_owned)
+        .filter(|model| !model.is_empty())
+    {
+        return Some((model.to_owned(), "observed"));
+    }
+    if kind.or_else(|| tc.and_then(|tc| tool_raw_input_string(tc, "subagent_type"))) == Some("fork")
+    {
+        return Some(("parent model".to_owned(), "inherited"));
+    }
+    if let Some(model) = tc.and_then(|tc| tool_raw_input_string(tc, "model")) {
+        return Some((model.to_owned(), "requested"));
+    }
+    default.map(|model| (model.to_owned(), "agent default"))
 }
 
 fn tool_display_title<'a>(

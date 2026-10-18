@@ -186,6 +186,8 @@ pub enum TaskUpdateSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskItem {
     pub task_id: String,
+    pub run_id: Option<String>,
+    pub parent_task_id: Option<String>,
     pub subject: String,
     pub description: Option<String>,
     pub active_form: Option<String>,
@@ -195,6 +197,7 @@ pub struct TaskItem {
     pub blocked_by: Vec<String>,
     pub metadata: Option<serde_json::Value>,
     pub source_tool_call_id: Option<String>,
+    pub source_tool_call_run_id: Option<String>,
 }
 
 impl TaskItem {
@@ -202,6 +205,8 @@ impl TaskItem {
     pub fn new(task_id: impl Into<String>, subject: impl Into<String>, status: TaskStatus) -> Self {
         Self {
             task_id: task_id.into(),
+            run_id: None,
+            parent_task_id: None,
             subject: subject.into(),
             description: None,
             active_form: None,
@@ -211,6 +216,7 @@ impl TaskItem {
             blocked_by: Vec::new(),
             metadata: None,
             source_tool_call_id: None,
+            source_tool_call_run_id: None,
         }
     }
 

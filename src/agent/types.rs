@@ -618,6 +618,8 @@ pub enum TaskUpdateSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskItem {
     pub task_id: String,
+    pub run_id: Option<String>,
+    pub parent_task_id: Option<String>,
     pub subject: String,
     pub description: Option<String>,
     pub active_form: Option<String>,
@@ -627,6 +629,7 @@ pub struct TaskItem {
     pub blocked_by: Vec<String>,
     pub metadata: Option<serde_json::Value>,
     pub source_tool_call_id: Option<String>,
+    pub source_tool_call_run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -43,6 +43,8 @@ fn allow_deny_options() -> Vec<model::PermissionOption> {
 
 fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
     model::TaskItem {
+        run_id: None,
+        parent_task_id: None,
         task_id: id.to_owned(),
         subject: subject.to_owned(),
         description: None,
@@ -53,6 +55,7 @@ fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskI
         blocked_by: Vec::new(),
         metadata: None,
         source_tool_call_id: None,
+        source_tool_call_run_id: None,
     }
 }
 

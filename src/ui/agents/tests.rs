@@ -128,6 +128,81 @@ fn reply(text: &str) -> SubagentMessage {
 }
 
 #[test]
+fn ancestry_runs_and_fork_model_provenance_stay_with_the_selected_row() {
+    let (mut app, _commands) = app_with_subagents();
+    app.sdk_inventory.tasks[0].metadata.as_mut().unwrap()["subagent_type"] =
+        serde_json::json!("fork");
+    app.sdk_inventory.tasks[0].run_id = Some("A".to_owned());
+    app.sdk_inventory.tasks[0].source_tool_call_run_id = Some("A".to_owned());
+    app.sdk_inventory.tasks[0].parent_task_id = Some("agent-2".to_owned());
+    tool_call(
+        &mut app,
+        "fork-launch",
+        "Agent",
+        "Fork review",
+        serde_json::json!({ "subagent_type": "fork", "model": "ignored-model", "effort": "max" }),
+        None,
+    );
+    app.sdk_inventory.tasks[0].source_tool_call_id = Some("fork-launch".to_owned());
+    let lines = screen(&mut app, 80, 38);
+    let (_, model) = row_with(&lines, "Model:");
+    assert!(model.contains("parent model (inherited)"));
+    let (_, parent) = row_with(&lines, "Parent:");
+    assert!(parent.contains("Review the parser (reviewer)"));
+    assert!(row_with(&lines, "Run:").1.contains('A'));
+    assert!(!lines.iter().any(|line| line.contains("ignored-model") || line.contains("max")));
+
+    crate::app::handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "session-1".to_owned(),
+            update: model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "fork-launch",
+                model::ToolCallUpdateFields::new().output_metadata(
+                    model::ToolOutputMetadata::new().agent(Some(
+                        model::AgentOutputMetadata::new()
+                            .resolved_model(Some("observed-sonnet".to_owned()))
+                            .models_used(Some(vec![
+                                "observed-opus".to_owned(),
+                                "observed-sonnet".to_owned(),
+                            ])),
+                    )),
+                ),
+            )),
+        },
+    );
+    let lines = screen(&mut app, 100, 38);
+    assert!(row_with(&lines, "Model:").1.contains("observed-opus -> observed-sonnet (observed)"));
+    // Reusing a launching invocation cannot turn A's observation into B's model.
+    app.sdk_inventory.tasks[0].run_id = Some("B".to_owned());
+    crate::app::agents::tasks_changed(&mut app);
+    let lines = screen(&mut app, 80, 38);
+    assert!(row_with(&lines, "Model:").1.contains("parent model (inherited)"));
+    assert_eq!(app.agents.selected_task_id.as_deref(), Some("agent-1"));
+    // A missing parent leaves the child selected and its controls available.
+    app.sdk_inventory.tasks.retain(|task| task.task_id != "agent-2");
+    let lines = screen(&mut app, 80, 38);
+    assert!(row_with(&lines, "Run the slow check").1.contains('›'));
+    assert!(lines.iter().any(|line| line.contains("Enter transcript")));
+    assert!(!lines.iter().any(|line| line.contains("Parent:")));
+}
+
+#[test]
+fn a_new_run_labels_the_open_saved_snapshot_without_replacing_its_rendered_content() {
+    let (mut app, mut commands) = app_with_subagents();
+    app.sdk_inventory.tasks[2].run_id = Some("A".to_owned());
+    let request = open_transcript(&mut app, &mut commands);
+    answer(&mut app, &request, Ok(vec![reply("Report from A")]));
+    app.sdk_inventory.tasks[2].run_id = Some("B".to_owned());
+    crate::app::agents::tasks_changed(&mut app);
+    let lines = screen(&mut app, 100, 28);
+    assert!(row_with(&lines, "saved snapshot").1.contains("Review the parser"));
+    let (heading, _) = row_with(&lines, "Reply");
+    assert_eq!(lines[heading + 1].trim(), "Report from A");
+    assert!(lines.iter().any(|line| line.contains("r refresh")));
+}
+
+#[test]
 fn rows_show_each_subagents_status_type_and_transcript_under_their_own_title() {
     let (mut app, _commands) = app_with_subagents();
     apply_transcript_list(&mut app, vec!["agent-2".to_owned()], None);
@@ -473,7 +548,7 @@ fn a_completed_subagents_response_is_previewed_in_six_rows_and_read_in_full_as_m
     answer(&mut app, &request, Ok(transcript));
 
     let overview = screen(&mut app, 80, 40);
-    let (heading, _) = row_with(&overview, "Response");
+    let (heading, _) = row_with(&overview, "Saved response");
     let preview: Vec<_> =
         overview[heading + 1..=heading + 7].iter().map(|row| row.trim()).collect();
     assert_eq!(preview[..6], report[..6], "{}", overview.join("\n"));
@@ -542,7 +617,7 @@ fn a_transcript_read_while_running_is_not_taken_as_the_response() {
         Ok(vec![reply("Halfway through the files"), reply("All files checked")]),
     );
     let overview = screen(&mut app, 80, 40);
-    let (heading, _) = row_with(&overview, "Response");
+    let (heading, _) = row_with(&overview, "Saved response");
     assert_eq!(overview[heading + 1].trim(), "All files checked");
 }
 

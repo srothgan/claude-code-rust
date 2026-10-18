@@ -337,9 +337,21 @@ pub(super) async fn handle_bridge_event(
                 })
                 .await;
         }
-        crate::agent::wire::BridgeEvent::SubagentStopResult { session_id, task_id, error } => {
-            let _ =
-                event_tx.send(ClientEvent::SubagentStopResult { session_id, task_id, error }).await;
+        crate::agent::wire::BridgeEvent::SubagentStopResult {
+            session_id,
+            task_id,
+            run_id,
+            error,
+        } => {
+            let _ = event_tx
+                .send(ClientEvent::SubagentStopResult {
+                    session_id,
+                    task_id,
+                    run_id,
+                    request_id,
+                    error,
+                })
+                .await;
         }
         crate::agent::wire::BridgeEvent::SessionHistoryExport {
             session_id,

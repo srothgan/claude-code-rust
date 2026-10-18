@@ -12,7 +12,7 @@ use crate::agent::model::{TaskItem, TaskStatus};
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
 use crate::app::{App, FullscreenView, MessageBlock, SurfaceMode, ToolCallInfo, ToolCallScope};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const SUBAGENT_TASK_TYPE: &str = "local_agent";
 const PAGE_ROWS: u16 = 10;
@@ -68,6 +68,9 @@ pub(crate) struct Notice {
 #[derive(Debug)]
 pub(crate) struct TranscriptRead {
     pub agent_id: String,
+    pub run_id: Option<String>,
+    pub saved_snapshot: bool,
+    pending: bool,
     /// The request this read waits on; an answer to any earlier one is superseded.
     request_id: String,
     /// The last successful answer; `None` until one arrives. It stays shown
@@ -75,9 +78,14 @@ pub(crate) struct TranscriptRead {
     pub messages: Option<Vec<SubagentMessage>>,
     /// Why the latest request failed.
     pub error: Option<String>,
-    /// Whether the subagent had completed when the latest request was sent,
-    /// so the read's last reply is its final response.
+    /// Whether the current run had completed when this request was sent.
     after_completion: bool,
+}
+
+#[derive(Debug)]
+struct PendingStop {
+    run_id: Option<String>,
+    request_id: String,
 }
 
 /// The open transcript reader, showing `AgentsView::read`.
@@ -106,7 +114,7 @@ pub(crate) struct AgentsView {
     /// Why the last transcript check failed. The ids it could not refresh are
     /// kept, and the next successful check clears it.
     pub list_error: Option<String>,
-    stop_requested: HashSet<String>,
+    stop_requested: HashMap<String, PendingStop>,
     /// The transcript last read; the open reader shows it.
     pub read: Option<TranscriptRead>,
     /// An unanswered response read the selection has moved past. The next one
@@ -149,20 +157,21 @@ impl SubagentRow<'_> {
     }
 }
 
-/// A completed subagent's final response: its last reply in a read made after
-/// it completed, or why that read failed. `None` until such a read answers.
-pub(crate) fn final_response<'a>(
+/// Last saved reply read after this run completed, or the read error.
+/// Persistence can lag the lifecycle: this is a preview, not a run's result.
+pub(crate) fn saved_response<'a>(
     app: &'a App,
     row: &SubagentRow<'_>,
 ) -> Option<Result<&'a str, &'a str>> {
     if row.status != SubagentStatus::Completed {
         return None;
     }
-    let read = app
-        .agents
-        .read
-        .as_ref()
-        .filter(|read| read.agent_id == row.task.task_id && read.after_completion)?;
+    let read = app.agents.read.as_ref().filter(|read| {
+        read.agent_id == row.task.task_id
+            && read.run_id == row.task.run_id
+            && read.after_completion
+            && !read.saved_snapshot
+    })?;
     if let Some(error) = &read.error {
         return Some(Err(error));
     }
@@ -244,7 +253,13 @@ pub(crate) fn subagent_rows(app: &App) -> Vec<SubagentRow<'_>> {
         .filter(|task| is_subagent(task))
         .map(|task| {
             let status = match lifecycle_status(task) {
-                SubagentStatus::Running if app.agents.stop_requested.contains(&task.task_id) => {
+                SubagentStatus::Running
+                    if app
+                        .agents
+                        .stop_requested
+                        .get(&task.task_id)
+                        .is_some_and(|stop| stop.run_id == task.run_id) =>
+                {
                     SubagentStatus::Stopping
                 }
                 status => status,
@@ -342,11 +357,11 @@ pub(crate) fn apply_client_event(app: &mut App, event: ClientEvent) {
         ClientEvent::SubagentsListed { agent_ids, error, .. } => {
             apply_transcript_list(app, agent_ids, error);
         }
-        ClientEvent::SubagentMessagesReceived { request_id, messages, error, .. } => {
-            apply_transcript(app, request_id.as_deref(), messages, error);
+        ClientEvent::SubagentMessagesReceived { agent_id, request_id, messages, error, .. } => {
+            apply_transcript(app, &agent_id, request_id.as_deref(), messages, error);
         }
-        ClientEvent::SubagentStopResult { task_id, error, .. } => {
-            apply_stop_result(app, &task_id, error);
+        ClientEvent::SubagentStopResult { task_id, run_id, request_id, error, .. } => {
+            apply_stop_result(app, &task_id, run_id.as_deref(), request_id.as_deref(), error);
         }
         _ => {}
     }
@@ -365,6 +380,7 @@ pub(crate) fn apply_transcript_list(app: &mut App, agent_ids: Vec<String>, error
 /// request, for this subagent or another, changes nothing.
 fn apply_transcript(
     app: &mut App,
+    agent_id: &str,
     request_id: Option<&str>,
     messages: Vec<SubagentMessage>,
     error: Option<String>,
@@ -375,10 +391,16 @@ fn apply_transcript(
         return;
     }
     let Some(read) =
-        app.agents.read.as_mut().filter(|read| Some(read.request_id.as_str()) == request_id)
+        app.agents.read.as_mut().filter(|read| {
+            read.agent_id == agent_id && Some(read.request_id.as_str()) == request_id
+        })
     else {
         return;
     };
+    read.pending = false;
+    if read.saved_snapshot {
+        return;
+    }
     match error {
         // A failed re-read keeps what was read before for the next retry.
         Some(error) => read.error = Some(error),
@@ -389,7 +411,18 @@ fn apply_transcript(
     }
 }
 
-fn apply_stop_result(app: &mut App, task_id: &str, error: Option<String>) {
+fn apply_stop_result(
+    app: &mut App,
+    task_id: &str,
+    run_id: Option<&str>,
+    request_id: Option<&str>,
+    error: Option<String>,
+) {
+    if !app.agents.stop_requested.get(task_id).is_some_and(|stop| {
+        stop.run_id.as_deref() == run_id && Some(stop.request_id.as_str()) == request_id
+    }) {
+        return;
+    }
     match error {
         Some(error) => {
             app.agents.stop_requested.remove(task_id);
@@ -442,6 +475,29 @@ fn move_selection(app: &mut App, down: bool) {
 /// Lifecycle rows changed: a selected subagent that completed while the list
 /// is shown is read for its response.
 pub(crate) fn tasks_changed(app: &mut App) {
+    app.agents.stop_requested.retain(|id, stop| {
+        app.sdk_inventory.tasks.iter().any(|task| {
+            task.task_id == *id
+                && task.run_id == stop.run_id
+                && task.status == TaskStatus::InProgress
+        })
+    });
+    if let Some(read) = app.agents.read.as_mut() {
+        let current_run = app
+            .sdk_inventory
+            .tasks
+            .iter()
+            .find(|task| task.task_id == read.agent_id)
+            .map(|task| &task.run_id);
+        if current_run != Some(&read.run_id) {
+            read.saved_snapshot = true;
+            read.after_completion = false;
+            if read.pending {
+                app.agents.read_in_flight = Some(read.request_id.clone());
+                read.pending = false;
+            }
+        }
+    }
     read_selected_response(app, false);
 }
 
@@ -455,9 +511,9 @@ fn read_selected_response(app: &mut App, again: bool) {
         return;
     }
     let Some((task_id, status)) = selected_row(app) else { return };
-    if let Some(passed) = app.agents.read.take_if(|read| read.agent_id != task_id)
-        && passed.messages.is_none()
-        && passed.error.is_none()
+    if let Some(passed) =
+        app.agents.read.take_if(|read| read.agent_id != task_id || read.saved_snapshot)
+        && passed.pending
     {
         app.agents.read_in_flight = Some(passed.request_id);
     }
@@ -481,8 +537,17 @@ fn read_selected_response(app: &mut App, again: bool) {
 /// subagent stays shown, at the same position, until the answer replaces it,
 /// except a read from before it completed once it has: that is not its response.
 fn request_read(app: &mut App, agent_id: String) -> bool {
+    if app.agents.read_in_flight.is_some() {
+        return false;
+    }
     let Some((session_id, conn)) = active_session(app) else { return false };
     let request_id = uuid::Uuid::new_v4().to_string();
+    let run_id = app
+        .sdk_inventory
+        .tasks
+        .iter()
+        .find(|task| task.task_id == agent_id)
+        .and_then(|task| task.run_id.clone());
     if let Err(error) = conn.get_subagent_messages(session_id, agent_id.clone(), request_id.clone())
     {
         notice(app, NoticeKind::Error, format!("Could not read the transcript: {error}"));
@@ -495,10 +560,23 @@ fn request_read(app: &mut App, agent_id: String) -> bool {
         .agents
         .read
         .take()
-        .filter(|read| read.agent_id == agent_id && (read.after_completion || !after_completion))
+        .filter(|read| {
+            read.agent_id == agent_id
+                && read.run_id == run_id
+                && !read.saved_snapshot
+                && (read.after_completion || !after_completion)
+        })
         .and_then(|read| read.messages);
-    app.agents.read =
-        Some(TranscriptRead { agent_id, request_id, messages, error: None, after_completion });
+    app.agents.read = Some(TranscriptRead {
+        agent_id,
+        run_id,
+        saved_snapshot: false,
+        pending: true,
+        request_id,
+        messages,
+        error: None,
+        after_completion,
+    });
     true
 }
 
@@ -512,8 +590,8 @@ fn open_transcript(app: &mut App) {
         );
         return;
     }
-    // A completed subagent's transcript no longer changes, so the read its
-    // response came from is opened as it is; `r` reads it again.
+    // Open the saved conversation already read; persistence can still change.
+    // The user explicitly refreshes it with `r`.
     let held = app.agents.read.as_ref().is_some_and(|read| {
         read.agent_id == task_id && read.after_completion && read.error.is_none()
     });
@@ -543,9 +621,16 @@ fn request_stop(app: &mut App) {
     let Some((session_id, conn)) = active_session(app) else { return };
     // Keep the row selected after it stops running.
     app.agents.selected_task_id = Some(task_id.clone());
-    match conn.stop_subagent(session_id, task_id.clone()) {
+    let run_id = app
+        .sdk_inventory
+        .tasks
+        .iter()
+        .find(|task| task.task_id == task_id)
+        .and_then(|task| task.run_id.clone());
+    let request_id = uuid::Uuid::new_v4().to_string();
+    match conn.stop_subagent(session_id, task_id.clone(), run_id.clone(), request_id.clone()) {
         Ok(()) => {
-            app.agents.stop_requested.insert(task_id);
+            app.agents.stop_requested.insert(task_id, PendingStop { run_id, request_id });
             app.agents.notice = None;
         }
         Err(error) => {

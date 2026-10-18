@@ -90,7 +90,8 @@ export function transcriptPresentation(raw: unknown): TranscriptPresentation {
   const origin = asRecordOrNull(record.origin);
   if (origin?.kind === "task-notification" && origin.subkind === undefined &&
       (origin.producer === undefined || origin.producer === "session-task")) {
-    return { kind: "task_notification", notification: taskNotification(record.message) };
+    const notification = taskNotification(record.message);
+    return { kind: "task_notification", notification: notification ? { ...notification, run_id: origin.runId } : undefined };
   }
   // Explicitly authored and external messages retain their literal content,
   // including examples that happen to use Claude's internal tag names.

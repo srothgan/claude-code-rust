@@ -87,7 +87,7 @@ function handbackReport(tool: ToolCall): string | undefined {
 
 /** The text a reader follows: prompts, SDK reminders, replies and the titles of tool calls. */
 function transcriptEntries(history: Parameters<typeof mapSessionMessagesToEntries>[0]): SubagentMessage[] {
-  return mapSessionMessagesToEntries(history).flatMap((update): SubagentMessage[] => {
+  return mapSessionMessagesToEntries(history, true).flatMap((update): SubagentMessage[] => {
     if (update.type === "system_reminder") return [{ role: "system_reminder", text: update.text }];
     if (update.type === "tool_call") {
       const report = handbackReport(update.tool_call);
@@ -104,10 +104,12 @@ async function requestStop(
   requestId?: string,
 ): Promise<void> {
   const session = activeSession(command.session_id);
-  const result = { event: "subagent_stop_result" as const, session_id: command.session_id, task_id: command.task_id };
+  // Capture the operation before awaiting; the task may resume meanwhile.
+  const result = { event: "subagent_stop_result" as const, session_id: command.session_id, task_id: command.task_id, run_id: command.expected_run_id };
   try {
     if (!session) throw new Error(NO_SESSION);
     const task = session.tasksById.get(command.task_id);
+    if (task?.run_id !== command.expected_run_id) throw new Error("This subagent's execution has changed.");
     if (
       task?.status !== "in_progress" ||
       asRecordOrNull(task.metadata)?.task_type !== "local_agent"

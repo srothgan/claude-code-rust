@@ -356,6 +356,8 @@ export type TaskUpdateSource =
 
 export interface TaskItem {
   task_id: string;
+  run_id?: string;
+  parent_task_id?: string;
   subject: string;
   description?: string;
   active_form?: string;
@@ -365,6 +367,8 @@ export interface TaskItem {
   blocked_by: string[];
   metadata?: Json;
   source_tool_call_id?: string;
+  /** Run that established the invocation; an older launch can still identify the producer. */
+  source_tool_call_run_id?: string;
 }
 
 /** One readable entry of a saved subagent transcript. `system_reminder` is a
@@ -1043,6 +1047,7 @@ export type BridgeCommand =
       command: "stop_subagent";
       session_id: string;
       task_id: string;
+      expected_run_id?: string;
     }
   | {
       command: "get_rewind_targets";
@@ -1331,6 +1336,7 @@ export type BridgeEvent =
       event: "subagent_stop_result";
       session_id: string;
       task_id: string;
+      run_id?: string;
       error?: string;
     }
   | {

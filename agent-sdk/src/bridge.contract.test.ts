@@ -1551,6 +1551,7 @@ test("subagent commands read SDK transcripts and stop only a running subagent, l
   const journal = join(directory, "sdk.jsonl");
   const started = (taskId: string, taskType: string) => ({
     type: "system", subtype: "task_started", uuid: crypto.randomUUID(), task_id: taskId,
+    ...(taskId === "agent-running" ? { run_id: "B" } : {}),
     task_type: taskType, description: `Run ${taskId}`, ...(taskType === "local_agent" ? { subagent_type: "general-purpose" } : {}),
   });
   const { bridge, cleanup } = ultracodeFixtureBridge({
@@ -1614,14 +1615,20 @@ test("subagent commands read SDK transcripts and stop only a running subagent, l
     assert.equal(shell.task_id, "shell-1");
     assert.match(String(shell.error), /not running/, "a background shell is not a subagent");
 
+    const stale = await result("subagent_stop_result", { command: "stop_subagent", task_id: "agent-running", expected_run_id: "A" });
+    assert.match(String(stale.error), /execution has changed/);
+    assert.equal(stale.run_id, "A");
+    assert.deepEqual(sdkCalls("stopTask"), [], "a stale command must not reach the SDK");
+
     const stopRequestId = crypto.randomUUID();
-    bridge.writeCommand({ command: "stop_subagent", session_id: sessionId, task_id: "agent-running", request_id: stopRequestId });
+    bridge.writeCommand({ command: "stop_subagent", session_id: sessionId, task_id: "agent-running", expected_run_id: "B", request_id: stopRequestId });
     const beforeAcknowledgement: BridgeEnvelope[] = [];
     const acknowledged = await nextMatching(bridge, event => {
       beforeAcknowledgement.push(event);
       return event.event === "subagent_stop_result";
     });
     assert.deepEqual([acknowledged.request_id, acknowledged.task_id, acknowledged.error], [stopRequestId, "agent-running", undefined]);
+    assert.equal(acknowledged.run_id, "B");
     assert.ok(
       !beforeAcknowledgement.some(event => (event.update as BridgeEnvelope)?.type === "task_state_update"),
       "acknowledging a stop request must not report the task as stopped",

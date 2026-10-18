@@ -13,13 +13,21 @@ pub(super) fn apply_task_state_update(app: &mut App, update: model::TaskStateUpd
             let incoming: HashSet<&str> =
                 update.tasks.iter().map(|task| task.task_id.as_str()).collect();
             app.sdk_inventory.tasks.retain(|task| {
-                !is_sdk_background_task(task)
+                (!is_sdk_background_task(task) || incoming.contains(task.task_id.as_str()))
                     && !removed.contains(task.task_id.as_str())
-                    && !incoming.contains(task.task_id.as_str())
             });
             for task in update.tasks {
                 if !removed.contains(task.task_id.as_str()) {
-                    app.sdk_inventory.tasks.push(task);
+                    if let Some(existing) = app
+                        .sdk_inventory
+                        .tasks
+                        .iter_mut()
+                        .find(|existing| existing.task_id == task.task_id)
+                    {
+                        *existing = task;
+                    } else {
+                        app.sdk_inventory.tasks.push(task);
+                    }
                 }
             }
             refresh_task_tool_displays_with_previous(app, &previous_tasks);
