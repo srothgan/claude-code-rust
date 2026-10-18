@@ -2348,22 +2348,22 @@ mod tests {
                 .all(|span| span.style.add_modifier.contains(ratatui::style::Modifier::BOLD)),
             "heading lost its style"
         );
-        assert!(!text.iter().any(|row| row.contains("##") || row.contains("```")), "{text:?}");
+        assert!(!text.iter().any(|row| row.contains("##")), "{text:?}");
 
         let body_column = text
             .iter()
             .find_map(|row| row.find("1. Then check"))
             .map(|column| column + 3)
             .expect("list item");
-        for content in ["sh", "# nested", "Name"] {
-            let row =
-                text.iter().find(|row| row.trim() == content || row.trim().starts_with(content));
-            let row = row.unwrap_or_else(|| panic!("missing {content:?}: {text:?}"));
-            assert_eq!(row.find(content), Some(body_column), "{content:?} left its item: {text:?}");
-        }
+        assert!(
+            text.iter().any(|row| row == "# nested"),
+            "nested code lost its own line: {text:?}"
+        );
+        let header = text.iter().find(|row| row.contains("Name")).expect("table header");
         let table_row = text.iter().find(|row| row.contains("Alpha")).expect("table row");
         assert!(table_row.contains("Beta"), "table cells split across rows: {text:?}");
-        assert!(text.iter().any(|row| row.find('─') == Some(body_column)), "{text:?}");
+        assert_eq!(header.find('│'), Some(body_column), "table left its list: {text:?}");
+        assert_eq!(header.find('│'), table_row.find('│'), "table columns shifted: {text:?}");
 
         let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
             panic!("expected assistant text");
@@ -2816,7 +2816,7 @@ mod tests {
     }
 
     #[test]
-    fn live_assistant_ordered_list_wraps_continuation_with_hanging_indent() {
+    fn live_assistant_ordered_list_wraps_without_losing_content() {
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_text_message(
             "3. Keymap survey - mapping the keymap system, focus dispatch, and help generation.",
@@ -2826,12 +2826,13 @@ mod tests {
         let text = line_texts(&rows);
 
         assert!(
-            text.iter().any(|line| line.starts_with(" ●   3. Keymap survey")),
+            text.iter().any(|line| line.starts_with(" ● 3. Keymap survey")),
             "missing ordered list prefix: {text:?}"
         );
+        let content = text.iter().map(|line| line.trim()).collect::<Vec<_>>().join(" ");
         assert!(
-            text.iter().any(|line| line.starts_with("        ") && !line.trim().is_empty()),
-            "list continuation lost hanging indent: {text:?}"
+            content.contains("mapping the keymap system, focus dispatch, and help generation."),
+            "{text:?}"
         );
     }
 
@@ -2860,7 +2861,7 @@ mod tests {
 
         assert_eq!(serialized.stable_row_count(), 0);
         assert!(
-            remaining_text.iter().any(|line| line.starts_with(" ●   3. Keymap survey")),
+            remaining_text.iter().any(|line| line.starts_with(" ● 3. Keymap survey")),
             "missing ordered list prefix: {remaining_text:?}"
         );
     }

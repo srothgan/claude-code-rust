@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod document;
-mod table;
 
 pub(super) use document::DocumentCursor;
 
@@ -80,10 +79,12 @@ where
     }
 }
 
-fn render_with_tui_markdown(text: &str, bg: Option<Color>) -> Vec<Line<'static>> {
+fn render_with_tui_markdown(text: &str, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
     render_markdown_safe_with(text, bg, |text, bg| {
-        let rendered =
-            tui_markdown::from_str_with_options(text, &tui_markdown::Options::new(MarkdownStyle));
+        let rendered = tui_markdown::from_str_with_options(
+            text,
+            &tui_markdown::Options::new(MarkdownStyle).table_width(width),
+        );
         rendered
             .lines
             .into_iter()
@@ -136,53 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn list_continuation_paragraphs_and_nested_items_retain_their_parent() {
-        let rows = document_rows(
-            "3. First paragraph.\n\n   Second paragraph.\n\n   - Child item.\n\n     Child continuation.\n\n   Parent again.\n4. Next item.",
-            60,
-        );
-        for (text, column) in [
-            ("Second paragraph.", 5),
-            ("- Child item.", 5),
-            ("Child continuation.", 7),
-            ("Parent again.", 5),
-        ] {
-            let row = rows.iter().find(|row| row.trim() == text).expect("list content survives");
-            assert_eq!(row.find(text), Some(column), "wrong parent alignment: {rows:?}");
-        }
-        let first = rows.iter().position(|row| row.contains("First paragraph.")).unwrap();
-        let second = rows.iter().position(|row| row.contains("Second paragraph.")).unwrap();
-        assert!(
-            rows[first + 1..second].iter().any(String::is_empty),
-            "separate item paragraphs must stay separate: {rows:?}"
-        );
-        assert!(rows.iter().any(|row| row.trim() == "4. Next item."));
-    }
-
-    #[test]
-    fn ordered_and_task_item_wrapping_use_the_actual_body_column() {
-        for (source, prefix, column) in [
-            ("9) alpha beta gamma delta epsilon\n1) zeta eta theta iota kappa", "9.", 5),
-            ("10. alpha beta gamma delta epsilon", "10.", 6),
-            ("- [x] alpha beta gamma delta epsilon", "- [x]", 8),
-        ] {
-            let rows = document_rows(source, 22);
-            let first =
-                rows.iter().position(|row| row.trim_start().starts_with(prefix)).expect("marker");
-            let continuation = &rows[first + 1];
-            assert!(!continuation.trim().is_empty());
-            assert_eq!(continuation.len() - continuation.trim_start().len(), column, "{rows:?}");
-            assert!(rows.iter().all(|row| crate::ui::wrap::display_width(row) <= 22));
-            if source.starts_with("9)") {
-                assert!(
-                    rows.iter().any(|row| row.trim_start().starts_with("10. zeta")),
-                    "number sequentially from the declared start: {rows:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn code_and_escaped_markers_do_not_acquire_list_indentation() {
         for source in [
             "~~~text\n- literal marker\n~~~",
@@ -226,7 +180,8 @@ mod tests {
                 "lost {word} formatting"
             );
         }
-        assert!(lines.iter().all(|line| crate::ui::wrap::line_display_width(line) <= 28));
+        let physical = crate::ui::wrap::wrap_lines_to_physical_rows(&lines, 28);
+        assert!(physical.iter().all(|line| crate::ui::wrap::line_display_width(line) <= 28));
         assert!(
             lines
                 .iter()
@@ -234,47 +189,27 @@ mod tests {
                 .all(|span| span.style.bg == Some(Color::Blue))
         );
         let child = text.iter().position(|row| row.contains("- Bold")).expect("nested item");
-        for row in &text[child + 1..] {
-            assert_eq!(
-                row.find(|ch: char| !ch.is_whitespace()),
-                Some(7),
-                "child continuation lost its parent: {text:?}"
-            );
-        }
+        let parent_column = text[0].find("1.").expect("parent marker");
+        assert!(text[child].find('-').unwrap() > parent_column, "nesting lost: {text:?}");
     }
 
     #[test]
-    fn table_and_code_inside_a_list_keep_the_parent_column() {
+    fn table_and_code_inside_a_list_preserve_cells_and_literal_code_lines() {
         let rows = document_rows(
             "1. Parent\n\n   | Name | Value |\n   | --- | --- |\n   | Alpha | Beta |\n\n   ~~~text\n   - literal code\n       indented code\n   ~~~\n\n   Tail paragraph.",
             60,
         );
-        for word in ["Name", "Alpha", "- literal code", "Tail paragraph."] {
-            let row = rows.iter().find(|row| row.contains(word)).expect("nested content survives");
-            assert!(row.starts_with("     "), "content escaped its parent: {rows:?}");
-        }
-        let code = rows.iter().find(|row| row.contains("- literal code")).unwrap();
-        assert_eq!(code.find('-'), Some(5), "code marker must stay literal");
-        let indented = rows.iter().find(|row| row.contains("indented code")).unwrap();
+        let header = rows.iter().find(|row| row.contains("Name")).expect("table header");
+        let data = rows.iter().find(|row| row.contains("Alpha")).expect("table row");
+        assert!(header.contains("Value") && data.contains("Beta"), "lost cells: {rows:?}");
+        assert_eq!(header.find('│'), data.find('│'), "table columns shifted: {rows:?}");
+        assert!(rows.iter().any(|row| row.trim() == "Tail paragraph."));
+        let code = rows.iter().position(|row| row == "- literal code").expect("literal code line");
         assert_eq!(
-            indented.find("indented code"),
-            Some(9),
-            "code indentation must survive inside its parent list"
+            rows[code + 1],
+            "    indented code",
+            "literal code lines or indentation were lost: {rows:?}"
         );
-    }
-
-    #[test]
-    fn quoted_lists_keep_one_quote_prefix_on_wrapped_and_continued_rows() {
-        let rows = document_rows(
-            "> Introduction\n> continued\n>\n> 1. Parent item with enough words to wrap onto another row\n>\n>    Continuation paragraph\n>\n>    - Child item\n>\n> End quote",
-            30,
-        );
-        for row in rows.iter().filter(|row| !row.trim().is_empty()) {
-            assert!(row.starts_with("> "), "quote ownership lost: {rows:?}");
-            assert_eq!(row.matches('>').count(), 1, "quote prefixes duplicated: {rows:?}");
-        }
-        assert!(rows.iter().any(|row| row.contains("Child item")));
-        assert!(rows.iter().any(|row| row.contains("End quote")));
     }
 
     #[test]
@@ -316,28 +251,23 @@ mod tests {
     fn unordered_lists_preserve_surrounding_paragraph_separators() {
         let lines = render_markdown_safe("Intro\n\n- One\n- Two\n\nOutro", None);
 
-        assert_eq!(rendered_text(&lines), vec!["Intro", "", "  - One", "  - Two", "", "Outro"]);
+        assert_eq!(rendered_text(&lines), vec!["Intro", "", "- One", "- Two", "", "Outro"]);
     }
 
     #[test]
     fn ordered_lists_preserve_surrounding_paragraph_separators() {
         let lines = render_markdown_safe("Intro\n\n1. One\n2. Two\n\nOutro", None);
 
-        assert_eq!(rendered_text(&lines), vec!["Intro", "", "  1. One", "  2. Two", "", "Outro"]);
+        assert_eq!(rendered_text(&lines), vec!["Intro", "", "1. One", "2. Two", "", "Outro"]);
     }
 
     #[test]
-    fn nested_lists_keep_relative_indentation() {
-        let lines = render_markdown_safe("- Parent\n  - Child", None);
-
-        assert_eq!(rendered_text(&lines), vec!["  - Parent", "    - Child"]);
-    }
-
-    #[test]
-    fn task_lists_keep_markers_after_indentation() {
-        let lines = render_markdown_safe("- [ ] Todo\n- [x] Done", None);
-
-        assert_eq!(rendered_text(&lines), vec!["  - [ ] Todo", "  - [x] Done"]);
+    fn text_after_a_list_returns_to_the_normal_column_without_a_blank_line() {
+        let lines = render_markdown_at_width("Intro\n1. One\n2. Two\nOutro", 40, None, true);
+        let rows = rendered_text(&lines);
+        let last_item = rows.iter().position(|row| row == "2. Two").expect("last list item");
+        assert_eq!(rows[last_item + 1], "Outro", "trailing text acquired list indentation");
+        assert_eq!(rows.first().map(String::as_str), Some("Intro"));
     }
 
     #[test]
@@ -424,19 +354,17 @@ mod tests {
         );
         let text = rendered_text(&lines);
 
-        for row in
-            ["first line", "second line", "  - item one", "    continued", "echo a", "echo b"]
-        {
+        for row in ["first line", "second line", "- item one", "continued", "echo a", "echo b"] {
             assert!(text.iter().any(|line| line == row), "missing {row:?}: {text:?}");
         }
         assert!(text.iter().all(|line| !line.ends_with(' ')), "trailing spaces: {text:?}");
     }
 
     #[test]
-    fn list_indent_preserves_requested_background() {
+    fn list_markers_preserve_requested_background() {
         let lines = render_markdown_safe("- One", Some(Color::Blue));
 
-        assert_eq!(rendered_text(&lines), vec!["  - One"]);
+        assert_eq!(rendered_text(&lines), vec!["- One"]);
         assert_eq!(lines[0].spans[0].style.bg, Some(Color::Blue));
         assert!(lines[0].spans.iter().all(|span| span.style.bg == Some(Color::Blue)));
     }

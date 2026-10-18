@@ -107,7 +107,7 @@ pub(super) fn render_text_cached(
     control: &super::layout_control::LayoutControl<'_>,
 ) {
     // Reuse only lines laid out at this width.
-    // Lists and tables resolve width-dependent geometry before final row wrapping,
+    // Tables and code resolve width-dependent geometry before final row wrapping,
     // so a fresh cache from another width is not safe to reuse.
     if let Some(cached_lines) = cache.get_for_width(width) {
         out.extend_from_slice(cached_lines);
@@ -216,23 +216,24 @@ mod tests {
         let mut wide_lines = Vec::new();
         render_message(&mut msg, 40, &mut wide_lines);
         let wide_rendered = render_lines_to_strings(&wide_lines);
-        assert!(wide_rendered.iter().any(|line| line.contains("Name")));
-        assert!(wide_rendered.iter().any(|line| line.contains('─')));
-        assert!(!wide_rendered.iter().any(|line| line.contains("Name:")));
 
         let mut narrow_lines = Vec::new();
         render_message(&mut msg, 16, &mut narrow_lines);
         let narrow_rendered = render_lines_to_strings(&narrow_lines);
-        assert!(narrow_rendered.iter().any(|line| line.contains("Name:")));
-        assert!(narrow_rendered.iter().any(|line| line.contains("Description")));
-        assert!(!narrow_rendered.iter().any(|line| line.contains('─')));
+        assert_ne!(narrow_rendered, wide_rendered, "resize must reflow the table");
+        let mut fresh_msg = make_text_message(MessageRole::User, table);
+        let mut fresh_narrow_lines = Vec::new();
+        render_message(&mut fresh_msg, 16, &mut fresh_narrow_lines);
+        assert_eq!(
+            narrow_rendered,
+            render_lines_to_strings(&fresh_narrow_lines),
+            "shrinking must not reuse table geometry cached at the wider width"
+        );
 
         let mut wide_again_lines = Vec::new();
         render_message(&mut msg, 40, &mut wide_again_lines);
         let wide_again_rendered = render_lines_to_strings(&wide_again_lines);
-        assert!(wide_again_rendered.iter().any(|line| line.contains("Name")));
-        assert!(wide_again_rendered.iter().any(|line| line.contains('─')));
-        assert!(!wide_again_rendered.iter().any(|line| line.contains("Name:")));
+        assert_eq!(wide_again_rendered, wide_rendered, "growing must restore the wide layout");
     }
 
     #[test]

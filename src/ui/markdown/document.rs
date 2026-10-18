@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Document layout from one parse. Lists, code blocks and tables retain parser ownership through
-//! nesting and wrapping; the remaining blocks render through `tui-markdown`.
+//! Document layout from one parse. Code blocks use app layout; lists, tables and their
+//! enclosing containers render through `tui-markdown`.
 
 use std::borrow::Cow;
 use std::ops::Range;
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Tag};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use tui_markdown::StyleSheet as _;
@@ -16,7 +16,6 @@ use super::super::wrap::{
     StyledChunk, display_width, split_line_at_width, wrap_styled_chunks_with_hanging_prefix,
 };
 use super::MarkdownStyle;
-use super::table::DocumentTable;
 use crate::ui::layout_control::LayoutControl;
 
 #[derive(Clone, Copy)]
@@ -51,10 +50,21 @@ impl Node<'_> {
         }
     }
 
-    /// Lists, code blocks and tables are laid out here instead of by `tui-markdown`.
-    fn needs_layout(&self) -> bool {
+    fn contains_list_or_table(&self) -> bool {
         match self {
-            Self::Block(Tag::List(_) | Tag::CodeBlock(_) | Tag::Table(_), _, _) => true,
+            Self::Block(Tag::List(_) | Tag::Table(_), _, _) => true,
+            Self::Block(_, _, children) => children.iter().any(Self::contains_list_or_table),
+            Self::Inline(_, _) => false,
+        }
+    }
+
+    /// Keep lists, tables and their enclosing containers together in the crate renderer.
+    fn needs_layout(&self) -> bool {
+        if self.contains_list_or_table() {
+            return false;
+        }
+        match self {
+            Self::Block(Tag::CodeBlock(_), _, _) => true,
             Self::Block(_, _, children) => children.iter().any(Self::needs_layout),
             Self::Inline(_, _) => false,
         }
@@ -120,7 +130,6 @@ struct DocumentState {
     separate_next: bool,
     previous_nonblank: bool,
     code: Option<CodeRows>,
-    list_item: usize,
 }
 
 pub(crate) struct DocumentCursor {
@@ -168,42 +177,9 @@ impl DocumentState {
             self.code = None;
         }
         let node = nodes.get(self.next_node)?;
-        if !node.needs_layout() {
-            if std::mem::take(&mut self.separate_next) {
-                push_gap(layout.bg, &mut out, self.previous_nonblank);
-            }
-            self.plain(nodes, layout, prefix, &mut out);
-        } else if let Node::Block(Tag::List(start), range, items) = node {
-            if self.list_item == 0 {
-                if std::mem::take(&mut self.separate_next) {
-                    push_gap(layout.bg, &mut out, self.previous_nonblank);
-                }
-                preserve_separator(
-                    layout.source,
-                    range.start,
-                    layout.bg,
-                    &mut out,
-                    self.previous_nonblank,
-                );
-            }
-            if let Some(item) = items.get(self.list_item) {
-                render_list(
-                    std::slice::from_ref(item),
-                    start.map(|number| number.saturating_add(self.list_item as u64)),
-                    layout,
-                    &format!("{prefix}  "),
-                    &mut out,
-                );
-                self.list_item += 1;
-            }
-            if self.list_item >= items.len() {
-                self.list_item = 0;
-                self.next_node += 1;
-                self.section_start = range.end;
-            }
-        } else {
+        if node.needs_layout() {
             if std::mem::take(&mut self.separate_next)
-                || matches!(node, Node::Block(Tag::CodeBlock(_) | Tag::Table(_), _, _))
+                || matches!(node, Node::Block(Tag::CodeBlock(_), _, _))
             {
                 push_gap(layout.bg, &mut out, self.previous_nonblank);
             }
@@ -217,25 +193,9 @@ impl DocumentState {
             match node {
                 Node::Block(Tag::CodeBlock(kind), _, content) => {
                     let (label, code) = CodeRows::new(kind, content);
-                    out.extend(prefix_block_lines(
-                        vec![label],
-                        prefix,
-                        prefix,
-                        layout.width,
-                        layout.bg,
-                    ));
+                    out.extend(prefix_block_lines(vec![label], prefix, layout.width, layout.bg));
                     self.code = Some(code);
                     self.separate_next = true;
-                }
-                Node::Block(Tag::Table(alignments), _, sections) => {
-                    let lines = table_lines(
-                        alignments,
-                        sections,
-                        inner_width(prefix, layout.width),
-                        layout,
-                    );
-                    out.extend(prefix_block_lines(lines, prefix, prefix, layout.width, layout.bg));
-                    out.push(Line::default());
                 }
                 Node::Block(Tag::BlockQuote(_), _, children) => {
                     render_document(children, layout, &format!("{prefix}> "), &mut out);
@@ -245,6 +205,11 @@ impl DocumentState {
             }
             self.section_start = node.range().end;
             self.next_node += 1;
+        } else {
+            if std::mem::take(&mut self.separate_next) {
+                push_gap(layout.bg, &mut out, self.previous_nonblank);
+            }
+            self.plain(nodes, layout, prefix, &mut out);
         }
         self.remember(&out);
         Some(out)
@@ -278,13 +243,7 @@ impl DocumentState {
             } else {
                 let mut spans = Vec::new();
                 inline_spans(node, MarkdownStyle.blockquote(), layout, &mut spans);
-                out.extend(prefix_lines(
-                    vec![Line::from(spans)],
-                    prefix,
-                    prefix,
-                    layout.width,
-                    layout.bg,
-                ));
+                out.extend(prefix_lines(vec![Line::from(spans)], prefix, layout.width, layout.bg));
             }
             self.next_node += 1;
         }
@@ -366,7 +325,7 @@ impl CodeRows {
         } else {
             return None;
         };
-        Some(prefix_block_lines(vec![line], prefix, prefix, layout.width, layout.bg))
+        Some(prefix_block_lines(vec![line], prefix, layout.width, layout.bg))
     }
 }
 
@@ -389,7 +348,7 @@ fn render_plain(run: &[&Node<'_>], start: usize, layout: Layout<'_>, out: &mut V
     } else {
         Cow::Borrowed(source)
     };
-    out.extend(super::render_with_tui_markdown(&text, layout.bg));
+    out.extend(super::render_with_tui_markdown(&text, layout.width, layout.bg));
 }
 
 /// Two trailing spaces before each parsed soft break turn it into a hard break.
@@ -436,209 +395,6 @@ fn preserve_separator(
     if blank_line_before {
         push_gap(bg, out, previous_nonblank);
     }
-}
-
-fn inner_width(prefix: &str, width: u16) -> u16 {
-    width.saturating_sub(u16::try_from(display_width(prefix)).unwrap_or(u16::MAX))
-}
-
-fn render_list(
-    items: &[Node<'_>],
-    mut number: Option<u64>,
-    layout: Layout<'_>,
-    indent: &str,
-    out: &mut Vec<Line<'static>>,
-) {
-    for node in items {
-        if layout.control.cancelled() {
-            return;
-        }
-        let Node::Block(Tag::Item, _, children) = node else {
-            continue;
-        };
-        let marker = number.map_or_else(|| "- ".to_owned(), |value| format!("{value}. "));
-        let ordered = number.is_some();
-        let marker_row = out.len();
-        number = number.map(|value| value.saturating_add(1));
-        let mut prefix = format!("{indent}{marker}");
-        if let Some(checked) = first_task_marker(children) {
-            prefix.push_str(if checked { "[x] " } else { "[ ] " });
-        }
-        let body_prefix =
-            format!("{indent}{}", " ".repeat(display_width(&prefix) - display_width(indent)));
-        let mut first = true;
-        let mut inline = Vec::new();
-        for child in children {
-            if layout.control.cancelled() {
-                return;
-            }
-            match child {
-                Node::Block(Tag::List(start), _, nested) => {
-                    flush_inline(&mut inline, &prefix, &body_prefix, &mut first, layout, out);
-                    if first {
-                        out.push(Line::from(prefix.trim_end().to_owned()));
-                        first = false;
-                    }
-                    render_list(nested, *start, layout, &body_prefix, out);
-                }
-                Node::Block(Tag::Paragraph, _, paragraph) => {
-                    flush_inline(&mut inline, &prefix, &body_prefix, &mut first, layout, out);
-                    if !first {
-                        out.push(Line::default());
-                    }
-                    inline.extend(paragraph);
-                    flush_inline(&mut inline, &prefix, &body_prefix, &mut first, layout, out);
-                }
-                Node::Block(Tag::CodeBlock(kind), _, content) => {
-                    flush_inline(&mut inline, &prefix, &body_prefix, &mut first, layout, out);
-                    if !first {
-                        out.push(Line::default());
-                    }
-                    let first_prefix = if first { &prefix } else { &body_prefix };
-                    out.extend(code_block_lines(kind, content, first_prefix, &body_prefix, layout));
-                    first = false;
-                }
-                Node::Block(Tag::Table(alignments), _, sections) => {
-                    flush_inline(&mut inline, &prefix, &body_prefix, &mut first, layout, out);
-                    let lines = table_lines(
-                        alignments,
-                        sections,
-                        inner_width(&body_prefix, layout.width),
-                        layout,
-                    );
-                    out.extend(prefix_block_lines(
-                        lines,
-                        if first { &prefix } else { &body_prefix },
-                        &body_prefix,
-                        layout.width,
-                        layout.bg,
-                    ));
-                    first = false;
-                }
-                Node::Block(Tag::BlockQuote(_), _, quoted) => {
-                    flush_inline(&mut inline, &prefix, &body_prefix, &mut first, layout, out);
-                    if first {
-                        out.push(Line::from(prefix.trim_end().to_owned()));
-                        first = false;
-                    }
-                    render_document(quoted, layout, &format!("{body_prefix}> "), out);
-                }
-                node => inline.push(node),
-            }
-        }
-        flush_inline(&mut inline, &prefix, &body_prefix, &mut first, layout, out);
-        if first {
-            out.push(Line::from(prefix.trim_end().to_owned()));
-        }
-        if ordered
-            && let Some(span) = out.get_mut(marker_row).and_then(|line| line.spans.first_mut())
-        {
-            span.style = span.style.patch(MarkdownStyle.list_marker());
-        }
-    }
-}
-
-/// A labelled, highlighted block whose source lines wrap inside the container's column.
-fn code_block_lines(
-    kind: &CodeBlockKind<'_>,
-    content: &[Node<'_>],
-    first: &str,
-    continuation: &str,
-    layout: Layout<'_>,
-) -> Vec<Line<'static>> {
-    let (label, mut cursor) = CodeRows::new(kind, content);
-    let mut lines = prefix_block_lines(vec![label], first, continuation, layout.width, layout.bg);
-    while !layout.control.cancelled() {
-        let Some(rows) = cursor.next(continuation, layout) else {
-            break;
-        };
-        lines.extend(rows);
-    }
-    lines
-}
-
-fn table_lines(
-    alignments: &[Alignment],
-    sections: &[Node<'_>],
-    width: u16,
-    layout: Layout<'_>,
-) -> Vec<Line<'static>> {
-    let cells = |row: &[Node<'_>]| {
-        row.iter()
-            .filter_map(|cell| {
-                let Node::Block(Tag::TableCell, _, children) = cell else {
-                    return None;
-                };
-                let mut spans = Vec::new();
-                for child in children {
-                    inline_spans(child, Style::default(), layout, &mut spans);
-                }
-                Some(
-                    spans
-                        .into_iter()
-                        .map(|span| StyledChunk {
-                            text: span.content.into_owned(),
-                            style: span.style,
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    let mut header = Vec::new();
-    let mut rows = Vec::new();
-    for section in sections {
-        if layout.control.cancelled() {
-            return Vec::new();
-        }
-        match section {
-            Node::Block(Tag::TableHead, _, head) => {
-                header = match head.first() {
-                    Some(Node::Block(Tag::TableRow, _, row)) => cells(row),
-                    _ => cells(head),
-                };
-            }
-            Node::Block(Tag::TableRow, _, row) => rows.push(cells(row)),
-            _ => {}
-        }
-    }
-    DocumentTable::new(alignments, header, rows).render_lines(width, layout.bg, layout.control)
-}
-
-fn first_task_marker(nodes: &[Node<'_>]) -> Option<bool> {
-    match nodes.first()? {
-        Node::Inline(Event::TaskListMarker(checked), _) => Some(*checked),
-        Node::Block(Tag::Paragraph, _, children) => first_task_marker(children),
-        _ => None,
-    }
-}
-
-fn flush_inline(
-    nodes: &mut Vec<&Node<'_>>,
-    prefix: &str,
-    continuation: &str,
-    first: &mut bool,
-    layout: Layout<'_>,
-    out: &mut Vec<Line<'static>>,
-) {
-    if nodes.is_empty() {
-        return;
-    }
-    let mut spans = Vec::new();
-    for node in nodes.drain(..) {
-        inline_spans(node, Style::default(), layout, &mut spans);
-    }
-    if spans.is_empty() {
-        return;
-    }
-    out.extend(prefix_lines(
-        vec![Line::from(spans)],
-        if *first { prefix } else { continuation },
-        continuation,
-        layout.width,
-        layout.bg,
-    ));
-    *first = false;
 }
 
 fn heading_level(level: HeadingLevel) -> u8 {
@@ -713,15 +469,13 @@ fn inline_spans(node: &Node<'_>, style: Style, layout: Layout<'_>, spans: &mut V
 
 fn prefix_lines(
     lines: Vec<Line<'static>>,
-    first: &str,
-    continuation: &str,
+    prefix: &str,
     width: u16,
     bg: Option<Color>,
 ) -> Vec<Line<'static>> {
     let style = bg.map_or(Style::default(), |color| Style::default().bg(color));
     let mut out = Vec::new();
-    for (index, line) in lines.into_iter().enumerate() {
-        let prefix = if index == 0 { first } else { continuation };
+    for line in lines {
         let chunks = line
             .spans
             .into_iter()
@@ -730,49 +484,34 @@ fn prefix_lines(
                 style: line.style.patch(span.style).patch(style),
             })
             .collect::<Vec<_>>();
-        let mut rows = wrap_styled_chunks_with_hanging_prefix(
+        let rows = wrap_styled_chunks_with_hanging_prefix(
             &[StyledChunk { text: prefix.to_owned(), style }],
             &chunks,
             usize::from(width),
             style,
         );
-        if display_width(prefix) < usize::from(width) {
-            for row in rows.iter_mut().skip(1) {
-                if let Some(span) = row.spans.first_mut() {
-                    span.content = continuation.to_owned().into();
-                }
-            }
-        }
         out.extend(rows);
     }
     out
 }
 
-/// Code and pre-laid-out tables retain their own leading whitespace.
+/// Code retains its leading whitespace.
 fn prefix_block_lines(
     lines: Vec<Line<'static>>,
-    first: &str,
-    continuation: &str,
+    prefix: &str,
     width: u16,
     bg: Option<Color>,
 ) -> Vec<Line<'static>> {
-    let prefix_width = u16::try_from(display_width(first)).unwrap_or(u16::MAX);
+    let prefix_width = u16::try_from(display_width(prefix)).unwrap_or(u16::MAX);
     if prefix_width >= width {
-        return prefix_lines(lines, first, continuation, width, bg);
+        return prefix_lines(lines, prefix, width, bg);
     }
     let style = bg.map_or(Style::default(), |color| Style::default().bg(color));
     lines
         .into_iter()
         .flat_map(|line| split_line_at_width(line, usize::from(width - prefix_width)))
-        .enumerate()
-        .map(|(index, mut line)| {
-            line.spans.insert(
-                0,
-                Span::styled(
-                    if index == 0 { first.to_owned() } else { continuation.to_owned() },
-                    style,
-                ),
-            );
+        .map(|mut line| {
+            line.spans.insert(0, Span::styled(prefix.to_owned(), style));
             if let Some(color) = bg {
                 line.style = line.style.bg(color);
                 for span in &mut line.spans {
