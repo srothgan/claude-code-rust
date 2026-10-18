@@ -42,6 +42,8 @@ agent-sdk/dist/bridge.js
 
 The TypeScript bridge wraps `@anthropic-ai/claude-agent-sdk`. Rust and TypeScript communicate over stdin/stdout using newline-delimited JSON command and event envelopes.
 
+The SDK owns subprocess option serialization. The bridge forwards its argument array unchanged to the child process; named `--flag=value` arguments and separately serialized settings JSON retain their original boundaries. Assistant text projection preserves text and Markdown links across streaming, completed-only replies and saved history. Structured citation objects supplied by the SDK are not transported to Rust or rendered as source references.
+
 Rust sends commands such as session creation, session resume, prompt submission, permission responses, MCP actions, and runtime refresh requests. The bridge sends events such as assistant messages, tool updates, permission requests, question requests, available commands, modes, models, usage, and errors.
 
 ## Subsystems

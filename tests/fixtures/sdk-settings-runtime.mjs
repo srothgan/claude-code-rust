@@ -5,6 +5,8 @@ import http from "node:http";
 const { query } = await import("../../agent-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs");
 const [type, policy] = process.argv.slice(2),
   cwd = process.cwd();
+const citation = { type: "web_search_result_location", url: "https://example.test/citation-only", title: "Metadata source", encrypted_index: "fixture-only", cited_text: "Evidence" };
+const reply = type === "citations" ? "Evidence: [source](https://example.test/source)." : "HOOK-PROBE-OK";
 if (type === "idle") {
   fs.writeFileSync(
     path.join(cwd, ".claude/settings.json"),
@@ -62,7 +64,7 @@ if (type === "idle") {
       type: "message",
       role: "assistant",
       model: data.model,
-      content: [{ type: "text", text: "HOOK-PROBE-OK" }],
+      content: [{ type: "text", text: reply, ...(type === "citations" ? { citations: [citation] } : {}) }],
       stop_reason: "end_turn",
       stop_sequence: null,
       usage: { input_tokens: 10, output_tokens: 5 },
@@ -75,8 +77,9 @@ if (type === "idle") {
       send("content_block_delta", {
         type: "content_block_delta",
         index: 0,
-        delta: { type: "text_delta", text: "HOOK-PROBE-OK" },
+        delta: { type: "text_delta", text: reply },
       });
+      if (type === "citations") send("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "citations_delta", citation } });
       send("content_block_stop", { type: "content_block_stop", index: 0 });
       send("message_delta", {
         type: "message_delta",
@@ -104,7 +107,7 @@ if (type === "idle") {
       ? { type, command: '"' + process.execPath + '" "' + failure + '"' }
       : { type, url: base + "/hook" };
   if (policy !== "default") handler.onFailure = policy;
-  fs.writeFileSync(
+  if (type !== "citations") fs.writeFileSync(
     path.join(cwd, ".claude/settings.json"),
     JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [handler] }] } }),
   );
@@ -119,6 +122,7 @@ if (type === "idle") {
       maxTurns: 1,
       persistSession: false,
       model: "claude-sonnet-4-6",
+      ...(type === "citations" ? { includePartialMessages: true } : {}),
     },
   });
   const timer = setTimeout(() => q.close(), 15000);
@@ -133,6 +137,7 @@ if (type === "idle") {
         result: msg.result,
         errors: msg.errors,
         content: msg.message?.content,
+        ...(type === "citations" ? { event: msg.event } : {}),
       });
     }
   } finally {

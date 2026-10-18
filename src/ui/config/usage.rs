@@ -528,35 +528,63 @@ mod tests {
     }
 
     #[test]
-    fn sdk_behavior_labels_keep_their_values_in_their_activity_window() {
-        let window = |key: &str, pct, count| UsageActivityWindow {
-            request_count: 20,
-            session_count: 2,
-            behaviors: vec![crate::app::UsageBehaviorAttribution {
-                key: key.to_owned(),
-                pct,
-                count,
-            }],
-            agents: Vec::new(),
-            skills: Vec::new(),
-            plugins: Vec::new(),
-            mcp_servers: Vec::new(),
-        };
-        for (key, label) in [
-            ("max_effort", "max effort"),
-            ("workflow", "workflow"),
-            ("always_on_context", "always on context"),
-            ("large_tool_results", "large tool results"),
-            ("future_behavior", "future behavior"),
-        ] {
-            let day = super::format_activity_window("Day", &window(key, 70.0, 7));
-            let week = super::format_activity_window("Week", &window(key, 85.0, 17));
-            assert!(day.starts_with("Day:"));
-            assert!(day.contains(&format!("{label} 70% (7 requests)")));
-            assert!(!day.contains("85%"));
-            assert!(week.starts_with("Week:"));
-            assert!(week.contains(&format!("{label} 85% (17 requests)")));
-            assert!(!week.contains("70%"));
+    fn sdk_behavior_labels_keep_their_values_in_their_rendered_activity_window() {
+        let raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/sdk-usage-attribution.json"
+        ))
+        .expect("SDK fixture");
+        let snapshot = serde_json::from_value(serde_json::json!({
+            "rate_limits_available":false,
+            "activity_day":raw["behaviors"]["day"], "activity_week":raw["behaviors"]["week"]
+        }))
+        .expect("wire snapshot");
+        let mut app = usage_app();
+        crate::app::usage::apply_structured_sdk_result(&mut app, Some(snapshot), None);
+        for width in [80, 120] {
+            let rows = render_usage_rows(&app, width, 40);
+            let day = rows
+                .iter()
+                .position(|row| row.contains("Last 24 hours: 20 requests across 2 sessions"))
+                .expect("day heading");
+            let week = rows
+                .iter()
+                .position(|row| row.contains("Last 7 days: 100 requests across 9 sessions"))
+                .expect("week heading");
+            let end = rows
+                .iter()
+                .position(|row| row.contains("Local transcript scan"))
+                .expect("activity explanation");
+            assert!(day < week && week < end);
+            let day_rows = rows[day + 1..week].join(" ");
+            let week_rows = rows[week + 1..end].join(" ");
+            // Remove the card gutter and wrapping whitespace, keeping label/value association.
+            let compact = |text: &str| {
+                text.chars()
+                    .filter(|ch| !ch.is_whitespace() && *ch != '\u{2502}')
+                    .collect::<String>()
+            };
+            let day_rows = compact(&day_rows);
+            let week_rows = compact(&week_rows);
+            for (day_value, week_value) in [
+                ("max effort 71% (7 requests)", "max effort 81% (17 requests)"),
+                ("workflow 62% (6 requests)", "workflow 72% (16 requests)"),
+                ("always on context 53% (5 requests)", "always on context 63% (15 requests)"),
+                ("large tool results 44% (4 requests)", "large tool results 54% (14 requests)"),
+                ("future behavior 35% (3 requests)", "future behavior 45% (13 requests)"),
+            ] {
+                assert!(day_rows.contains(&compact(day_value)), "{day_rows}");
+                assert!(!week_rows.contains(&compact(day_value)));
+                assert!(week_rows.contains(&compact(week_value)), "{week_rows}");
+                assert!(!day_rows.contains(&compact(week_value)));
+            }
+            // The existing display bound does not discard the sixth entry from state.
+            assert!(!rows.iter().any(|row| row.contains("sixth")));
+            let activity = app.usage.snapshot.as_ref().unwrap().activity.as_ref().unwrap();
+            assert_eq!(
+                activity.day.as_ref().unwrap().behaviors.last().unwrap().key,
+                "sixth_behavior"
+            );
+            assert_eq!(activity.week.as_ref().unwrap().behaviors.last().unwrap().count, 12);
         }
     }
 

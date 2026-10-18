@@ -9096,56 +9096,119 @@ test("agent sdk version compatibility check matches pinned version", () => {
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
-test("the pinned SDK keeps named option values intact in generated argv", async () => {
-  let args: string[] | undefined;
-  const stop = new Error("argv captured without launching a process");
-  const capture = () => query({
-    prompt: "never sent",
-    options: {
-      model: "-model with = signs",
-      permissionMode: "plan",
-      debugFile: "-debug path=example.log",
-      settingSources: ["user", "project", "local"],
-      settings: { language: "value with = signs" },
+test("the pinned SDK forwards named options unchanged through the host to a real child", { timeout: 15000 }, async (context) => {
+  const { fileURLToPath } = await import("node:url");
+  const fixture = fileURLToPath(new URL("../../tests/fixtures/sdk-compatibility-peer.js", import.meta.url));
+  for (const special of [false, true]) {
+    const session = makeSessionState();
+    const host = buildQueryOptions({ resolvedSettings: {}, cwd: process.cwd(), launchSettings: {},
+      provisionalSessionId: session.sessionId, input: session.input, canUseTool: async () => ({behavior:"deny",message:"unused"}),
+      claudeCodeExecutable: fixture, enableSdkDebug:false, enableSpawnDebug:false, sessionIdForLogs:()=>session.sessionId });
+    let generated: string[] | undefined;
+    const sdkQuery = query({prompt:session.input,options:{
+      ...host, executable:"node", persistSession:false, settings:{language:"value with = signs"},
+      ...(special ? {model:"-model with = signs",debugFile:"-debug path=example.log",permissionMode:"plan" as const,
+        settings:{language:""},settingSources:[]} : {}),
       spawnClaudeCodeProcess(options) {
-        args = options.args;
-        throw stop;
+        generated = [...options.args];
+        return host.spawnClaudeCodeProcess(options);
       },
-    },
-  });
-  let sdkQuery: ReturnType<typeof query> | undefined;
-  try {
-    await assert.rejects(async () => {
-      sdkQuery = capture();
-      await sdkQuery.supportedCommands();
-    }, error => error === stop);
-    assert.ok(args);
-    assert.ok(args.includes("--model=-model with = signs"));
-    assert.ok(args.includes("--permission-mode=plan"));
-    assert.ok(args.includes("--debug-file=-debug path=example.log"));
-    assert.ok(args.includes("--setting-sources=user,project,local"));
-    // Settings JSON has its own SDK serialization path, not the named-option map.
-    assert.equal(args[args.indexOf("--settings") + 1], '{"language":"value with = signs"}');
-  } finally {
-    sdkQuery?.close();
+    }});
+    context.after(()=>sdkQuery.close());
+    try {
+      const commands = await sdkQuery.supportedCommands();
+      const report = commands.find(command=>command.name === "received-argv");
+      assert.ok(report);
+      assert.ok(generated);
+      assert.equal(generated[0],fixture);
+      assert.deepEqual(JSON.parse(report.description),generated.slice(1));
+      if (special) {
+        assert.ok(generated.includes("--model=-model with = signs"));
+        assert.ok(generated.includes("--debug-file=-debug path=example.log"));
+        assert.ok(generated.includes("--permission-mode=plan"));
+        assert.ok(generated.includes("--setting-sources="));
+      } else {
+        assert.ok(!generated.some(arg=>arg.startsWith("--model=") || arg.startsWith("--debug-file=")));
+        assert.ok(generated.includes("--setting-sources=user,project,local"));
+      }
+      assert.equal(generated[generated.indexOf("--settings")+1],special ? '{"language":""}' : '{"language":"value with = signs"}');
+    } finally {sdkQuery.close();}
   }
 });
 
-test("usage attribution accepts the new SDK behaviors and future keys in each window", () => {
-  const day = [
-    { key: "max_effort", pct: 70, count: 7 },
-    { key: "workflow", pct: 60, count: 6 },
-    { key: "always_on_context", pct: 50, count: 5 },
-    { key: "large_tool_results", pct: 40, count: 4 },
-    { key: "future_behavior", pct: 30, count: 3 },
-  ];
-  const week = [{ key: "workflow", pct: 85, count: 17 }];
-  const result = normalizeStructuredUsage({ behaviors: {
-    day: { request_count: 10, session_count: 2, behaviors: day },
-    week: { request_count: 20, session_count: 4, behaviors: week },
-  } });
-  assert.deepEqual(result.activity_day?.behaviors, day);
-  assert.deepEqual(result.activity_week?.behaviors, week);
+test("usage attribution preserves both windows and future keys in the emitted response", async () => {
+  const {readFileSync} = await import("node:fs");
+  const raw = JSON.parse(readFileSync(new URL("../../tests/fixtures/sdk-usage-attribution.json",import.meta.url),"utf8"));
+  const session = makeSessionState();
+  session.query = {usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET:async()=>raw} as unknown as SessionState["query"];
+  sessions.set(session.sessionId,session);
+  try {
+    const events = await captureBridgeEventsAsync(()=>handleSessionDataCommand({command:"get_usage",session_id:session.sessionId},"usage-request",{
+      generatePersistedSessionTitle,buildSessionMutationOptions,rewindTargetsFromSessionMessages,handleRewind:async()=>assert.fail("unused"),
+    }));
+    assert.equal(events.length,1);
+    assert.equal(events[0].request_id,"usage-request");
+    assert.equal(events[0].event,"usage_snapshot");
+    assert.equal(events[0].session_id,session.sessionId);
+    const snapshot = events[0].snapshot as import("./types.js").StructuredUsageSnapshot;
+    assert.deepEqual(snapshot.activity_day?.behaviors,[
+      {key:"max_effort",pct:71,count:7},{key:"workflow",pct:62,count:6},{key:"always_on_context",pct:53,count:5},
+      {key:"large_tool_results",pct:44,count:4},{key:"future_behavior",pct:35,count:3},{key:"sixth_behavior",pct:26,count:2},
+    ]);
+    assert.deepEqual(snapshot.activity_week?.behaviors,[
+      {key:"max_effort",pct:81,count:17},{key:"workflow",pct:72,count:16},{key:"always_on_context",pct:63,count:15},
+      {key:"large_tool_results",pct:54,count:14},{key:"future_behavior",pct:45,count:13},{key:"sixth_behavior",pct:36,count:12},
+    ]);
+    assert.equal(snapshot.activity_day?.request_count,20);
+    assert.equal(snapshot.activity_week?.request_count,100);
+  } finally {sessions.delete(session.sessionId);}
+});
+
+test("pinned SDK preserves supplied citations and the host delivers streamed and saved text once", {timeout:15000}, async (context) => {
+  // This peer checks transport and host consumers. settings_runtime.test.ts
+  // separately exercises the native producer with actual API citation deltas.
+  const {fileURLToPath} = await import("node:url");
+  const fixture = fileURLToPath(new URL("../../tests/fixtures/sdk-compatibility-peer.js",import.meta.url));
+  const session = makeSessionState();
+  const host = buildQueryOptions({resolvedSettings:{},cwd:process.cwd(),launchSettings:{},provisionalSessionId:session.sessionId,
+    input:session.input,canUseTool:async()=>({behavior:"deny",message:"unused"}),claudeCodeExecutable:fixture,
+    enableSdkDebug:false,enableSpawnDebug:false,sessionIdForLogs:()=>session.sessionId});
+  const sdkQuery = query({prompt:"COMPAT-CITATIONS",options:{...host,executable:"node",persistSession:false}});
+  context.after(()=>sdkQuery.close());
+  const completed: SessionMessage[] = [];
+  let citationDeltaSeen = false;
+  try {
+    const events = await captureBridgeEventsAsync(async()=>{
+      for await (const message of sdkQuery) {
+        if (message.type === "stream_event" && message.event.type === "content_block_delta" && message.event.delta.type === "citations_delta") citationDeltaSeen = true;
+        if (message.type === "assistant") {
+          assert.deepEqual(message.message.content,[{type:"text",text:"Evidence: [source](https://example.test/source).",citations:[{
+            type:"web_search_result_location",url:"https://example.test/citation-only",title:"Metadata source",encrypted_index:"fixture-only",cited_text:"Evidence",
+          }]}]);
+          completed.push({...message,parent_agent_id:null});
+        }
+        handleSdkMessage(session,message);
+        if (message.type === "result") break;
+      }
+    });
+    assert.ok(citationDeltaSeen);
+    assert.equal(completed.length,1);
+    const live = events.flatMap(event=>{const update=event.update as import("./types.js").SessionUpdate|undefined;return update?.type === "agent_message_chunk" ? [update.content] : [];});
+    assert.deepEqual(live,[{type:"text",text:"Evidence: "},{type:"text",text:"[source](https://example.test/source)."}]);
+    assert.equal(events.filter(event=>event.event === "turn_complete").length,1);
+    const saved = await getSessionMessages("11111111-1111-4111-8111-111111111111",{dir:process.cwd(),sessionStore:{
+      load:async()=>[{type:"assistant",uuid:"22222222-2222-4222-8222-222222222222",parentUuid:null,
+        sessionId:"11111111-1111-4111-8111-111111111111",isSidechain:false,timestamp:"2026-10-18T12:00:00Z",message:completed[0].message}],
+      append:async()=>assert.fail("history reads must not write"),
+    }});
+    assert.equal(saved.length,1);
+    assert.deepEqual(saved[0].message,completed[0].message);
+    const replay = mapSessionMessagesToUpdates(saved).filter(update=>update.type === "agent_message_chunk");
+    assert.deepEqual(replay.map(update=>update.content),[{type:"text",text:"Evidence: [source](https://example.test/source)."}]);
+    // Completed-only replies also keep the same visible text without needing deltas.
+    const fallback = captureBridgeEvents(()=>handleSdkMessage(makeSessionState(),completed[0] as import("@anthropic-ai/claude-agent-sdk").SDKMessage));
+    assert.deepEqual(fallback.flatMap(event=>{const update=event.update as import("./types.js").SessionUpdate|undefined;return update?.type === "agent_message_chunk" ? [update.content] : [];}),replay.map(update=>update.content));
+  } finally {sdkQuery.close();}
 });
 
 test("mapSessionMessagesToUpdates maps message content blocks", () => {

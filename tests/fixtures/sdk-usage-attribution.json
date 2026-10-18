@@ -1,0 +1,30 @@
+{
+  "subscription_type": "max",
+  "rate_limits_available": false,
+  "behaviors": {
+    "day": {
+      "request_count": 20,
+      "session_count": 2,
+      "behaviors": [
+        {"key": "max_effort", "pct": 71, "count": 7},
+        {"key": "workflow", "pct": 62, "count": 6},
+        {"key": "always_on_context", "pct": 53, "count": 5},
+        {"key": "large_tool_results", "pct": 44, "count": 4},
+        {"key": "future_behavior", "pct": 35, "count": 3},
+        {"key": "sixth_behavior", "pct": 26, "count": 2}
+      ]
+    },
+    "week": {
+      "request_count": 100,
+      "session_count": 9,
+      "behaviors": [
+        {"key": "max_effort", "pct": 81, "count": 17},
+        {"key": "workflow", "pct": 72, "count": 16},
+        {"key": "always_on_context", "pct": 63, "count": 15},
+        {"key": "large_tool_results", "pct": 54, "count": 14},
+        {"key": "future_behavior", "pct": 45, "count": 13},
+        {"key": "sixth_behavior", "pct": 36, "count": 12}
+      ]
+    }
+  }
+}

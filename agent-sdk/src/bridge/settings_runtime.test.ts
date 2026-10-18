@@ -64,3 +64,16 @@ test("a fresh native session reports the saved idle preference without an applie
     assert.equal(result.applied, undefined, "saved preference must not be presented as active feature evidence");
   }
 });
+
+test("SDK 0.3.302 native streaming accumulates citation deltas into completed text blocks", async () => {
+  const result = await probe("citations", "default");
+  assert.equal(result.calls, 1);
+  const messages = result.messages as Array<{ type: string; content?: unknown; event?: { type?: string; delta?: { type?: string } } }>;
+  assert.ok(messages.some(message => message.event?.delta?.type === "citations_delta"));
+  assert.deepEqual(messages.filter(message => message.type === "assistant").map(message => message.content), [[{
+    type: "text", text: "Evidence: [source](https://example.test/source).", citations: [{
+      type: "web_search_result_location", url: "https://example.test/citation-only", title: "Metadata source",
+      encrypted_index: "fixture-only", cited_text: "Evidence",
+    }],
+  }]]);
+});
