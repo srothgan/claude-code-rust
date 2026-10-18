@@ -66,6 +66,7 @@ pub(crate) enum McpServerOwnership<'a> {
     Persisted(McpConfigScope),
     SdkDynamic,
     PluginOwned(&'a InstalledPluginEntry),
+    SessionPluginOwned(&'a crate::agent::types::SessionPlugin),
     PluginOwnedUnknown,
     RuntimeOnly,
 }

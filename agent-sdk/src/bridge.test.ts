@@ -3,6 +3,7 @@ import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentC
 import test, { mock } from "node:test";
 import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
+import { resolve as resolvePath } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   AsyncQueue,
@@ -1717,6 +1718,30 @@ test("parseCommandEnvelope validates reload_plugins command", () => {
   );
 });
 
+test("folder reload commands preserve path intent and reject malformed paths before dispatch", () => {
+  const command = { command: "reload_plugins", session_id: "session-1", add_plugins: ["./folder with spaces"] };
+  assert.deepEqual(parseCommandEnvelope(JSON.stringify(command)).command, command);
+  for (const invalid of [null, "folder", [3], [""], [" \t"]]) {
+    assert.throws(() => parseCommandEnvelope(JSON.stringify({ ...command, add_plugins: invalid })), /local folder paths/);
+  }
+});
+
+test("unsafe folder text is a correlated reload refusal rather than a fatal command decode error", async () => {
+  const session = makeSessionState();
+  let calls = 0;
+  session.query = { reloadPlugins: async () => { calls += 1; throw new Error("must not dispatch"); } } as unknown as SessionState["query"];
+  for (const folder of ["bad\nfolder", "bad\u202efolder"]) {
+    const parsed = parseCommandEnvelope(JSON.stringify({ command: "reload_plugins", session_id: session.sessionId, add_plugins: [folder] }));
+    assert.equal(parsed.command.command, "reload_plugins");
+    const events = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "unsafe-folder", false, [folder]));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event, "runtime_reload_failed");
+    assert.equal(events[0].request_id, "unsafe-folder");
+    assert.match(String(events[0].message), /control or format characters/);
+  }
+  assert.equal(calls, 0);
+});
+
 test("parseCommandEnvelope validates reload_skills_and_styles command", () => {
   const parsed = parseCommandEnvelope(
     JSON.stringify({
@@ -1989,10 +2014,12 @@ test("handleReloadPluginsCommand holds cache-impacting reloads and sanitizes plu
 
   assert.deepEqual(optionsSeen, [{ holdOnCacheImpact: true }]);
   assert.deepEqual(events, [
+    { event: "plugin_inventory", session_id: session.sessionId, plugins: [] },
     {
       request_id: "req-held",
       event: "runtime_reload_held",
       session_id: "session-1",
+      error_count: 0,
       cache_impact: {
         mcp_servers_added: ["plugin:docs:search"],
         mcp_servers_removed: ["plugin:old:server"],
@@ -2024,6 +2051,92 @@ test("handleReloadPluginsCommand forces only through an optionless explicit requ
   });
 
   assert.deepEqual(argumentLists, [[]]);
+});
+
+test("local folder reload retains its exact request through hold and apply and reconciles partial results", async () => {
+  const session = makeSessionState();
+  const calls: unknown[] = [];
+  let held = true;
+  session.query = { reloadPlugins: async (options: unknown) => {
+    calls.push(options);
+    const folder = (options as { addPlugins: Array<{ path: string }> }).addPlugins[0].path;
+    return {
+      commands: [{ name: "fixture:hello", description: "Fixture", argumentHint: "" }],
+      agents: [{ name: "fixture-agent", description: "Fixture" }],
+      plugins: held ? [] : [{ name: "fixture", path: folder, source: "fixture@inline", version: "1.2.3" }],
+      mcpServers: [], error_count: 2, held,
+      cache_impact: { mcp_servers_added: ["plugin:fixture:tools"], mcp_servers_removed: [] },
+    };
+  } } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const before = session.availableCommands;
+  const heldEvents = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "held", false, ["fixture"]));
+  assert.equal(session.availableCommands, before);
+  assert.ok(heldEvents.some(event => event.event === "runtime_reload_held" && event.error_count === 2));
+  assert.deepEqual(session.pluginInventory, []);
+  held = false;
+  const applied = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "applied", true, ["fixture"]));
+  const first = calls[0] as { addPlugins: unknown };
+  assert.deepEqual(calls[1], { addPlugins: first.addPlugins });
+  const inventory = applied.find(event => event.event === "plugin_inventory")?.plugins as Array<{ path: string }>;
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].path, resolvePath(session.cwd, "fixture"));
+  assert.ok(applied.some(event => event.event === "runtime_reload_completed" && event.error_count === 2));
+  assert.equal(applied.some(event => event.event === "runtime_reload_failed"), false);
+  assert.ok(session.availableCommands?.commands.some(command => command.name === "fixture:hello"));
+  assert.ok(session.availableAgents?.some(agent => agent.name === "fixture-agent"));
+});
+
+test("a rejected folder reload preserves confirmed plugin inventory and reports its correlated error", async () => {
+  const session = makeSessionState();
+  session.pluginInventory = [{ name: "existing", path: session.cwd, source: "existing@inline" }];
+  const confirmed = session.pluginInventory;
+  session.query = { reloadPlugins: async () => { throw new Error("Local plugins are disabled by managed settings"); } } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const events = await captureBridgeEventsAsync(() => handleReloadPluginsCommand(session, "rejected", false, ["new-folder"]));
+  assert.equal(session.pluginInventory, confirmed);
+  assert.deepEqual(events, [{ request_id: "rejected", event: "runtime_reload_failed", session_id: session.sessionId, message: "Local plugins are disabled by managed settings" }]);
+});
+
+test("an applied folder reload reports host reconciliation failure without offering native retry", async () => {
+  const session = makeSessionState();
+  let nativeCalls = 0;
+  session.query = { reloadPlugins: async () => {
+    nativeCalls += 1;
+    return { plugins: [{ name: "confirmed", path: session.cwd, source: "confirmed@inline" }], commands: [], agents: [], mcpServers: [], error_count: 1 };
+  } } as unknown as SessionState["query"];
+  const events: Array<Record<string, unknown>> = [];
+  const restore = replaceProtocolEventWriter(line => {
+    const event = JSON.parse(line);
+    if (event.event === "mcp_snapshot") throw new Error("MCP snapshot delivery failed");
+    events.push(event);
+  });
+  try {
+    await handleReloadPluginsCommand(session, "reconcile", false, ["confirmed"]);
+    assert.equal(nativeCalls, 1);
+    assert.ok(events.some(event => event.event === "plugin_inventory"));
+    assert.deepEqual(events.at(-1), { request_id: "reconcile", event: "runtime_reload_completed", session_id: session.sessionId, error_count: 1, reconciliation_error: "MCP snapshot delivery failed" });
+    assert.equal(events.some(event => event.event === "runtime_reload_failed"), false);
+  } finally { restore(); }
+});
+
+test("closing a query while its folder reload is awaiting the SDK suppresses late inventory and outcomes", async () => {
+  for (const fail of [false, true]) {
+    const session = makeSessionState();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    session.query = { reloadPlugins: async () => {
+      await gate;
+      if (fail) throw new Error("closed");
+      return { plugins: [], commands: [], agents: [], mcpServers: [], error_count: 0 };
+    } } as unknown as SessionState["query"];
+    const events = await captureBridgeEventsAsync(async () => {
+      const reload = handleReloadPluginsCommand(session, "closed", false, ["folder"]);
+      session.closing = true;
+      release();
+      await reload;
+    });
+    assert.deepEqual(events, []);
+    assert.equal(session.pluginInventory, undefined);
+  }
 });
 
 test("handleReloadPluginsCommand emits MCP snapshot from reload result", async () => {
@@ -2092,6 +2205,7 @@ test("handleReloadPluginsCommand emits MCP snapshot from reload result", async (
         request_id: "req-reload",
         event: "runtime_reload_completed",
         session_id: "session-1",
+      error_count: 0,
       },
     ],
   );
@@ -2825,6 +2939,7 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   const options = buildQueryOptions({
     resolvedSettings: {},
     cwd: "C:/work",
+    pluginPaths: ["C:/plugins/confirmed"],
     resume: "session-1",
     resumeSessionAt: "assistant-1",
     resumeDropsTurn: "user-2",
@@ -2842,6 +2957,7 @@ test("buildQueryOptions includes resumeSessionAt when provided", () => {
   assert.equal(options.resumeSessionAt, "assistant-1");
   assert.equal(options.resumeDropsTurn, "user-2");
   assert.equal(options.forkSession, true);
+  assert.deepEqual(options.plugins, [{ type: "local", path: "C:/plugins/confirmed" }]);
   assert.equal(options.sessionId, "session-1");
   assert.deepEqual(options.systemPrompt, {
     type: "preset",
@@ -9951,6 +10067,7 @@ test("commitDeferredSession publishes connect before all buffered session-scoped
       writeEvent({
         event: "runtime_reload_completed",
         session_id: session.sessionId,
+        error_count: 0,
       });
       sessions.delete(session.sessionId);
       session.sessionId = "session-committed";

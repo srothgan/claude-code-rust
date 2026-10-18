@@ -67,6 +67,10 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                     PluginsViewTab::Installed => open_installed_actions_overlay(app),
                     PluginsViewTab::Plugins => open_plugin_install_overlay(app),
                     PluginsViewTab::Marketplace => open_marketplace_overlay(app),
+                    PluginsViewTab::Session => {
+                        super::local::open_folder_input(app);
+                        true
+                    }
                 }
             }
         }
@@ -96,7 +100,11 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 && (modifiers.is_empty() || modifiers == KeyModifiers::SHIFT)
                 && !app.plugins.search_focused =>
         {
-            request_inventory_refresh_manual(app);
+            refresh_active_list(app);
+            true
+        }
+        (KeyCode::Char('l'), KeyModifiers::NONE) if !app.plugins.search_focused => {
+            super::local::open_folder_input(app);
             true
         }
         (KeyCode::Char(ch), modifiers)
@@ -112,5 +120,13 @@ pub(crate) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+fn refresh_active_list(app: &mut App) {
+    if app.plugins.active_tab == PluginsViewTab::Session {
+        super::actions::start_runtime_reload(app, "Session plugin inventory refreshed".to_owned());
+    } else {
+        request_inventory_refresh_manual(app);
     }
 }

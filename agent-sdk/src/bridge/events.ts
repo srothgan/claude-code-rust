@@ -1,4 +1,5 @@
 import { emitSessionTitle } from "./session_title.js";
+import { emitSessionPluginInventory } from "./plugin_inventory.js";
 import {
   listSessions,
   type ListSessionsOptions,
@@ -152,9 +153,11 @@ export function emitSessionResumeFailed(
 export function emitRuntimeReloadCompleted(
   sessionId: string,
   requestId?: string,
+  errorCount = 0,
+  reconciliationError?: string,
 ): void {
   writeEvent(
-    { event: "runtime_reload_completed", session_id: sessionId },
+    { event: "runtime_reload_completed", session_id: sessionId, error_count: errorCount, ...(reconciliationError ? { reconciliation_error: reconciliationError } : {}) },
     requestId,
   );
 }
@@ -163,9 +166,10 @@ export function emitRuntimeReloadHeld(
   sessionId: string,
   cacheImpact: import("../types.js").RuntimeReloadCacheImpact,
   requestId?: string,
+  errorCount = 0,
 ): void {
   writeEvent(
-    { event: "runtime_reload_held", session_id: sessionId, cache_impact: cacheImpact },
+    { event: "runtime_reload_held", session_id: sessionId, cache_impact: cacheImpact, error_count: errorCount },
     requestId,
   );
 }
@@ -399,6 +403,7 @@ export function emitConnectEvent(session: SessionState): Promise<void> {
   }
   session.connectRequestId = undefined;
   session.connected = true;
+  emitSessionPluginInventory(session);
   session.authHintSent = false;
   const deferredBridgeEvents = session.deferredBridgeEvents;
   session.deferredBridgeEvents = undefined;
@@ -446,6 +451,7 @@ export function emitSessionReplacedEvent(
   const bridgeEvent = buildConnectBridgeEvent(session, "session_replaced");
   logConnectEventEmission(session, "session_replaced", requestId);
   writeEvent(bridgeEvent, requestId);
+  emitSessionPluginInventory(session);
   emitAvailableCommandsSnapshot(session);
   emitAvailableAgentsSnapshot(session);
   void emitSessionTitle(session);

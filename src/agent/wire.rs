@@ -242,6 +242,8 @@ pub enum BridgeCommand {
         session_id: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        add_plugins: Vec<String>,
     },
     ReloadSkillsAndStyles {
         session_id: String,
@@ -571,12 +573,22 @@ pub enum BridgeEvent {
         session_id: String,
         message: String,
     },
+    PluginInventory {
+        session_id: String,
+        plugins: Vec<types::SessionPlugin>,
+    },
     RuntimeReloadCompleted {
         session_id: String,
+        #[serde(default)]
+        error_count: u32,
+        #[serde(default)]
+        reconciliation_error: Option<String>,
     },
     RuntimeReloadHeld {
         session_id: String,
         cache_impact: types::RuntimeReloadCacheImpact,
+        #[serde(default)]
+        error_count: u32,
     },
     RuntimeReloadFailed {
         session_id: String,
@@ -704,6 +716,7 @@ impl BridgeEvent {
             Self::SlashError { .. } => "slash_error",
             Self::SessionResumeFailed { .. } => "session_resume_failed",
             Self::RuntimeReloadCompleted { .. } => "runtime_reload_completed",
+            Self::PluginInventory { .. } => "plugin_inventory",
             Self::RuntimeReloadHeld { .. } => "runtime_reload_held",
             Self::RuntimeReloadFailed { .. } => "runtime_reload_failed",
             Self::SkillsAndStylesReloaded { .. } => "skills_and_styles_reloaded",
@@ -750,6 +763,7 @@ impl BridgeEvent {
             | Self::SlashError { session_id, .. }
             | Self::SessionResumeFailed { session_id, .. }
             | Self::RuntimeReloadCompleted { session_id, .. }
+            | Self::PluginInventory { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }
@@ -802,6 +816,7 @@ impl BridgeEvent {
             | Self::SlashError { .. }
             | Self::SessionResumeFailed { .. }
             | Self::RuntimeReloadCompleted { .. }
+            | Self::PluginInventory { .. }
             | Self::RuntimeReloadHeld { .. }
             | Self::RuntimeReloadFailed { .. }
             | Self::SkillsAndStylesReloaded { .. }

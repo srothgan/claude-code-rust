@@ -256,6 +256,7 @@ function eventToolCallId(event: BridgeEvent): string | undefined {
     case "slash_error":
     case "session_resume_failed":
     case "runtime_reload_completed":
+    case "plugin_inventory":
     case "runtime_reload_held":
     case "runtime_reload_failed":
     case "skills_and_styles_reloaded":
@@ -340,6 +341,7 @@ function protocolEventLevel(event: BridgeEvent): LogLevel {
     case "session_history_export":
     case "rewind_result":
     case "runtime_reload_completed":
+    case "plugin_inventory":
     case "skills_and_styles_reloaded":
     case "skills_and_styles_reload_expired":
     case "mcp_set_servers_result":

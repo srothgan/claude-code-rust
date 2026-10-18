@@ -246,7 +246,7 @@ pub(crate) const APP_SLASH_COMMANDS: &[AppSlashCommandSpec] = &[
         name: "/plugins",
         usage: "Usage: /plugins",
         short_description: "Open plugins",
-        long_description: "Open the fullscreen plugins tab.",
+        long_description: "Manage installed plugins, marketplaces and session-only local folders.",
         args: NO_ARGS,
     },
     AppSlashCommandSpec {

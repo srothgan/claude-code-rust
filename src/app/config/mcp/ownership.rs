@@ -6,6 +6,12 @@ pub(crate) fn mcp_server_ownership<'a>(
     app: &'a App,
     server: &'a crate::agent::model::McpServerStatus,
 ) -> McpServerOwnership<'a> {
+    if (server.source.as_deref() == Some("plugin") || server.source.is_none())
+        && let Some(plugin) =
+            crate::app::plugins::session_mcp_plugin_for_runtime_server(app, &server.name)
+    {
+        return McpServerOwnership::SessionPluginOwned(plugin);
+    }
     if let Some(source) = server.source.as_deref() {
         return match source {
             "plugin" => {
@@ -42,6 +48,7 @@ pub(crate) fn mcp_config_removal_scope(
         McpServerOwnership::Persisted(scope) => Some(scope),
         McpServerOwnership::SdkDynamic => Some(McpConfigScope::Dynamic),
         McpServerOwnership::PluginOwned(_)
+        | McpServerOwnership::SessionPluginOwned(_)
         | McpServerOwnership::PluginOwnedUnknown
         | McpServerOwnership::RuntimeOnly => None,
     }
@@ -54,6 +61,9 @@ pub(crate) fn mcp_server_owner_summary(
     match mcp_server_ownership(app, server) {
         McpServerOwnership::PluginOwned(entry) => {
             Some(format!("Managed by plugin: {}", crate::app::plugins::display_label(&entry.id)))
+        }
+        McpServerOwnership::SessionPluginOwned(plugin) => {
+            Some(format!("Session plugin: {}", crate::app::plugins::display_label(&plugin.name)))
         }
         McpServerOwnership::PluginOwnedUnknown => Some(
             "Managed by a plugin. Refresh plugin inventory from the Plugins tab to manage it here."

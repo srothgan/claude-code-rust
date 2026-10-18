@@ -82,10 +82,14 @@ pub(super) fn render_marketplace_actions_overlay(frame: &mut Frame, area: Rect, 
     );
 }
 
-pub(super) fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(overlay) = app.config.add_marketplace_overlay() else {
+pub(super) fn render_plugin_source_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(overlay) = app.config.plugin_source_input_overlay() else {
         return;
     };
+    let local = matches!(
+        app.config.overlay,
+        Some(crate::app::config::ConfigOverlayState::LocalPluginFolder(_))
+    );
     let rendered = render_overlay_shell(
         frame,
         area,
@@ -99,9 +103,15 @@ pub(super) fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app:
             inner_margin: Margin { vertical: 1, horizontal: 2 },
         },
         OverlayChrome {
-            title: "Add Marketplace",
+            title: if local { "Load local folder" } else { "Add Marketplace" },
             subtitle: None,
-            help: Some("Enter add | Esc cancel"),
+            help: Some(if local && app.plugins.loading {
+                "Loading folder..."
+            } else if local {
+                "Enter load | Esc cancel"
+            } else {
+                "Enter add | Esc cancel"
+            }),
             message: app.config.overlay_message.as_ref(),
         },
     );
@@ -118,13 +128,13 @@ pub(super) fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app:
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Enter marketplace source:",
+            if local { "Local plugin directory:" } else { "Enter marketplace source:" },
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ))),
         sections[0],
     );
     frame.render_widget(
-        Paragraph::new(add_marketplace_example_lines()).wrap(Wrap { trim: false }),
+        Paragraph::new(if local { vec![Line::from("Attach to this session. Relative paths use the session working directory; persistent installation is unchanged.")] } else { add_marketplace_example_lines() }).wrap(Wrap { trim: false }),
         sections[1],
     );
     render_text_input_field(
@@ -132,6 +142,6 @@ pub(super) fn render_add_marketplace_overlay(frame: &mut Frame, area: Rect, app:
         sections[3],
         &overlay.draft,
         overlay.cursor,
-        "owner/repo or URL",
+        if local { "Absolute or session-relative folder path" } else { "owner/repo or URL" },
     );
 }

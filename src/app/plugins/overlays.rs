@@ -42,9 +42,20 @@ pub(crate) fn handle_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-pub(crate) fn handle_add_marketplace_overlay_key(app: &mut App, key: KeyEvent) {
+pub(crate) fn handle_plugin_source_overlay_key(app: &mut App, key: KeyEvent) {
+    if app.plugins.loading
+        && matches!(app.config.overlay, Some(ConfigOverlayState::LocalPluginFolder(_)))
+    {
+        return;
+    }
     match (key.code, key.modifiers) {
-        (KeyCode::Enter, KeyModifiers::NONE) => confirm_add_marketplace_overlay(app),
+        (KeyCode::Enter, KeyModifiers::NONE) => {
+            if matches!(app.config.overlay, Some(ConfigOverlayState::LocalPluginFolder(_))) {
+                super::local::load_folder(app);
+            } else {
+                confirm_add_marketplace_overlay(app);
+            }
+        }
         (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Left, KeyModifiers::NONE) => {
             move_add_marketplace_cursor_left(app);
@@ -142,7 +153,7 @@ pub(super) fn open_marketplace_actions_overlay(app: &mut App) -> bool {
 
 pub(super) fn open_add_marketplace_overlay(app: &mut App) -> bool {
     app.config.replace_overlay(ConfigOverlayState::AddMarketplace(
-        AddMarketplaceOverlayState::from_text_input(String::new(), 0),
+        PluginSourceInputOverlayState::from_text_input(String::new(), 0),
     ));
     true
 }
@@ -262,7 +273,7 @@ pub(super) fn open_confirmation_overlay(
 }
 
 pub(super) fn confirm_add_marketplace_overlay(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay().cloned() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay().cloned() else {
         return;
     };
     let source = overlay.draft.trim().to_owned();
@@ -320,35 +331,35 @@ pub(super) fn confirm_add_marketplace_overlay(app: &mut App) {
 }
 
 pub(super) fn move_add_marketplace_cursor_left(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay_mut() else {
         return;
     };
     overlay.cursor = overlay.cursor.saturating_sub(1);
 }
 
 pub(super) fn move_add_marketplace_cursor_right(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay_mut() else {
         return;
     };
     overlay.cursor = overlay.cursor.saturating_add(1).min(overlay.draft.chars().count());
 }
 
 pub(super) fn move_add_marketplace_cursor_to_end(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay_mut() else {
         return;
     };
     overlay.cursor = overlay.draft.chars().count();
 }
 
 pub(super) fn set_add_marketplace_cursor(app: &mut App, cursor: usize) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay_mut() else {
         return;
     };
     overlay.cursor = cursor.min(overlay.draft.chars().count());
 }
 
 pub(super) fn insert_add_marketplace_char(app: &mut App, ch: char) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay_mut() else {
         return;
     };
     let byte_index = char_to_byte_index(&overlay.draft, overlay.cursor);
@@ -357,7 +368,7 @@ pub(super) fn insert_add_marketplace_char(app: &mut App, ch: char) {
 }
 
 pub(super) fn delete_add_marketplace_before_cursor(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay_mut() else {
         return;
     };
     if overlay.cursor == 0 {
@@ -370,7 +381,7 @@ pub(super) fn delete_add_marketplace_before_cursor(app: &mut App) {
 }
 
 pub(super) fn delete_add_marketplace_at_cursor(app: &mut App) {
-    let Some(overlay) = app.config.add_marketplace_overlay_mut() else {
+    let Some(overlay) = app.config.plugin_source_input_overlay_mut() else {
         return;
     };
     let char_count = overlay.draft.chars().count();

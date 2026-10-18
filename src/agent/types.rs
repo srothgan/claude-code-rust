@@ -327,6 +327,14 @@ pub struct RateLimitUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPlugin {
+    pub name: String,
+    pub path: String,
+    pub source: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeReloadCacheImpact {
     #[serde(default)]
     pub mcp_servers_added: Vec<String>,

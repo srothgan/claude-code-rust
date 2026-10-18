@@ -135,8 +135,7 @@ fn execute_mcp_server_action(app: &mut App, server_name: &str, action: McpServer
             set_mcp_server_enabled(app, server_name, false);
         }
         McpServerActionKind::ManagePlugin => {
-            if !crate::app::plugins::open_installed_actions_overlay_for_mcp_server(app, server_name)
-            {
+            if !crate::app::plugins::open_plugin_for_mcp_server(app, server_name) {
                 app.config.set_overlay_error(
                     "Refresh plugin inventory from the Plugins tab before managing this MCP server.",
                 );

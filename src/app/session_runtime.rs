@@ -12,14 +12,34 @@ pub(crate) enum RuntimeReloadRequestOutcome {
 }
 
 pub(crate) fn request_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutcome {
-    request_runtime_reload_with_force(app, false)
+    request_plugin_folders(app, Vec::new(), false)
 }
 
 pub(crate) fn request_forced_runtime_reload(app: &mut App) -> RuntimeReloadRequestOutcome {
-    request_runtime_reload_with_force(app, true)
+    if app.plugins.pending_reload.as_ref().is_some_and(|operation| {
+        !operation.held
+            || app
+                .session_runtime
+                .session_id
+                .as_ref()
+                .is_none_or(|id| id.to_string() != operation.session_id)
+    }) {
+        return RuntimeReloadRequestOutcome::Failed;
+    }
+    let folders = app
+        .plugins
+        .pending_reload
+        .as_ref()
+        .map(|operation| operation.folders.clone())
+        .unwrap_or_default();
+    request_plugin_folders(app, folders, true)
 }
 
-fn request_runtime_reload_with_force(app: &mut App, force: bool) -> RuntimeReloadRequestOutcome {
+pub(crate) fn request_plugin_folders(
+    app: &mut App,
+    folders: Vec<String>,
+    force: bool,
+) -> RuntimeReloadRequestOutcome {
     let Some(conn) = app.session_runtime.conn.as_ref() else {
         return RuntimeReloadRequestOutcome::Unavailable;
     };
@@ -27,8 +47,16 @@ fn request_runtime_reload_with_force(app: &mut App, force: bool) -> RuntimeReloa
         return RuntimeReloadRequestOutcome::Unavailable;
     };
     let session_id = sid.to_string();
-    match conn.reload_plugins(session_id.clone(), force) {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    match conn.reload_plugins(session_id.clone(), force, folders.clone(), Some(request_id.clone()))
+    {
         Ok(()) => {
+            app.plugins.pending_reload = Some(crate::app::plugins::PendingPluginReload {
+                session_id: session_id.clone(),
+                request_id,
+                folders,
+                held: false,
+            });
             tracing::debug!(
                 target: crate::logging::targets::APP_SESSION,
                 event_name = "runtime_reload_requested",
@@ -214,7 +242,7 @@ mod tests {
         let envelope = rx.try_recv().expect("reload command");
         assert!(matches!(
             envelope.command,
-            BridgeCommand::ReloadPlugins { session_id, force: false } if session_id == "session-1"
+            BridgeCommand::ReloadPlugins { session_id, force: false, .. } if session_id == "session-1"
         ));
     }
 
@@ -240,7 +268,7 @@ mod tests {
         let envelope = rx.try_recv().expect("forced reload command");
         assert!(matches!(
             envelope.command,
-            BridgeCommand::ReloadPlugins { session_id, force: true } if session_id == "session-1"
+            BridgeCommand::ReloadPlugins { session_id, force: true, .. } if session_id == "session-1"
         ));
     }
 

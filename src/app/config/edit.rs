@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::{
-    AddMarketplaceOverlayState, ConfigOverlayState, ConfirmationAction,
-    PendingSessionTitleChangeKind, PendingSessionTitleChangeState, SessionRenameOverlayState,
+    ConfigOverlayState, ConfirmationAction, PendingSessionTitleChangeKind,
+    PendingSessionTitleChangeState, PluginSourceInputOverlayState, SessionRenameOverlayState,
     SettingOverlayState,
 };
 use crate::agent::settings::{SettingDescriptor, SettingKind, SettingsMutation, SettingsOperation};
@@ -152,8 +152,8 @@ pub(super) fn handle_overlay_key(app: &mut App, key: KeyEvent) {
         Some(ConfigOverlayState::MarketplaceActions(_)) => {
             crate::app::plugins::handle_marketplace_overlay_key(app, key);
         }
-        Some(ConfigOverlayState::AddMarketplace(_)) => {
-            crate::app::plugins::handle_add_marketplace_overlay_key(app, key);
+        Some(ConfigOverlayState::AddMarketplace(_) | ConfigOverlayState::LocalPluginFolder(_)) => {
+            crate::app::plugins::handle_plugin_source_overlay_key(app, key);
         }
         Some(ConfigOverlayState::Confirmation(_)) => handle_confirmation_overlay_key(app, key),
         _ => {}
@@ -186,8 +186,11 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
             }
             true
         }
-        Some(ConfigOverlayState::AddMarketplace(_)) => {
-            insert_text_str(app.config.add_marketplace_overlay_mut(), text);
+        Some(ConfigOverlayState::AddMarketplace(_) | ConfigOverlayState::LocalPluginFolder(_)) => {
+            if app.plugins.loading {
+                return true;
+            }
+            insert_text_str(app.config.plugin_source_input_overlay_mut(), text);
             true
         }
         _ => false,
@@ -725,7 +728,7 @@ impl SessionRenameOverlayState {
     }
 }
 
-impl TextInputOverlay for AddMarketplaceOverlayState {
+impl TextInputOverlay for PluginSourceInputOverlayState {
     fn draft(&self) -> &str {
         &self.draft
     }
@@ -743,7 +746,7 @@ impl TextInputOverlay for AddMarketplaceOverlayState {
     }
 }
 
-impl AddMarketplaceOverlayState {
+impl PluginSourceInputOverlayState {
     pub(crate) fn from_text_input(draft: String, cursor: usize) -> Self {
         Self { draft, cursor }
     }

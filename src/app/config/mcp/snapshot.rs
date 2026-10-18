@@ -133,7 +133,8 @@ fn clear_missing_mcp_server_overlays(app: &mut App) {
             | ConfigOverlayState::InstalledPluginActions(_)
             | ConfigOverlayState::PluginInstallActions(_)
             | ConfigOverlayState::MarketplaceActions(_)
-            | ConfigOverlayState::AddMarketplace(_),
+            | ConfigOverlayState::AddMarketplace(_)
+            | ConfigOverlayState::LocalPluginFolder(_),
         )
         | None => None,
     }

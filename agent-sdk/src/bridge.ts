@@ -1,7 +1,7 @@
 import { inspectSettings, mutateSetting } from "./bridge/settings_service.js";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePluginPath } from "node:path";
 import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
@@ -27,6 +27,7 @@ import {
   setSessionListingDir,
 } from "./bridge/events.js";
 import { contentFromPrompt } from "./bridge/message_handlers.js";
+import { sessionPluginFolders, updateSessionPlugins } from "./bridge/plugin_inventory.js";
 import {
   sessions,
   sessionById,
@@ -305,19 +306,32 @@ export async function handleReloadPluginsCommand(
   session: SessionState,
   requestId?: string,
   force = false,
+  addPlugins: string[] = [],
 ): Promise<void> {
+  let result: Awaited<ReturnType<SessionState["query"]["reloadPlugins"]>>;
   try {
-    const result = force
-      ? await session.query.reloadPlugins()
-      : await session.query.reloadPlugins({ holdOnCacheImpact: true });
-    if (!force && result.held === true) {
-      emitRuntimeReloadHeld(
-        session.sessionId,
-        sanitizeRuntimeReloadCacheImpact(result.cache_impact),
-        requestId,
-      );
-      return;
+    if (addPlugins.some(folder => /[\p{Cc}\p{Cf}\p{Cs}]/u.test(folder))) {
+      throw new Error("Local plugin folder paths cannot contain control or format characters.");
     }
+    const options = {
+      ...(!force ? { holdOnCacheImpact: true } : {}),
+      ...(addPlugins.length ? { addPlugins: addPlugins.map(folder => ({ type: "local" as const, path: resolvePluginPath(session.cwd, folder) })) } : {}),
+    };
+    result = Object.keys(options).length ? await session.query.reloadPlugins(options) : await session.query.reloadPlugins();
+  } catch (error) {
+    if (session.closing) return;
+    const message = error instanceof Error ? error.message : String(error);
+    emitRuntimeReloadFailed(session.sessionId, message, requestId);
+    return;
+  }
+  if (session.closing) return;
+  updateSessionPlugins(session, result.plugins);
+  const errorCount = result.error_count ?? 0;
+  if (result.held === true) {
+    emitRuntimeReloadHeld(session.sessionId, sanitizeRuntimeReloadCacheImpact(result.cache_impact), requestId, errorCount);
+    return;
+  }
+  try {
     updateAvailableCommands(
       session,
       "reload_plugins",
@@ -330,19 +344,19 @@ export async function handleReloadPluginsCommand(
       "reload_plugins",
       requestId,
     );
-    emitRuntimeReloadCompleted(session.sessionId, requestId);
+    emitRuntimeReloadCompleted(session.sessionId, requestId, errorCount);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.warn({
       target: LOG_TARGETS.APP_SESSION,
-      eventName: "reload_plugins_failed",
-      message: "failed to reload session plugins",
+      eventName: "reload_plugins_reconciliation_failed",
+      message: "plugin reload applied but host reconciliation failed",
       outcome: "failure",
       ...(requestId ? { requestId } : {}),
       sessionId: session.sessionId,
       fields: { error_message: message },
     });
-    emitRuntimeReloadFailed(session.sessionId, message, requestId);
+    emitRuntimeReloadCompleted(session.sessionId, requestId, errorCount, message);
   }
 }
 
@@ -639,6 +653,7 @@ async function prepareConversationRewindCandidate(
       });
       candidate = await createSession({
         cwd: session.cwd,
+        pluginPaths: sessionPluginFolders(session),
         launchSettings: command.launch_settings,
         connectEvent: "session_replaced",
         requestId,
@@ -651,6 +666,7 @@ async function prepareConversationRewindCandidate(
     } else {
       candidate = await createSession({
         cwd: session.cwd,
+        pluginPaths: sessionPluginFolders(session),
         resume: command.session_id,
         resumeSessionAt: resolved.resumeSessionAtUuid,
         resumeDropsTurn: resolved.resumeDropsTurnId,

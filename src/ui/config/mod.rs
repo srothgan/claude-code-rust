@@ -139,6 +139,7 @@ fn config_help_text(app: &App, width: u16) -> String {
             } else {
                 let mut hints = vec![
                     "Enter actions",
+                    "l load folder",
                     "Up/Down select",
                     "Tab/Shift+Tab tabs",
                     "Left/Right switch list",
@@ -182,8 +183,8 @@ fn render_active_overlay(frame: &mut Frame, frame_area: Rect, app: &mut App) {
         plugin_overlay::render_plugin_install_overlay(frame, frame_area, app);
     } else if app.config.marketplace_actions_overlay().is_some() {
         plugin_overlay::render_marketplace_actions_overlay(frame, frame_area, app);
-    } else if app.config.add_marketplace_overlay().is_some() {
-        plugin_overlay::render_add_marketplace_overlay(frame, frame_area, app);
+    } else if app.config.plugin_source_input_overlay().is_some() {
+        plugin_overlay::render_plugin_source_overlay(frame, frame_area, app);
     } else if app.config.mcp_details_overlay().is_some() {
         mcp::render_details_overlay(frame, frame_area, app);
     } else if app.config.mcp_callback_url_overlay().is_some() {
@@ -1221,7 +1222,7 @@ mod tests {
         app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
         app.config.active_tab = crate::app::ConfigTab::Plugins;
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
-            crate::app::config::AddMarketplaceOverlayState { draft: String::new(), cursor: 0 },
+            crate::app::config::PluginSourceInputOverlayState { draft: String::new(), cursor: 0 },
         ));
 
         terminal
@@ -1245,7 +1246,10 @@ mod tests {
         let draft =
             "https://example.com/some/really/long/path/to/custom-marketplace.json".to_owned();
         app.config.overlay = Some(crate::app::config::ConfigOverlayState::AddMarketplace(
-            crate::app::config::AddMarketplaceOverlayState { cursor: draft.chars().count(), draft },
+            crate::app::config::PluginSourceInputOverlayState {
+                cursor: draft.chars().count(),
+                draft,
+            },
         ));
 
         let rendered = render_config_text(64, 18, app);
@@ -1652,6 +1656,36 @@ mod tests {
             "Description: Tools for this project",
         ] {
             assert!(text.contains(field), "missing {field}: {text}");
+        }
+    }
+
+    #[test]
+    fn session_plugin_details_stay_with_the_selected_attachment_at_narrow_widths() {
+        for width in [42, 100] {
+            let mut app = config_list_preview(ConfigTab::Plugins);
+            app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Session;
+            app.plugins.session_selected_index = 1;
+            app.plugins.session_plugins = ["first", "chosen"]
+                .into_iter()
+                .map(|name| crate::agent::types::SessionPlugin {
+                    name: name.to_owned(),
+                    path: format!("C:/plugins/{name}"),
+                    source: Some(format!("{name}@inline")),
+                    version: Some("1.2.3".to_owned()),
+                })
+                .collect();
+            let text = render_config_text(width, 24, app);
+            let rows: Vec<_> = text.lines().collect();
+            let selected =
+                rows.iter().position(|row| row.contains("Chosen")).expect("selected attachment");
+            assert!(rows[selected].contains('›') || rows[selected].contains('>'), "{text}");
+            let details = rows[selected + 1..].join("\n");
+            for expected in
+                ["Source: Session", "C:/plugins/chosen", "chosen@inline", "Version: 1.2.3"]
+            {
+                assert!(details.contains(expected), "missing {expected}: {text}");
+            }
+            assert!(!details.contains("C:/plugins/first"), "{text}");
         }
     }
 

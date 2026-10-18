@@ -7,6 +7,23 @@ use std::time::Duration;
 
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if std::env::var("FAKE_AUTH_MODE").as_deref() == Ok("plugin-inventory") {
+        assert!(
+            [
+                vec!["plugin", "list", "--json"],
+                vec!["plugin", "list", "--available", "--json"],
+                vec!["plugin", "marketplace", "list", "--json"],
+            ]
+            .iter()
+            .any(|allowed| args.iter().map(String::as_str).eq(allowed.iter().copied())),
+            "the local-folder workflow may only inspect persistent CLI inventory: {args:?}"
+        );
+        println!(
+            "{}",
+            if args.iter().any(|arg| arg == "--available") { r#"{"available":[]}"# } else { "[]" }
+        );
+        return Ok(());
+    }
     assert_eq!(args, ["auth", "login"]);
     let profile = PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").expect("isolated profile"));
     println!("AUTH_CHILD_READY");

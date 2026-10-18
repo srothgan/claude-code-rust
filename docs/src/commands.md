@@ -26,7 +26,7 @@ Use `/docs commands` in the app to render the live merged command list into chat
 | `/fast` | `/fast [on\|off]` | Toggle fast mode or explicitly enable/disable it for the active session. |
 | `/help` | `/help` | Open the fullscreen Help tab. |
 | `/mcp` | `/mcp` | Open MCP status and authorization. |
-| `/plugins` | `/plugins` | Open plugin management. |
+| `/plugins` | `/plugins` | Manage installed plugins, marketplaces and session-only local folders. |
 | `/status` | `/status` | Open session and account status. |
 | `/usage` | `/usage` | Open quota and usage information. |
 | `/agents` | `/agents` | Open this session's subagents with their live status and saved transcripts. |

@@ -8,10 +8,11 @@ pub enum PluginsViewTab {
     Installed,
     Plugins,
     Marketplace,
+    Session,
 }
 
 impl PluginsViewTab {
-    pub const ALL: [Self; 3] = [Self::Installed, Self::Plugins, Self::Marketplace];
+    pub const ALL: [Self; 4] = [Self::Installed, Self::Plugins, Self::Marketplace, Self::Session];
 
     #[must_use]
     pub const fn title(self) -> &'static str {
@@ -19,6 +20,7 @@ impl PluginsViewTab {
             Self::Installed => "Installed",
             Self::Plugins => "Plugins",
             Self::Marketplace => "Marketplace",
+            Self::Session => "Session",
         }
     }
 
@@ -27,14 +29,16 @@ impl PluginsViewTab {
         match self {
             Self::Installed => Self::Plugins,
             Self::Plugins => Self::Marketplace,
-            Self::Marketplace => Self::Installed,
+            Self::Marketplace => Self::Session,
+            Self::Session => Self::Installed,
         }
     }
 
     #[must_use]
     pub const fn prev(self) -> Self {
         match self {
-            Self::Installed => Self::Marketplace,
+            Self::Installed => Self::Session,
+            Self::Session => Self::Marketplace,
             Self::Plugins => Self::Installed,
             Self::Marketplace => Self::Plugins,
         }
@@ -80,6 +84,10 @@ pub struct PluginsInventorySnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PluginsState {
+    /// Confirmed session attachments from the SDK, separate from installed disk records.
+    pub session_plugins: Vec<crate::agent::types::SessionPlugin>,
+    pub session_selected_index: usize,
+    pub pending_reload: Option<PendingPluginReload>,
     pub active_tab: PluginsViewTab,
     pub search_focused: bool,
     pub installed_search_query: String,
@@ -106,6 +114,14 @@ pub struct PluginsCliActionSuccess {
     pub claude_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPluginReload {
+    pub session_id: String,
+    pub request_id: String,
+    pub folders: Vec<String>,
+    pub held: bool,
+}
+
 impl PluginsState {
     #[must_use]
     pub fn selected_index_for(&self, tab: PluginsViewTab) -> usize {
@@ -113,6 +129,7 @@ impl PluginsState {
             PluginsViewTab::Installed => self.installed_selected_index,
             PluginsViewTab::Plugins => self.plugins_selected_index,
             PluginsViewTab::Marketplace => self.marketplace_selected_index,
+            PluginsViewTab::Session => self.session_selected_index,
         }
     }
 
@@ -121,6 +138,7 @@ impl PluginsState {
             PluginsViewTab::Installed => self.installed_selected_index = index,
             PluginsViewTab::Plugins => self.plugins_selected_index = index,
             PluginsViewTab::Marketplace => self.marketplace_selected_index = index,
+            PluginsViewTab::Session => self.session_selected_index = index,
         }
     }
 
@@ -134,7 +152,7 @@ impl PluginsState {
         match tab {
             PluginsViewTab::Installed => &self.installed_search_query,
             PluginsViewTab::Plugins => &self.plugins_search_query,
-            PluginsViewTab::Marketplace => "",
+            PluginsViewTab::Marketplace | PluginsViewTab::Session => "",
         }
     }
 
@@ -142,7 +160,7 @@ impl PluginsState {
         match self.active_tab {
             PluginsViewTab::Installed => Some(&mut self.installed_search_query),
             PluginsViewTab::Plugins => Some(&mut self.plugins_search_query),
-            PluginsViewTab::Marketplace => None,
+            PluginsViewTab::Marketplace | PluginsViewTab::Session => None,
         }
     }
 }

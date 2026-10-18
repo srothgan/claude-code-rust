@@ -2178,6 +2178,49 @@ fn structured_settings_editor_adds_individual_rules_and_preserves_them_on_resize
 }
 
 #[test]
+fn local_plugin_loading_holds_then_applies_the_same_folder_without_persistent_settings() {
+    let mut test = TerminalTest::start_with_auth("hold-local-plugin", 8, Some("plugin-inventory"));
+    test.submit("go", "go");
+    test.wait_journal("reply-held");
+    test.submit("/plugins", "/plugins");
+    test.wait_screen("Plugin inventory refreshed");
+    test.send(b"\x1b[D");
+    test.wait_screen("Session attachments");
+    test.send(b"l");
+    test.wait_screen("Local plugin directory:");
+    let folder = "./plugin folder";
+    std::fs::create_dir(test.temp.path().join("project/plugin folder")).expect("local folder");
+    test.paste(folder);
+    test.wait_screen(folder);
+    test.send(b"\r");
+    test.wait_screen("invalidate prompt cache?");
+    assert_eq!(test.commands("reload_plugins").len(), 1);
+    assert!(!test.screen().contains("Version: 1.2.3"));
+    test.send(b"\x1b[B\r");
+    test.wait_screen_with("Version: 1.2.3", &["Local Fixture", "Source: Session"]);
+    let reloads = test.commands("reload_plugins");
+    assert_eq!(reloads.len(), 2);
+    for reload in &reloads {
+        assert_eq!(reload["add_plugins"], serde_json::json!([folder]));
+    }
+    assert_ne!(reloads[0]["force"], true);
+    assert_eq!(reloads[1]["force"], true);
+    assert_ne!(reloads[0]["request_id"], reloads[1]["request_id"]);
+    for (rows, cols) in [(18, 50), (38, 87), (55, 120)] {
+        test.resize_keeping(rows, cols, &["Local Fixture", "Source: Session"]);
+    }
+    assert!(!test.temp.path().join("profile/settings.json").exists());
+    assert!(!test.temp.path().join("profile/plugins/installed_plugins.json").exists());
+    assert!(!test.temp.path().join("project/.claude/settings.json").exists());
+    test.send(b"\x1b");
+    test.wait_screen("streamed line 8");
+    test.assert_prompts(&["go"]);
+    test.release();
+    test.wait_journal("turn_complete");
+    test.shutdown();
+}
+
+#[test]
 fn guided_hook_creation_survives_resize_and_saves_a_complete_hook_with_existing_data() {
     let mut test = TerminalTest::start("hold-hooks", 8);
     std::fs::write(

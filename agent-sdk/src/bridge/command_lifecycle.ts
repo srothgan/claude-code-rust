@@ -4,6 +4,7 @@ import {
   renameSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { BridgeCommand } from "../types.js";
+import { sessionPluginFolders } from "./plugin_inventory.js";
 import {
   currentSessionListOptions,
   emitSessionResumeFailed,
@@ -126,12 +127,15 @@ async function resumeAt(
     }
 
     const staleSessions = Array.from(sessions.values());
+    const previous = sessions.get(command.session_id);
+    const pluginPaths = previous ? sessionPluginFolders(previous) : [];
     const connectEvent =
       staleSessions.length > 0 ? "session_replaced" : "connected";
     candidate = plan.resumeSessionAtUuid
       ? await createSession({
           cwd,
           resume: command.session_id,
+          pluginPaths,
           resumeSessionAt: plan.resumeSessionAtUuid,
           resumeDropsTurn: plan.resumeDropsTurnId,
           forkSession: true,
@@ -145,6 +149,7 @@ async function resumeAt(
       : await createSession({
           cwd,
           launchSettings: command.launch_settings,
+          pluginPaths,
           connectEvent,
           requestId,
           deferConnect: true,

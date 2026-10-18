@@ -1068,6 +1068,7 @@ export type BridgeCommand =
       command: "reload_plugins";
       session_id: string;
       force?: boolean;
+      add_plugins?: string[];
     }
   | {
       command: "reload_skills_and_styles";
@@ -1139,6 +1140,13 @@ export type TurnErrorKind =
   | "transient_service"
   | "internal"
   | "other";
+
+export interface SessionPlugin {
+  name: string;
+  path: string;
+  source?: string;
+  version?: string;
+}
 
 export interface RuntimeReloadCacheImpact {
   mcp_servers_added: string[];
@@ -1274,11 +1282,13 @@ export type BridgeEvent =
       session_id: string;
       message: string;
     }
-  | { event: "runtime_reload_completed"; session_id: string }
+  | { event: "plugin_inventory"; session_id: string; plugins: SessionPlugin[] }
+  | { event: "runtime_reload_completed"; session_id: string; error_count: number; reconciliation_error?: string }
   | {
       event: "runtime_reload_held";
       session_id: string;
       cache_impact: RuntimeReloadCacheImpact;
+      error_count: number;
     }
   | { event: "runtime_reload_failed"; session_id: string; message: string }
   | {

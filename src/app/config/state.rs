@@ -334,16 +334,26 @@ impl ConfigState {
     }
 
     #[must_use]
-    pub fn add_marketplace_overlay(&self) -> Option<&AddMarketplaceOverlayState> {
-        if let Some(ConfigOverlayState::AddMarketplace(overlay)) = &self.overlay {
+    pub fn plugin_source_input_overlay(&self) -> Option<&PluginSourceInputOverlayState> {
+        if let Some(
+            ConfigOverlayState::AddMarketplace(overlay)
+            | ConfigOverlayState::LocalPluginFolder(overlay),
+        ) = &self.overlay
+        {
             Some(overlay)
         } else {
             None
         }
     }
 
-    pub fn add_marketplace_overlay_mut(&mut self) -> Option<&mut AddMarketplaceOverlayState> {
-        if let Some(ConfigOverlayState::AddMarketplace(overlay)) = &mut self.overlay {
+    pub fn plugin_source_input_overlay_mut(
+        &mut self,
+    ) -> Option<&mut PluginSourceInputOverlayState> {
+        if let Some(
+            ConfigOverlayState::AddMarketplace(overlay)
+            | ConfigOverlayState::LocalPluginFolder(overlay),
+        ) = &mut self.overlay
+        {
             Some(overlay)
         } else {
             None

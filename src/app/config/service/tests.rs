@@ -230,7 +230,7 @@ async fn permission_scope_selection_loads_only_its_rules_and_keeps_dialog_scope_
 async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledged_save() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             app.surface_mode =
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -343,7 +343,7 @@ async fn rule_item_editor_preserves_draft_across_resize_conflict_and_acknowledge
                 Some(&json!(["Read(./src/**)", "Read(./docs/**)", "Bash(npm test *)"]))
             );
             assert!(app.config.setting_overlay().is_none());
-        })
+        }))
         .await;
 }
 
@@ -452,7 +452,7 @@ fn request_correlation_and_session_epoch_protect_editor_state() {
 async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() {
     use ratatui::{Terminal, backend::TestBackend};
     tokio::task::LocalSet::new()
-        .run_until(async {
+        .run_until(Box::pin(async {
             let mut app = App::test_default();
             app.surface_mode =
                 crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
@@ -547,7 +547,7 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
                 "read-only controls must preserve the saved value"
             );
             assert_eq!(app.config.saved_value("language"), Some(&json!("medium")));
-        })
+        }))
         .await;
 }
 

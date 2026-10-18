@@ -1,5 +1,6 @@
 import { observeMainAgentStream, resetMainAgentActivity, responseNeverStreamed } from "./activity.js";
 import { nativeNotification } from "./notifications.js";
+import { updateSessionPlugins } from "./plugin_inventory.js";
 import { elapsedNumber, messageMetadata, turnTiming } from "./presentation_metadata.js";
 import { refreshUltracode } from "./ultracode.js";
 import { observeSessionEffort, refreshSessionEffort } from "./effort.js";
@@ -2135,6 +2136,7 @@ export function handleSdkMessage(
       const incomingSessionId =
         typeof msg.session_id === "string" ? msg.session_id : session.sessionId;
       updateSessionId(session, incomingSessionId);
+      updateSessionPlugins(session, msg.plugins);
       if (session.connected) {
         void refreshUltracode(session);
       }

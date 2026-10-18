@@ -188,6 +188,14 @@ General native notices are transcript-only because the SDK supplies no universal
 
 Replay never delivers. `load_resume_history` observes notifications as replay and primes terminal tool identities, including older histories without delivery reports. The manager keeps a bounded ledger of session/UUID and session/tool-ID identities across reconnects; native replacement keys are not event identities. Live suppression consumes an event instead of queuing it for a later focus change.
 
+### Session plugin attachments
+
+The existing plugin reload owner handles both persistent plugin changes and local folder attachments through `Query.reloadPlugins()`. The NDJSON command carries folder intent and a request ID; the bridge resolves folders against the session cwd and requests `holdOnCacheImpact`. Rust retains the exact operation through a held confirmation, and Apply sends the same folders with a new request ID. Late acknowledgements cannot complete a different operation. A held result leaves commands, agents and MCP state unchanged. A native rejection, an applied result with `error_count`, and an applied result whose host reconciliation fails have distinct outcomes; the latter two never automatically retry an attachment.
+
+`plugin_inventory.ts` owns normalization of SDK plugin metadata and selection of confirmed session attachments. SDK init frames and reload results populate that inventory; launch intent alone never creates a row. Rust holds the attachment snapshot in the existing Plugins state, separately from the CLI's persistent installation inventory, and the Session list labels its source explicitly. Names, paths, versions and SDK sources are validated before crossing the display boundary. No installation record or marketplace configuration is fabricated.
+
+When replacing the same active session, the bridge derives launch folders from its confirmed attachment inventory and supplies SDK `Options.plugins`. This includes resume, rewind and the first-message replacement path. A new session receives no attachment paths. The host does not persist these paths across process exit or switching away; native plain resume does not restore them. The first SDK init frame or an explicit reload refreshes the replacement's inventory.
+
 ## Packaging
 
 The npm install is split across a root command package and platform payload packages.

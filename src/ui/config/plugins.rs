@@ -29,6 +29,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
                 PluginsViewTab::Installed => ordered_installed(&app.plugins, &app.cwd_raw).len(),
                 PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
                 PluginsViewTab::Marketplace => visible_marketplaces(&app.plugins).len(),
+                PluginsViewTab::Session => app.plugins.session_plugins.len(),
             };
             format!("{} ({count})", tab.title())
         })
@@ -91,7 +92,14 @@ fn render_top_region(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     frame.render_widget(
-        Paragraph::new(Line::styled("Configured marketplaces", common::title_style())),
+        Paragraph::new(Line::styled(
+            if app.plugins.active_tab == PluginsViewTab::Session {
+                "Session attachments · l Load local folder"
+            } else {
+                "Configured marketplaces"
+            },
+            common::title_style(),
+        )),
         area,
     );
 }
@@ -118,7 +126,35 @@ fn list_content(app: &App) -> Vec<Vec<Line<'static>>> {
         PluginsViewTab::Installed => installed_content(app),
         PluginsViewTab::Plugins => plugins_content(app),
         PluginsViewTab::Marketplace => marketplace_content(app),
+        PluginsViewTab::Session => session_content(app),
     }
+}
+
+fn session_content(app: &App) -> Vec<Vec<Line<'static>>> {
+    let mut rows = app
+        .plugins
+        .session_plugins
+        .iter()
+        .map(|plugin| {
+            let mut lines = vec![
+                Line::styled(display_label(&plugin.name), common::title_style()),
+                common::detail_kv("Source", "Session", Color::White),
+                common::detail_kv("Folder", &plugin.path, Color::White),
+            ];
+            if let Some(source) = &plugin.source {
+                lines.push(common::detail_kv("SDK source", source, Color::White));
+            }
+            if let Some(version) = &plugin.version {
+                lines.push(common::detail_kv("Version", version, Color::White));
+            }
+            lines
+        })
+        .collect::<Vec<_>>();
+    rows.push(vec![
+        Line::styled("Load local folder", common::title_style()),
+        Line::from("Attach a plugin directory to this session."),
+    ]);
+    rows
 }
 
 fn installed_content(app: &App) -> Vec<Vec<Line<'static>>> {

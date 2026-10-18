@@ -111,22 +111,32 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
             app.chat_render.invalidate_live_anchor();
             app.request_chat_visible_rebuild();
         }
-        ClientEvent::RuntimeReloadCompleted { session_id: _ } => {
-            crate::app::plugins::apply_runtime_reload_success(app);
+        ClientEvent::PluginInventory { plugins, .. } => {
+            crate::app::plugins::apply_plugin_inventory(app, plugins);
         }
-        ClientEvent::RuntimeReloadHeld { session_id: _, cache_impact } => {
-            crate::app::plugins::apply_runtime_reload_held(app, &cache_impact);
-            if app.mcp.in_flight {
-                app.mcp.in_flight = false;
-            }
+        ClientEvent::RuntimeReloadCompleted {
+            request_id,
+            error_count,
+            reconciliation_error,
+            ..
+        } => {
+            crate::app::plugins::complete_reload(
+                app,
+                request_id.as_deref(),
+                error_count,
+                reconciliation_error,
+            );
         }
-        ClientEvent::RuntimeReloadFailed { session_id: _, message } => {
-            crate::app::plugins::apply_runtime_reload_failure(app, &message);
-            if app.mcp.in_flight {
-                app.mcp.in_flight = false;
-                app.mcp.last_error =
-                    Some(format!("Failed to reload MCP server snapshot: {message}"));
-            }
+        ClientEvent::RuntimeReloadHeld { request_id, cache_impact, error_count, .. } => {
+            crate::app::plugins::hold_reload(
+                app,
+                request_id.as_deref(),
+                &cache_impact,
+                error_count,
+            );
+        }
+        ClientEvent::RuntimeReloadFailed { request_id, message, .. } => {
+            crate::app::plugins::fail_reload(app, request_id.as_deref(), &message);
         }
         ClientEvent::SkillsAndStylesReloaded { session_id: _, skills, output_styles } => {
             apply_skills_and_styles_reloaded(app, &skills, &output_styles);

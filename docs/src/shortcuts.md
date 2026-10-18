@@ -26,6 +26,10 @@ See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the
 
 The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
 
+## Plugins
+
+Open `/plugins`. `Left` and `Right` switch between Installed, Plugins, Marketplace and Session; `Up` and `Down` select an entry. Outside search, `l` opens Load local folder. In Session, Enter opens the selected folder for reloading, or the new-folder input; `r` reloads the runtime inventory. In the folder input, Enter requests loading and Esc returns. A held reload defaults to declining; select Apply explicitly to add the same folders and invalidate the prompt cache. Esc declines and keeps the folder draft.
+
 ## Subagents View
 
 `/agents`, or `Left` in an empty input, opens the current session's subagents.

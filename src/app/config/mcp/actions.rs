@@ -194,7 +194,7 @@ pub(crate) fn available_mcp_actions(
         McpServerOwnership::SdkDynamic => {
             actions.push(McpServerActionKind::RemoveDynamicConfig);
         }
-        McpServerOwnership::PluginOwned(_) => {
+        McpServerOwnership::PluginOwned(_) | McpServerOwnership::SessionPluginOwned(_) => {
             actions.push(McpServerActionKind::ManagePlugin);
         }
         McpServerOwnership::PluginOwnedUnknown | McpServerOwnership::RuntimeOnly => {}
@@ -225,7 +225,10 @@ pub(crate) fn is_mcp_action_available(
             action.mcp_config_scope() == mcp_config_removal_scope(app, server)
         }
         McpServerActionKind::ManagePlugin => {
-            matches!(mcp_server_ownership(app, server), McpServerOwnership::PluginOwned(_))
+            matches!(
+                mcp_server_ownership(app, server),
+                McpServerOwnership::PluginOwned(_) | McpServerOwnership::SessionPluginOwned(_)
+            )
         }
         McpServerActionKind::RefreshSnapshot
         | McpServerActionKind::Reconnect

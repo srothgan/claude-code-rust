@@ -7,6 +7,8 @@ pub(crate) fn clamp_selection(app: &mut App) {
     let installed_len = ordered_installed(&app.plugins, &app.cwd_raw).len();
     let plugin_len = filtered_marketplace_plugins(&app.plugins).len();
     let marketplace_len = marketplace_row_count(&app.plugins);
+    app.plugins.session_selected_index =
+        clamp_index(app.plugins.session_selected_index, app.plugins.session_plugins.len() + 1);
     app.plugins.installed_selected_index =
         clamp_index(app.plugins.installed_selected_index, installed_len);
     app.plugins.plugins_selected_index =
@@ -81,6 +83,7 @@ pub(super) fn move_selection(app: &mut App, delta: isize) {
         PluginsViewTab::Installed => ordered_installed(&app.plugins, &app.cwd_raw).len(),
         PluginsViewTab::Plugins => filtered_marketplace_plugins(&app.plugins).len(),
         PluginsViewTab::Marketplace => marketplace_row_count(&app.plugins),
+        PluginsViewTab::Session => app.plugins.session_plugins.len() + 1,
     };
     if len == 0 {
         app.plugins.set_selected_index_for(tab, 0);
@@ -158,5 +161,5 @@ pub(super) fn marketplace_plugin_matches(entry: &MarketplaceEntry, query: &str) 
 
 #[must_use]
 pub(crate) const fn search_enabled(tab: PluginsViewTab) -> bool {
-    !matches!(tab, PluginsViewTab::Marketplace)
+    matches!(tab, PluginsViewTab::Installed | PluginsViewTab::Plugins)
 }

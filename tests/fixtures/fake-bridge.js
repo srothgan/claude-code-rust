@@ -511,6 +511,18 @@ readline
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
         break;
+      case 'reload_plugins': {
+        if (SCENARIO === 'hold-local-plugin' && !message.force) {
+          send({ event: 'runtime_reload_held', session_id: SESSION, request_id: message.request_id, error_count: 0,
+            cache_impact: { mcp_servers_added: ['plugin:local-fixture:inspect'], mcp_servers_removed: [], invalid_server_name_count: 0 } });
+        } else {
+          send({ event: 'plugin_inventory', session_id: SESSION, plugins: (message.add_plugins ?? []).map(folder => ({
+            name: 'local-fixture', path: path.resolve(cwd, folder), source: 'local-fixture@inline', version: '1.2.3',
+          })) });
+          send({ event: 'runtime_reload_completed', session_id: SESSION, request_id: message.request_id, error_count: 0 });
+        }
+        break;
+      }
       case 'reload_skills_and_styles':
         if (SCENARIO === 'reload-expired') {
           // The bridge's answer when an earlier request for the session held the reload too long.

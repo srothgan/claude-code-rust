@@ -425,8 +425,14 @@ If no session is active, the tab asks you to open or resume a session first. If 
 
 ## Plugins
 
-The Plugins tab is available through `/plugins`. It shows installed plugins, marketplace plugins, and configured marketplaces.
+The Plugins tab is available through `/plugins`. It shows installed plugins, marketplace plugins, configured marketplaces, and Session attachments.
 
 Supported actions include enabling, disabling, updating, uninstalling, and installing plugins into user, project, or local scopes when those actions are available for the selected plugin.
 
 After plugin changes, the app requests a session runtime plugin reload when an active session is available.
+
+In the Session list, choose **Load local folder** or press `l` outside search. Enter the plugin directory, using an absolute path or a path relative to the session's working directory. The SDK loads it into the current session without installing it into a persistent scope or changing marketplaces. Confirmed folders show **Source: Session**, their folder, and the SDK's source and version when supplied. Select an existing folder and press Enter to load it again after editing its files; `r` reloads the current inventory.
+
+A reload that would invalidate the prompt cache opens an Apply/Decline confirmation. Until Apply, no requested folder is added. Apply submits the same folders; declining keeps the draft and the session's existing plugins. A rejected request keeps the draft for retry. A reload can apply with component errors: the app shows the SDK's error count and reconciles the confirmed plugins, commands, agents and MCP servers. A host reconciliation failure is reported separately and does not imply that the attachment was rolled back.
+
+Confirmed attachments are retained when the bridge replaces or resumes the same active session, including rewind. They are not persisted by the host: after restarting the app or switching away and returning, load the folders again. A fresh session does not inherit them. Before the first prompt after a replacement, press `r` in Session to obtain a new SDK inventory if it is not yet listed. Managed policy, remote environments or an already-running sandbox can reject local folder loading; the SDK's refusal is shown without a persistent-install fallback.

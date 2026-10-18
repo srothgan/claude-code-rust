@@ -9,10 +9,16 @@ pub(super) fn selected_installed_entry(app: &App) -> Option<&InstalledPluginEntr
     ordered_installed(&app.plugins, &app.cwd_raw).get(app.plugins.installed_selected_index).copied()
 }
 
-pub(crate) fn open_installed_actions_overlay_for_mcp_server(
-    app: &mut App,
-    server_name: &str,
-) -> bool {
+pub(crate) fn open_plugin_for_mcp_server(app: &mut App, server_name: &str) -> bool {
+    if let Some(plugin) = session_mcp_plugin_for_runtime_server(app, server_name) {
+        app.plugins.session_selected_index =
+            app.plugins.session_plugins.iter().position(|entry| entry == plugin).unwrap_or(0);
+        app.plugins.active_tab = PluginsViewTab::Session;
+        app.plugins.search_focused = false;
+        app.config.active_tab = crate::app::ConfigTab::Plugins;
+        app.config.clear_overlay();
+        return true;
+    }
     let Some(entry) = installed_mcp_plugin_for_runtime_server(app, server_name).cloned() else {
         return false;
     };
@@ -42,6 +48,18 @@ pub(crate) fn is_stale_plugin_mcp_runtime_server(app: &App, server_name: &str) -
     is_plugin_mcp_runtime_server_name(server_name)
         && app.plugins.last_inventory_refresh_at.is_some()
         && installed_mcp_plugin_for_runtime_server(app, server_name).is_none()
+        && session_mcp_plugin_for_runtime_server(app, server_name).is_none()
+}
+
+pub(crate) fn session_mcp_plugin_for_runtime_server<'a>(
+    app: &'a App,
+    server_name: &str,
+) -> Option<&'a crate::agent::types::SessionPlugin> {
+    let runtime = parse_plugin_mcp_runtime_server_name(server_name)?;
+    app.plugins
+        .session_plugins
+        .iter()
+        .find(|plugin| plugin_id_matches_runtime_name(&plugin.name, runtime.plugin_name))
 }
 
 pub(crate) fn is_plugin_mcp_runtime_server_name(server_name: &str) -> bool {
@@ -71,12 +89,16 @@ pub(super) fn plugin_entry_matches_runtime_name(
     entry: &InstalledPluginEntry,
     runtime_plugin_name: &str,
 ) -> bool {
+    plugin_id_matches_runtime_name(&entry.id, runtime_plugin_name)
+}
+
+fn plugin_id_matches_runtime_name(id: &str, runtime_plugin_name: &str) -> bool {
     let runtime = normalize_plugin_runtime_identifier(runtime_plugin_name);
-    let id_base = entry.id.split('@').next().unwrap_or(entry.id.as_str());
+    let id_base = id.split('@').next().unwrap_or(id);
     [
         normalize_plugin_runtime_identifier(id_base),
         normalize_plugin_runtime_identifier(&display_label(id_base)),
-        normalize_plugin_runtime_identifier(&entry.id),
+        normalize_plugin_runtime_identifier(id),
     ]
     .into_iter()
     .any(|candidate| !candidate.is_empty() && candidate == runtime)

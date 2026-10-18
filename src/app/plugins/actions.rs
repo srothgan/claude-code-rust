@@ -230,9 +230,9 @@ pub(crate) fn apply_cli_action_failure(app: &mut App, message: String) {
 pub(crate) fn apply_runtime_reload_success(app: &mut App) {
     app.plugins.loading = false;
     app.plugins.last_error = None;
+    app.config.last_error = None;
     if let Some(message) = app.plugins.pending_runtime_reload_success_message.take() {
         app.plugins.status_message = Some(message.clone());
-        app.config.last_error = None;
         app.config.status_message = Some(message);
     }
 }
@@ -268,8 +268,13 @@ pub(crate) fn apply_runtime_reload_held(
     if changes.is_empty() {
         changes.push("The session tool list would change".to_owned());
     }
-    let status =
-        "Plugin files were updated, but the session reload was held to preserve the prompt cache.";
+    let local =
+        app.plugins.pending_reload.as_ref().is_some_and(|operation| !operation.folders.is_empty());
+    let status = if local {
+        "No folders were added. The reload was held to preserve the prompt cache."
+    } else {
+        "Plugin files were updated, but the session reload was held to preserve the prompt cache."
+    };
     app.plugins.status_message = Some(status.to_owned());
     app.config.status_message = Some(status.to_owned());
     app.config.last_error = None;
@@ -280,7 +285,7 @@ pub(crate) fn apply_runtime_reload_held(
             "Applying the plugin reload will change the session tool list and invalidate the current prompt cache:\n\n{}",
             changes.join("\n")
         ),
-        confirm_label: "Force reload".to_owned(),
+        confirm_label: if local { "Apply" } else { "Force reload" }.to_owned(),
         cancel_label: "Keep current session tools".to_owned(),
         selected_index: 0,
         action: ConfirmationAction::ForceRuntimePluginReload,
@@ -291,7 +296,13 @@ pub(crate) fn apply_runtime_reload_held(
 pub(crate) fn cancel_held_runtime_reload(app: &mut App) {
     app.plugins.loading = false;
     app.plugins.pending_runtime_reload_success_message = None;
-    let status = "Plugin files were updated; the current session kept its existing tools to preserve the prompt cache.";
+    let local =
+        app.plugins.pending_reload.take().is_some_and(|operation| !operation.folders.is_empty());
+    let status = if local {
+        "Folder loading declined. The session kept its existing plugins."
+    } else {
+        "Plugin files were updated; the current session kept its existing tools to preserve the prompt cache."
+    };
     app.plugins.status_message = Some(status.to_owned());
     app.config.status_message = Some(status.to_owned());
 }
@@ -305,7 +316,10 @@ pub(crate) fn force_held_runtime_reload(app: &mut App) {
     match crate::app::session_runtime::request_forced_runtime_reload(app) {
         crate::app::session_runtime::RuntimeReloadRequestOutcome::Requested => {}
         crate::app::session_runtime::RuntimeReloadRequestOutcome::Unavailable => {
-            apply_runtime_reload_success(app);
+            apply_runtime_reload_failure(
+                app,
+                "the session is unavailable; the held reload was not applied",
+            );
         }
         crate::app::session_runtime::RuntimeReloadRequestOutcome::Failed => {
             apply_runtime_reload_failure(

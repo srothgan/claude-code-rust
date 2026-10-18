@@ -451,7 +451,7 @@ fn marketplace_add_row_opens_text_input_overlay() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    let overlay = app.config.plugin_source_input_overlay().expect("add marketplace overlay");
     assert_eq!(overlay.draft, "");
     assert_eq!(overlay.cursor, 0);
 }
@@ -469,7 +469,7 @@ fn add_marketplace_overlay_supports_editing_and_escape() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
 
-    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    let overlay = app.config.plugin_source_input_overlay().expect("add marketplace overlay");
     assert_eq!(overlay.draft, "on");
     assert_eq!(overlay.cursor, 1);
 
@@ -490,7 +490,7 @@ fn add_marketplace_overlay_accepts_paste() {
         Event::Paste("anthropics/claude-plugins-official".into()),
     );
 
-    let overlay = app.config.add_marketplace_overlay().expect("add marketplace overlay");
+    let overlay = app.config.plugin_source_input_overlay().expect("add marketplace overlay");
     assert_eq!(overlay.draft, "anthropics/claude-plugins-official");
 }
 
@@ -503,7 +503,7 @@ fn empty_marketplace_source_sets_overlay_error_and_keeps_overlay_open() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(app.config.add_marketplace_overlay().is_some());
+    assert!(app.config.plugin_source_input_overlay().is_some());
     let message = app.config.overlay_message.as_ref().expect("overlay message");
     assert_eq!(message.kind, OverlayMessageKind::Error);
     assert_eq!(message.text, "Marketplace source cannot be empty");
@@ -1175,6 +1175,41 @@ fn true_dynamic_mcp_server_offers_matching_config_remove_action() {
 }
 
 #[test]
+fn session_plugin_mcp_server_survives_persistent_inventory_refresh_and_opens_its_session_row() {
+    let (_dir, mut app) = open_settings_test_app();
+    app.config.active_tab = ConfigTab::Mcp;
+    app.plugins.last_inventory_refresh_at = Some(std::time::Instant::now());
+    app.plugins.session_plugins = vec![crate::agent::types::SessionPlugin {
+        name: "Notion".to_owned(),
+        path: "C:/plugins/notion".to_owned(),
+        source: Some("Notion@inline".to_owned()),
+        version: None,
+    }];
+    app.mcp.servers = vec![notion_mcp_server_status()];
+    super::reconcile_stale_plugin_mcp_servers(&mut app);
+    assert_eq!(
+        app.mcp.servers.len(),
+        1,
+        "persistent CLI inventory cannot remove a confirmed session plugin server"
+    );
+    let actions = available_mcp_actions(&app, &app.mcp.servers[0]);
+    assert!(!actions.contains(&super::mcp::McpServerActionKind::RemoveDynamicConfig));
+    let selected_index = actions
+        .iter()
+        .position(|action| *action == super::mcp::McpServerActionKind::ManagePlugin)
+        .expect("manage session plugin");
+    app.config.overlay = Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+        server_name: "plugin:Notion:notion".to_owned(),
+        selected_index,
+    }));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.config.active_tab, ConfigTab::Plugins);
+    assert_eq!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Session);
+    assert_eq!(app.plugins.session_plugins[app.plugins.session_selected_index].name, "Notion");
+    assert!(app.config.installed_plugin_actions_overlay().is_none());
+}
+
+#[test]
 fn plugin_owned_mcp_server_offers_manage_plugin_instead_of_dynamic_remove() {
     let (_dir, mut app) = open_settings_test_app();
     app.plugins.installed = vec![notion_plugin_entry()];
@@ -1437,7 +1472,11 @@ fn mcp_config_remove_success_reloads_runtime_without_extra_snapshot() {
     let envelope = rx.try_recv().expect("runtime reload command");
     assert_eq!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+        BridgeCommand::ReloadPlugins {
+            session_id: "session-1".to_owned(),
+            force: false,
+            add_plugins: Vec::new()
+        }
     );
     assert!(app.mcp.in_flight);
     assert!(rx.try_recv().is_err());
@@ -1903,7 +1942,11 @@ fn mcp_tab_refresh_key_requests_snapshot() {
     let envelope = rx.try_recv().expect("runtime reload command");
     assert_eq!(
         envelope.command,
-        BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+        BridgeCommand::ReloadPlugins {
+            session_id: "session-1".to_owned(),
+            force: false,
+            add_plugins: Vec::new()
+        }
     );
     let envelope = rx.try_recv().expect("mcp snapshot command");
     assert_eq!(

@@ -1,4 +1,5 @@
 import { restoreResumedToolState } from "./history.js";
+import { sessionPluginFolders } from "./plugin_inventory.js";
 import { randomUUID } from "node:crypto";
 import { resetMainAgentActivity, type MainAgentResponse } from "./activity.js";
 import { spawn as spawnChild } from "node:child_process";
@@ -176,6 +177,9 @@ export type PendingWorkerShutdown = {
 };
 
 export type SessionState = {
+  pluginInventory?: import("../types.js").SessionPlugin[];
+  /** Folders requested at process launch, not evidence of successful loading. */
+  pluginLaunchPaths?: string[];
   mainAgentResponse?: MainAgentResponse;
   /** The API response ID of the last top-level response whose stream began. */
   lastStreamedResponseId?: string;
@@ -503,6 +507,7 @@ export async function closeAllSessions(
 
 export async function createSession(params: {
   cwd: string;
+  pluginPaths?: string[];
   resume?: string;
   resumeSessionAt?: string;
   resumeDropsTurn?: string;
@@ -518,6 +523,8 @@ export async function createSession(params: {
   restoredInput?: string;
   pendingRewindResult?: PendingRewindResult;
 }): Promise<SessionState> {
+  const previous = params.resume ? sessions.get(params.resume) : undefined;
+  const pluginPaths = params.pluginPaths ?? (previous ? sessionPluginFolders(previous) : []);
   const input = new AsyncQueue<SDKUserMessage>();
   const provisionalSessionId =
     params.sessionId ??
@@ -668,6 +675,7 @@ export async function createSession(params: {
       prompt: input,
       options: buildQueryOptions({
         cwd: params.cwd,
+        pluginPaths,
         resume: params.resume,
         resumeSessionAt: params.resumeSessionAt,
         resumeDropsTurn: params.resumeDropsTurn,
@@ -710,6 +718,7 @@ export async function createSession(params: {
   session = {
     sessionId: provisionalSessionId,
     cwd: params.cwd,
+    pluginLaunchPaths: pluginPaths,
     ...(params.launchSettings.model ? { requestedModelId: params.launchSettings.model } : {}),
     availableModels: [],
     mode: initialMode,
@@ -1035,6 +1044,7 @@ export function commitDeferredSession(session: SessionState): void {
 
 type QueryOptionsBuilderParams = {
   cwd: string;
+  pluginPaths?: string[];
   resolvedSettings: Settings;
   resume?: string;
   resumeSessionAt?: string;
@@ -1136,6 +1146,7 @@ export function buildQueryOptions(params: QueryOptionsBuilderParams) {
   const settings = buildFlagSettings(params.launchSettings, params.resolvedSettings);
   return {
     cwd: params.cwd,
+    ...(params.pluginPaths?.length ? { plugins: params.pluginPaths.map(path => ({ type: "local" as const, path })) } : {}),
     includePartialMessages: true,
     promptSuggestions: true,
     // SDK sessions need an explicit recording opt-in; their recording gate

@@ -39,6 +39,7 @@ The Rust TUI implements its own interface and uses the SDK's session capabilitie
 | Shell completions and man pages | Native CLI | Generated from the CLI definitions; see [Usage](usage.md#shell-completions). |
 | Account login and logout | Installed Claude CLI | Invoked from `/login` and `/logout`. |
 | Plugin inventory and persistent management | Installed Claude CLI | Invoked from the plugin management interface. |
+| Session-only local plugin folders | Rust TUI and SDK | Load local folder in `/plugins`; no persistent installation. |
 | Usage information | SDK, OAuth, or installed Claude CLI | The CLI is conditional; see the dependency table above. |
 | Whole-session background detach/attach and stock agent view | Unavailable in the Rust TUI | SDK background tasks are supported, but the stock `/background` and `claude agents` interface is not provided. |
 | Remote Control and stock IDE integrations | Unavailable in the Rust TUI | No equivalent to the stock `/remote-control` or `/ide` integration. Running in an IDE terminal still works. |

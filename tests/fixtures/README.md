@@ -6,6 +6,8 @@
 
 Run the suite with `cargo test --all-features --test terminal_resize -- --test-threads=1`. Bun or Node and `rustc` must be available on `PATH`; the auth tests compile a small native fake CLI into their temporary directory.
 
+`sdk-plugin-runtime.mjs` exercises the pinned SDK's local-folder contract with temporary plugin manifests and commands, a local model stub and a local MCP server. It checks deduplication, malformed and missing folders, partial application, cache-impact holds, applying the same folder, explicit restoration on resume and isolation of fresh sessions. It uses a temporary Claude profile without provider credentials and closes its own queries and servers before removing the fixture directory. The bridge test runs it with an independent timeout; it does not prove managed-policy or remote/sandbox behavior.
+
 The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all three platform jobs to pass. Windows uses ConPTY; Linux and macOS use native Unix PTYs. Windows receives complete paste actions; Unix additionally exercises fragmented control sequences and UTF-8 scalars. Exact Unicode payloads, including combining accents, are checked in the journal on every platform. Submission waits out the application's existing paste Enter suppression window.
 
 | Scenario | First turn |
@@ -15,6 +17,7 @@ The PR workflow runs this suite on Ubuntu, Windows, and macOS, and requires all 
 | `hold-error` | Streams text, waits for the release file, then emits a service error. |
 | `hold-eof` | Streams text, waits for the release file, then closes stdout by exiting. |
 | `hold-malformed` | Streams text, waits for the release file, then writes invalid NDJSON and remains alive for shutdown. |
+| `hold-local-plugin` | Holds the assistant turn while a local-folder reload returns a cache-impact confirmation; Apply publishes a confirmed Session plugin with SDK source/version. The test supplies a native fake CLI for read-only persistent inventory and verifies that no plugin settings or installation records are written. |
 | `permission` | Starts a tool, requests an allow/deny decision, then completes after the correlated response. |
 | `question` | Starts a tool, requests a destination selection, then completes after the correlated answer or cancellation. |
 | `disconnect-during-auth` | Connects normally, then exits when the release file appears while the auth child owns stdin. |

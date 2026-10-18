@@ -169,15 +169,24 @@ pub enum ClientEvent {
     },
     /// Terminal ownership returned from a child process.
     TerminalReturnedFromChild { reason: ReleaseReason },
-    /// Session runtime plugin reload completed successfully.
-    RuntimeReloadCompleted { session_id: String },
+    /// Confirmed local-folder attachments from the SDK's current inventory.
+    PluginInventory { session_id: String, plugins: Vec<crate::agent::types::SessionPlugin> },
+    /// Native application completed; component errors and host reconciliation are separate.
+    RuntimeReloadCompleted {
+        session_id: String,
+        request_id: Option<String>,
+        error_count: u32,
+        reconciliation_error: Option<String>,
+    },
     /// A safe plugin reload was held because it would invalidate the prompt cache.
     RuntimeReloadHeld {
         session_id: String,
         cache_impact: crate::agent::types::RuntimeReloadCacheImpact,
+        request_id: Option<String>,
+        error_count: u32,
     },
     /// Session runtime plugin reload failed after dispatch.
-    RuntimeReloadFailed { session_id: String, message: String },
+    RuntimeReloadFailed { session_id: String, request_id: Option<String>, message: String },
     /// How the skills and the output styles halves of a `/reload` each ended.
     SkillsAndStylesReloaded {
         session_id: String,
@@ -305,7 +314,8 @@ impl ClientEvent {
             | Self::TurnComplete { session_id, .. }
             | Self::TurnError { session_id, .. }
             | Self::TurnErrorClassified { session_id, .. }
-            | Self::RuntimeReloadCompleted { session_id }
+            | Self::PluginInventory { session_id, .. }
+            | Self::RuntimeReloadCompleted { session_id, .. }
             | Self::RuntimeReloadHeld { session_id, .. }
             | Self::RuntimeReloadFailed { session_id, .. }
             | Self::SkillsAndStylesReloaded { session_id, .. }

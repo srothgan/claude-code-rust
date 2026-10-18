@@ -843,10 +843,16 @@ impl AgentConnection {
         })
     }
 
-    pub fn reload_plugins(&self, session_id: String, force: bool) -> anyhow::Result<()> {
+    pub fn reload_plugins(
+        &self,
+        session_id: String,
+        force: bool,
+        add_plugins: Vec<String>,
+        request_id: Option<String>,
+    ) -> anyhow::Result<()> {
         self.send(CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::ReloadPlugins { session_id, force },
+            request_id,
+            command: BridgeCommand::ReloadPlugins { session_id, force, add_plugins },
         })
     }
 
@@ -1383,12 +1389,17 @@ mod tests {
     fn reload_plugins_sends_bridge_command() {
         let (conn, mut rx) = AgentConnection::test_channel();
 
-        conn.reload_plugins("session-1".to_owned(), false).expect("reload plugins");
+        conn.reload_plugins("session-1".to_owned(), false, Vec::new(), None)
+            .expect("reload plugins");
 
         let envelope = rx.try_recv().expect("command");
         assert_eq!(
             envelope.command,
-            BridgeCommand::ReloadPlugins { session_id: "session-1".to_owned(), force: false }
+            BridgeCommand::ReloadPlugins {
+                session_id: "session-1".to_owned(),
+                force: false,
+                add_plugins: Vec::new()
+            }
         );
     }
 
