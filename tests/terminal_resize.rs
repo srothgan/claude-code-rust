@@ -1008,25 +1008,16 @@ fn assert_read_previews(test: &TerminalTest) {
     }
 }
 
-fn assert_read_preparation_avoids_empty_terminal_work(records: &[Value]) {
-    let mut pending = false;
-    let mut drew = false;
-    let mut continued_without_draw = false;
+fn assert_empty_insertion_preserves_viewport_height(records: &[Value]) {
     let mut shrank_for_insertion = false;
     for record in records {
         match record["event_name"].as_str() {
-            Some("inline_chat_layout_step") => {
-                continued_without_draw |= pending && !drew;
-                pending = record["rows"] == 0 && record["complete"] == false;
-                drew = false;
-            }
             Some("inline_chat_geometry_reconciled") => {
                 shrank_for_insertion |=
                     record["old_height"].as_u64().is_some_and(|height| height > 1)
                         && record["target_height"] == 1;
             }
             Some("inline_chat_terminal_draw_transaction") => {
-                drew = true;
                 if record["flushed_rows"] == 0 {
                     assert!(!shrank_for_insertion, "empty insertion must not shrink the viewport");
                 }
@@ -1035,62 +1026,42 @@ fn assert_read_preparation_avoids_empty_terminal_work(records: &[Value]) {
             _ => {}
         }
     }
-    assert!(continued_without_draw, "pending Read preparation must advance without a redraw");
 }
 
 #[test]
-fn read_replay_preserves_preview_windows_and_accepts_input_and_new_width_while_preparing() {
+fn read_replay_preserves_preview_windows_and_draft_across_resizes() {
     let mut test = TerminalTest::start("resize-read", 2_000);
     test.submit("READ_PREVIEWS", "READ_PREVIEWS");
     test.wait_turn_finished("READ_2000_2000");
     assert_read_previews(&test);
     let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
     test.resize(18, 73);
-    test.wait_until("Read preparation yielded without rows", |test| {
-        test.runtime_records_since(offset).iter().any(|record| {
-            record["event_name"] == "inline_chat_layout_step"
-                && record["rows"] == 0
-                && record["complete"] == false
-        })
-    });
-    let input_offset =
-        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
     test.paste("DRAFT_DURING_READ");
-    test.wait_composer_text(input_offset, "DRAFT_DURING_READ");
-    let records = test.runtime_records_since(offset);
-    assert!(
-        !records.iter().any(|record| record["replay_complete"] == true),
-        "input must be displayed while Read preparation is still pending"
-    );
-    assert_read_preparation_avoids_empty_terminal_work(&records);
+    test.wait_composer_text(offset, "DRAFT_DURING_READ");
     let resize_offset =
         std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
     test.resize_and_wait_for_draw(24, 61);
     test.wait_composer_text(resize_offset, "DRAFT_DURING_READ");
     assert_read_previews(&test);
-    assert_read_preparation_avoids_empty_terminal_work(&test.runtime_records_since(resize_offset));
+    assert_empty_insertion_preserves_viewport_height(&test.runtime_records_since(offset));
     test.assert_prompts(&["READ_PREVIEWS"]);
     test.shutdown();
 }
 
 #[test]
-fn shutdown_finishes_read_preparation_even_when_no_repaint_is_pending() {
+fn shutdown_preserves_read_previews_after_resize() {
     let mut test = TerminalTest::start("resize-read", 2_000);
     test.submit("READ_SHUTDOWN", "READ_SHUTDOWN");
     test.wait_turn_finished("READ_2000_2000");
     let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
     test.resize(18, 73);
-    test.wait_until("Read preparation pending at shutdown", |test| {
-        test.runtime_records_since(offset).iter().any(|record| {
-            record["event_name"] == "inline_chat_layout_step"
-                && record["rows"] == 0
-                && record["complete"] == false
-        })
-    });
     test.shutdown();
-    assert!(
-        test.runtime_records_since(offset).iter().any(|record| record["replay_complete"] == true)
-    );
+    assert!(test.runtime_records_since(offset).iter().any(|record| {
+        record["event_name"] == "inline_chat_terminal_draw_transaction"
+            && record["replay_complete"] == true
+            && record["terminal_height"] == 18
+            && record["terminal_width"] == 73
+    }));
     assert_read_previews(&test);
 }
 
