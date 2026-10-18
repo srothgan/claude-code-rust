@@ -528,6 +528,39 @@ mod tests {
     }
 
     #[test]
+    fn sdk_behavior_labels_keep_their_values_in_their_activity_window() {
+        let window = |key: &str, pct, count| UsageActivityWindow {
+            request_count: 20,
+            session_count: 2,
+            behaviors: vec![crate::app::UsageBehaviorAttribution {
+                key: key.to_owned(),
+                pct,
+                count,
+            }],
+            agents: Vec::new(),
+            skills: Vec::new(),
+            plugins: Vec::new(),
+            mcp_servers: Vec::new(),
+        };
+        for (key, label) in [
+            ("max_effort", "max effort"),
+            ("workflow", "workflow"),
+            ("always_on_context", "always on context"),
+            ("large_tool_results", "large tool results"),
+            ("future_behavior", "future behavior"),
+        ] {
+            let day = super::format_activity_window("Day", &window(key, 70.0, 7));
+            let week = super::format_activity_window("Week", &window(key, 85.0, 17));
+            assert!(day.starts_with("Day:"));
+            assert!(day.contains(&format!("{label} 70% (7 requests)")));
+            assert!(!day.contains("85%"));
+            assert!(week.starts_with("Week:"));
+            assert!(week.contains(&format!("{label} 85% (17 requests)")));
+            assert!(!week.contains("70%"));
+        }
+    }
+
+    #[test]
     fn renders_structured_session_totals_and_approximate_activity_without_plan_windows() {
         let mut app = usage_app();
         app.usage.snapshot = Some(UsageSnapshot {

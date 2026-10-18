@@ -190,6 +190,10 @@ export function buildRateLimitUpdate(
     update.limit_scope = info.limitScope;
   }
 
+  if (typeof info.overageEnabled === "boolean") {
+    update.overage_enabled = info.overageEnabled;
+  }
+
   const overageStatus = parseRateLimitStatus(info.overageStatus);
   if (overageStatus) {
     update.overage_status = overageStatus;

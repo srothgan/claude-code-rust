@@ -158,10 +158,19 @@ mod tests {
         let folder: String = std::fs::canonicalize(&project)
             .expect("resolved project")
             .to_string_lossy()
+            // Node's realpath omits Rust's Windows verbatim prefix.
+            .trim_start_matches(r"\\?\")
             .chars()
             .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
             .collect();
-        let memory = dir.path().join("home/.claude/projects").join(folder).join("memory/MEMORY.md");
+        let memory = dir
+            .path()
+            .join("home")
+            .join(".claude")
+            .join("projects")
+            .join(folder)
+            .join("memory")
+            .join("MEMORY.md");
         std::fs::create_dir_all(memory.parent().expect("memory folder")).expect("memory folder");
         std::fs::write(&memory, "notes").expect("memory file");
 

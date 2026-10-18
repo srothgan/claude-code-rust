@@ -274,6 +274,12 @@ fn startup_failure_message(reason: &str) -> &'static str {
         "remote_settings_required_unavailable" => {
             "Required remote managed settings could not be loaded. Check connectivity and contact your administrator."
         }
+        "org_config_required_unavailable" => {
+            "Required organization configuration is temporarily unavailable. Check connectivity and retry."
+        }
+        "org_config_refused" => {
+            "Organization configuration access was refused. Sign in with an allowed account or contact your administrator."
+        }
         "gateway_signin_required" => {
             "Authenticate through your organization's required gateway before starting Claude Code."
         }
@@ -738,6 +744,8 @@ mod tests {
                 "Required remote managed settings could not be loaded",
             ),
             ("gateway_signin_required", "Authenticate through"),
+            ("org_config_required_unavailable", "Check connectivity and retry"),
+            ("org_config_refused", "Sign in with an allowed account or contact your administrator"),
             ("gateway_access_denied", "gateway denied access"),
             ("proxy_invalid", "Correct your proxy URL"),
             ("temp_dir_unusable", "select a writable temporary directory"),

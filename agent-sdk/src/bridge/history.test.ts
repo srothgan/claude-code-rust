@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { mapSessionMessagesToUpdates } from "./history.js";
 
-test("resume display restores compaction segments once and preserves SDK branch filtering", () => {
+test("resume restores compaction segments and Unicode separators with SDK branch filtering", () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "claude-rs-transcript-")));
   try {
     const cwd = join(directory, "project");
@@ -17,16 +17,16 @@ test("resume display restores compaction segments once and preserves SDK branch 
     mkdirSync(projectDir, { recursive: true });
     const sessionId = "11111111-1111-4111-8111-111111111111";
     const records: Record<string, unknown>[] = [];
-    const source = "# Notes\r\n\r\n\t**literal**  \r\n";
+    const source = "# Notes\r\n\r\n\t**literal**\u2028retained\u2029too  \r\n";
     const add = (uuid: string, parentUuid: string | null, type: string, message: unknown, extra = {}) => {
       records.push({ uuid, parentUuid, type, message, sessionId, cwd, timestamp: `2026-10-06T10:00:${String(records.length).padStart(2, "0")}.000Z`, ...extra });
     };
-    add("prompt-1", null, "user", { role: "user", content: "First prompt" });
+    add("prompt-1", null, "user", { role: "user", content: "First\u2028prompt\u2029retained" });
     add("tool", "prompt-1", "assistant", { id: "assistant-1", role: "assistant", content: [{ type: "tool_use", id: "read-1", name: "Read", input: { file_path: "notes.md", offset: 60 } }] });
     add("result", "tool", "user", { role: "user", content: [{ type: "tool_result", tool_use_id: "read-1", content: "60\t# Notes\n61\t\n62\t\t**literal**  " }] }, {
       toolUseResult: { type: "text", file: { filePath: "notes.md", content: source, numLines: 3, startLine: 60, totalLines: 100 } },
     });
-    add("answer-1", "result", "assistant", { id: "assistant-2", role: "assistant", content: [{ type: "text", text: "First answer" }] });
+    add("answer-1", "result", "assistant", { id: "assistant-2", role: "assistant", content: [{ type: "text", text: "First\u2028answer\u2029retained" }] });
     add("boundary-1", null, "system", undefined, { subtype: "compact_boundary", logicalParentUuid: "answer-1", compactMetadata: { trigger: "auto", preservedMessages: { anchorUuid: "summary-1", uuids: ["tool", "result", "answer-1"] } } });
     add("summary-1", "boundary-1", "user", { role: "user", content: "Internal summary one" }, { isCompactSummary: true });
     add("prompt-2", "summary-1", "user", { role: "user", content: [{ type: "text", text: "Second prompt" }] });
@@ -65,8 +65,8 @@ test("resume display restores compaction segments once and preserves SDK branch 
     const result = JSON.parse(child.stdout);
     assert.deepEqual(result.uuids, ["prompt-1", "tool", "result", "answer-1", "boundary-1", "summary-1", "prompt-2", "rename", "color", "answer-2", "boundary-2", "summary-2", "prompt-3", "answer-3"]);
     const chunks = result.updates.filter((update: { type: string }) => update.type === "user_message_chunk" || update.type === "agent_message_chunk");
-    assert.deepEqual(chunks.map((update: { content: { text: string } }) => update.content.text), ["First prompt", "First answer", "Second prompt", "/rename review-444", "/color blue", "Second answer", "Third prompt", "Third answer"]);
-    assert.deepEqual(result.targets, [["prompt-3", "Third prompt"], ["prompt-2", "Second prompt"], ["prompt-1", "First prompt"]]);
+    assert.deepEqual(chunks.map((update: { content: { text: string } }) => update.content.text), ["First\u2028prompt\u2029retained", "First\u2028answer\u2029retained", "Second prompt", "/rename review-444", "/color blue", "Second answer", "Third prompt", "Third answer"]);
+    assert.deepEqual(result.targets, [["prompt-3", "Third prompt"], ["prompt-2", "Second prompt"], ["prompt-1", "First\u2028prompt\u2029retained"]]);
     const tools = result.updates.filter((update: { type: string }) => update.type === "tool_call");
     assert.equal(tools.length, 1);
     assert.equal(tools[0].tool_call.tool_call_id, "read-1");

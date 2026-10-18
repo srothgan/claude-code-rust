@@ -90,7 +90,20 @@ pub fn save_global_settings(path: &Path, settings: &AppSettings) -> Result<(), S
 }
 
 pub fn global_settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join(SETTINGS_DIR_NAME).join(SETTINGS_FILE))
+    settings_path_from(
+        std::env::var_os("CLAUDE_RS_CONFIG_DIR").as_deref(),
+        dirs::config_dir().as_deref(),
+    )
+}
+
+fn settings_path_from(
+    app_config_dir: Option<&std::ffi::OsStr>,
+    system_config_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(directory) = app_config_dir.filter(|directory| !directory.is_empty()) {
+        return Some(PathBuf::from(directory).join(SETTINGS_FILE));
+    }
+    system_config_dir.map(|directory| directory.join(SETTINGS_DIR_NAME).join(SETTINGS_FILE))
 }
 
 pub fn update_prompt_candidate(
@@ -192,6 +205,29 @@ pub(crate) fn load_from_path(path: &Path) -> Result<AppSettings, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_profile_selects_its_own_settings_without_a_system_directory() {
+        let profile = Path::new("isolated-app");
+        for system in [None, Some(Path::new("system-config"))] {
+            assert_eq!(
+                settings_path_from(Some(profile.as_os_str()), system),
+                Some(profile.join("settings.json"))
+            );
+        }
+    }
+
+    #[test]
+    fn empty_and_unset_app_profiles_preserve_the_system_settings_location() {
+        let system = Path::new("system-config");
+        for profile in [None, Some(std::ffi::OsStr::new(""))] {
+            assert_eq!(
+                settings_path_from(profile, Some(system)),
+                Some(system.join("claude-code-rust").join("settings.json"))
+            );
+            assert_eq!(settings_path_from(profile, None), None);
+        }
+    }
 
     #[test]
     fn prompt_candidate_requires_newer_version() {

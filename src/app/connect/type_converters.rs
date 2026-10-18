@@ -22,6 +22,7 @@ pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::Ra
         utilization: update.utilization,
         rate_limit_type: update.rate_limit_type,
         limit_scope: update.limit_scope,
+        overage_enabled: update.overage_enabled,
         overage_status: update.overage_status.map(map_rate_limit_status),
         overage_resets_at: update.overage_resets_at,
         overage_disabled_reason: update.overage_disabled_reason,
@@ -481,6 +482,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             utilization,
             rate_limit_type,
             limit_scope,
+            overage_enabled,
             overage_status,
             overage_resets_at,
             overage_disabled_reason,
@@ -496,6 +498,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                 utilization,
                 rate_limit_type,
                 limit_scope,
+                overage_enabled,
                 overage_status,
                 overage_resets_at,
                 overage_disabled_reason,
@@ -1560,6 +1563,29 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_enablement_survives_both_conversion_paths() {
+        for enabled in [None, Some(false), Some(true)] {
+            let raw = serde_json::json!({
+                "status": "allowed_warning", "overage_enabled": enabled, "is_using_overage": false
+            });
+            let direct = super::map_rate_limit_update(
+                serde_json::from_value(raw.clone()).expect("rate limit"),
+            );
+            let mut update = raw;
+            update["type"] = serde_json::json!("rate_limit_update");
+            let mapped =
+                map_session_update(serde_json::from_value(update).expect("session update"))
+                    .expect("mapped update");
+            let model::SessionUpdate::RateLimitUpdate(flattened) = mapped else {
+                panic!("rate limit update");
+            };
+            assert_eq!(direct.overage_enabled, enabled);
+            assert_eq!(flattened.overage_enabled, enabled);
+            assert_eq!(flattened.is_using_overage, Some(false));
+        }
+    }
+
+    #[test]
     fn map_session_update_preserves_rate_limit_credits_metadata() {
         let mapped = map_session_update(types::SessionUpdate::RateLimitUpdate {
             status: types::RateLimitStatus::Rejected,
@@ -1568,6 +1594,7 @@ mod tests {
             utilization: None,
             rate_limit_type: None,
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,

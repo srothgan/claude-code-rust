@@ -62,6 +62,8 @@ fn save_transcript(dir: &TempDir, session_id: &str) -> PathBuf {
     let project = std::fs::canonicalize(dir.path().join("project")).expect("project path");
     let name: String = project
         .to_string_lossy()
+        // Node's realpath omits Rust's Windows verbatim prefix.
+        .trim_start_matches(r"\\?\")
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect();
@@ -763,6 +765,7 @@ fn a_resumed_session_is_saved_in_the_folder_it_was_listed_under() {
     let sibling = std::fs::canonicalize(sibling).expect("sibling path");
     let name: String = sibling
         .to_string_lossy()
+        .trim_start_matches(r"\\?\")
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect();

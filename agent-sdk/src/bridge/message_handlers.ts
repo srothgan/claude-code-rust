@@ -1829,7 +1829,9 @@ export function handleResultMessage(
     return;
   }
   const assistantError = session.lastAssistantError;
-  const authHint = errors.find((entry) => looksLikeAuthRequired(entry));
+  const authHint = assistantError === "invalid_request"
+    ? undefined
+    : errors.find((entry) => looksLikeAuthRequired(entry));
   if (authHint) {
     emitAuthRequired(session, authHint);
   }

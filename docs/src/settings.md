@@ -80,13 +80,15 @@ Each save goes to one scope. Press `s` in the list to cycle the save scope throu
 | Project | `./.claude/settings.json` | Defaults shared with the repository. |
 | Local | `./.claude/settings.local.json` | Private defaults for this project. |
 | Managed | Organization policy | Shown for information. Settings restricted by policy are read-only. |
-| App preferences | `claude-code-rust/settings.json` in the OS config directory | This app's own preferences: footer layout, tab-title activity, the `/copy` picker, notification categories and automatic updates. Always saved for the user. |
+| App preferences | `claude-code-rust/settings.json` in the OS config directory, or `<CLAUDE_RS_CONFIG_DIR>/settings.json` when overridden | This app's own preferences: footer layout, tab-title activity, the `/copy` picker, notification categories and automatic updates. Always saved for the user. |
 
 Not every setting can be saved at every scope. A setting that the selected scope cannot hold is read-only until you switch scope; [Settings by pane](#settings-by-pane) lists the restrictions.
 
 Workspace trust is recorded separately in `~/.claude.json`. It is not a settings scope and is never used as a fallback for a setting.
 
 Set `CLAUDE_CONFIG_DIR` before startup to use an isolated Claude profile. User settings then live in `<directory>/settings.json`, workspace trust in `<directory>/.claude.json`, and file credentials in `<directory>/.credentials.json`. Sessions, plugins and authentication use the same directory. Project and Local settings stay in the project, and app preferences and diagnostics keep their normal OS locations.
+
+Set `CLAUDE_RS_CONFIG_DIR` to select a separate directory for this app's preferences. They are read from and saved to `<directory>/settings.json`, including the footer layout, presentation preferences, notification categories and update preferences. An empty or unset value uses the normal OS config location. This override is independent of `CLAUDE_CONFIG_DIR`; diagnostics retain their normal location.
 
 The Settings tab shows saved values. A running session can differ, because workspace trust, managed policy, model capabilities, startup arguments and session commands also apply. The Status tab and the chat footer show what the session is running with.
 
@@ -339,7 +341,7 @@ Permission mode, model, effort, Ultracode, fast mode, running subagents, working
 
 Permission and startup MCP-authentication notices remain at the far right and take priority over configured fields. On narrow terminals, paths and branches shorten first, then later fields are omitted, with the left group preceding the right group for overflow priority. The footer never wraps.
 
-The layout is a user-level app preference saved as the `presentation.footer` array in `claude-code-rust/settings.json` in the OS config directory. Each entry has an `id`, a `visible` boolean, a `side` of `left` or `right`, and an optional `color`; array order determines reading order within each group. The field IDs are `permissionMode`, `model`, `effort`, `ultracode`, `fastMode`, `runningSubagents`, `directory`, `gitBranch` and `contextRemaining`. Omitted fields remain available in the dialog but are hidden. An empty array hides all optional fields. Removing the setting restores the built-in layout.
+The layout is a user-level app preference saved as the `presentation.footer` array in the app-preferences file described under [Where settings are saved](#where-settings-are-saved). Each entry has an `id`, a `visible` boolean, a `side` of `left` or `right`, and an optional `color`; array order determines reading order within each group. The field IDs are `permissionMode`, `model`, `effort`, `ultracode`, `fastMode`, `runningSubagents`, `directory`, `gitBranch` and `contextRemaining`. Omitted fields remain available in the dialog but are hidden. An empty array hides all optional fields. Removing the setting restores the built-in layout.
 
 For example, `{ "id": "model", "visible": true, "side": "left", "color": "cyan" }` sets the model color. Omitting `color` keeps its existing appearance. The palette IDs are `red`, `orange`, `amber`, `yellow`, `lime`, `green`, `emerald`, `teal`, `cyan`, `sky`, `blue`, `indigo`, `violet`, `purple`, `fuchsia`, `pink`, `rose`, `white`, `gray`, and `slate`.
 

@@ -1,0 +1,10 @@
+{
+  "presentation": {
+    "footer": [
+      { "id": "runningSubagents", "visible": false, "side": "left" },
+      { "id": "directory", "visible": true, "side": "right", "color": "amber" },
+      { "id": "model", "visible": true, "side": "left", "color": "cyan" }
+    ]
+  },
+  "unrelated": "preserve this profile"
+}

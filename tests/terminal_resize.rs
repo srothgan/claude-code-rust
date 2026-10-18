@@ -29,6 +29,24 @@ const OWNED_REGION_ERROR: &str = "refusing to clear outside inline chat owned re
 const WAIT_LIMIT: Duration = Duration::from_secs(60);
 type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+#[derive(Clone, Copy, Default)]
+struct AppProfileFixture<'a> {
+    inherited_directory: Option<&'a Path>,
+    contents: Option<&'a str>,
+}
+
+#[allow(clippy::expect_used)]
+fn configure_test_profiles(command: &mut CommandBuilder, root: &Path) {
+    for (variable, directory) in
+        [("CLAUDE_CONFIG_DIR", "profile"), ("CLAUDE_RS_CONFIG_DIR", "app-config")]
+    {
+        let directory = root.join(directory);
+        std::fs::create_dir_all(&directory).expect("isolated configuration directory");
+        command.env(variable, directory);
+    }
+    command.env_remove("CLAUDE_CODE_PROJECT_DIR_NAME");
+}
+
 struct CapturedTerminal {
     parser: vt100::Parser<ScrollbackCallbacks>,
     raw: Vec<u8>,
@@ -197,12 +215,40 @@ impl TerminalTest {
         has_initial_prompt: bool,
         removed_env: &[&str],
     ) -> Self {
+        Self::start_with_profile(
+            scenario,
+            lines,
+            auth_mode,
+            args,
+            has_initial_prompt,
+            removed_env,
+            AppProfileFixture::default(),
+        )
+    }
+
+    fn start_with_profile(
+        scenario: &str,
+        lines: u16,
+        auth_mode: Option<&str>,
+        args: &[&str],
+        has_initial_prompt: bool,
+        removed_env: &[&str],
+        app_profile: AppProfileFixture<'_>,
+    ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
         let project = temp.path().join("project");
         let journal = temp.path().join("commands.jsonl");
         let release_file = temp.path().join("release");
-        std::fs::create_dir_all(&profile).expect("profile");
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        if let Some(inherited_directory) = app_profile.inherited_directory {
+            command.env("CLAUDE_RS_CONFIG_DIR", inherited_directory);
+        }
+        configure_test_profiles(&mut command, temp.path());
+        if let Some(contents) = app_profile.contents {
+            std::fs::write(temp.path().join("app-config/settings.json"), contents)
+                .expect("app preferences fixture");
+        }
         std::fs::create_dir_all(&project).expect("project");
         if has_initial_prompt {
             std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}"#).expect("saved settings");
@@ -213,7 +259,6 @@ impl TerminalTest {
             .expect("terminal tests need bun or node on PATH");
 
         let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
         command.arg("--no-update-check");
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
@@ -228,7 +273,6 @@ impl TerminalTest {
             command.arg(arg);
         }
         command.cwd(&project);
-        command.env("CLAUDE_CONFIG_DIR", &profile);
         command.env("CLAUDE_RS_AGENT_BRIDGE", &bridge);
         command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", runtime);
         command.env("FAKE_BRIDGE_LINES", lines.to_string());
@@ -2493,7 +2537,7 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     test.select_setting("Notify when Claude requests it");
     test.send(b" "); // On -> Off, immediate acknowledged save.
     test.wait_setting(
-        "profile/app-settings.json",
+        "app-config/settings.json",
         "/notifications/modelDirected",
         Some(&Value::Bool(false)),
     );
@@ -2504,7 +2548,7 @@ fn notifications_follow_focus_saved_categories_and_sdk_delivery_provenance_in_a_
     test.wait_screen_with("Native notice 3", &["[READY]"]);
     assert_eq!(notification_bells(&test), 1);
     let saved: Value = serde_json::from_slice(
-        &std::fs::read(test.temp.path().join("profile/app-settings.json"))
+        &std::fs::read(test.temp.path().join("app-config/settings.json"))
             .expect("saved categories"),
     )
     .expect("category JSON");
@@ -2816,6 +2860,89 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 }
 
 #[test]
+fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes() {
+    let inherited = tempfile::tempdir().expect("inherited app profile");
+    let inherited_path = inherited.path().join("settings.json");
+    let original = include_str!("fixtures/app-settings/hidden-subagents.json");
+    std::fs::write(&inherited_path, original).expect("conflicting inherited preferences");
+    let mut preferences: Value = serde_json::from_str(original).expect("app fixture");
+    preferences["presentation"]["footer"][0]["visible"] = Value::Bool(true);
+    let preferences = preferences.to_string();
+    let mut test = TerminalTest::start_with_profile(
+        "agents",
+        3,
+        None,
+        &[],
+        false,
+        &[],
+        AppProfileFixture {
+            inherited_directory: Some(inherited.path()),
+            contents: Some(&preferences),
+        },
+    );
+    test.wait_screen("[AGENTS:1]");
+    test.submit("/config", "/config");
+    test.wait_settings_ready("Footer");
+    let inspections = test.commands("inspect_settings");
+    let inspected_path = inspections.last().expect("settings inspection")["app_settings_path"]
+        .as_str()
+        .expect("app settings path");
+    assert_eq!(
+        Path::new(inspected_path),
+        test.temp.path().join("app-config").join("settings.json"),
+        "verify the selected profile before editing any preferences"
+    );
+    test.select_setting("Footer");
+    test.send(b"\r");
+    test.wait_screen("Running subagents");
+    // The fixture explicitly puts Running subagents first in the editor.
+    test.send(b" ");
+    test.wait_until("footer saved in the isolated app profile", |test| {
+        std::fs::read(test.temp.path().join("app-config/settings.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+            .and_then(|saved| saved["presentation"]["footer"].as_array().cloned())
+            .is_some_and(|fields| {
+                fields
+                    .iter()
+                    .any(|field| field["id"] == "runningSubagents" && field["visible"] == false)
+            })
+    });
+    test.shutdown();
+    assert_eq!(std::fs::read(&inherited_path).expect("inherited preferences"), original.as_bytes());
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(test.temp.path().join("app-config/settings.json"))
+            .expect("isolated preferences"),
+    )
+    .expect("saved JSON");
+    assert_eq!(saved["unrelated"], "preserve this profile");
+}
+
+#[test]
+fn a_custom_app_profile_can_hide_the_footer_count_without_hiding_subagents() {
+    let mut test = TerminalTest::start_with_profile(
+        "agents",
+        3,
+        None,
+        &[],
+        false,
+        &[],
+        AppProfileFixture {
+            contents: Some(include_str!("fixtures/app-settings/hidden-subagents.json")),
+            ..AppProfileFixture::default()
+        },
+    );
+    test.send(b"\x1b[D");
+    test.wait_screen_with("Check the parser for edge cases", &["Subagents", "running"]);
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    let footer =
+        test.screen_rows().into_iter().find(|row| row.contains("[READY]")).expect("ready footer");
+    assert!(!footer.contains("AGENTS:"), "custom footer must hide the count: {footer}");
+    test.shutdown();
+}
+
+#[test]
 fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns_to_chat() {
     let mut test = TerminalTest::start("agents", 3);
     // A draft keeping Left as cursor movement is covered by the app key tests.
@@ -2869,7 +2996,6 @@ fn agents_view_opens_from_an_empty_composer_stops_a_running_subagent_and_returns
 fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
     let temp = tempfile::tempdir().expect("tempdir");
     let profile = temp.path().join("profile");
-    std::fs::create_dir_all(&profile).expect("profile");
     let file = temp.path().join("notes.txt");
     std::fs::write(&file, "").expect("file");
     let cases = [
@@ -2880,11 +3006,11 @@ fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
     for (flag, path) in cases {
         let pair = native_pty_system().openpty(pty_size(SHORT_ROWS, COLS)).expect("open pty");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
+        configure_test_profiles(&mut command, temp.path());
         command.arg("--no-update-check");
         command.arg(flag);
         command.arg(&path);
         command.cwd(temp.path());
-        command.env("CLAUDE_CONFIG_DIR", &profile);
         let writer = Arc::new(Mutex::new(pair.master.take_writer().expect("pty writer")));
         let reader = pair.master.try_clone_reader().expect("pty reader");
         let process = pair.slave.spawn_command(command).expect("spawn claude-rs");

@@ -2079,6 +2079,30 @@ mod tests {
     }
 
     #[test]
+    fn rate_limit_envelope_preserves_enabled_false_separately_from_unknown() {
+        for enabled in [Some(true), Some(false), None] {
+            let mut raw = serde_json::json!({
+                "event": "session_update", "session_id": "session",
+                "update": {"type": "rate_limit_update", "status": "allowed_warning", "is_using_overage": false}
+            });
+            if let Some(enabled) = enabled {
+                raw["update"]["overage_enabled"] = serde_json::json!(enabled);
+            }
+            let envelope: EventEnvelope = serde_json::from_value(raw).expect("rate limit envelope");
+            let BridgeEvent::SessionUpdate {
+                update:
+                    types::SessionUpdate::RateLimitUpdate { overage_enabled, is_using_overage, .. },
+                ..
+            } = envelope.event
+            else {
+                panic!("rate limit event")
+            };
+            assert_eq!(overage_enabled, enabled);
+            assert_eq!(is_using_overage, Some(false));
+        }
+    }
+
+    #[test]
     fn settings_categories_and_recursive_forms_cross_the_settings_result_wire() {
         let mut snapshot: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/settings-ui-catalog.json"))

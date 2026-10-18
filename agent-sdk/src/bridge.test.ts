@@ -3,6 +3,7 @@ import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentC
 import test, { mock } from "node:test";
 import { emitEffortConfigOptionUpdate, refreshSessionEffort } from "./bridge/effort.js";
 import assert from "node:assert/strict";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   AsyncQueue,
   buildApiRetryUpdate,
@@ -124,6 +125,8 @@ const STARTUP_REASONS = {
   org_pin_mismatch: true,
   managed_settings_invalid: true,
   remote_settings_required_unavailable: true,
+  org_config_required_unavailable: true,
+  org_config_refused: true,
   gateway_signin_required: true,
   gateway_access_denied: true,
   proxy_invalid: true,
@@ -179,6 +182,22 @@ test("startup errors are validated, bounded and redacted", () => {
   assert.equal(details.length, 8);
   assert.ok(details.every((detail) => detail.length === 1_024));
   assert.ok(details.every((detail) => !/private-key|secret-token|user:password|private-token/.test(detail)));
+});
+
+test("a structured invalid request does not turn refresh failure text into login", () => {
+  const session = makeSessionState();
+  session.lastAssistantError = "invalid_request";
+  const events = captureBridgeEvents(() => handleResultMessage(session, {
+    type: "result", subtype: "error_during_execution",
+    errors: ["Unable to save refreshed credentials: ENOSPC. Please login again."],
+    api_error_status: null,
+  }));
+  assert.equal(events.some(event => event.event === "auth_required"), false);
+  const error = events.find(event => event.event === "turn_error");
+  assert.ok(error);
+  assert.equal(error.assistant_error, "invalid_request");
+  assert.equal(Object.hasOwn(error, "api_error_status"), false);
+  assert.equal(session.lastAssistantError, undefined);
 });
 
 test("only execution result messages recognize startup reasons; older errors retain behavior", () => {
@@ -6775,6 +6794,19 @@ test("buildRateLimitUpdate normalizes SDK overage boolean spellings", () => {
   }
 });
 
+test("overage enablement remains distinct from use, status and unknown", () => {
+  for (const enabled of [true, false, undefined, null, "true"]) {
+    const update = buildRateLimitUpdate({
+      status: "allowed_warning", overageEnabled: enabled,
+      overageStatus: "allowed", overageInUse: false,
+    });
+    assert.equal(update?.overage_enabled, typeof enabled === "boolean" ? enabled : undefined);
+    assert.equal(Object.hasOwn(update ?? {}, "overage_enabled"), typeof enabled === "boolean");
+    assert.equal(update?.is_using_overage, false);
+    assert.equal(update?.overage_status, "allowed");
+  }
+});
+
 test("buildRateLimitUpdate rejects invalid payloads", () => {
   assert.equal(buildRateLimitUpdate(null), null);
   assert.equal(buildRateLimitUpdate({}), null);
@@ -9010,8 +9042,60 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.288");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.302");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
+});
+
+test("the pinned SDK keeps named option values intact in generated argv", async () => {
+  let args: string[] | undefined;
+  const stop = new Error("argv captured without launching a process");
+  const capture = () => query({
+    prompt: "never sent",
+    options: {
+      model: "-model with = signs",
+      permissionMode: "plan",
+      debugFile: "-debug path=example.log",
+      settingSources: ["user", "project", "local"],
+      settings: { language: "value with = signs" },
+      spawnClaudeCodeProcess(options) {
+        args = options.args;
+        throw stop;
+      },
+    },
+  });
+  let sdkQuery: ReturnType<typeof query> | undefined;
+  try {
+    await assert.rejects(async () => {
+      sdkQuery = capture();
+      await sdkQuery.supportedCommands();
+    }, error => error === stop);
+    assert.ok(args);
+    assert.ok(args.includes("--model=-model with = signs"));
+    assert.ok(args.includes("--permission-mode=plan"));
+    assert.ok(args.includes("--debug-file=-debug path=example.log"));
+    assert.ok(args.includes("--setting-sources=user,project,local"));
+    // Settings JSON has its own SDK serialization path, not the named-option map.
+    assert.equal(args[args.indexOf("--settings") + 1], '{"language":"value with = signs"}');
+  } finally {
+    sdkQuery?.close();
+  }
+});
+
+test("usage attribution accepts the new SDK behaviors and future keys in each window", () => {
+  const day = [
+    { key: "max_effort", pct: 70, count: 7 },
+    { key: "workflow", pct: 60, count: 6 },
+    { key: "always_on_context", pct: 50, count: 5 },
+    { key: "large_tool_results", pct: 40, count: 4 },
+    { key: "future_behavior", pct: 30, count: 3 },
+  ];
+  const week = [{ key: "workflow", pct: 85, count: 17 }];
+  const result = normalizeStructuredUsage({ behaviors: {
+    day: { request_count: 10, session_count: 2, behaviors: day },
+    week: { request_count: 20, session_count: 4, behaviors: week },
+  } });
+  assert.deepEqual(result.activity_day?.behaviors, day);
+  assert.deepEqual(result.activity_week?.behaviors, week);
 });
 
 test("mapSessionMessagesToUpdates maps message content blocks", () => {

@@ -530,7 +530,8 @@ readline
         break;
       case 'inspect_settings':
         if (notificationScenario) {
-          notificationAppPath = path.join(process.env.CLAUDE_CONFIG_DIR, 'app-settings.json');
+          notificationAppPath = message.app_settings_path;
+          if (!notificationAppPath) throw new Error('App settings path was not supplied');
           if (!fs.existsSync(notificationAppPath)) fs.writeFileSync(notificationAppPath, JSON.stringify({ notifications: { actionsRequired: true, modelDirected: true, turnComplete: false } }));
         }
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {

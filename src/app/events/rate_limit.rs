@@ -93,16 +93,22 @@ pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> Stri
 
     let mut message = format!("{intro}, {usage_part}.");
 
-    // Overage hint
-    if is_rejected {
-        // Rejected: state if overage is in use
-        if update.is_using_overage == Some(true) {
-            message.push_str(" You are using your overage allowance.");
-        }
-    } else {
-        // Warning: hint that overage is available
-        if update.is_using_overage == Some(false) || update.overage_status.is_some() {
+    // Enablement, availability and current use are separate SDK observations.
+    if update.overage_enabled == Some(false)
+        || update.overage_disabled_reason.is_some()
+        || update.overage_status == Some(model::RateLimitStatus::Rejected)
+    {
+        message.push_str(" Extra usage is unavailable.");
+    } else if update.is_using_overage == Some(true) {
+        message.push_str(" You are using your overage allowance.");
+    } else if !is_rejected && update.overage_enabled == Some(true) {
+        if matches!(
+            update.overage_status,
+            Some(model::RateLimitStatus::Allowed | model::RateLimitStatus::AllowedWarning)
+        ) {
             message.push_str(" You can continue using your overage allowance.");
+        } else {
+            message.push_str(" Extra usage is enabled.");
         }
     }
 
@@ -142,6 +148,7 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
         rate_limit_type = update.rate_limit_type.as_deref().unwrap_or(""),
         limit_scope = update.limit_scope.as_deref().unwrap_or(""),
         resets_at = update.resets_at.unwrap_or_default(),
+        overage_enabled = ?update.overage_enabled,
         overage_status = ?update.overage_status,
         overage_resets_at = update.overage_resets_at.unwrap_or_default(),
         overage_disabled_reason = update.overage_disabled_reason.as_deref().unwrap_or(""),
@@ -180,6 +187,53 @@ mod tests {
     use crate::agent::model::{RateLimitStatus, RateLimitUpdate};
 
     #[test]
+    fn overage_warning_requires_enabled_and_available_allowance() {
+        for enabled in [None, Some(false), Some(true)] {
+            for status in [
+                None,
+                Some(RateLimitStatus::Allowed),
+                Some(RateLimitStatus::AllowedWarning),
+                Some(RateLimitStatus::Rejected),
+            ] {
+                for disabled_reason in [None, Some("out_of_credits")] {
+                    let update: RateLimitUpdate = serde_json::from_value(serde_json::json!({
+                        "status": "allowed_warning", "overage_enabled": enabled,
+                        "overage_status": status, "overage_disabled_reason": disabled_reason,
+                        "is_using_overage": false
+                    }))
+                    .expect("warning fixture");
+                    let summary = format_rate_limit_summary(&update);
+                    let available = enabled == Some(true)
+                        && matches!(
+                            status,
+                            Some(RateLimitStatus::Allowed | RateLimitStatus::AllowedWarning)
+                        )
+                        && disabled_reason.is_none();
+                    assert_eq!(
+                        summary.contains("can continue"),
+                        available,
+                        "{update:?}: {summary}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn current_use_does_not_override_an_unavailable_allowance() {
+        for disabled in [false, true] {
+            let update: RateLimitUpdate = serde_json::from_value(serde_json::json!({
+                "status": "rejected", "overage_enabled": !disabled,
+                "is_using_overage": true
+            }))
+            .expect("rejection fixture");
+            let summary = format_rate_limit_summary(&update);
+            assert_eq!(summary.contains("are using"), !disabled);
+            assert!(!summary.contains("can continue"));
+        }
+    }
+
+    #[test]
     fn org_level_disabled_without_primary_context_uses_extra_usage_message() {
         let update = RateLimitUpdate {
             status: RateLimitStatus::Rejected,
@@ -188,6 +242,7 @@ mod tests {
             utilization: None,
             rate_limit_type: None,
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: Some("org_level_disabled".to_owned()),
@@ -212,6 +267,7 @@ mod tests {
             utilization: None,
             rate_limit_type: Some("five_hour".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: Some("org_level_disabled".to_owned()),
@@ -236,6 +292,7 @@ mod tests {
             utilization: Some(0.92),
             rate_limit_type: Some("seven_day_overage_included".to_owned()),
             limit_scope: None,
+            overage_enabled: None,
             overage_status: None,
             overage_resets_at: None,
             overage_disabled_reason: None,

@@ -119,6 +119,7 @@ export interface RateLimitUpdate {
   utilization?: number;
   rate_limit_type?: string;
   limit_scope?: "service" | "channel" | "group_pool";
+  overage_enabled?: boolean;
   overage_status?: RateLimitStatus;
   overage_resets_at?: number;
   overage_disabled_reason?: string;

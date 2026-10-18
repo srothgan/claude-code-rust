@@ -37,6 +37,8 @@ claude-rs logs --latest
 
 ## Login And Authentication Failures
 
+If startup reports that required organization configuration is temporarily unavailable, check connectivity and retry. If access to organization configuration was refused, sign in with an allowed account or contact your organization administrator.
+
 Authentication is owned by the Claude Code CLI, not by this project. `claude-rs` reuses the credentials the CLI already holds.
 
 Sign in from inside the app with `/login`, or from a shell:
@@ -51,7 +53,11 @@ If login appears to succeed but sessions still fail, confirm that the CLI itself
 claude-rs doctor
 ```
 
-Billing, model availability, and service limits are controlled by Anthropic and surface here as session errors rather than install problems. For the authentication and permission flow in the log, use the `session` preset:
+Billing, model availability, and service limits are controlled by Anthropic and surface here as session errors rather than install problems.
+
+Extra usage being enabled and extra usage being available are separate conditions. A warning offers continued use only when the SDK confirms both; an unavailable allowance is not a promise that work will continue. A refresh failure reported as an invalid request, such as a full disk, remains a request failure and does not trigger login from its error text.
+
+For the authentication and permission flow in the log, use the `session` preset:
 
 ```bash
 claude-rs --enable-logs --diagnostics-preset session

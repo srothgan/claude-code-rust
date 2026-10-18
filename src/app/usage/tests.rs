@@ -145,6 +145,33 @@ fn maps_structured_sdk_usage_without_conflating_session_and_account_totals() {
 }
 
 #[test]
+fn sdk_behavior_keys_keep_their_own_attribution_during_conversion() {
+    let raw = serde_json::json!({
+        "request_count": 10, "session_count": 2,
+        "behaviors": [
+            {"key": "max_effort", "pct": 70, "count": 7},
+            {"key": "workflow", "pct": 60, "count": 6},
+            {"key": "always_on_context", "pct": 50, "count": 5},
+            {"key": "large_tool_results", "pct": 40, "count": 4},
+            {"key": "future_behavior", "pct": 30, "count": 3}
+        ]
+    });
+    let window = super::map_activity_window(serde_json::from_value(raw).expect("SDK activity"));
+    let actual: Vec<_> =
+        window.behaviors.iter().map(|item| (item.key.as_str(), item.pct, item.count)).collect();
+    assert_eq!(
+        actual,
+        [
+            ("max_effort", 70.0, 7),
+            ("workflow", 60.0, 6),
+            ("always_on_context", 50.0, 5),
+            ("large_tool_results", 40.0, 4),
+            ("future_behavior", 30.0, 3)
+        ]
+    );
+}
+
+#[test]
 fn suppresses_plan_windows_when_sdk_reports_rate_limits_unavailable() {
     let snapshot = map_structured_sdk_snapshot(StructuredUsageSnapshot {
         subscription_type: None,
