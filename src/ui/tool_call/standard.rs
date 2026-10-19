@@ -203,10 +203,7 @@ fn finish_standard_body(
             )
         }
         ToolContentHeightPolicy::Unbounded => {
-            wrap_content_lines_with_source(content_lines, content_width, control)
-                .into_iter()
-                .map(|wrapped| wrapped.row)
-                .collect()
+            crate::ui::wrap::wrap_lines_with_control(&content_lines, content_width, control)
         }
     };
 
@@ -845,12 +842,6 @@ fn line_text_starts_with_diff_count_header(line: &Line<'static>) -> bool {
     line_plain_text(line).trim_start().starts_with('(')
 }
 
-#[derive(Clone)]
-struct WrappedContentRow {
-    source_index: usize,
-    row: Line<'static>,
-}
-
 fn cap_tool_content_lines(
     lines: Vec<Line<'static>>,
     width: u16,
@@ -862,8 +853,8 @@ fn cap_tool_content_lines(
     let protected_source_lines = protected_source_lines.min(source_line_count);
     let mut head = lines;
     let rest = head.split_off(protected_source_lines);
-    let mut wrapped = wrap_content_lines_with_source(head, width, control);
-    let protected_rows = wrapped.len();
+    let head = measure_content_lines(head, width, control);
+    let protected_rows = content_height(&head);
 
     // Every logical line produces at least one row. When the source already
     // exceeds the cap, only the protected prefix and the visible tail need layout.
@@ -871,91 +862,115 @@ fn cap_tool_content_lines(
     if source_line_count > TOOL_BODY_MAX_LINES && protected_rows < TOOL_BODY_MAX_LINES {
         let tail_budget = TOOL_BODY_MAX_LINES - protected_rows - 1;
         let mut tail = std::collections::VecDeque::new();
+        let mut first_tail = source_line_count;
         for (index, line) in rest.into_iter().enumerate().rev() {
             if tail.len() >= tail_budget || control.cancelled() {
                 break;
             }
-            let rows = crate::ui::wrap::wrap_lines_with_control(&[line], width, control);
-            for row in rows.into_iter().rev().take(tail_budget - tail.len()) {
-                tail.push_front(WrappedContentRow {
-                    source_index: protected_source_lines + index,
-                    row,
-                });
+            let layout = crate::ui::wrap::WrappedLineLayout::new(line, width);
+            let end = layout.height();
+            let start = end.saturating_sub(tail_budget - tail.len());
+            for row in layout.render(start..end, control).into_iter().rev() {
+                tail.push_front(row);
+                first_tail = protected_source_lines + index;
             }
         }
-        let first_tail = tail.front().map_or(source_line_count, |row| row.source_index);
         let omitted = first_tail.saturating_sub(protected_source_lines);
-        let mut out = wrapped.into_iter().map(|row| row.row).collect::<Vec<_>>();
+        let (_, mut out) = render_content_window(head, 0..protected_rows, control);
         out.push(Line::from(Span::styled(
             format!("... {omitted} {omitted_label} ..."),
             Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
         )));
-        out.extend(tail.into_iter().map(|row| row.row));
+        out.extend(tail);
         return out;
     }
-    wrapped.extend(wrap_content_lines_with_source(rest, width, control).into_iter().map(
-        |mut row| {
-            row.source_index += protected_source_lines;
-            row
-        },
-    ));
-    if wrapped.len() <= TOOL_BODY_MAX_LINES {
-        return wrapped.into_iter().map(|wrapped| wrapped.row).collect();
+    let rest = measure_content_lines(rest, width, control);
+    let remaining_rows = content_height(&rest);
+    let total_rows = protected_rows + remaining_rows;
+    if total_rows <= TOOL_BODY_MAX_LINES {
+        return render_content_window(
+            head.into_iter().chain(rest).collect(),
+            0..total_rows,
+            control,
+        )
+        .1;
     }
 
     if protected_rows >= TOOL_BODY_MAX_LINES {
         let visible = TOOL_BODY_MAX_LINES.saturating_sub(1);
-        let omitted_rows = wrapped.len().saturating_sub(visible);
-        let mut out = Vec::with_capacity(TOOL_BODY_MAX_LINES);
-        out.extend(wrapped.iter().take(visible).map(|wrapped| wrapped.row.clone()));
-        if omitted_rows > 0 {
-            out.push(Line::from(Span::styled(
-                format!("... {omitted_rows} wrapped rows hidden ..."),
-                Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
-            )));
-        }
+        let omitted_rows = total_rows - visible;
+        let (_, mut out) = render_content_window(head, 0..visible, control);
+        out.push(Line::from(Span::styled(
+            format!("... {omitted_rows} wrapped rows hidden ..."),
+            Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
+        )));
         return out;
     }
 
     let tail = TOOL_BODY_MAX_LINES.saturating_sub(protected_rows + 1);
-    let tail_start = wrapped.len().saturating_sub(tail).max(protected_rows);
-    let omitted_rows = tail_start.saturating_sub(protected_rows);
-    let first_tail_source =
-        wrapped.get(tail_start).map_or(source_line_count, |row| row.source_index);
-    let omitted_source_lines = first_tail_source.saturating_sub(protected_source_lines);
+    let omitted_rows = remaining_rows.saturating_sub(tail);
+    let (first_tail_source, tail_rows) =
+        render_content_window(rest, omitted_rows..remaining_rows, control);
+    let omitted_source_lines =
+        first_tail_source.unwrap_or(source_line_count - protected_source_lines);
     let omitted = if omitted_source_lines > 0 {
         format!("... {omitted_source_lines} {omitted_label} ...")
     } else {
         format!("... {omitted_rows} wrapped rows hidden ...")
     };
 
-    let mut out = Vec::with_capacity(TOOL_BODY_MAX_LINES);
-    out.extend(wrapped.iter().take(protected_rows).map(|wrapped| wrapped.row.clone()));
+    let (_, mut out) = render_content_window(head, 0..protected_rows, control);
     out.push(Line::from(Span::styled(
         omitted,
         Style::default().fg(theme::DIM).add_modifier(Modifier::ITALIC),
     )));
-    out.extend(wrapped.into_iter().skip(tail_start).map(|wrapped| wrapped.row));
+    out.extend(tail_rows);
     out
 }
 
-fn wrap_content_lines_with_source(
+fn measure_content_lines(
     lines: Vec<Line<'static>>,
     width: u16,
     control: &LayoutControl<'_>,
-) -> Vec<WrappedContentRow> {
-    let mut rows = Vec::new();
-    for (source_index, line) in lines.into_iter().enumerate() {
+) -> Vec<crate::ui::wrap::WrappedLineLayout> {
+    let mut layouts = Vec::new();
+    for line in lines {
         if control.cancelled() {
             return Vec::new();
         }
-        rows.extend(
-            crate::ui::wrap::wrap_lines_with_control(&[line], width, control)
-                .into_iter()
-                .map(|row| WrappedContentRow { source_index, row }),
-        );
+        layouts.push(crate::ui::wrap::WrappedLineLayout::new(line, width));
     }
-    rows
+    layouts
+}
+
+fn content_height(lines: &[crate::ui::wrap::WrappedLineLayout]) -> usize {
+    lines.iter().map(crate::ui::wrap::WrappedLineLayout::height).sum()
+}
+
+/// Materialize only the selected physical rows, retaining their source association
+/// for omission counts. Hidden rows never become terminal cells or owned spans.
+fn render_content_window(
+    lines: Vec<crate::ui::wrap::WrappedLineLayout>,
+    window: std::ops::Range<usize>,
+    control: &LayoutControl<'_>,
+) -> (Option<usize>, Vec<Line<'static>>) {
+    let mut rows = Vec::new();
+    let mut first_source = None;
+    let mut offset = 0;
+    for (source_index, line) in lines.into_iter().enumerate() {
+        if offset >= window.end || control.cancelled() {
+            break;
+        }
+        let height = line.height();
+        let start = window.start.saturating_sub(offset).min(height);
+        let end = window.end.saturating_sub(offset).min(height);
+        if start < end {
+            first_source.get_or_insert(source_index);
+            rows.extend(line.render(start..end, control));
+        }
+        offset += height;
+    }
+    (first_source, rows)
 }
 
 fn line_text_is_existing_omission_marker(line: &Line<'static>) -> bool {
@@ -970,6 +985,64 @@ fn line_plain_text(line: &Line<'static>) -> String {
 #[cfg(test)]
 mod replay_tests {
     use super::*;
+
+    #[test]
+    fn capped_long_line_materializes_only_the_visible_tail() {
+        let source = format!("{}TAIL", "x".repeat(29_996));
+        let checks = std::cell::Cell::new(0);
+        let cancel_unbounded_materialization = || {
+            checks.set(checks.get() + 1);
+            checks.get() > 40
+        };
+        let control = LayoutControl::new(&cancel_unbounded_materialization);
+        let rows = cap_tool_content_lines(
+            vec![Line::from(Span::styled(source, Style::default().fg(theme::RUST_ORANGE)))],
+            20,
+            "source lines hidden",
+            0,
+            &control,
+        );
+        assert!(!control.cancelled(), "hidden physical rows must not be materialized");
+        assert_eq!(rows[0].to_string(), "... 1492 wrapped rows hidden ...");
+        assert_eq!(rows.last().unwrap().to_string(), format!("{}TAIL", "x".repeat(16)));
+        assert_eq!(rows.len(), TOOL_BODY_MAX_LINES);
+        assert!(rows[1..].iter().all(|row| {
+            row.width() == 20
+                && row.spans.iter().all(|span| span.style.fg == Some(theme::RUST_ORANGE))
+        }));
+    }
+
+    #[test]
+    fn capped_content_preserves_protected_rows_and_source_omission_counts() {
+        let control = LayoutControl::uninterrupted();
+        let rows = cap_tool_content_lines(
+            vec![Line::from("HEADER"), Line::from("hidden"), Line::from("tail".repeat(40))],
+            20,
+            "source lines hidden",
+            1,
+            &control,
+        );
+        assert_eq!(rows[0].to_string().trim_end(), "HEADER");
+        assert_eq!(rows[1].to_string(), "... 1 source lines hidden ...");
+        assert_eq!(
+            rows[2..].iter().map(Line::to_string).collect::<Vec<_>>(),
+            vec!["tail".repeat(5); 7]
+        );
+
+        // A protected prefix that fills the preview keeps its beginning, not its tail.
+        let rows = cap_tool_content_lines(
+            vec![Line::from("HEAD".repeat(50)), Line::from("body".repeat(10))],
+            20,
+            "source lines hidden",
+            1,
+            &control,
+        );
+        assert_eq!(
+            rows[..8].iter().map(Line::to_string).collect::<Vec<_>>(),
+            vec!["HEAD".repeat(5); 8]
+        );
+        assert_eq!(rows[8].to_string(), "... 4 wrapped rows hidden ...");
+    }
 
     #[test]
     fn capped_output_does_not_lay_out_the_hidden_middle() {

@@ -65,34 +65,68 @@ pub(super) fn wrap_lines_with_control(
     width: u16,
     control: &super::layout_control::LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
-    if lines.is_empty() {
-        return Vec::new();
-    }
-    if width == 0 {
-        return vec![Line::default(); lines.len()];
-    }
-
     let mut rows = Vec::new();
-    // Paragraph wraps logical lines independently. Keep the temporary cell buffer local
-    // to one line instead of allocating a width × transcript-height intermediate.
     for line in lines {
         if control.cancelled() {
             return Vec::new();
         }
-        let text = Text::from(line.clone());
-        let height =
-            Paragraph::new(text.clone()).wrap(Wrap { trim: false }).line_count(width).max(1);
-        let area = Rect::new(0, 0, width, u16::try_from(height).unwrap_or(u16::MAX));
-        let mut buffer = Buffer::empty(area);
-        Paragraph::new(text).wrap(Wrap { trim: false }).render(area, &mut buffer);
-        for row in 0..area.height {
-            if control.cancelled() {
-                return Vec::new();
-            }
-            rows.push(buffer_row_to_line(&buffer, area, row));
+        let layout = WrappedLineLayout::new(line.clone(), width);
+        let height = layout.height();
+        rows.extend(layout.render(0..height, control));
+        if control.cancelled() {
+            return Vec::new();
         }
     }
     rows
+}
+
+/// Measure wrapping without rasterizing hidden rows. Ratatui remains the owner of
+/// word boundaries, alignment and grapheme width for both full and windowed layout.
+pub(super) struct WrappedLineLayout {
+    paragraph: Paragraph<'static>,
+    width: u16,
+    height: u16,
+}
+
+impl WrappedLineLayout {
+    pub(super) fn new(line: Line<'static>, width: u16) -> Self {
+        let paragraph = Paragraph::new(Text::from(line)).wrap(Wrap { trim: false });
+        let height = u16::try_from(paragraph.line_count(width).max(1)).unwrap_or(u16::MAX);
+        Self { paragraph, width, height }
+    }
+
+    pub(super) fn height(&self) -> usize {
+        usize::from(self.height)
+    }
+
+    pub(super) fn render(
+        self,
+        rows: std::ops::Range<usize>,
+        control: &super::layout_control::LayoutControl<'_>,
+    ) -> Vec<Line<'static>> {
+        let start = rows.start.min(self.height());
+        let end = rows.end.min(self.height());
+        if start >= end || control.cancelled() {
+            return Vec::new();
+        }
+        if self.width == 0 {
+            return vec![Line::default(); end - start];
+        }
+        // Both bounds are limited to the measured u16 height above.
+        let height = u16::try_from(end - start).unwrap_or(self.height);
+        let offset = u16::try_from(start).unwrap_or(self.height);
+        let area = Rect::new(0, 0, self.width, height);
+        let mut buffer = Buffer::empty(area);
+        self.paragraph.scroll((offset, 0)).render(area, &mut buffer);
+        let mut rendered = Vec::with_capacity(usize::from(height));
+        for row in 0..height {
+            if control.cancelled() {
+                return Vec::new();
+            }
+            rendered.push(buffer_row_to_line(&buffer, area, row));
+        }
+        rendered
+    }
 }
 
 /// Splits a line at grapheme boundaries into rows of at most `width` cells, keeping every
@@ -433,6 +467,65 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn windowed_rows_match_the_selected_paragraph_cells() {
+        let fixtures = [
+            Line::from("word boundaries  and trailing spaces   ".repeat(20)),
+            Line::from(vec![
+                Span::raw("  日本語👩‍💻e\u{301} ".repeat(20)),
+                Span::styled("colored tail", Style::new().fg(ratatui::style::Color::Red)),
+            ])
+            .style(Style::new().bg(ratatui::style::Color::Blue)),
+            Line::from("right aligned words ".repeat(20)).right_aligned(),
+            Line::from("centered words ".repeat(20)).centered(),
+            Line::from("unbroken".repeat(100)),
+            Line::default(),
+        ];
+        for line in fixtures {
+            for width in [1, 4, 13, 60] {
+                let paragraph = Paragraph::new(line.clone()).wrap(Wrap { trim: false });
+                let height = u16::try_from(paragraph.line_count(width).max(1)).unwrap();
+                let area = Rect::new(0, 0, width, height);
+                let mut expected = Buffer::empty(area);
+                paragraph.render(area, &mut expected);
+                for start in [0, height / 2, height.saturating_sub(3)] {
+                    let end = height.min(start + 3);
+                    let layout = WrappedLineLayout::new(line.clone(), width);
+                    let rows = layout.render(
+                        usize::from(start)..usize::from(end),
+                        &super::super::layout_control::LayoutControl::uninterrupted(),
+                    );
+                    let viewport = Rect::new(0, 0, width, end - start);
+                    let mut actual = Buffer::empty(viewport);
+                    Paragraph::new(rows).render(viewport, &mut actual);
+                    for y in 0..viewport.height {
+                        for x in 0..width {
+                            assert_eq!(
+                                actual.cell((x, y)),
+                                expected.cell((x, start + y)),
+                                "width={width}, start={start}, cell=({x}, {y})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windowed_rows_handle_zero_width_and_empty_or_cancelled_windows() {
+        use super::super::layout_control::LayoutControl;
+        let control = LayoutControl::uninterrupted();
+        let layout = WrappedLineLayout::new(Line::from("text"), 0);
+        assert_eq!(layout.height(), 1);
+        assert_eq!(layout.render(0..1, &control), vec![Line::default()]);
+        let layout = WrappedLineLayout::new(Line::from("text"), 2);
+        assert!(layout.render(2..2, &control).is_empty());
+        let layout = WrappedLineLayout::new(Line::from("text"), 2);
+        control.cancel();
+        assert!(layout.render(0..2, &control).is_empty());
+    }
 
     #[test]
     fn physical_rows_match_paragraph_cells_across_logical_lines() {

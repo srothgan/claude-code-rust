@@ -1225,6 +1225,42 @@ fn style_of(lines: &[Line<'static>], needle: &str) -> Style {
 }
 
 #[test]
+fn shell_long_line_keeps_its_styled_tail_through_cached_redraw_and_resize() {
+    let output = format!("{}\u{1b}[31mEND\u{1b}[0m", "x".repeat(29_997));
+    let mut tc = test_tool_call("long-shell-output", "Bash", model::ToolCallStatus::Completed);
+    tc.terminal_output = Some(output.clone());
+    for (width, hidden_rows, text_width) in [(26, 1492, 20), (46, 742, 40)] {
+        let mut rendered = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            width,
+            crate::ui::SpinnerState::Static,
+            &mut rendered,
+        );
+        // The omission marker is clipped to the available width; the output tail
+        // must still occupy its own eight rows and retain the program's style.
+        assert!(rendered[1].to_string().contains(&format!("... {hidden_rows} wrapped")));
+        let body = rendered_line_texts(&rendered[2..]);
+        let mut expected = vec![format!("      {}", "x".repeat(text_width)); 7];
+        expected.push(format!("      {}END", "x".repeat(text_width - 3)));
+        assert_eq!(body, expected);
+        assert_eq!(style_of(&rendered[2..], "END").fg, Some(Color::Red));
+        assert_eq!(tc.terminal_output.as_deref(), Some(output.as_str()));
+
+        let mut cached = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            width,
+            crate::ui::SpinnerState::Static,
+            &mut cached,
+        );
+        assert_eq!(cached, rendered);
+    }
+}
+
+#[test]
 fn shell_output_keeps_program_styles_over_the_dim_default() {
     let output = concat!(
         "\u{1b}[31mred\u{1b}[0m plain\n",
