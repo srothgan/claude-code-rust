@@ -6,205 +6,6 @@ use crate::agent::model;
 use crate::agent::types;
 use crate::app::{ModeInfo, ModeState};
 
-pub(super) fn map_rate_limit_status(status: types::RateLimitStatus) -> model::RateLimitStatus {
-    match status {
-        types::RateLimitStatus::Allowed => model::RateLimitStatus::Allowed,
-        types::RateLimitStatus::AllowedWarning => model::RateLimitStatus::AllowedWarning,
-        types::RateLimitStatus::Rejected => model::RateLimitStatus::Rejected,
-    }
-}
-
-pub(super) fn map_rate_limit_update(update: types::RateLimitUpdate) -> model::RateLimitUpdate {
-    model::RateLimitUpdate {
-        status: map_rate_limit_status(update.status),
-        error_code: update.error_code,
-        resets_at: update.resets_at,
-        utilization: update.utilization,
-        rate_limit_type: update.rate_limit_type,
-        limit_scope: update.limit_scope,
-        overage_enabled: update.overage_enabled,
-        overage_status: update.overage_status.map(map_rate_limit_status),
-        overage_resets_at: update.overage_resets_at,
-        overage_disabled_reason: update.overage_disabled_reason,
-        is_using_overage: update.is_using_overage,
-        surpassed_threshold: update.surpassed_threshold,
-        can_user_purchase_credits: update.can_user_purchase_credits,
-        has_chargeable_saved_payment_method: update.has_chargeable_saved_payment_method,
-    }
-}
-
-pub(super) fn map_api_retry_error(error: types::ApiRetryError) -> model::ApiRetryError {
-    match error {
-        types::ApiRetryError::AuthenticationFailed => model::ApiRetryError::AuthenticationFailed,
-        types::ApiRetryError::AccountOnHold => model::ApiRetryError::AccountOnHold,
-        types::ApiRetryError::OauthOrgNotAllowed => model::ApiRetryError::OauthOrgNotAllowed,
-        types::ApiRetryError::BillingError => model::ApiRetryError::BillingError,
-        types::ApiRetryError::RateLimit => model::ApiRetryError::RateLimit,
-        types::ApiRetryError::Overloaded => model::ApiRetryError::Overloaded,
-        types::ApiRetryError::InvalidRequest => model::ApiRetryError::InvalidRequest,
-        types::ApiRetryError::ModelNotFound => model::ApiRetryError::ModelNotFound,
-        types::ApiRetryError::ServerError => model::ApiRetryError::ServerError,
-        types::ApiRetryError::VerificationRequired => model::ApiRetryError::VerificationRequired,
-        types::ApiRetryError::CloudCredentialError => model::ApiRetryError::CloudCredentialError,
-        types::ApiRetryError::MaxOutputTokens => model::ApiRetryError::MaxOutputTokens,
-        types::ApiRetryError::Unknown => model::ApiRetryError::Unknown,
-    }
-}
-
-pub(super) fn map_mcp_server_connection_status(
-    status: types::McpServerConnectionStatus,
-) -> model::McpServerConnectionStatus {
-    match status {
-        types::McpServerConnectionStatus::Connected => model::McpServerConnectionStatus::Connected,
-        types::McpServerConnectionStatus::Failed => model::McpServerConnectionStatus::Failed,
-        types::McpServerConnectionStatus::NeedsAuth => model::McpServerConnectionStatus::NeedsAuth,
-        types::McpServerConnectionStatus::Pending => model::McpServerConnectionStatus::Pending,
-        types::McpServerConnectionStatus::Disabled => model::McpServerConnectionStatus::Disabled,
-    }
-}
-
-fn map_mcp_tool_permission_policy(
-    policy: types::McpServerToolPermissionPolicy,
-) -> model::McpServerToolPermissionPolicy {
-    match policy {
-        types::McpServerToolPermissionPolicy::Allow => model::McpServerToolPermissionPolicy::Allow,
-        types::McpServerToolPermissionPolicy::Ask => model::McpServerToolPermissionPolicy::Ask,
-        types::McpServerToolPermissionPolicy::Deny => model::McpServerToolPermissionPolicy::Deny,
-    }
-}
-
-fn map_mcp_server_org_max_permission(
-    permission: types::McpServerOrgMaxPermission,
-) -> model::McpServerOrgMaxPermission {
-    match permission {
-        types::McpServerOrgMaxPermission::Allow => model::McpServerOrgMaxPermission::Allow,
-        types::McpServerOrgMaxPermission::Ask => model::McpServerOrgMaxPermission::Ask,
-        types::McpServerOrgMaxPermission::Blocked => model::McpServerOrgMaxPermission::Blocked,
-    }
-}
-
-fn map_mcp_tool_policy(policy: types::McpServerToolPolicy) -> model::McpServerToolPolicy {
-    model::McpServerToolPolicy {
-        name: policy.name,
-        permission_policy: policy.permission_policy.map(map_mcp_tool_permission_policy),
-        org_max_permission: policy.org_max_permission.map(map_mcp_server_org_max_permission),
-    }
-}
-
-fn map_mcp_status_config(config: types::McpServerStatusConfig) -> model::McpServerStatusConfig {
-    match config {
-        types::McpServerStatusConfig::Stdio {
-            command,
-            args,
-            env,
-            timeout,
-            request_timeout_ms,
-            always_load,
-        } => model::McpServerStatusConfig::Stdio {
-            command,
-            args,
-            env,
-            timeout,
-            request_timeout_ms,
-            always_load,
-        },
-        types::McpServerStatusConfig::Sse {
-            url,
-            headers,
-            tools,
-            timeout,
-            request_timeout_ms,
-            always_load,
-        } => model::McpServerStatusConfig::Sse {
-            url,
-            headers,
-            tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
-            timeout,
-            request_timeout_ms,
-            always_load,
-        },
-        types::McpServerStatusConfig::Http {
-            url,
-            headers,
-            tools,
-            timeout,
-            request_timeout_ms,
-            always_load,
-        } => model::McpServerStatusConfig::Http {
-            url,
-            headers,
-            tools: tools.into_iter().map(map_mcp_tool_policy).collect(),
-            timeout,
-            request_timeout_ms,
-            always_load,
-        },
-        types::McpServerStatusConfig::Sdk { name } => model::McpServerStatusConfig::Sdk { name },
-        types::McpServerStatusConfig::ClaudeaiProxy { url, id, timeout } => {
-            model::McpServerStatusConfig::ClaudeaiProxy { url, id, timeout }
-        }
-        types::McpServerStatusConfig::Unknown { raw_type } => {
-            model::McpServerStatusConfig::Unknown { raw_type }
-        }
-    }
-}
-
-pub(super) fn map_mcp_server_status(status: types::McpServerStatus) -> model::McpServerStatus {
-    model::McpServerStatus {
-        name: status.name,
-        status: map_mcp_server_connection_status(status.status),
-        server_info: status
-            .server_info
-            .map(|info| model::McpServerInfo { name: info.name, version: info.version }),
-        error: status.error,
-        config: status.config.map(map_mcp_status_config),
-        scope: status.scope,
-        source: status.source,
-        tools: status
-            .tools
-            .into_iter()
-            .map(|tool| model::McpTool {
-                name: tool.name,
-                description: tool.description,
-                annotations: tool.annotations.map(|annotations| model::McpToolAnnotations {
-                    read_only: annotations.read_only,
-                    destructive: annotations.destructive,
-                    open_world: annotations.open_world,
-                }),
-            })
-            .collect(),
-    }
-}
-
-pub(super) const fn map_mcp_auth_capabilities(
-    capabilities: types::McpAuthCapabilities,
-) -> model::McpAuthCapabilities {
-    model::McpAuthCapabilities {
-        authenticate: capabilities.authenticate,
-        clear_auth: capabilities.clear_auth,
-        submit_oauth_callback_url: capabilities.submit_oauth_callback_url,
-    }
-}
-
-fn map_system_notice_severity(
-    severity: types::SystemNoticeSeverity,
-) -> model::SystemNoticeSeverity {
-    match severity {
-        types::SystemNoticeSeverity::Info => model::SystemNoticeSeverity::Info,
-        types::SystemNoticeSeverity::Warning => model::SystemNoticeSeverity::Warning,
-        types::SystemNoticeSeverity::Error => model::SystemNoticeSeverity::Error,
-    }
-}
-
-fn map_effort_level(level: types::EffortLevel) -> model::EffortLevel {
-    match level {
-        types::EffortLevel::Low => model::EffortLevel::Low,
-        types::EffortLevel::Medium => model::EffortLevel::Medium,
-        types::EffortLevel::High => model::EffortLevel::High,
-        types::EffortLevel::XHigh => model::EffortLevel::XHigh,
-        types::EffortLevel::Max => model::EffortLevel::Max,
-    }
-}
-
 pub(super) fn map_available_commands_update(
     commands: Vec<types::AvailableCommand>,
     source: Option<String>,
@@ -213,15 +14,9 @@ pub(super) fn map_available_commands_update(
     let mut update = model::AvailableCommandsUpdate::new(
         commands
             .into_iter()
-            .map(|cmd| {
-                let mut mapped = model::AvailableCommand::new(cmd.name, cmd.description);
-                if let Some(input_hint) = cmd.input_hint
-                    && !input_hint.trim().is_empty()
-                {
-                    mapped = mapped.input_hint(input_hint);
-                }
-                mapped = mapped.aliases(cmd.aliases).builtin(cmd.builtin);
-                mapped
+            .map(|mut cmd| {
+                cmd.input_hint = cmd.input_hint.filter(|value| !value.trim().is_empty());
+                cmd
             })
             .collect(),
     );
@@ -240,58 +35,12 @@ pub(super) fn map_available_agents_update(
     model::AvailableAgentsUpdate::new(
         agents
             .into_iter()
-            .map(|agent| {
-                let mut mapped = model::AvailableAgent::new(agent.name, agent.description);
-                if let Some(model_name) = agent.model
-                    && !model_name.trim().is_empty()
-                {
-                    mapped = mapped.model(model_name);
-                }
-                mapped
+            .map(|mut agent| {
+                agent.model = agent.model.filter(|value| !value.trim().is_empty());
+                agent
             })
             .collect(),
     )
-}
-
-pub(super) fn map_rewind_targets(targets: Vec<types::RewindTarget>) -> Vec<model::RewindTarget> {
-    targets
-        .into_iter()
-        .map(|target| model::RewindTarget {
-            uuid: target.uuid,
-            first_text: target.first_text,
-            input_text: target.input_text,
-            index: target.index,
-            previous_assistant_uuid: target.previous_assistant_uuid,
-            resume_anchor_uuid: target.resume_anchor_uuid,
-        })
-        .collect()
-}
-
-fn map_rewind_restore_mode(mode: types::RewindRestoreMode) -> model::RewindRestoreMode {
-    match mode {
-        types::RewindRestoreMode::Both => model::RewindRestoreMode::Both,
-        types::RewindRestoreMode::Conversation => model::RewindRestoreMode::Conversation,
-        types::RewindRestoreMode::Code => model::RewindRestoreMode::Code,
-    }
-}
-
-fn map_rewind_result_status(status: types::RewindResultStatus) -> model::RewindResultStatus {
-    match status {
-        types::RewindResultStatus::Success => model::RewindResultStatus::Success,
-        types::RewindResultStatus::Failure => model::RewindResultStatus::Failure,
-        types::RewindResultStatus::PartialFailure => model::RewindResultStatus::PartialFailure,
-    }
-}
-
-fn map_rewind_files_result(result: types::RewindFilesResult) -> model::RewindFilesResult {
-    model::RewindFilesResult {
-        can_rewind: result.can_rewind,
-        error: result.error,
-        files_changed: result.files_changed,
-        insertions: result.insertions,
-        deletions: result.deletions,
-        skipped_links: result.skipped_links,
-    }
 }
 
 pub(super) fn map_rewind_result(
@@ -301,13 +50,7 @@ pub(super) fn map_rewind_result(
     file_result: Option<types::RewindFilesResult>,
     message: Option<String>,
 ) -> model::RewindResult {
-    model::RewindResult {
-        session_id,
-        restore_mode: map_rewind_restore_mode(restore_mode),
-        status: map_rewind_result_status(status),
-        file_result: file_result.map(map_rewind_files_result),
-        message,
-    }
+    model::RewindResult { session_id, restore_mode, status, file_result, message }
 }
 
 pub(super) fn map_available_models(
@@ -315,53 +58,14 @@ pub(super) fn map_available_models(
 ) -> Vec<model::AvailableModel> {
     models
         .into_iter()
-        .map(|model_info| {
-            let mut mapped = model::AvailableModel::new(model_info.id, model_info.display_name);
-            if let Some(resolved_model) = model_info.resolved_model
-                && !resolved_model.trim().is_empty()
-            {
-                mapped = mapped.resolved_model(resolved_model);
-            }
-            if let Some(description) = model_info.description
-                && !description.trim().is_empty()
-            {
-                mapped = mapped.description(description);
-            }
-            mapped = mapped.supports_effort(model_info.supports_effort);
-            mapped = mapped.supports_adaptive_thinking(model_info.supports_adaptive_thinking);
-            mapped = mapped.supports_fast_mode(model_info.supports_fast_mode);
-            mapped = mapped.supports_auto_mode(model_info.supports_auto_mode);
-            if !model_info.supported_effort_levels.is_empty() {
-                mapped = mapped.supported_effort_levels(
-                    model_info.supported_effort_levels.into_iter().map(map_effort_level).collect(),
-                );
-            }
-            mapped
+        .map(|mut model_info| {
+            model_info.resolved_model =
+                model_info.resolved_model.filter(|value| !value.trim().is_empty());
+            model_info.description =
+                model_info.description.filter(|value| !value.trim().is_empty());
+            model_info
         })
         .collect()
-}
-
-pub(super) fn convert_current_model(current_model: types::CurrentModel) -> model::CurrentModel {
-    let mut mapped = model::CurrentModel::new(
-        current_model.resolved_id,
-        current_model.display_name_short,
-        current_model.display_name_long,
-    )
-    .supports_effort(current_model.supports_effort)
-    .supported_effort_levels(
-        current_model.supported_effort_levels.into_iter().map(map_effort_level).collect(),
-    )
-    .supports_fast_mode(current_model.supports_fast_mode)
-    .supports_auto_mode(current_model.supports_auto_mode)
-    .supports_adaptive_thinking(current_model.supports_adaptive_thinking)
-    .authoritative(current_model.is_authoritative);
-    if let Some(requested_id) = current_model.requested_id {
-        mapped = mapped.requested_id(requested_id);
-    }
-    if let Some(catalog_id) = current_model.catalog_id {
-        mapped = mapped.catalog_id(catalog_id);
-    }
-    mapped
 }
 
 pub(super) fn convert_account_info(account: types::AccountInfo) -> model::AccountInfo {
@@ -408,16 +112,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             Some(model::SessionUpdate::ExternalMessageUpdate(model::ExternalMessageUpdate {
                 content,
                 source_message_uuid,
-                origin: model::MessageOrigin {
-                    kind: origin.kind,
-                    subkind: origin.subkind,
-                    from: origin.from,
-                    name: origin.name,
-                    from_session: origin.from_session,
-                    sender_task_id: origin.sender_task_id,
-                    verified_peer_pid: origin.verified_peer_pid,
-                    from_mode: origin.from_mode,
-                },
+                origin,
             }))
         }
         types::SessionUpdate::AgentMessageChunk { content, source_message_uuid } => {
@@ -438,11 +133,11 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::ToolCallUpdate { tool_call_update } => {
             Some(model::SessionUpdate::ToolCallUpdate(convert_tool_call_update(tool_call_update)))
         }
-        types::SessionUpdate::TranscriptRetraction { retraction } => Some(
-            model::SessionUpdate::TranscriptRetraction(convert_transcript_retraction(retraction)),
-        ),
+        types::SessionUpdate::TranscriptRetraction { retraction } => {
+            Some(model::SessionUpdate::TranscriptRetraction(retraction))
+        }
         types::SessionUpdate::TaskStateUpdate { update: task_update } => {
-            Some(model::SessionUpdate::TaskStateUpdate(convert_task_state_update(task_update)))
+            Some(model::SessionUpdate::TaskStateUpdate(task_update))
         }
         types::SessionUpdate::AvailableCommandsUpdate { commands, source, generation } => {
             Some(model::SessionUpdate::AvailableCommandsUpdate(map_available_commands_update(
@@ -455,11 +150,9 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         types::SessionUpdate::ModeStateUpdate { mode } => {
             Some(model::SessionUpdate::ModeStateUpdate(convert_mode_state(mode)))
         }
-        types::SessionUpdate::CurrentModelUpdate { current_model } => {
-            Some(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
-                convert_current_model(current_model),
-            )))
-        }
+        types::SessionUpdate::CurrentModelUpdate { current_model } => Some(
+            model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(current_model)),
+        ),
         types::SessionUpdate::ConfigOptionUpdate { option_id, value } => {
             Some(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
                 option_id,
@@ -471,7 +164,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
         }
         types::SessionUpdate::FastModeUpdate { fast_mode_state, fast_mode_disabled_reason } => {
             Some(model::SessionUpdate::FastModeUpdate {
-                state: convert_fast_mode_state(fast_mode_state),
+                state: fast_mode_state,
                 disabled_reason: fast_mode_disabled_reason,
             })
         }
@@ -490,24 +183,22 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             surpassed_threshold,
             can_user_purchase_credits,
             has_chargeable_saved_payment_method,
-        } => Some(model::SessionUpdate::RateLimitUpdate(map_rate_limit_update(
-            types::RateLimitUpdate {
-                status,
-                error_code,
-                resets_at,
-                utilization,
-                rate_limit_type,
-                limit_scope,
-                overage_enabled,
-                overage_status,
-                overage_resets_at,
-                overage_disabled_reason,
-                is_using_overage,
-                surpassed_threshold,
-                can_user_purchase_credits,
-                has_chargeable_saved_payment_method,
-            },
-        ))),
+        } => Some(model::SessionUpdate::RateLimitUpdate(types::RateLimitUpdate {
+            status,
+            error_code,
+            resets_at,
+            utilization,
+            rate_limit_type,
+            limit_scope,
+            overage_enabled,
+            overage_status,
+            overage_resets_at,
+            overage_disabled_reason,
+            is_using_overage,
+            surpassed_threshold,
+            can_user_purchase_credits,
+            has_chargeable_saved_payment_method,
+        })),
         types::SessionUpdate::ApiRetryUpdate {
             attempt,
             max_retries,
@@ -519,7 +210,7 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             max_retries,
             retry_delay_ms,
             error_status,
-            error: map_api_retry_error(error),
+            error,
         }),
         types::SessionUpdate::PromptSuggestionUpdate { suggestion } => {
             Some(model::SessionUpdate::PromptSuggestionUpdate(suggestion))
@@ -530,31 +221,19 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
             ))
         }
         types::SessionUpdate::RuntimeSessionStateUpdate { state } => {
-            Some(model::SessionUpdate::RuntimeSessionStateUpdate(match state {
-                types::RuntimeSessionState::Idle => model::RuntimeSessionState::Idle,
-                types::RuntimeSessionState::Running => model::RuntimeSessionState::Running,
-                types::RuntimeSessionState::RequiresAction => {
-                    model::RuntimeSessionState::RequiresAction
-                }
-            }))
+            Some(model::SessionUpdate::RuntimeSessionStateUpdate(state))
         }
         types::SessionUpdate::SettingsParseError { file, path, message } => {
             Some(model::SessionUpdate::SettingsParseError { file, path, message })
         }
         types::SessionUpdate::SessionStatusUpdate { status } => {
-            Some(model::SessionUpdate::SessionStatusUpdate(match status {
-                types::SessionStatus::Requesting => model::SessionStatus::Requesting,
-                types::SessionStatus::Idle => model::SessionStatus::Idle,
-            }))
+            Some(model::SessionUpdate::SessionStatusUpdate(status))
         }
         types::SessionUpdate::NotificationUpdate { notification, replay } => {
             Some(model::SessionUpdate::NotificationUpdate { notification, replay })
         }
         types::SessionUpdate::SystemNoticeUpdate { severity, message } => {
-            Some(model::SessionUpdate::SystemNoticeUpdate {
-                severity: map_system_notice_severity(severity),
-                message,
-            })
+            Some(model::SessionUpdate::SystemNoticeUpdate { severity, message })
         }
         types::SessionUpdate::CompactionUpdate { update: compaction } => {
             Some(model::SessionUpdate::CompactionUpdate(match compaction {
@@ -565,30 +244,13 @@ pub(super) fn map_session_update(update: types::SessionUpdate) -> Option<model::
                     post_tokens,
                     duration_ms,
                 } => model::CompactionUpdate::Boundary(model::CompactionBoundary {
-                    trigger: match trigger {
-                        types::CompactionTrigger::Manual => model::CompactionTrigger::Manual,
-                        types::CompactionTrigger::Auto => model::CompactionTrigger::Auto,
-                    },
+                    trigger,
                     pre_tokens,
                     post_tokens,
                     duration_ms,
                 }),
                 types::CompactionUpdate::Finished { result, error_code, error } => {
-                    model::CompactionUpdate::Finished {
-                        result: match result {
-                            types::CompactionResult::Success => model::CompactionResult::Success,
-                            types::CompactionResult::Failed => model::CompactionResult::Failed,
-                        },
-                        error_code: error_code.map(|code| match code {
-                            types::CompactionFailureCode::TooFewGroups => {
-                                model::CompactionFailureCode::TooFewGroups
-                            }
-                            types::CompactionFailureCode::Unknown => {
-                                model::CompactionFailureCode::Unknown
-                            }
-                        }),
-                        error,
-                    }
+                    model::CompactionUpdate::Finished { result, error_code, error }
                 }
             }))
         }
@@ -640,12 +302,7 @@ pub(super) fn map_permission_request(
             options,
             convert_permission_display(request.display),
         )
-        .mcp_server(
-            request.mcp_server.map(|server| model::McpServerProvenance {
-                name: server.name,
-                source: server.source,
-            }),
-        ),
+        .mcp_server(request.mcp_server),
         tool_call_id,
     )
 }
@@ -662,21 +319,7 @@ pub(super) fn map_question_request(
         tool_call_update = tool_call_update.meta(meta);
     }
 
-    let prompt = model::QuestionPrompt::new(
-        request.prompt.question,
-        request.prompt.header,
-        request.prompt.multi_select,
-        request
-            .prompt
-            .options
-            .into_iter()
-            .map(|option| {
-                model::QuestionOption::new(option.option_id, option.label)
-                    .description(option.description)
-                    .preview(option.preview)
-            })
-            .collect(),
-    );
+    let prompt = request.prompt;
 
     (
         model::RequestQuestionRequest::new(
@@ -698,18 +341,8 @@ pub(super) fn map_user_dialog_request(
     request: types::UserDialogRequest,
 ) -> (model::RequestUserDialogRequest, String) {
     let request_id = request.request_id.clone();
-    let payload = model::RefusalFallbackPayload {
-        original_model: request.payload.original_model,
-        fallback_model: request.payload.fallback_model,
-        api_refusal_category: request.payload.api_refusal_category,
-        guidance_text: request.payload.guidance_text,
-        retracted_message_uuids: request.payload.retracted_message_uuids,
-    };
-    let options = request
-        .options
-        .into_iter()
-        .map(|option| model::UserDialogOption::new(option.option_id, option.label))
-        .collect();
+    let payload = request.payload;
+    let options = request.options;
     (
         model::RequestUserDialogRequest::new(
             model::SessionId::new(session_id),
@@ -785,10 +418,10 @@ pub(super) fn convert_tool_call(tool_call: types::ToolCall) -> model::ToolCall {
         tc = tc.raw_output(serde_json::Value::String(raw_output));
     }
     if let Some(output_metadata) = output_metadata {
-        tc = tc.output_metadata(convert_tool_output_metadata(output_metadata));
+        tc = tc.output_metadata(output_metadata);
     }
     if let Some(task_metadata) = task_metadata {
-        tc = tc.task_metadata(convert_task_metadata(task_metadata));
+        tc = tc.task_metadata(task_metadata);
     }
     if let Some(meta) = meta {
         tc = tc.meta(meta);
@@ -842,41 +475,13 @@ pub(super) fn convert_tool_call_to_fields(
         fields = fields.raw_output(serde_json::Value::String(raw_output));
     }
     if let Some(output_metadata) = tool_call.output_metadata {
-        fields = fields.output_metadata(convert_tool_output_metadata(output_metadata));
+        fields = fields.output_metadata(output_metadata);
     }
     if let Some(task_metadata) = tool_call.task_metadata {
-        fields = fields.task_metadata(convert_task_metadata(task_metadata));
+        fields = fields.task_metadata(task_metadata);
     }
 
     fields
-}
-
-fn convert_transcript_retraction(
-    retraction: types::TranscriptRetraction,
-) -> model::TranscriptRetraction {
-    model::TranscriptRetraction {
-        message_uuids: retraction.message_uuids,
-        reason: match retraction.reason {
-            types::TranscriptRetractionReason::ModelRefusalFallback => {
-                model::TranscriptRetractionReason::ModelRefusalFallback
-            }
-            types::TranscriptRetractionReason::ModelFallback => {
-                model::TranscriptRetractionReason::ModelFallback
-            }
-            types::TranscriptRetractionReason::AssistantSupersedes => {
-                model::TranscriptRetractionReason::AssistantSupersedes
-            }
-        },
-        request_id: retraction.request_id,
-        trigger: retraction.trigger,
-        direction: retraction.direction,
-        original_model: retraction.original_model,
-        fallback_model: retraction.fallback_model,
-        scope: retraction.scope,
-        api_refusal_category: retraction.api_refusal_category,
-        api_refusal_explanation: retraction.api_refusal_explanation,
-        content: retraction.content,
-    }
 }
 
 pub(super) fn convert_tool_call_update_fields(
@@ -904,10 +509,10 @@ pub(super) fn convert_tool_call_update_fields(
         out = out.raw_output(serde_json::Value::String(raw_output));
     }
     if let Some(output_metadata) = fields.output_metadata {
-        out = out.output_metadata(convert_tool_output_metadata(output_metadata));
+        out = out.output_metadata(output_metadata);
     }
     if let Some(task_metadata) = fields.task_metadata {
-        out = out.task_metadata(convert_task_metadata(task_metadata));
+        out = out.task_metadata(task_metadata);
     }
     if let Some(locations) = fields.locations {
         out = out.locations(
@@ -927,105 +532,10 @@ pub(super) fn convert_tool_call_update_fields(
     out
 }
 
-fn convert_tool_output_metadata(
-    output_metadata: types::ToolOutputMetadata,
-) -> model::ToolOutputMetadata {
-    model::ToolOutputMetadata::new()
-        .presentation(output_metadata.presentation)
-        .timing(output_metadata.timing)
-        .staged(output_metadata.staged)
-        .structured_content_omitted(output_metadata.structured_content_omitted)
-        .bash(output_metadata.bash.map(|bash| {
-            model::BashOutputMetadata::new()
-                .assistant_auto_backgrounded(bash.assistant_auto_backgrounded)
-                .timed_out_after_ms(bash.timed_out_after_ms)
-                .background_cwd_hint(bash.background_cwd_hint)
-                .background_ends_with_final_response(bash.background_ends_with_final_response)
-        }))
-        .agent(output_metadata.agent.map(|agent| {
-            model::AgentOutputMetadata::new()
-                .resolved_model(agent.resolved_model)
-                .models_used(agent.models_used)
-        }))
-        .web_fetch(output_metadata.web_fetch.map(|web_fetch| {
-            model::WebFetchOutputMetadata::new().artifact_read(web_fetch.artifact_read.map(
-                |artifact| {
-                    model::WebFetchArtifactReadMetadata::new(artifact.slug)
-                        .ver(artifact.ver)
-                        .seeded(artifact.seeded)
-                },
-            ))
-        }))
-        .skill(
-            output_metadata
-                .skill
-                .map(|skill| model::SkillOutputMetadata::new().background(skill.background)),
-        )
-        .read(output_metadata.read.map(|read| model::ReadOutputMetadata {
-            file_path: read.file_path.into(),
-            start_line: read.start_line,
-        }))
-        .non_execution(output_metadata.non_execution.map(|metadata| {
-            model::ToolNonExecutionMetadata::new(metadata.kind)
-                .user_feedback(metadata.user_feedback)
-        }))
-}
-
 fn convert_permission_display(
     display: Option<types::PermissionDisplay>,
 ) -> Option<model::PermissionDisplay> {
-    let display = display?;
-    let mapped = model::PermissionDisplay::new()
-        .title(display.title)
-        .display_name(display.display_name)
-        .description(display.description)
-        .default_to_no(display.default_to_no)
-        .suppress_always_allow_rule(display.suppress_always_allow_rule);
-    (!mapped.is_empty()).then_some(mapped)
-}
-
-fn convert_task_metadata(task_metadata: types::TaskMetadata) -> model::TaskMetadata {
-    model::TaskMetadata::new()
-        .end_time(task_metadata.end_time)
-        .total_paused_ms(task_metadata.total_paused_ms)
-        .error(task_metadata.error)
-        .backgrounded(task_metadata.is_backgrounded)
-        .spawn_depth(task_metadata.spawn_depth)
-        .request_id(task_metadata.request_id)
-        .subagent_type(task_metadata.subagent_type)
-        .task_description(task_metadata.task_description)
-        .task_type(task_metadata.task_type)
-        .workflow_name(task_metadata.workflow_name)
-        .prompt(task_metadata.prompt)
-        .output_file(task_metadata.output_file)
-        .summary(task_metadata.summary)
-        .terminal_status(task_metadata.terminal_status)
-        .terminal_reason(task_metadata.terminal_reason)
-        .blocked(task_metadata.blocked)
-        .parent_agent_id(task_metadata.parent_agent_id)
-        .ambient(task_metadata.ambient)
-        .subagent_retry(task_metadata.subagent_retry.map(convert_subagent_retry_update))
-}
-
-fn convert_subagent_retry_update(retry: types::SubagentRetryUpdate) -> model::SubagentRetryUpdate {
-    match retry {
-        types::SubagentRetryUpdate::Waiting {
-            agent_id,
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error_category,
-        } => model::SubagentRetryUpdate::Waiting {
-            agent_id,
-            attempt,
-            max_retries,
-            retry_delay_ms,
-            error_status,
-            error_category,
-        },
-        types::SubagentRetryUpdate::Clear => model::SubagentRetryUpdate::Clear,
-    }
+    display.filter(|display| !display.is_empty())
 }
 
 fn convert_tool_call_content(
@@ -1094,52 +604,6 @@ pub(super) fn convert_tool_status(status: &str) -> model::ToolCallStatus {
     }
 }
 
-fn convert_task_status(status: types::TaskStatus) -> model::TaskStatus {
-    match status {
-        types::TaskStatus::Pending => model::TaskStatus::Pending,
-        types::TaskStatus::InProgress => model::TaskStatus::InProgress,
-        types::TaskStatus::Completed => model::TaskStatus::Completed,
-    }
-}
-
-fn convert_task_update_source(source: types::TaskUpdateSource) -> model::TaskUpdateSource {
-    match source {
-        types::TaskUpdateSource::Create => model::TaskUpdateSource::Create,
-        types::TaskUpdateSource::Update => model::TaskUpdateSource::Update,
-        types::TaskUpdateSource::Get => model::TaskUpdateSource::Get,
-        types::TaskUpdateSource::List => model::TaskUpdateSource::List,
-        types::TaskUpdateSource::Lifecycle => model::TaskUpdateSource::Lifecycle,
-        types::TaskUpdateSource::BackgroundTasks => model::TaskUpdateSource::BackgroundTasks,
-    }
-}
-
-fn convert_task_item(task: types::TaskItem) -> model::TaskItem {
-    model::TaskItem {
-        task_id: task.task_id,
-        run_id: task.run_id,
-        parent_task_id: task.parent_task_id,
-        subject: task.subject,
-        description: task.description,
-        active_form: task.active_form,
-        status: convert_task_status(task.status),
-        owner: task.owner,
-        blocks: task.blocks,
-        blocked_by: task.blocked_by,
-        metadata: task.metadata,
-        source_tool_call_id: task.source_tool_call_id,
-        source_tool_call_run_id: task.source_tool_call_run_id,
-    }
-}
-
-fn convert_task_state_update(update: types::TaskStateUpdate) -> model::TaskStateUpdate {
-    model::TaskStateUpdate {
-        source: convert_task_update_source(update.source),
-        tasks: update.tasks.into_iter().map(convert_task_item).collect(),
-        removed_task_ids: update.removed_task_ids,
-        is_complete_snapshot: update.is_complete_snapshot,
-    }
-}
-
 pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
     let available_modes: Vec<ModeInfo> =
         mode.available_modes.into_iter().map(|m| ModeInfo { id: m.id, name: m.name }).collect();
@@ -1150,23 +614,63 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
     }
 }
 
-pub(super) fn convert_fast_mode_state(state: types::FastModeState) -> model::FastModeState {
-    match state {
-        types::FastModeState::Unknown => model::FastModeState::Unknown,
-        types::FastModeState::Off => model::FastModeState::Off,
-        types::FastModeState::Cooldown => model::FastModeState::Cooldown,
-        types::FastModeState::On => model::FastModeState::On,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        convert_account_info, convert_current_model, convert_tool_call, convert_tool_call_update,
+        convert_account_info, convert_tool_call, convert_tool_call_update,
         convert_tool_call_update_fields, map_available_commands_update, map_available_models,
         map_permission_request, map_question_request, map_session_update,
     };
     use crate::agent::{model, types};
+
+    #[test]
+    fn shared_session_types_keep_wire_tokens_defaults_and_unknown_values() {
+        for (payload, expected) in [
+            (
+                serde_json::json!({"type": "runtime_session_state_update", "state": "requires_action"}),
+                model::SessionUpdate::RuntimeSessionStateUpdate(
+                    model::RuntimeSessionState::RequiresAction,
+                ),
+            ),
+            (
+                serde_json::json!({"type": "system_notice_update", "severity": "warning", "message": "notice"}),
+                model::SessionUpdate::SystemNoticeUpdate {
+                    severity: model::SystemNoticeSeverity::Warning,
+                    message: "notice".into(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                map_session_update(serde_json::from_value(payload).expect("wire event")),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<types::ApiRetryError>("\"future_error\"")
+                .expect("open error vocabulary"),
+            model::ApiRetryError::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<types::CompactionFailureCode>("\"future_failure\"")
+                .expect("open compaction failure vocabulary"),
+            model::CompactionFailureCode::Unknown
+        );
+        let command: types::AvailableCommand =
+            serde_json::from_value(serde_json::json!({"name": "review", "description": "Review"}))
+                .expect("minimal command");
+        assert!(command.aliases.is_empty());
+        assert!(!command.builtin);
+        let metadata: types::ToolOutputMetadata = serde_json::from_value(
+            serde_json::json!({"read": {"file_path": "notes.md", "start_line": 4}}),
+        )
+        .expect("minimal output metadata");
+        assert!(!metadata.staged);
+        assert!(!metadata.structured_content_omitted);
+        assert_eq!(
+            serde_json::to_value(metadata).expect("output metadata")["read"],
+            serde_json::json!({"file_path": "notes.md", "start_line": 4})
+        );
+    }
 
     #[test]
     fn read_wire_updates_replace_cached_preview_without_changing_source() {
@@ -1402,29 +906,28 @@ mod tests {
     }
 
     #[test]
-    fn convert_current_model_preserves_new_effort_levels() {
-        let mapped = convert_current_model(types::CurrentModel {
-            requested_id: Some("sonnet".to_owned()),
-            resolved_id: "claude-sonnet".to_owned(),
-            display_name_short: "Sonnet".to_owned(),
-            display_name_long: "Claude Sonnet".to_owned(),
-            catalog_id: Some("claude-sonnet".to_owned()),
-            supports_effort: true,
-            supported_effort_levels: vec![
-                types::EffortLevel::Low,
-                types::EffortLevel::XHigh,
-                types::EffortLevel::Max,
-            ],
-            supports_fast_mode: Some(true),
-            supports_auto_mode: Some(false),
-            supports_adaptive_thinking: Some(true),
-            is_authoritative: true,
-        });
-
+    fn current_model_wire_update_preserves_sdk_effort_levels() {
+        let update = serde_json::from_value(serde_json::json!({
+            "type": "current_model_update", "current_model": {
+                "requested_id": "sonnet", "resolved_id": "claude-sonnet",
+                "display_name_short": "Sonnet", "display_name_long": "Claude Sonnet",
+                "catalog_id": "claude-sonnet", "supports_effort": true,
+                "supported_effort_levels": ["low", "xhigh", "max"],
+                "supports_fast_mode": true, "supports_auto_mode": false,
+                "supports_adaptive_thinking": true, "is_authoritative": true
+            }
+        }))
+        .expect("current model wire update");
+        let Some(model::SessionUpdate::CurrentModelUpdate(update)) = map_session_update(update)
+        else {
+            panic!("current model update");
+        };
         assert_eq!(
-            mapped.supported_effort_levels,
-            vec![model::EffortLevel::Low, model::EffortLevel::XHigh, model::EffortLevel::Max,]
+            update.current_model.supported_effort_levels,
+            vec![model::EffortLevel::Low, model::EffortLevel::XHigh, model::EffortLevel::Max]
         );
+        assert_eq!(update.current_model.supports_fast_mode, Some(true));
+        assert_eq!(update.current_model.supports_auto_mode, Some(false));
     }
 
     #[test]
@@ -1673,9 +1176,8 @@ mod tests {
             let raw = serde_json::json!({
                 "status": "allowed_warning", "overage_enabled": enabled, "is_using_overage": false
             });
-            let direct = super::map_rate_limit_update(
-                serde_json::from_value(raw.clone()).expect("rate limit"),
-            );
+            let direct: model::RateLimitUpdate =
+                serde_json::from_value(raw.clone()).expect("rate limit");
             let mut update = raw;
             update["type"] = serde_json::json!("rate_limit_update");
             let mapped =
@@ -1917,7 +1419,7 @@ mod tests {
                 }),
                 skill: Some(types::SkillOutputMetadata { background: Some(true) }),
                 read: Some(types::ReadOutputMetadata {
-                    file_path: "src/lib.rs".to_owned(),
+                    file_path: "src/lib.rs".into(),
                     start_line: 42,
                 }),
                 non_execution: Some(types::ToolNonExecutionMetadata {
@@ -2244,38 +1746,21 @@ mod tests {
     }
 
     #[test]
-    fn map_mcp_server_status_converts_latest_config_fields() {
-        let status = types::McpServerStatus {
-            name: "notion".to_owned(),
-            status: types::McpServerConnectionStatus::Connected,
-            server_info: None,
-            error: None,
-            config: Some(types::McpServerStatusConfig::Http {
-                url: "https://mcp.notion.com/mcp".to_owned(),
-                headers: std::collections::BTreeMap::new(),
-                tools: vec![
-                    types::McpServerToolPolicy {
-                        name: "search".to_owned(),
-                        permission_policy: Some(types::McpServerToolPermissionPolicy::Deny),
-                        org_max_permission: Some(types::McpServerOrgMaxPermission::Blocked),
-                    },
-                    types::McpServerToolPolicy {
-                        name: "lookup".to_owned(),
-                        permission_policy: None,
-                        org_max_permission: Some(types::McpServerOrgMaxPermission::Ask),
-                    },
-                ],
-                timeout: Some(5000),
-                request_timeout_ms: Some(30000),
-                always_load: Some(true),
-            }),
-            scope: Some("project".to_owned()),
-            source: Some("project".to_owned()),
-            tools: Vec::new(),
-        };
-
-        let mapped = super::map_mcp_server_status(status);
-
+    fn mcp_wire_status_preserves_sdk_config_and_policy_fields() {
+        let mapped: model::McpServerStatus = serde_json::from_value(serde_json::json!({
+            "name": "notion", "status": "needs-auth", "config": {
+                "type": "http", "url": "https://mcp.notion.com/mcp", "tools": [
+                    {"name": "search", "permission_policy": "always_deny", "org_max_permission": "blocked"},
+                    {"name": "lookup", "org_max_permission": "ask"}
+                ], "timeout": 5000, "request_timeout_ms": 30000, "always_load": true
+            }, "scope": "project", "source": "project"
+        })).expect("MCP status wire payload");
+        assert_eq!(mapped.status, model::McpServerConnectionStatus::NeedsAuth);
+        assert!(mapped.tools.is_empty());
+        assert_eq!(
+            serde_json::to_value(&mapped).expect("serialize status")["status"],
+            "needs-auth"
+        );
         let Some(model::McpServerStatusConfig::Http {
             tools,
             timeout,

@@ -6,7 +6,9 @@ pub struct AvailableCommand {
     pub name: String,
     pub description: String,
     pub input_hint: Option<String>,
+    #[serde(default)]
     pub aliases: Vec<String>,
+    #[serde(default)]
     pub builtin: bool,
 }
 
@@ -179,6 +181,7 @@ pub struct AvailableModel {
     pub display_name: String,
     pub description: Option<String>,
     pub supports_effort: bool,
+    #[serde(default)]
     pub supported_effort_levels: Vec<EffortLevel>,
     pub supports_adaptive_thinking: Option<bool>,
     pub supports_fast_mode: Option<bool>,
@@ -252,6 +255,7 @@ pub struct CurrentModel {
     pub display_name_long: String,
     pub catalog_id: Option<String>,
     pub supports_effort: bool,
+    #[serde(default)]
     pub supported_effort_levels: Vec<EffortLevel>,
     pub supports_fast_mode: Option<bool>,
     pub supports_auto_mode: Option<bool>,

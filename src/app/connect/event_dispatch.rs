@@ -14,10 +14,8 @@ use tokio::sync::mpsc;
 
 use super::bridge_lifecycle::emit_connection_failed;
 use super::type_converters::{
-    convert_account_info, convert_current_model, convert_fast_mode_state, convert_mode_state,
-    map_available_models, map_mcp_auth_capabilities, map_mcp_server_status, map_permission_request,
-    map_question_request, map_rewind_result, map_rewind_targets, map_session_update,
-    map_user_dialog_request,
+    convert_account_info, convert_mode_state, map_available_models, map_permission_request,
+    map_question_request, map_rewind_result, map_session_update, map_user_dialog_request,
 };
 
 struct ConnectedEventData {
@@ -302,10 +300,10 @@ pub(super) async fn handle_bridge_event(
                 .send(ClientEvent::SessionReplaced {
                     session_id: model::SessionId::new(session_id),
                     cwd,
-                    current_model: convert_current_model(current_model),
+                    current_model,
                     available_models: map_available_models(available_models),
                     mode: mode.map(convert_mode_state),
-                    fast_mode_state: convert_fast_mode_state(fast_mode_state),
+                    fast_mode_state,
                     fast_mode_disabled_reason,
                     ultracode,
                     history_updates,
@@ -401,11 +399,7 @@ pub(super) async fn handle_bridge_event(
         }
         crate::agent::wire::BridgeEvent::RewindTargets { session_id, targets, error } => {
             let _ = event_tx
-                .send(ClientEvent::RewindTargetsReceived {
-                    session_id,
-                    targets: map_rewind_targets(targets),
-                    error,
-                })
+                .send(ClientEvent::RewindTargetsReceived { session_id, targets, error })
                 .await;
         }
         crate::agent::wire::BridgeEvent::RewindResult {
@@ -437,8 +431,8 @@ pub(super) async fn handle_bridge_event(
             let _ = event_tx
                 .send(ClientEvent::McpSnapshotReceived {
                     session_id,
-                    servers: servers.into_iter().map(map_mcp_server_status).collect(),
-                    auth_capabilities: map_mcp_auth_capabilities(auth_capabilities),
+                    servers,
+                    auth_capabilities,
                     source,
                     error,
                 })
@@ -464,10 +458,10 @@ async fn handle_connected_event(
             .send(ClientEvent::SessionReplaced {
                 session_id: model::SessionId::new(event.session_id),
                 cwd: event.cwd,
-                current_model: convert_current_model(event.current_model),
+                current_model: event.current_model,
                 available_models: map_available_models(event.available_models),
                 mode,
-                fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
+                fast_mode_state: event.fast_mode_state,
                 fast_mode_disabled_reason: event.fast_mode_disabled_reason,
                 ultracode: event.ultracode,
                 history_updates,
@@ -480,10 +474,10 @@ async fn handle_connected_event(
             .send(ClientEvent::Connected {
                 session_id: model::SessionId::new(event.session_id),
                 cwd: event.cwd,
-                current_model: convert_current_model(event.current_model),
+                current_model: event.current_model,
                 available_models: map_available_models(event.available_models),
                 mode,
-                fast_mode_state: convert_fast_mode_state(event.fast_mode_state),
+                fast_mode_state: event.fast_mode_state,
                 fast_mode_disabled_reason: event.fast_mode_disabled_reason,
                 ultracode: event.ultracode,
                 history_updates,
@@ -692,10 +686,7 @@ fn spawn_question_response_forwarder(
         let outcome = match response.outcome {
             model::RequestQuestionOutcome::Answered(answered) => types::QuestionOutcome::Answered {
                 selected_option_ids: answered.selected_option_ids,
-                annotation: answered.annotation.map(|annotation| types::QuestionAnnotation {
-                    preview: annotation.preview,
-                    notes: annotation.notes,
-                }),
+                annotation: answered.annotation,
             },
             model::RequestQuestionOutcome::Cancelled => types::QuestionOutcome::Cancelled,
         };

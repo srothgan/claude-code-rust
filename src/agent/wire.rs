@@ -923,7 +923,7 @@ mod tests {
         );
         assert_eq!(
             fields.output_metadata.expect("metadata").read,
-            Some(types::ReadOutputMetadata { file_path: "notes.md".to_owned(), start_line: 60 })
+            Some(types::ReadOutputMetadata { file_path: "notes.md".into(), start_line: 60 })
         );
     }
 

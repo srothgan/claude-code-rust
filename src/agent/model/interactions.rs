@@ -225,7 +225,9 @@ pub struct PermissionDisplay {
     pub title: Option<String>,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    #[serde(default)]
     pub default_to_no: bool,
+    #[serde(default)]
     pub suppress_always_allow_rule: bool,
 }
 

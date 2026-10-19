@@ -101,6 +101,7 @@ pub struct McpAuthCapabilities {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum McpServerConnectionStatus {
     Connected,
     Failed,
@@ -130,9 +131,13 @@ pub struct McpTool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum McpServerToolPermissionPolicy {
+    #[serde(rename = "always_allow")]
     Allow,
+    #[serde(rename = "always_ask")]
     Ask,
+    #[serde(rename = "always_deny")]
     Deny,
 }
 
@@ -148,6 +153,7 @@ impl McpServerToolPermissionPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum McpServerOrgMaxPermission {
     Allow,
     Ask,
@@ -168,15 +174,20 @@ impl McpServerOrgMaxPermission {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerToolPolicy {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_policy: Option<McpServerToolPermissionPolicy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub org_max_permission: Option<McpServerOrgMaxPermission>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerStatusConfig {
     Stdio {
         command: String,
+        #[serde(default)]
         args: Vec<String>,
+        #[serde(default)]
         env: BTreeMap<String, String>,
         timeout: Option<u64>,
         request_timeout_ms: Option<u64>,
@@ -184,7 +195,9 @@ pub enum McpServerStatusConfig {
     },
     Sse {
         url: String,
+        #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
         tools: Vec<McpServerToolPolicy>,
         timeout: Option<u64>,
         request_timeout_ms: Option<u64>,
@@ -192,7 +205,9 @@ pub enum McpServerStatusConfig {
     },
     Http {
         url: String,
+        #[serde(default)]
         headers: BTreeMap<String, String>,
+        #[serde(default)]
         tools: Vec<McpServerToolPolicy>,
         timeout: Option<u64>,
         request_timeout_ms: Option<u64>,
@@ -201,6 +216,7 @@ pub enum McpServerStatusConfig {
     Sdk {
         name: String,
     },
+    #[serde(rename = "claudeai-proxy")]
     ClaudeaiProxy {
         url: String,
         id: String,
@@ -220,5 +236,6 @@ pub struct McpServerStatus {
     pub config: Option<McpServerStatusConfig>,
     pub scope: Option<String>,
     pub source: Option<String>,
+    #[serde(default)]
     pub tools: Vec<McpTool>,
 }

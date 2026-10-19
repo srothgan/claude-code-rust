@@ -3,7 +3,20 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub use super::model::UltracodeState;
+pub use super::model::{
+    AgentOutputMetadata, ApiRetryError, AvailableAgent, AvailableCommand, AvailableModel,
+    BashOutputMetadata, CompactionFailureCode, CompactionResult, CompactionTrigger, CurrentModel,
+    EffortLevel, FastModeState, McpAuthCapabilities, McpServerConnectionStatus, McpServerInfo,
+    McpServerOrgMaxPermission, McpServerProvenance, McpServerStatus, McpServerStatusConfig,
+    McpServerToolPermissionPolicy, McpServerToolPolicy, McpTool, McpToolAnnotations, MessageOrigin,
+    PermissionDisplay, QuestionAnnotation, QuestionOption, QuestionPrompt, RateLimitStatus,
+    RateLimitUpdate, ReadOutputMetadata, RefusalFallbackPayload, RewindFilesResult,
+    RewindRestoreMode, RewindResultStatus, RewindTarget, RuntimeSessionState, SessionStatus,
+    SkillOutputMetadata, SubagentRetryUpdate, SystemNoticeSeverity, TaskItem, TaskMetadata,
+    TaskStateUpdate, TaskStatus, TaskUpdateSource, ToolNonExecutionMetadata, ToolOutputMetadata,
+    TranscriptRetraction, TranscriptRetractionReason, UltracodeState, UserDialogOption,
+    WebFetchArtifactReadMetadata, WebFetchOutputMetadata,
+};
 
 /// Startup reasons are an open SDK vocabulary; unknown tokens must survive the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,27 +54,6 @@ pub struct ModeState {
     pub current_mode_id: String,
     pub current_mode_name: String,
     pub available_modes: Vec<ModeInfo>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AvailableCommand {
-    pub name: String,
-    pub description: String,
-    pub input_hint: Option<String>,
-    #[serde(default)]
-    pub aliases: Vec<String>,
-    #[serde(default)]
-    pub builtin: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RewindTarget {
-    pub uuid: String,
-    pub first_text: String,
-    pub input_text: String,
-    pub index: u64,
-    pub previous_assistant_uuid: Option<String>,
-    pub resume_anchor_uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -141,189 +133,11 @@ pub struct StructuredUsageSnapshot {
     pub activity_week: Option<StructuredActivityWindow>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RewindRestoreMode {
-    Both,
-    Conversation,
-    Code,
-}
-
-impl RewindRestoreMode {
-    #[must_use]
-    pub const fn as_stored(self) -> &'static str {
-        match self {
-            Self::Both => "both",
-            Self::Conversation => "conversation",
-            Self::Code => "code",
-        }
-    }
-
-    #[must_use]
-    pub fn from_stored(value: &str) -> Option<Self> {
-        match value {
-            "both" => Some(Self::Both),
-            "conversation" => Some(Self::Conversation),
-            "code" => Some(Self::Code),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RewindResultStatus {
-    Success,
-    Failure,
-    PartialFailure,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RewindFilesResult {
-    pub can_rewind: bool,
-    pub error: Option<String>,
-    #[serde(default)]
-    pub files_changed: Vec<String>,
-    pub insertions: Option<u64>,
-    pub deletions: Option<u64>,
-    pub skipped_links: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AvailableAgent {
-    pub name: String,
-    pub description: String,
-    pub model: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EffortLevel {
-    Low,
-    Medium,
-    High,
-    #[serde(rename = "xhigh")]
-    XHigh,
-    Max,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AvailableModel {
-    pub id: String,
-    pub resolved_model: Option<String>,
-    pub display_name: String,
-    pub description: Option<String>,
-    pub supports_effort: bool,
-    #[serde(default)]
-    pub supported_effort_levels: Vec<EffortLevel>,
-    pub supports_adaptive_thinking: Option<bool>,
-    pub supports_fast_mode: Option<bool>,
-    pub supports_auto_mode: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CurrentModel {
-    pub requested_id: Option<String>,
-    pub resolved_id: String,
-    pub display_name_short: String,
-    pub display_name_long: String,
-    pub catalog_id: Option<String>,
-    pub supports_effort: bool,
-    #[serde(default)]
-    pub supported_effort_levels: Vec<EffortLevel>,
-    pub supports_fast_mode: Option<bool>,
-    pub supports_auto_mode: Option<bool>,
-    pub supports_adaptive_thinking: Option<bool>,
-    pub is_authoritative: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FastModeState {
-    Unknown,
-    Off,
-    Cooldown,
-    On,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RateLimitStatus {
-    Allowed,
-    AllowedWarning,
-    Rejected,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ApiRetryError {
-    AuthenticationFailed,
-    AccountOnHold,
-    OauthOrgNotAllowed,
-    BillingError,
-    RateLimit,
-    Overloaded,
-    InvalidRequest,
-    ModelNotFound,
-    ServerError,
-    VerificationRequired,
-    CloudCredentialError,
-    MaxOutputTokens,
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeSessionState {
-    Idle,
-    Running,
-    RequiresAction,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SystemNoticeSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettingsParseErrorUpdate {
     pub file: Option<String>,
     pub path: String,
     pub message: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageOrigin {
-    pub kind: String,
-    pub subkind: Option<String>,
-    pub from: Option<String>,
-    pub name: Option<String>,
-    pub from_session: Option<String>,
-    pub sender_task_id: Option<String>,
-    pub verified_peer_pid: Option<u64>,
-    pub from_mode: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RateLimitUpdate {
-    pub status: RateLimitStatus,
-    pub error_code: Option<String>,
-    pub resets_at: Option<f64>,
-    pub utilization: Option<f64>,
-    pub rate_limit_type: Option<String>,
-    pub limit_scope: Option<String>,
-    pub overage_enabled: Option<bool>,
-    pub overage_status: Option<RateLimitStatus>,
-    pub overage_resets_at: Option<f64>,
-    pub overage_disabled_reason: Option<String>,
-    pub is_using_overage: Option<bool>,
-    pub surpassed_threshold: Option<f64>,
-    pub can_user_purchase_credits: Option<bool>,
-    pub has_chargeable_saved_payment_method: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,35 +166,6 @@ pub enum ReloadOutcome {
     Reloaded { names: Vec<String> },
     Failed { message: String },
     TimedOut { after_ms: u64 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionStatus {
-    Requesting,
-    Idle,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionTrigger {
-    Manual,
-    Auto,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionResult {
-    Success,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompactionFailureCode {
-    TooFewGroups,
-    #[serde(other)]
-    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,29 +216,6 @@ pub struct ToolCallUpdate {
     pub fields: ToolCallUpdateFields,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TranscriptRetractionReason {
-    ModelRefusalFallback,
-    ModelFallback,
-    AssistantSupersedes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TranscriptRetraction {
-    pub message_uuids: Vec<String>,
-    pub reason: TranscriptRetractionReason,
-    pub request_id: Option<String>,
-    pub trigger: Option<String>,
-    pub direction: Option<String>,
-    pub original_model: Option<String>,
-    pub fallback_model: Option<String>,
-    pub scope: Option<String>,
-    pub api_refusal_category: Option<String>,
-    pub api_refusal_explanation: Option<String>,
-    pub content: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolCallUpdateFields {
     pub title: Option<String>,
@@ -472,102 +234,6 @@ pub struct ToolCallUpdateFields {
 pub struct ToolLocation {
     pub path: String,
     pub line: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct BashOutputMetadata {
-    pub assistant_auto_backgrounded: Option<bool>,
-    pub timed_out_after_ms: Option<u64>,
-    pub background_cwd_hint: Option<String>,
-    pub background_ends_with_final_response: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct ToolOutputMetadata {
-    pub presentation: Option<Box<super::model::ToolResultPresentation>>,
-    pub timing: Option<super::model::ToolTiming>,
-    #[serde(default)]
-    pub staged: bool,
-    #[serde(default)]
-    pub structured_content_omitted: bool,
-    pub bash: Option<BashOutputMetadata>,
-    pub agent: Option<AgentOutputMetadata>,
-    pub web_fetch: Option<WebFetchOutputMetadata>,
-    pub skill: Option<SkillOutputMetadata>,
-    pub read: Option<ReadOutputMetadata>,
-    pub non_execution: Option<ToolNonExecutionMetadata>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AgentOutputMetadata {
-    pub resolved_model: Option<String>,
-    pub models_used: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct WebFetchOutputMetadata {
-    pub artifact_read: Option<WebFetchArtifactReadMetadata>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct WebFetchArtifactReadMetadata {
-    pub slug: String,
-    pub ver: Option<String>,
-    pub seeded: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct SkillOutputMetadata {
-    pub background: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReadOutputMetadata {
-    pub file_path: String,
-    pub start_line: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolNonExecutionMetadata {
-    pub kind: String,
-    pub user_feedback: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct TaskMetadata {
-    pub end_time: Option<u64>,
-    pub total_paused_ms: Option<u64>,
-    pub error: Option<String>,
-    pub is_backgrounded: Option<bool>,
-    pub spawn_depth: Option<u64>,
-    pub request_id: Option<String>,
-    pub subagent_type: Option<String>,
-    pub task_description: Option<String>,
-    pub task_type: Option<String>,
-    pub workflow_name: Option<String>,
-    pub prompt: Option<String>,
-    pub output_file: Option<String>,
-    pub summary: Option<String>,
-    pub terminal_status: Option<String>,
-    pub terminal_reason: Option<String>,
-    pub blocked: Option<bool>,
-    pub parent_agent_id: Option<String>,
-    pub ambient: Option<bool>,
-    pub subagent_retry: Option<SubagentRetryUpdate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum SubagentRetryUpdate {
-    Waiting {
-        agent_id: Option<String>,
-        attempt: u64,
-        max_retries: u64,
-        retry_delay_ms: u64,
-        error_status: Option<u64>,
-        error_category: Option<String>,
-    },
-    Clear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -602,47 +268,6 @@ pub enum ToolCallContent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskUpdateSource {
-    #[serde(rename = "task_create")]
-    Create,
-    #[serde(rename = "task_update")]
-    Update,
-    #[serde(rename = "task_get")]
-    Get,
-    #[serde(rename = "task_list")]
-    List,
-    #[serde(rename = "task_lifecycle")]
-    Lifecycle,
-    #[serde(rename = "background_tasks")]
-    BackgroundTasks,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskItem {
-    pub task_id: String,
-    pub run_id: Option<String>,
-    pub parent_task_id: Option<String>,
-    pub subject: String,
-    pub description: Option<String>,
-    pub active_form: Option<String>,
-    pub status: TaskStatus,
-    pub owner: Option<String>,
-    pub blocks: Vec<String>,
-    pub blocked_by: Vec<String>,
-    pub metadata: Option<serde_json::Value>,
-    pub source_tool_call_id: Option<String>,
-    pub source_tool_call_run_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum SubagentMessageRole {
     User,
     Assistant,
@@ -656,14 +281,6 @@ pub enum SubagentMessageRole {
 pub struct SubagentMessage {
     pub role: SubagentMessageRole,
     pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskStateUpdate {
-    pub source: TaskUpdateSource,
-    pub tasks: Vec<TaskItem>,
-    pub removed_task_ids: Vec<String>,
-    pub is_complete_snapshot: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -826,39 +443,6 @@ pub struct PermissionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpServerProvenance {
-    pub name: String,
-    pub source: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PermissionDisplay {
-    pub title: Option<String>,
-    pub display_name: Option<String>,
-    pub description: Option<String>,
-    #[serde(default)]
-    pub default_to_no: bool,
-    #[serde(default)]
-    pub suppress_always_allow_rule: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuestionOption {
-    pub option_id: String,
-    pub label: String,
-    pub description: Option<String>,
-    pub preview: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuestionPrompt {
-    pub question: String,
-    pub header: String,
-    pub multi_select: bool,
-    pub options: Vec<QuestionOption>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionRequest {
     /// Trusted-source inactivity interval; None waits for explicit confirmation.
     #[serde(default)]
@@ -867,12 +451,6 @@ pub struct QuestionRequest {
     pub prompt: QuestionPrompt,
     pub question_index: u64,
     pub total_questions: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuestionAnnotation {
-    pub preview: Option<String>,
-    pub notes: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -897,24 +475,6 @@ pub enum QuestionOutcome {
 pub enum UserDialogOutcome {
     Selected { option_id: String },
     Cancelled,
-}
-
-/// Snake-case payload of a `refusal_fallback_prompt` dialog, as normalized by
-/// the bridge. `original_model`/`fallback_model` are always present; the rest is
-/// optional metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RefusalFallbackPayload {
-    pub original_model: String,
-    pub fallback_model: String,
-    pub api_refusal_category: Option<String>,
-    pub guidance_text: Option<String>,
-    pub retracted_message_uuids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UserDialogOption {
-    pub option_id: String,
-    pub label: String,
 }
 
 /// Turn-level `request_user_dialog` request the bridge emits for a refusal
@@ -966,13 +526,6 @@ pub struct McpAuthRedirect {
     pub server_name: String,
     pub auth_url: String,
     pub requires_user_action: bool,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpAuthCapabilities {
-    pub authenticate: bool,
-    pub clear_auth: bool,
-    pub submit_oauth_callback_url: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1101,64 +654,6 @@ pub struct AccountInfo {
     pub api_provider: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum McpServerConnectionStatus {
-    Connected,
-    Failed,
-    NeedsAuth,
-    Pending,
-    Disabled,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpServerInfo {
-    pub name: String,
-    pub version: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct McpToolAnnotations {
-    pub read_only: Option<bool>,
-    pub destructive: Option<bool>,
-    pub open_world: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpTool {
-    pub name: String,
-    pub description: Option<String>,
-    pub annotations: Option<McpToolAnnotations>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum McpServerToolPermissionPolicy {
-    #[serde(rename = "always_allow")]
-    Allow,
-    #[serde(rename = "always_ask")]
-    Ask,
-    #[serde(rename = "always_deny")]
-    Deny,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum McpServerOrgMaxPermission {
-    Allow,
-    Ask,
-    Blocked,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpServerToolPolicy {
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_policy: Option<McpServerToolPermissionPolicy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub org_max_permission: Option<McpServerOrgMaxPermission>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum McpServerConfig {
@@ -1201,66 +696,6 @@ pub enum McpServerConfig {
         #[serde(skip_serializing_if = "Option::is_none")]
         always_load: Option<bool>,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum McpServerStatusConfig {
-    Stdio {
-        command: String,
-        #[serde(default)]
-        args: Vec<String>,
-        #[serde(default)]
-        env: BTreeMap<String, String>,
-        timeout: Option<u64>,
-        request_timeout_ms: Option<u64>,
-        always_load: Option<bool>,
-    },
-    Sse {
-        url: String,
-        #[serde(default)]
-        headers: BTreeMap<String, String>,
-        #[serde(default)]
-        tools: Vec<McpServerToolPolicy>,
-        timeout: Option<u64>,
-        request_timeout_ms: Option<u64>,
-        always_load: Option<bool>,
-    },
-    Http {
-        url: String,
-        #[serde(default)]
-        headers: BTreeMap<String, String>,
-        #[serde(default)]
-        tools: Vec<McpServerToolPolicy>,
-        timeout: Option<u64>,
-        request_timeout_ms: Option<u64>,
-        always_load: Option<bool>,
-    },
-    Sdk {
-        name: String,
-    },
-    #[serde(rename = "claudeai-proxy")]
-    ClaudeaiProxy {
-        url: String,
-        id: String,
-        timeout: Option<u64>,
-    },
-    Unknown {
-        raw_type: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpServerStatus {
-    pub name: String,
-    pub status: McpServerConnectionStatus,
-    pub server_info: Option<McpServerInfo>,
-    pub error: Option<String>,
-    pub config: Option<McpServerStatusConfig>,
-    pub scope: Option<String>,
-    pub source: Option<String>,
-    #[serde(default)]
-    pub tools: Vec<McpTool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -367,6 +367,7 @@ impl BashOutputMetadata {
 pub struct ToolOutputMetadata {
     pub presentation: Option<Box<ToolResultPresentation>>,
     pub timing: Option<ToolTiming>,
+    #[serde(default)]
     pub staged: bool,
     #[serde(default)]
     pub structured_content_omitted: bool,

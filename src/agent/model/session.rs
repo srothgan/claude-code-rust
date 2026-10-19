@@ -115,6 +115,7 @@ pub enum RateLimitStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ApiRetryError {
     AuthenticationFailed,
     AccountOnHold,
@@ -128,10 +129,12 @@ pub enum ApiRetryError {
     VerificationRequired,
     CloudCredentialError,
     MaxOutputTokens,
+    #[serde(other)]
     Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeSessionState {
     Idle,
     Running,
@@ -139,6 +142,7 @@ pub enum RuntimeSessionState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SystemNoticeSeverity {
     Info,
     Warning,
@@ -193,8 +197,10 @@ pub enum CompactionResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CompactionFailureCode {
     TooFewGroups,
+    #[serde(other)]
     Unknown,
 }
 
