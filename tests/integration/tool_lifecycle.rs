@@ -147,7 +147,7 @@ async fn terminal_tool_statuses_do_not_infer_thinking_once_all_calls_finish() {
 // --- Task tool call tracking ---
 
 #[tokio::test]
-async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
+async fn task_tool_calls_apply_pending_and_terminal_statuses() {
     let mut app = test_app();
 
     let tc = model::ToolCall::new("task-pend", "Running subtask")
@@ -155,7 +155,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
         .status(model::ToolCallStatus::InProgress)
         .meta(task_meta());
     send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.turn.active_task_ids.contains("task-pend"), "new Task should be tracked");
+    assert_eq!(tool_call_block(&app, "task-pend").status, model::ToolCallStatus::InProgress);
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Pending);
     send_client_event(
@@ -165,7 +165,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             fields,
         ))),
     );
-    assert!(app.turn.active_task_ids.contains("task-pend"), "Pending should stay active");
+    assert_eq!(tool_call_block(&app, "task-pend").status, model::ToolCallStatus::Pending);
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed);
     send_client_event(
@@ -175,14 +175,14 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             fields,
         ))),
     );
-    assert!(!app.turn.active_task_ids.contains("task-pend"), "completed Task should be removed");
+    assert_eq!(tool_call_block(&app, "task-pend").status, model::ToolCallStatus::Completed);
 
     let tc = model::ToolCall::new("task-fail", "Subtask")
         .kind(model::ToolKind::Think)
         .status(model::ToolCallStatus::InProgress)
         .meta(task_meta());
     send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.turn.active_task_ids.contains("task-fail"));
+    assert_eq!(tool_call_block(&app, "task-fail").status, model::ToolCallStatus::InProgress);
 
     let fields = model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Failed);
     send_client_event(
@@ -192,7 +192,7 @@ async fn task_tool_calls_leave_active_set_only_on_terminal_statuses() {
             fields,
         ))),
     );
-    assert!(!app.turn.active_task_ids.contains("task-fail"), "failed Task should also be removed");
+    assert_eq!(tool_call_block(&app, "task-fail").status, model::ToolCallStatus::Failed);
 }
 
 #[tokio::test]

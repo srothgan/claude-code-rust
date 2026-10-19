@@ -926,7 +926,7 @@ pub fn emit_bridge_stderr_line(line: &str) {
     );
 }
 
-fn preview_text(input: &str, limit: usize) -> String {
+pub(crate) fn preview_text(input: &str, limit: usize) -> String {
     let mut preview = String::new();
     for (index, ch) in input.chars().enumerate() {
         if index >= limit {

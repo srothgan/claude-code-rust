@@ -462,13 +462,9 @@ fn register_tool_call_scope_uses_explicit_parent_for_subagent_child() {
     );
 }
 
-/// Regression: when a Task was cancelled mid-turn, `active_task_ids` was never cleared
-/// because `finalize_in_progress_tool_calls` doesn't call `remove_active_task` and
-/// `clear_tool_scope_tracking` (called on `TurnComplete`) did not clear `active_task_ids`.
-/// The leaked ID caused main-agent tools on the next turn to be classified as Subagent,
-/// which eventually caused main-agent tools to inherit the wrong scope.
+/// A cancelled subagent must not change the scope of the next foreground tool.
 #[test]
-fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
+fn turn_complete_after_cancelled_task_preserves_next_tool_scope() {
     let mut app = make_test_app();
 
     // Simulate a Task tool call arriving as InProgress (no Completed update will follow)
@@ -477,14 +473,10 @@ fn turn_complete_after_cancelled_task_leaves_no_stale_active_task_ids() {
         .status(model::ToolCallStatus::InProgress)
         .meta(serde_json::json!({"claudeCode": {"toolName": "Task"}}));
     handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(task_tc)));
-    assert!(app.turn.active_task_ids.contains("task-1"), "task must be tracked while InProgress");
 
     // User cancels then TurnComplete finalizes the turn
     handle_local_cancel_enqueued(&mut app);
     handle_client_event(&mut app, turn_complete(None));
-
-    // Stale task ID must be gone after turn boundary
-    assert!(app.turn.active_task_ids.is_empty(), "stale task id must not survive TurnComplete");
 
     // Next turn: a normal main-agent Glob must get MainAgent scope, not Subagent
     let glob_tc = model::ToolCall::new("glob-1", "Glob **/*.rs")
@@ -932,7 +924,7 @@ fn powershell_raw_input_update_does_not_populate_terminal_command() {
 }
 
 #[test]
-fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
+fn late_tool_update_for_removed_tool_does_not_restore_scope_or_transcript() {
     let mut app = make_test_app();
     app.transcript.messages.push(assistant_msg(vec![MessageBlock::ToolCall(Box::new(tool_call(
         "tool-stale",
@@ -951,10 +943,12 @@ fn late_tool_update_for_removed_tool_does_not_corrupt_active_task_set() {
     let update = model::ToolCallUpdate::new(
         "tool-stale",
         model::ToolCallUpdateFields::new().status(model::ToolCallStatus::InProgress),
-    );
+    )
+    .meta(serde_json::json!({"claudeCode": {"parentToolUseId": "task-1"}}));
     handle_client_event(&mut app, session_update(model::SessionUpdate::ToolCallUpdate(update)));
-
-    assert!(app.turn.active_task_ids.is_empty());
+    assert!(app.tool_call_scope("tool-stale").is_none());
+    assert!(!app.has_tool_call("tool-stale"));
+    assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
@@ -1558,7 +1552,6 @@ fn resume_history_clears_foreground_tracking_and_retains_tool_relationships() {
         },
     );
 
-    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("resume-task"), Some(ToolCallScope::SubagentRoot));
     let (mi, bi) = app.lookup_tool_call("resume-task").expect("resumed foreground tool");
     let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
@@ -2004,7 +1997,6 @@ fn turn_error_clears_foreground_tracking_without_misclassifying_the_next_tool() 
         },
     );
 
-    assert!(app.turn.active_task_ids.is_empty());
     assert_eq!(app.tool_call_scope("task-1"), Some(ToolCallScope::SubagentRoot));
     let (mi, bi) = app.lookup_tool_call("task-1").expect("failed foreground tool");
     let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
@@ -2020,7 +2012,6 @@ fn turn_error_clears_foreground_tracking_without_misclassifying_the_next_tool() 
         )),
     );
     assert_eq!(app.tool_call_scope("next-bash"), Some(ToolCallScope::MainAgent));
-    assert!(app.turn.active_task_ids.is_empty());
 }
 
 #[test]
@@ -2041,7 +2032,6 @@ fn auth_required_clears_active_turn_runtime_tracking() {
     )))]));
     app.bind_active_turn_assistant(0);
     app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
     app.pending_interaction_ids.push("task-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
@@ -2054,7 +2044,6 @@ fn auth_required_clears_active_turn_runtime_tracking() {
     );
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
     assert!(app.pending_interaction_ids.is_empty());
     assert_ne!(app.focus_owner(), FocusOwner::Permission);
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
@@ -2111,12 +2100,10 @@ fn connection_failed_clears_active_turn_runtime_tracking() {
     )))]));
     app.bind_active_turn_assistant(0);
     app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
 
     handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
     };
@@ -2133,7 +2120,6 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
     )))]));
     app.bind_active_turn_assistant(0);
     app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
-    app.insert_active_task("task-1".into());
 
     handle_client_event(
         &mut app,
@@ -2141,7 +2127,6 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
     );
 
     assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.active_task_ids.is_empty());
     let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.first() else {
         panic!("expected tool call block");
     };

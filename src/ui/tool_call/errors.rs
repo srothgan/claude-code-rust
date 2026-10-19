@@ -2,9 +2,9 @@
 
 //! Error rendering and tool-use error extraction for failed tool calls.
 
-use crate::agent::error_handling::{
-    looks_like_internal_error as shared_looks_like_internal_error,
-    summarize_internal_error as shared_summarize_internal_error,
+use crate::agent::error_handling::{error_preview, extract_xml_tag_value};
+pub(super) use crate::agent::error_handling::{
+    looks_like_internal_error, summarize_internal_error,
 };
 use crate::agent::model;
 use crate::app::ToolCallInfo;
@@ -51,7 +51,7 @@ pub(super) fn render_failed_tool_text_content(
 }
 
 pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
-    if !matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed) {
+    if !is_failed_or_killed(tc.status) {
         return;
     }
 
@@ -72,7 +72,7 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
     let terminal_preview = tc
         .terminal_output
         .as_deref()
-        .map_or_else(|| "<no terminal output>".to_owned(), preview_for_log);
+        .map_or_else(|| "<no terminal output>".to_owned(), error_preview);
 
     tracing::debug!(
         target: crate::logging::targets::APP_TOOL,
@@ -88,33 +88,13 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
     );
 }
 
-fn preview_for_log(input: &str) -> String {
-    const LIMIT: usize = 240;
-    let mut out = String::new();
-    for (i, ch) in input.chars().enumerate() {
-        if i >= LIMIT {
-            out.push_str("...");
-            break;
-        }
-        out.push(ch);
-    }
-    out.replace('\n', "\\n")
-}
-
-pub(super) fn looks_like_internal_error(input: &str) -> bool {
-    shared_looks_like_internal_error(input)
-}
-
 #[cfg(test)]
 pub(super) fn extract_tool_use_error_message(input: &str) -> Option<String> {
     extract_tool_use_error_message_inner(input)
 }
 
 fn extract_tool_use_error_message_inner(input: &str) -> Option<String> {
-    extract_xml_tag_value(input, "tool_use_error")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
+    extract_xml_tag_value(input, "tool_use_error").map(str::to_owned)
 }
 
 fn extract_failed_xml_error_message(input: &str) -> Option<String> {
@@ -129,22 +109,8 @@ fn extract_failed_xml_error_message(input: &str) -> Option<String> {
     extract_simple_xml_wrapper_value(input).map(str::to_owned)
 }
 
-pub(super) fn summarize_internal_error(input: &str) -> String {
-    shared_summarize_internal_error(input)
-}
-
 fn is_failed_or_killed(status: model::ToolCallStatus) -> bool {
     matches!(status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-}
-
-fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
-    let lower = input.to_ascii_lowercase();
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let start = lower.find(&open)? + open.len();
-    let end = start + lower[start..].find(&close)?;
-    let value = input[start..end].trim();
-    (!value.is_empty()).then_some(value)
 }
 
 fn extract_simple_xml_wrapper_value(input: &str) -> Option<&str> {

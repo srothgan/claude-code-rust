@@ -87,9 +87,6 @@ pub struct TurnState {
     pub cancel_requested: bool,
     /// Message index that owns the current main-assistant turn output.
     pub assistant_message_idx: Option<usize>,
-    /// IDs of root Task/Agent tool calls currently `InProgress`.
-    /// Use `App::insert_active_task()`, `App::remove_active_task()`.
-    pub active_task_ids: HashSet<String>,
     /// Turn-local inline/system notices that may upgrade in place during the active turn.
     pub notice_refs: Vec<TurnNoticeRef>,
 }
@@ -110,7 +107,6 @@ impl TurnState {
         self.compaction.reset();
         self.cancel_requested = false;
         self.assistant_message_idx = None;
-        self.active_task_ids.clear();
         self.notice_refs.clear();
     }
 

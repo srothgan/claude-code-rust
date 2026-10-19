@@ -363,7 +363,6 @@ impl super::App {
 
     pub(crate) fn rebuild_tool_indices(&mut self) {
         self.transcript.tool_call_index.clear();
-        self.turn.active_task_ids.clear();
 
         let mut pending_interaction_ids = Vec::new();
         for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
@@ -394,33 +393,8 @@ impl super::App {
                 }
             }
         }
-        self.rebuild_active_task_tracking_from_tool_scopes();
-        self.sync_pending_interaction_focus(pending_interaction_ids);
-    }
-
-    fn rebuild_active_task_tracking_from_tool_scopes(&mut self) {
         self.tool_call_scopes.retain(|id, _| self.transcript.tool_call_index.contains_key(id));
-        let mut roots = Vec::new();
-        for msg in &self.transcript.messages {
-            for block in &msg.blocks {
-                let MessageBlock::ToolCall(tc) = block else {
-                    continue;
-                };
-                match self.tool_call_scopes.get(&tc.id) {
-                    Some(super::ToolCallScope::SubagentRoot) => {
-                        roots.push((tc.id.clone(), tc.status));
-                    }
-                    Some(
-                        super::ToolCallScope::SubagentChild { .. }
-                        | super::ToolCallScope::MainAgent,
-                    )
-                    | None => {}
-                }
-            }
-        }
-        for (id, status) in roots {
-            self.sync_active_task_status(&id, status);
-        }
+        self.sync_pending_interaction_focus(pending_interaction_ids);
     }
 
     fn sync_pending_interaction_focus(&mut self, pending_interaction_ids: Vec<String>) {

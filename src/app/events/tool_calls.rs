@@ -11,7 +11,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall, source: Trans
     let parent_tool_use_id = parent_tool_use_id_from_meta(tc.meta.as_ref());
     let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name, parent_tool_use_id);
     log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
-    update_subagent_scope_state(app, &scope, tc.status, &id_str);
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
@@ -73,18 +72,6 @@ pub(super) fn register_tool_call_scope(
     };
     app.register_tool_call_scope(id.to_owned(), scope.clone());
     scope
-}
-
-pub(super) fn update_subagent_scope_state(
-    app: &mut App,
-    scope: &ToolCallScope,
-    status: model::ToolCallStatus,
-    id: &str,
-) {
-    match scope {
-        ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent => {}
-        ToolCallScope::SubagentRoot => app.sync_active_task_status(id, status),
-    }
 }
 
 fn build_tool_info_from_tool_call(

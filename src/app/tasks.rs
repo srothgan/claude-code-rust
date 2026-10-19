@@ -442,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn ambient_inventory_task_does_not_enter_active_subagent_tracking() {
+    fn ambient_inventory_task_does_not_create_a_tool_scope() {
         let mut app = App::test_default();
         let mut ambient = background_task("ambient-watch", "watch artifact updates");
         ambient.metadata = Some(serde_json::json!({
@@ -458,7 +458,8 @@ mod tests {
         );
 
         assert_eq!(app.sdk_inventory.tasks.len(), 1);
-        assert!(app.turn.active_task_ids.is_empty());
+        assert!(app.tool_call_scope("ambient-watch").is_none());
+        assert!(!app.has_tool_call("ambient-watch"));
     }
 
     #[test]

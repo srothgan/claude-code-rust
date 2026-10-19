@@ -49,16 +49,16 @@ pub fn looks_like_internal_error(input: &str) -> bool {
 
 pub fn summarize_internal_error(input: &str) -> String {
     if let Some(summary) = summarize_permission_schema_error(input) {
-        return truncate_for_log(&summary);
+        return error_preview(&summary);
     }
     if let Some(msg) = extract_xml_tag_value(input, "message") {
-        return truncate_for_log(msg);
+        return error_preview(msg);
     }
     if let Some(msg) = extract_json_string_field(input, "message") {
-        return truncate_for_log(&msg);
+        return error_preview(&msg);
     }
     let fallback = input.lines().find(|line| !line.trim().is_empty()).unwrap_or(input);
-    truncate_for_log(fallback.trim())
+    error_preview(fallback.trim())
 }
 
 fn looks_like_plan_limit_error_lower(lower: &str) -> bool {
@@ -198,20 +198,11 @@ fn summarize_permission_schema_error(input: &str) -> Option<String> {
     Some(format!("Tool permission request failed: {detail}"))
 }
 
-fn truncate_for_log(input: &str) -> String {
-    const LIMIT: usize = 240;
-    let mut out = String::new();
-    for (i, ch) in input.chars().enumerate() {
-        if i >= LIMIT {
-            out.push_str("...");
-            break;
-        }
-        out.push(ch);
-    }
-    out.replace('\n', "\\n")
+pub(crate) fn error_preview(input: &str) -> String {
+    crate::logging::preview_text(input, 240).replace('\n', "\\n")
 }
 
-fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
+pub(crate) fn extract_xml_tag_value<'a>(input: &'a str, tag: &str) -> Option<&'a str> {
     let lower = input.to_ascii_lowercase();
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
@@ -262,6 +253,16 @@ mod tests {
         TurnErrorClass, classify_turn_error, looks_like_internal_error, parse_turn_error_class,
         summarize_internal_error,
     };
+
+    #[test]
+    fn error_previews_preserve_unicode_limits_and_escape_after_truncation() {
+        assert_eq!(super::error_preview(""), "");
+        assert_eq!(super::error_preview(&"é".repeat(240)), "é".repeat(240));
+        assert_eq!(super::error_preview(&"é".repeat(241)), format!("{}...", "é".repeat(240)));
+        let input = format!("{}\nxyz", "é".repeat(238));
+        assert_eq!(super::error_preview(&input), format!("{}\\nx...", "é".repeat(238)));
+        assert_eq!(crate::logging::preview_text("a\nb", 3), "a\nb");
+    }
 
     #[test]
     fn classifies_plan_limit_errors() {

@@ -29,7 +29,6 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
     let tool_scope = app.tool_call_scope(&id_str);
     let (previous_status, previous_terminal_id) = tool_call_at(app, mi, bi)
         .map_or((None, None), |tc| (Some(tc.status), tc.terminal_id.clone()));
-    apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
     let changed = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
     let history_changed = app.sync_tool_call_history(mi, bi);
@@ -52,21 +51,6 @@ fn tool_call_at(app: &App, mi: usize, bi: usize) -> Option<&ToolCallInfo> {
     match app.transcript.messages.get(mi)?.blocks.get(bi)? {
         MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
         _ => None,
-    }
-}
-
-fn apply_tool_scope_status_update(
-    app: &mut App,
-    id_str: &str,
-    tool_scope: Option<&ToolCallScope>,
-    status: Option<model::ToolCallStatus>,
-) {
-    let Some(status) = status else {
-        return;
-    };
-    match tool_scope {
-        Some(ToolCallScope::SubagentRoot) => app.sync_active_task_status(id_str, status),
-        Some(ToolCallScope::SubagentChild { .. } | ToolCallScope::MainAgent) | None => {}
     }
 }
 
@@ -857,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn killed_task_update_clears_active_task_scope() {
+    fn killed_task_update_applies_terminal_status() {
         let mut app = App::test_default();
         let tool_id = "task-1";
         app.transcript.messages.push(ChatMessage::new(
@@ -870,7 +854,6 @@ mod tests {
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
         app.register_tool_call_scope(tool_id.to_owned(), ToolCallScope::SubagentRoot);
-        app.insert_active_task(tool_id.to_owned());
 
         let update = model::ToolCallUpdate::new(
             tool_id,
@@ -883,7 +866,6 @@ mod tests {
             panic!("expected tool call block");
         };
         assert_eq!(tc.status, model::ToolCallStatus::Killed);
-        assert!(!app.turn.active_task_ids.contains(tool_id));
     }
 
     #[test]

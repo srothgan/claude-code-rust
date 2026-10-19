@@ -26,24 +26,6 @@ impl App {
         }
         true
     }
-    /// Track a Task/Agent tool call as active (in-progress subagent).
-    pub fn insert_active_task(&mut self, id: String) {
-        self.turn.active_task_ids.insert(id);
-    }
-
-    pub(crate) fn sync_active_task_status(&mut self, id: &str, status: model::ToolCallStatus) {
-        if matches!(status, model::ToolCallStatus::Pending | model::ToolCallStatus::InProgress) {
-            self.insert_active_task(id.to_owned());
-        } else {
-            self.remove_active_task(id);
-        }
-    }
-
-    /// Remove a Task/Agent tool call from the active set (completed/failed).
-    pub fn remove_active_task(&mut self, id: &str) {
-        self.turn.active_task_ids.remove(id);
-    }
-
     pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
         self.tool_call_scopes.insert(id, scope);
     }
@@ -55,7 +37,6 @@ impl App {
 
     pub fn clear_tool_scope_tracking(&mut self) {
         self.tool_call_scopes.clear();
-        self.turn.active_task_ids.clear();
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
@@ -262,12 +243,10 @@ impl App {
         };
         let _ = self.finalize_tool_calls(new_status, include_detached);
         let _ = self.clear_inline_tool_interactions_excluding(&preserved_tools);
+        // Tool scope belongs to the session: detached agents and their descendants
+        // can still emit events after the foreground turn ends.
         if include_detached {
             self.clear_tool_scope_tracking();
-        } else {
-            // Tool scope belongs to the session: detached agents and their descendants
-            // can still emit events after the foreground turn ends.
-            self.turn.active_task_ids.clear();
         }
     }
 }

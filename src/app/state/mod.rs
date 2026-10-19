@@ -114,7 +114,7 @@ mod prelude {
     pub(super) use crate::app::{
         ChatPurgeReplayOptions, SurfaceDirtyState, TerminalLifecycleState,
     };
-    pub(super) use std::collections::{BTreeSet, HashMap, HashSet};
+    pub(super) use std::collections::{BTreeSet, HashMap};
     pub(super) use std::path::{Path, PathBuf};
     pub(super) use std::sync::mpsc as std_mpsc;
     pub(super) use std::time::Instant;
