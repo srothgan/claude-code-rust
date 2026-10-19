@@ -2507,7 +2507,7 @@ mod tests {
         tool.sdk_tool_name = "WebFetch".to_owned();
         app.transcript.messages.push(assistant_blocks_message(vec![block]));
         app.index_tool_call("web-1".to_owned(), 0, 0);
-        app.sync_tool_call_history("web-1");
+        app.sync_tool_call_history(0, 0);
         app.status = AppStatus::Ready;
 
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
@@ -2522,7 +2522,7 @@ mod tests {
         tool.status = model::ToolCallStatus::Completed;
         tool.content = vec![model::ToolCallContent::from("Actual web output")];
         tool.invalidate_render_cache();
-        app.sync_tool_call_history("web-1");
+        app.sync_tool_call_history(0, 0);
         let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
         assert_eq!(serialized.stable_row_count(), serialized.rows().len());
         let rows = line_texts(serialized.rows());

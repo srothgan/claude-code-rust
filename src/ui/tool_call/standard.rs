@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Rendering for tool-call titles, standard bodies, and compact content summaries.
+//! Rendering for tool-call titles and standard bodies.
 
 use crate::agent::model;
 use crate::app::ToolCallInfo;
@@ -8,7 +8,6 @@ use crate::ui::diff::{is_markdown_file, lang_from_title, render_diff, strip_oute
 use crate::ui::highlight;
 use crate::ui::layout_control::LayoutControl;
 use crate::ui::markdown;
-use crate::ui::terminal_output;
 use crate::ui::theme;
 use crate::ui::tool_display;
 use ratatui::style::{Modifier, Style};
@@ -17,10 +16,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::task::Poll;
 
-use super::errors::{
-    debug_failed_tool_render, failed_execute_first_line, failed_tool_text_summary,
-    render_failed_tool_text_content,
-};
+use super::errors::{debug_failed_tool_render, render_failed_tool_text_content};
 use super::interactions::{render_permission_lines, render_question_lines};
 use super::{
     TOOL_BODY_MAX_LINES, ToolCallRenderContext, execute, markdown_inline_spans, read, status_icon,
@@ -28,8 +24,6 @@ use super::{
 };
 
 pub(super) const WRITE_DIFF_MAX_LINES: usize = TOOL_BODY_MAX_LINES;
-const DEFAULT_TEXT_SUMMARY_LIMIT: usize = 60;
-const IN_PROGRESS_SUBAGENT_TEXT_SUMMARY_LIMIT: usize = 180;
 const DIFF_BODY_INDENT: &str = "  ";
 const DIFF_BODY_INDENT_WIDTH: u16 = 2;
 const STANDARD_BODY_PREFIX_WIDTH: u16 = 5;
@@ -120,7 +114,7 @@ impl ToolBodyCursor {
         width: u16,
         control: &LayoutControl<'_>,
     ) -> Poll<Vec<Line<'static>>> {
-        if !tool_call_has_body(tc) || control.cancelled() {
+        if control.cancelled() {
             return Poll::Ready(Vec::new());
         }
         let prefix = if tc.is_execute_tool() {
@@ -149,11 +143,6 @@ pub(super) fn render_result_presentation(
     let mut lines = Vec::new();
     finish_standard_body(tc, width, content, &mut lines, control);
     lines
-}
-
-#[must_use]
-pub(super) fn tool_call_body_depends_on_width(tc: &ToolCallInfo) -> bool {
-    tool_call_has_body(tc)
 }
 
 #[must_use]
@@ -189,10 +178,6 @@ fn finish_standard_body(
     control: &LayoutControl<'_>,
 ) {
     let pipe_style = Style::default().fg(theme::DIM);
-
-    if !tool_call_has_body(tc) {
-        return;
-    }
 
     let is_execute = tc.is_execute_tool();
     let prefix_width =
@@ -274,102 +259,6 @@ fn render_non_execution_metadata(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     lines
 }
 
-/// One-line summary for tools that should not render expanded content.
-pub(super) fn content_summary(tc: &ToolCallInfo) -> String {
-    // For Execute tool calls, show last non-empty line of terminal output
-    if tc.terminal_id.is_some() {
-        if let Some(ref output) = tc.terminal_output {
-            let stripped_output = terminal_output::strip_ansi(output);
-            if matches!(tc.status, model::ToolCallStatus::Failed | model::ToolCallStatus::Killed)
-                && let Some(first_line) = failed_execute_first_line(&stripped_output)
-            {
-                return if first_line.chars().count() > 80 {
-                    let truncated: String = first_line.chars().take(77).collect();
-                    format!("{truncated}...")
-                } else {
-                    first_line
-                };
-            }
-            let last = stripped_output.lines().rev().find(|l| !l.trim().is_empty());
-            if let Some(line) = last {
-                return if line.chars().count() > 80 {
-                    let truncated: String = line.chars().take(77).collect();
-                    format!("{truncated}...")
-                } else {
-                    line.to_owned()
-                };
-            }
-        }
-        return if matches!(tc.status, model::ToolCallStatus::InProgress) {
-            "running...".to_owned()
-        } else {
-            String::new()
-        };
-    }
-
-    for content in &tc.content {
-        match content {
-            model::ToolCallContent::Diff(diff) => {
-                let name = diff.path.file_name().map_or_else(
-                    || diff.path.to_string_lossy().into_owned(),
-                    |f| f.to_string_lossy().into_owned(),
-                );
-                return name;
-            }
-            model::ToolCallContent::McpResource(resource) => {
-                if let Some(path) = &resource.blob_saved_to {
-                    return path.file_name().map_or_else(
-                        || path.to_string_lossy().into_owned(),
-                        |f| f.to_string_lossy().into_owned(),
-                    );
-                }
-                if let Some(text) = resource.text.as_deref() {
-                    if let Some(summary) = failed_tool_text_summary(tc.status, text) {
-                        return truncate_summary_line(&summary, DEFAULT_TEXT_SUMMARY_LIMIT);
-                    }
-                    let first = text.lines().find(|line| !line.trim().is_empty()).unwrap_or("");
-                    return truncate_summary_line(first, DEFAULT_TEXT_SUMMARY_LIMIT);
-                }
-                return resource.uri.clone();
-            }
-            model::ToolCallContent::ResourceLink(link) => {
-                return link.title.as_deref().unwrap_or(&link.name).to_owned();
-            }
-            model::ToolCallContent::Content(c) => {
-                if let model::ContentBlock::Text(text) = &c.content {
-                    let stripped = strip_outer_code_fence(&text.text);
-                    if let Some(summary) = failed_tool_text_summary(tc.status, &stripped) {
-                        return truncate_summary_line(&summary, text_summary_limit(tc));
-                    }
-                    let first = stripped.lines().next().unwrap_or("");
-                    return truncate_summary_line(first, text_summary_limit(tc));
-                }
-            }
-            model::ToolCallContent::Terminal(_) => {}
-        }
-    }
-    String::new()
-}
-
-fn text_summary_limit(tc: &ToolCallInfo) -> usize {
-    if matches!(tc.status, model::ToolCallStatus::InProgress)
-        && matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task")
-    {
-        IN_PROGRESS_SUBAGENT_TEXT_SUMMARY_LIMIT
-    } else {
-        DEFAULT_TEXT_SUMMARY_LIMIT
-    }
-}
-
-fn truncate_summary_line(line: &str, max_chars: usize) -> String {
-    if line.chars().count() > max_chars {
-        let truncated: String = line.chars().take(max_chars.saturating_sub(3)).collect();
-        format!("{truncated}...")
-    } else {
-        line.to_owned()
-    }
-}
-
 #[derive(Default)]
 struct ToolContentCursor {
     next_content: usize,
@@ -395,14 +284,6 @@ impl ToolContentCursor {
         }
         if let Some(lines) = render_completed_ask_user_question_content(tc) {
             return Poll::Ready(lines);
-        }
-        if tool_body_uses_summary_only(tc) {
-            let summary = content_summary(tc);
-            return Poll::Ready(if summary.is_empty() {
-                Vec::new()
-            } else {
-                vec![Line::from(Span::styled(summary, Style::default().fg(theme::DIM)))]
-            });
         }
         while let Some(content) = tc.content.get(self.next_content) {
             if control.cancelled() {
@@ -606,11 +487,6 @@ fn json_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 
 fn json_usize(value: &Value, key: &str) -> Option<usize> {
     value.get(key)?.as_u64().and_then(|number| usize::try_from(number).ok())
-}
-
-fn tool_body_uses_summary_only(tc: &ToolCallInfo) -> bool {
-    tc.is_exit_plan_mode_tool()
-        || matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task" | "WebSearch" | "WebFetch")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

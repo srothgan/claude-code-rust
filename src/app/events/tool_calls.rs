@@ -16,9 +16,14 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall, source: Trans
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
     log_command_started(app, &tool_info);
     log_terminal_spawned(app, &tool_info, "initial");
-    upsert_tool_call_into_assistant_message(app, tool_info, source);
-    app.sync_tool_call_history(&id_str);
-    crate::app::tasks::refresh_task_tool_displays(app);
+    let (mi, bi, mut changed) = upsert_tool_call_into_assistant_message(app, tool_info, source);
+    changed |= app.sync_tool_call_history(mi, bi);
+    changed |= crate::app::tasks::refresh_task_tool_display_at(app, mi, bi);
+    if changed {
+        app.sync_render_cache_slot(mi, bi);
+        app.recompute_message_retained_bytes(mi);
+        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    }
 
     app.files_accessed += 1;
 }
@@ -134,16 +139,15 @@ fn build_tool_info_from_tool_call(
     tool_info
 }
 
+/// Returns the block position and whether an existing block changed without
+/// being synced yet; a newly pushed block is synced with its message.
 fn upsert_tool_call_into_assistant_message(
     app: &mut App,
     tool_info: ToolCallInfo,
     source: TranscriptUpdateSource,
-) {
-    let existing_pos = app.lookup_tool_call(&tool_info.id);
-
-    if let Some((mi, bi)) = existing_pos {
-        update_existing_tool_call(app, mi, bi, &tool_info);
-        return;
+) -> (usize, usize, bool) {
+    if let Some((mi, bi)) = app.lookup_tool_call(&tool_info.id) {
+        return (mi, bi, update_existing_tool_call(app, mi, bi, &tool_info));
     }
 
     let msg_idx = app.ensure_assistant_output_owner(source);
@@ -152,48 +156,49 @@ fn upsert_tool_call_into_assistant_message(
     app.transcript.messages[msg_idx].blocks.push(MessageBlock::ToolCall(Box::new(tool_info)));
     app.sync_after_message_blocks_changed(msg_idx);
     app.index_tool_call(tc_id, msg_idx, block_idx);
+    (msg_idx, block_idx, false)
 }
 
-fn update_existing_tool_call(app: &mut App, mi: usize, bi: usize, tool_info: &ToolCallInfo) {
-    let mut layout_dirty = false;
-    if let Some(MessageBlock::ToolCall(existing)) =
+fn update_existing_tool_call(
+    app: &mut App,
+    mi: usize,
+    bi: usize,
+    tool_info: &ToolCallInfo,
+) -> bool {
+    let Some(MessageBlock::ToolCall(existing)) =
         app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    {
-        let existing = existing.as_mut();
-        let mut changed = false;
-        changed |= sync_if_changed(&mut existing.title, &tool_info.title);
-        changed |= sync_if_changed(&mut existing.status, &tool_info.status);
-        changed |= sync_if_changed(&mut existing.content, &tool_info.content);
-        changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
-        changed |= sync_if_changed(&mut existing.hidden, &tool_info.hidden);
-        for source_message_uuid in &tool_info.source_message_uuids {
-            changed |= existing.add_source_message_uuid(Some(source_message_uuid));
-        }
-        changed |= existing.set_raw_input(tool_info.raw_input.clone());
-        changed |= existing.set_locations(tool_info.locations.clone());
-        changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
-        changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);
-        if tool_info.terminal_id.is_some() {
-            changed |= sync_if_changed(&mut existing.terminal_id, &tool_info.terminal_id);
-        }
-        if tool_info.terminal_command.is_some() {
-            changed |= sync_if_changed(&mut existing.terminal_command, &tool_info.terminal_command);
-        }
-        if tool_info.terminal_output.is_some() {
-            changed |= sync_if_changed(&mut existing.terminal_output, &tool_info.terminal_output);
-            changed |=
-                sync_if_changed(&mut existing.terminal_output_len, &tool_info.terminal_output_len);
-        }
-        if changed {
-            existing.invalidate_render_cache();
-            layout_dirty = true;
-        }
+    else {
+        return false;
+    };
+    let existing = existing.as_mut();
+    let mut changed = false;
+    changed |= sync_if_changed(&mut existing.title, &tool_info.title);
+    changed |= sync_if_changed(&mut existing.status, &tool_info.status);
+    changed |= sync_if_changed(&mut existing.content, &tool_info.content);
+    changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
+    changed |= sync_if_changed(&mut existing.hidden, &tool_info.hidden);
+    for source_message_uuid in &tool_info.source_message_uuids {
+        changed |= existing.add_source_message_uuid(Some(source_message_uuid));
     }
-    if layout_dirty {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    changed |= existing.set_raw_input(tool_info.raw_input.clone());
+    changed |= existing.set_locations(tool_info.locations.clone());
+    changed |= sync_if_changed(&mut existing.output_metadata, &tool_info.output_metadata);
+    changed |= sync_if_changed(&mut existing.task_metadata, &tool_info.task_metadata);
+    if tool_info.terminal_id.is_some() {
+        changed |= sync_if_changed(&mut existing.terminal_id, &tool_info.terminal_id);
     }
+    if tool_info.terminal_command.is_some() {
+        changed |= sync_if_changed(&mut existing.terminal_command, &tool_info.terminal_command);
+    }
+    if tool_info.terminal_output.is_some() {
+        changed |= sync_if_changed(&mut existing.terminal_output, &tool_info.terminal_output);
+        changed |=
+            sync_if_changed(&mut existing.terminal_output_len, &tool_info.terminal_output_len);
+    }
+    if changed {
+        existing.invalidate_render_cache();
+    }
+    changed
 }
 
 pub(super) fn sync_if_changed<T: PartialEq + Clone>(dst: &mut T, src: &T) -> bool {

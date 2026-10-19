@@ -101,32 +101,6 @@ fn preview_for_log(input: &str) -> String {
     out.replace('\n', "\\n")
 }
 
-pub(super) fn failed_execute_first_line(output: &str) -> Option<String> {
-    if let Some(msg) = failed_tool_text_summary(model::ToolCallStatus::Failed, output) {
-        return Some(msg);
-    }
-    output.lines().find(|line| !line.trim().is_empty()).map(str::trim).map(str::to_owned)
-}
-
-pub(super) fn failed_tool_text_summary(
-    status: model::ToolCallStatus,
-    text: &str,
-) -> Option<String> {
-    if !is_failed_or_killed(status) {
-        return None;
-    }
-    if let Some(message) = extract_failed_xml_error_message(text) {
-        return Some(message);
-    }
-    if looks_like_internal_error(text) {
-        let summary = summarize_internal_error(text);
-        if !summary.is_empty() {
-            return Some(summary);
-        }
-    }
-    None
-}
-
 pub(super) fn looks_like_internal_error(input: &str) -> bool {
     shared_looks_like_internal_error(input)
 }

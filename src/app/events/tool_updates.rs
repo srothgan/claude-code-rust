@@ -27,38 +27,32 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         );
     }
     let tool_scope = app.tool_call_scope(&id_str);
-    let previous_status =
-        app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
-            |block| match block {
-                MessageBlock::ToolCall(tc) => Some(tc.status),
-                _ => None,
-            },
-        );
-    let previous_terminal_id =
-        app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi)).and_then(
-            |block| match block {
-                MessageBlock::ToolCall(tc) => tc.terminal_id.clone(),
-                _ => None,
-            },
-        );
+    let (previous_status, previous_terminal_id) = tool_call_at(app, mi, bi)
+        .map_or((None, None), |tc| (Some(tc.status), tc.terminal_id.clone()));
     apply_tool_scope_status_update(app, &id_str, tool_scope.as_ref(), tcu.fields.status);
 
-    let update_outcome = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
-    app.sync_tool_call_history(&id_str);
-    crate::app::tasks::refresh_task_tool_displays(app);
-    if let Some(mi) = update_outcome.layout_dirty_idx {
+    let changed = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
+    let history_changed = app.sync_tool_call_history(mi, bi);
+    let task_display_changed = crate::app::tasks::refresh_task_tool_display_at(app, mi, bi);
+    if changed || history_changed || task_display_changed {
+        app.sync_render_cache_slot(mi, bi);
         app.recompute_message_retained_bytes(mi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
     }
-    log_tool_call_update_applied(
-        app,
-        &id_str,
-        tcu,
-        tool_scope.as_ref(),
-        previous_status,
-        &update_outcome,
-    );
-    log_command_update_applied(app, &id_str, previous_status, previous_terminal_id.as_deref());
+    let Some(tc) = tool_call_at(app, mi, bi) else {
+        return;
+    };
+    if changed {
+        log_tool_call_update_applied(app, tc, tcu, tool_scope.as_ref(), previous_status);
+    }
+    log_command_update_applied(app, tc, previous_status, previous_terminal_id.as_deref());
+}
+
+fn tool_call_at(app: &App, mi: usize, bi: usize) -> Option<&ToolCallInfo> {
+    match app.transcript.messages.get(mi)?.blocks.get(bi)? {
+        MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
+        _ => None,
+    }
 }
 
 fn apply_tool_scope_status_update(
@@ -76,44 +70,34 @@ fn apply_tool_scope_status_update(
     }
 }
 
-struct ToolCallUpdateApplyOutcome {
-    changed: bool,
-    layout_dirty_idx: Option<usize>,
-}
-
 fn apply_tool_call_update_to_indexed_block(
     app: &mut App,
     mi: usize,
     bi: usize,
     tcu: &model::ToolCallUpdate,
-) -> ToolCallUpdateApplyOutcome {
-    let mut out = ToolCallUpdateApplyOutcome { changed: false, layout_dirty_idx: None };
-
-    if let Some(MessageBlock::ToolCall(tc)) =
+) -> bool {
+    let Some(MessageBlock::ToolCall(tc)) =
         app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    {
-        let tc = tc.as_mut();
-        let mut changed = false;
-        changed |= tc.add_source_message_uuid(tcu.source_message_uuid.as_deref());
-        changed |= apply_tool_call_status_update(tc, tcu.fields.status);
-        changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &app.cwd_raw);
-        changed |= apply_tool_call_content_update(tc, tcu.fields.content.as_deref());
-        changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
-        changed |= apply_tool_call_locations_update(tc, tcu.fields.locations.as_ref());
-        changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
-        changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
-        changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
-        changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
-        changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
-        if changed {
-            out.changed = true;
-            tc.invalidate_render_cache();
-            app.sync_render_cache_slot(mi, bi);
-            out.layout_dirty_idx = Some(mi);
-        }
+    else {
+        return false;
+    };
+    let tc = tc.as_mut();
+    let mut changed = false;
+    changed |= tc.add_source_message_uuid(tcu.source_message_uuid.as_deref());
+    changed |= apply_tool_call_status_update(tc, tcu.fields.status);
+    changed |= apply_tool_call_title_update(tc, tcu.fields.title.as_deref(), &app.cwd_raw);
+    changed |= apply_tool_call_content_update(tc, tcu.fields.content.as_deref());
+    changed |= apply_tool_call_raw_input_update(tc, tcu.fields.raw_input.as_ref());
+    changed |= apply_tool_call_locations_update(tc, tcu.fields.locations.as_ref());
+    changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
+    changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
+    changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
+    changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
+    changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
+    if changed {
+        tc.invalidate_render_cache();
     }
-
-    out
+    changed
 }
 
 fn apply_tool_call_status_update(
@@ -276,29 +260,11 @@ fn extract_text_field(value: &serde_json::Value) -> Option<&str> {
 
 fn log_tool_call_update_applied(
     app: &App,
-    id_str: &str,
+    tc: &ToolCallInfo,
     tcu: &model::ToolCallUpdate,
     tool_scope: Option<&ToolCallScope>,
     previous_status: Option<model::ToolCallStatus>,
-    update_outcome: &ToolCallUpdateApplyOutcome,
 ) {
-    if !update_outcome.changed {
-        return;
-    }
-
-    let Some(tc) = app
-        .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| {
-            app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi))
-        })
-        .and_then(|block| match block {
-            MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
-            _ => None,
-        })
-    else {
-        return;
-    };
-
     let session_id = current_session_id(app);
     let log_spec = tool_update_log_spec(tc, tcu, previous_status);
     let scope_name = tool_scope.map_or("unknown", tool_scope_name);
@@ -317,7 +283,7 @@ fn log_tool_call_update_applied(
             message = log_spec.message,
             outcome = log_spec.outcome,
             session_id = %session_id,
-            tool_call_id = %id_str,
+            tool_call_id = %tc.id,
             tool_name = %tc.sdk_tool_name,
             tool_title = %tc.title,
             tool_scope = scope_name,
@@ -334,7 +300,7 @@ fn log_tool_call_update_applied(
             message = log_spec.message,
             outcome = log_spec.outcome,
             session_id = %session_id,
-            tool_call_id = %id_str,
+            tool_call_id = %tc.id,
             tool_name = %tc.sdk_tool_name,
             tool_title = %tc.title,
             tool_scope = scope_name,
@@ -351,7 +317,7 @@ fn log_tool_call_update_applied(
             message = log_spec.message,
             outcome = log_spec.outcome,
             session_id = %session_id,
-            tool_call_id = %id_str,
+            tool_call_id = %tc.id,
             tool_name = %tc.sdk_tool_name,
             tool_title = %tc.title,
             tool_scope = scope_name,
@@ -483,23 +449,10 @@ fn entered_final_status(
 
 fn log_command_update_applied(
     app: &App,
-    id_str: &str,
+    tc: &ToolCallInfo,
     previous_status: Option<model::ToolCallStatus>,
     previous_terminal_id: Option<&str>,
 ) {
-    let Some(tc) = app
-        .lookup_tool_call(id_str)
-        .and_then(|(mi, bi)| {
-            app.transcript.messages.get(mi).and_then(|message| message.blocks.get(bi))
-        })
-        .and_then(|block| match block {
-            MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
-            _ => None,
-        })
-    else {
-        return;
-    };
-
     if !tc.is_execute_tool() {
         return;
     }

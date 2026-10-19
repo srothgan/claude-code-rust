@@ -38,13 +38,6 @@ export type ToolCorrelationMetadata = {
   parentAgentId?: string;
 };
 
-const TOOL_SUMMARY_TOOL_NAMES = new Set([
-  "Agent",
-  "Task",
-  "WebSearch",
-  "WebFetch",
-  "ExitPlanMode",
-]);
 const TASK_LIFECYCLE_TOOL_NAMES = new Set([
   "Agent",
   "Task",
@@ -98,11 +91,6 @@ function toolName(
   return toolNameFromMeta(base?.meta);
 }
 
-export function toolUsesSummaryOutput(base: ToolCall | undefined): boolean {
-  const baseToolName = toolName(base);
-  return Boolean(baseToolName && TOOL_SUMMARY_TOOL_NAMES.has(baseToolName));
-}
-
 export function toolAcceptsTaskLifecycle(base: ToolCall | undefined): boolean {
   const baseToolName = toolName(base);
   return Boolean(baseToolName && (
@@ -116,11 +104,12 @@ export function toolPreservesTaskNotificationOutput(
   return isShellToolName(toolName(base) ?? "");
 }
 
+/** Foreground Agent, Task and shell calls complete with their own tool result. */
 export function defersTaskNotificationCompletion(
   base: ToolCall | undefined,
 ): boolean {
-  const baseToolName = toolName(base);
-  return baseToolName === "Agent" || baseToolName === "Task";
+  const baseToolName = toolName(base) ?? "";
+  return baseToolName === "Agent" || baseToolName === "Task" || isShellToolName(baseToolName);
 }
 
 function classifyFailureKind(
@@ -692,29 +681,6 @@ export function emitToolProgressUpdate(
   if (Object.keys(fields).length > 0) {
     emitToolCallUpdate(session, toolUseId, fields, "progress");
   }
-}
-
-export function emitToolSummaryUpdate(
-  session: SessionState,
-  toolUseId: string,
-  summary: string,
-): void {
-  const base = session.toolCalls.get(toolUseId);
-  if (!base) {
-    return;
-  }
-  if (!toolUsesSummaryOutput(base) || base.status === "detached") {
-    return;
-  }
-  const fields: ToolCallUpdateFields = {
-    status:
-      base.status === "failed" || base.status === "killed"
-        ? base.status
-        : "completed",
-    raw_output: summary,
-    content: [{ type: "content", content: { type: "text", text: summary } }],
-  };
-  emitToolCallUpdate(session, toolUseId, fields, "summary");
 }
 
 export function setToolCallStatus(

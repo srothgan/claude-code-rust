@@ -3365,13 +3365,6 @@ test("handleTaskSystemMessage preserves blocked and parent agent metadata", () =
       tool_call_id: "tool-1",
       fields: {
         status: "in_progress",
-        raw_output: "Investigate release blocker",
-        content: [
-          {
-            type: "content",
-            content: { type: "text", text: "Investigate release blocker" },
-          },
-        ],
         task_metadata: {
           blocked: true,
           parent_agent_id: "agent-parent",
@@ -3441,16 +3434,6 @@ test("handleTaskSystemMessage keeps Agent completed notification provisional unt
     tool_call_update: {
       tool_call_id: "tool-1",
       fields: {
-        raw_output: "Found the auth bug and prepared the fix",
-        content: [
-          {
-            type: "content",
-            content: {
-              type: "text",
-              text: "Found the auth bug and prepared the fix",
-            },
-          },
-        ],
         task_metadata: {
           summary: "Found the auth bug and prepared the fix",
           terminal_status: "completed",
@@ -3459,6 +3442,7 @@ test("handleTaskSystemMessage keeps Agent completed notification provisional unt
     },
   });
   assert.equal(session.toolCalls.get("tool-1")?.status, "in_progress");
+  assert.equal(session.toolCalls.get("tool-1")?.raw_output, "Analyzing authentication flow");
   assert.equal(session.taskToolUseIds.get("task-1"), "tool-1");
   assert.equal(session.taskIdsByToolUseId.get("tool-1"), "task-1");
 });
@@ -3513,7 +3497,7 @@ test("emitToolResultUpdate finalizes deferred Agent completion and unlinks lifec
   assert.equal(session.taskIdsByToolUseId.has("tool-1"), false);
 });
 
-test("task notifications close Bash without replacing concrete tool output", () => {
+test("task notifications leave foreground tools open with their concrete tool output", () => {
   const session = makeSessionState();
   const protectedTools = [
     createToolCall("tool-bash", "Bash", { command: "git status" }),
@@ -3530,7 +3514,7 @@ test("task notifications close Bash without replacing concrete tool output", () 
     session.toolCalls.set(toolCall.tool_call_id, toolCall);
   }
 
-  const events = captureBridgeEvents(() => {
+  captureBridgeEvents(() => {
     for (const toolCall of protectedTools) {
       const taskId = `task-${toolCall.tool_call_id}`;
       handleTaskSystemMessage(session, "task_started", {
@@ -3547,21 +3531,9 @@ test("task notifications close Bash without replacing concrete tool output", () 
     }
   });
 
-  assert.equal(
-    events.filter(
-      (event) =>
-        event.event === "session_update" &&
-        (event.update as { type?: unknown } | undefined)?.type ===
-          "tool_call_update",
-    ).length,
-    1,
-  );
   for (const toolCall of protectedTools) {
     const stored = session.toolCalls.get(toolCall.tool_call_id);
-    assert.equal(
-      stored?.status,
-      toolCall.tool_call_id === "tool-bash" ? "completed" : "in_progress",
-    );
+    assert.equal(stored?.status, "in_progress");
     assert.equal(
       stored?.raw_output,
       `actual output for ${toolCall.tool_call_id}`,
@@ -3569,7 +3541,40 @@ test("task notifications close Bash without replacing concrete tool output", () 
   }
 });
 
-test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", () => {
+test("foreground shell task lifecycle never shows its description and completes only with the real result", () => {
+  const session = makeSessionState();
+  captureBridgeEvents(() => {
+    emitToolCall(session, "tool-ps", "PowerShell", { command: "git diff --stat" });
+    handleTaskSystemMessage(session, "task_started", {
+      task_id: "task-ps",
+      tool_use_id: "tool-ps",
+      description: "Show diff summary of uncommitted changes",
+    });
+    handleTaskSystemMessage(session, "task_notification", {
+      task_id: "task-ps",
+      tool_use_id: "tool-ps",
+      status: "completed",
+      summary: "Show diff summary of uncommitted changes",
+    });
+  });
+  const pending = session.toolCalls.get("tool-ps");
+  assert.equal(pending?.status, "in_progress");
+  assert.equal(pending?.raw_output, undefined);
+
+  captureBridgeEvents(() => {
+    emitToolResultUpdate(session, "tool-ps", false, {
+      stdout: " src/app/tasks.rs | 25 +++-",
+      stderr: "",
+      interrupted: false,
+    });
+  });
+  const finished = session.toolCalls.get("tool-ps");
+  assert.equal(finished?.status, "completed");
+  assert.match(finished?.raw_output ?? "", /src\/app\/tasks\.rs \| 25/);
+  assert.doesNotMatch(finished?.raw_output ?? "", /Show diff summary/);
+});
+
+test("handleSdkMessage keeps real tool output when tool_use_summary arrives", () => {
   const session = makeSessionState();
   const protectedTools = [
     createToolCall("tool-bash", "Bash", { command: "git diff" }),
@@ -3578,6 +3583,11 @@ test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", 
       file_path: "src/main.rs",
       content: "updated file contents",
     }),
+    createToolCall("tool-agent", "Agent", { prompt: "Inspect auth flow" }),
+    createToolCall("tool-task", "Task", { prompt: "Inspect auth flow" }),
+    createToolCall("tool-search", "WebSearch", { query: "ratatui" }),
+    createToolCall("tool-fetch", "WebFetch", { url: "https://example.com" }),
+    createToolCall("tool-plan", "ExitPlanMode", { plan: "Ship it" }),
   ];
 
   for (const toolCall of protectedTools) {
@@ -3605,51 +3615,6 @@ test("handleSdkMessage ignores tool_use_summary for Bash Read and Write tools", 
       `actual output for ${toolCall.tool_call_id}`,
     );
   }
-});
-
-test("handleSdkMessage applies tool_use_summary for summary-oriented tools", () => {
-  const session = makeSessionState();
-  const toolCall = createToolCall("tool-agent", "Agent", {
-    prompt: "Inspect auth flow",
-  });
-  session.toolCalls.set(toolCall.tool_call_id, toolCall);
-
-  const events = captureBridgeEvents(() => {
-    handleSdkMessage(session, {
-      type: "tool_use_summary",
-      summary: "Inspected auth flow and found the failing check",
-      preceding_tool_use_ids: [toolCall.tool_call_id],
-      uuid: "message-summary",
-      session_id: "session-1",
-    } as unknown as import("@anthropic-ai/claude-agent-sdk").SDKMessage);
-  });
-
-  const lastEvent = events.at(-1);
-  assert.ok(lastEvent);
-  assert.equal(lastEvent.event, "session_update");
-  assert.deepEqual(lastEvent.update, {
-    type: "tool_call_update",
-    tool_call_update: {
-      tool_call_id: "tool-agent",
-      fields: {
-        status: "completed",
-        raw_output: "Inspected auth flow and found the failing check",
-        content: [
-          {
-            type: "content",
-            content: {
-              type: "text",
-              text: "Inspected auth flow and found the failing check",
-            },
-          },
-        ],
-      },
-    },
-  });
-  assert.equal(
-    session.toolCalls.get(toolCall.tool_call_id)?.raw_output,
-    "Inspected auth flow and found the failing check",
-  );
 });
 
 test("handleSdkMessage suppresses ToolSearch bridge events without denying SDK use", () => {
@@ -4151,6 +4116,7 @@ test("task notification appends resource links with or without a summary", () =>
   for (const summary of ["Export complete", undefined]) {
     const session = makeSessionState();
     const events = captureBridgeEvents(() => {
+      emitToolCall(session, "tool-mcp", "mcp__docs__export", {});
       handleTaskSystemMessage(session, "task_started", {
         task_id: "task-mcp",
         tool_use_id: "tool-mcp",
@@ -8167,7 +8133,7 @@ test("handleTaskSystemMessage preserves task correlation metadata", () => {
   const metadata = { request_id: "request-1", subagent_type: "tester", task_description: "Validate the branch" };
   assert.deepEqual(tool?.task_metadata, metadata);
   assert.deepEqual(task?.metadata, { ...metadata, sdk_lifecycle_task: true });
-  assert.equal(tool?.raw_output, "Run checks");
+  assert.equal(tool?.raw_output, undefined);
   const published = events.map(event => event.update as import("./types.js").SessionUpdate).filter(update => update.type === "tool_call_update").at(-1);
   assert.deepEqual(published?.tool_call_update.fields.task_metadata, metadata);
 });

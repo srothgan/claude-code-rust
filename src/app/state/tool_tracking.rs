@@ -3,23 +3,19 @@
 use super::prelude::*;
 
 impl App {
-    pub(crate) fn sync_tool_call_history(&mut self, id: &str) {
-        let Some((mi, bi)) = self.lookup_tool_call(id) else {
-            return;
+    /// Returns whether the tool block changed; the caller syncs its cache slot,
+    /// retained bytes, and layout once together with its own changes.
+    pub(crate) fn sync_tool_call_history(&mut self, mi: usize, bi: usize) -> bool {
+        let Some(MessageBlock::ToolCall(tool)) =
+            self.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+        else {
+            return false;
         };
-        let result = match self
-            .transcript
-            .messages
-            .get_mut(mi)
-            .and_then(|message| message.blocks.get_mut(bi))
-        {
-            Some(MessageBlock::ToolCall(tool)) => tool.sync_history(),
-            _ => None,
-        };
-        self.sync_render_cache_slot(mi, bi);
-        self.recompute_message_retained_bytes(mi);
+        let was_frozen = tool.has_frozen_launch();
+        let result = tool.sync_history();
+        let froze = !was_frozen && tool.has_frozen_launch();
         let Some((id, tool)) = result else {
-            return;
+            return froze;
         };
         let block = MessageBlock::ToolResult { id, tool };
         if let Some(owner) = self.active_turn_assistant_idx() {
@@ -28,6 +24,7 @@ impl App {
         } else {
             self.push_message_tracked(ChatMessage::new(MessageRole::Assistant, vec![block], None));
         }
+        true
     }
     /// Track a Task/Agent tool call as active (in-progress subagent).
     pub fn insert_active_task(&mut self, id: String) {
@@ -135,7 +132,6 @@ impl App {
         let mut cleared_interaction = false;
         let mut changed_message_indices = Vec::new();
         let mut changed_slots = Vec::new();
-        let mut settled_tools = Vec::new();
         let background_tools: std::collections::HashSet<String> = if include_detached {
             std::collections::HashSet::new()
         } else {
@@ -148,7 +144,6 @@ impl App {
                     let tc = tc.as_mut();
                     if !tc.status.is_terminal() && !background_tools.contains(&tc.id) {
                         tc.status = new_status;
-                        settled_tools.push(tc.id.clone());
                         tc.invalidate_render_cache();
                         changed_slots.push((msg_idx, block_idx));
                         if tc.pending_permission.take().is_some() {
@@ -167,10 +162,8 @@ impl App {
         }
 
         for (msg_idx, block_idx) in changed_slots {
+            self.sync_tool_call_history(msg_idx, block_idx);
             self.sync_render_cache_slot(msg_idx, block_idx);
-        }
-        for id in settled_tools {
-            self.sync_tool_call_history(&id);
         }
 
         for msg_idx in changed_message_indices.iter().copied() {

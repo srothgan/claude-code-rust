@@ -44,7 +44,6 @@ import {
   emitToolResultUpdate,
   finalizeOpenToolCalls,
   emitToolProgressUpdate,
-  emitToolSummaryUpdate,
   ensureToolCallVisible,
   resolveTaskToolUseId,
   defersTaskNotificationCompletion,
@@ -899,17 +898,9 @@ export function taskSystemToolFields(
 ): ToolCallUpdateFields | undefined {
   const messageTaskMetadata = sdkTaskMetadata(msg);
   if (subtype === "task_started") {
-    const description =
-      typeof msg.description === "string" ? msg.description : "";
-    if (!description) {
-      return undefined;
-    }
+    // The launch description is not tool output; the row keeps its own content.
     const fields: ToolCallUpdateFields = {
       status: "in_progress",
-      ...(!(toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output) ? { raw_output: description,
-      content: [
-        { type: "content", content: { type: "text", text: description } },
-      ] } : {}),
       ...(messageTaskMetadata ? { task_metadata: messageTaskMetadata } : {}),
     };
     return Object.keys(fields).length === 1 && fields.status === toolCall.status ? undefined : fields;
@@ -922,7 +913,7 @@ export function taskSystemToolFields(
     }
     const fields: ToolCallUpdateFields = {
       status: "in_progress",
-      ...(!(toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output) ? {
+      ...(!toolPreservesTaskNotificationOutput(toolCall) ? {
         raw_output: progress,
         content: [{ type: "content", content: { type: "text", text: progress } }],
       } : {}),
@@ -966,7 +957,8 @@ export function taskSystemToolFields(
   if (messageTaskMetadata) {
     fields.task_metadata = messageTaskMetadata;
   }
-  if (summary && (!toolPreservesTaskNotificationOutput(toolCall) || toolCall.status === "detached")) {
+  // A deferred completion is followed by the real tool result, so its summary is never shown.
+  if (summary && !deferCompletion && (!toolPreservesTaskNotificationOutput(toolCall) || toolCall.status === "detached")) {
     const output = toolPreservesTaskNotificationOutput(toolCall) && toolCall.raw_output
       ? `${toolCall.raw_output}\n${summary}` : summary;
     fields.raw_output = output;
@@ -2491,20 +2483,7 @@ export function handleSdkMessage(
   }
 
   if (type === "tool_use_summary") {
-    const summary = typeof msg.summary === "string" ? msg.summary : "";
-    const toolIds = Array.isArray(msg.preceding_tool_use_ids)
-      ? msg.preceding_tool_use_ids.filter(
-          (id): id is string => typeof id === "string",
-        )
-      : [];
-    if (summary && toolIds.length > 0) {
-      for (const toolUseId of toolIds) {
-        if (session.hiddenToolUseIds.has(toolUseId)) {
-          continue;
-        }
-        emitToolSummaryUpdate(session, toolUseId, summary);
-      }
-    }
+    // Tool rows always keep their real result; SDK summaries are not displayed.
     return;
   }
 

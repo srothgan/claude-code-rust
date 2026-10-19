@@ -70,16 +70,27 @@ fn is_sdk_background_task(task: &model::TaskItem) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn refresh_task_tool_displays(app: &mut App) -> bool {
-    let previous_tasks = app.sdk_inventory.tasks.clone();
-    refresh_task_tool_displays_with_previous(app, &previous_tasks)
+/// Re-derive one task tool row after its own tool event. Returns whether the
+/// block changed; the caller owns the cache-slot and layout sync.
+pub(super) fn refresh_task_tool_display_at(app: &mut App, mi: usize, bi: usize) -> bool {
+    let current_tasks = &app.sdk_inventory.tasks;
+    let Some(MessageBlock::ToolCall(tool_call)) =
+        app.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+    else {
+        return false;
+    };
+    if !refresh_task_tool_display(tool_call.as_mut(), current_tasks, &[]) {
+        return false;
+    }
+    tool_call.invalidate_render_cache();
+    true
 }
 
 fn refresh_task_tool_displays_with_previous(
     app: &mut App,
     previous_tasks: &[model::TaskItem],
 ) -> bool {
-    let current_tasks = app.sdk_inventory.tasks.clone();
+    let current_tasks = &app.sdk_inventory.tasks;
     let mut dirty_blocks = Vec::new();
 
     for (message_idx, message) in app.transcript.messages.iter_mut().enumerate() {
@@ -87,7 +98,7 @@ fn refresh_task_tool_displays_with_previous(
             let MessageBlock::ToolCall(tool_call) = block else {
                 continue;
             };
-            if refresh_task_tool_display(tool_call.as_mut(), &current_tasks, previous_tasks) {
+            if refresh_task_tool_display(tool_call.as_mut(), current_tasks, previous_tasks) {
                 tool_call.invalidate_render_cache();
                 dirty_blocks.push((message_idx, block_idx));
             }
@@ -499,7 +510,7 @@ mod tests {
             ),
         );
 
-        refresh_task_tool_displays(&mut app);
+        refresh_task_tool_display_at(&mut app, 0, 0);
 
         let tool_call = only_tool_call(&app);
         assert_eq!(tool_call.title, "Start task #1: Scaffold Next.js 15 app via create-next-app");
@@ -524,7 +535,7 @@ mod tests {
         update.content = vec![model::ToolCallContent::from("Activity: Scaffolding Next.js app")];
         insert_tool_call(&mut app, update);
 
-        refresh_task_tool_displays(&mut app);
+        refresh_task_tool_display_at(&mut app, 0, 0);
 
         let tool_call = only_tool_call(&app);
         assert_eq!(

@@ -1578,6 +1578,57 @@ fn body_cap_reports_hidden_source_lines_when_full_lines_are_omitted() {
     assert!(rendered[0].contains("12 source lines hidden"));
 }
 
+fn rendered_body_rows(tc: &mut ToolCallInfo) -> Vec<String> {
+    let mut lines = Vec::new();
+    render_tool_call_cached(
+        tc,
+        ToolCallRenderContext::default(),
+        80,
+        crate::ui::SpinnerState::Animated(0),
+        &mut lines,
+    );
+    rendered_line_texts_trimmed(&lines).into_iter().skip(1).collect()
+}
+
+#[test]
+fn formerly_summarized_tools_render_every_content_row() {
+    for name in ["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"] {
+        let mut tc = test_tool_call("tc-real-content", name, model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::from(
+            "Found the failing check
+auth.rs:42
+retry disabled",
+        )];
+
+        let body = rendered_body_rows(&mut tc);
+
+        assert_eq!(body.len(), 3, "{name}: {body:?}");
+        for (row, expected) in
+            body.iter().zip(["Found the failing check", "auth.rs:42", "retry disabled"])
+        {
+            assert!(row.ends_with(expected), "{name}: {row:?} should show {expected:?}");
+        }
+    }
+}
+
+#[test]
+fn formerly_summarized_tools_keep_the_body_height_cap() {
+    for name in ["Agent", "WebFetch"] {
+        let mut tc = test_tool_call("tc-long-content", name, model::ToolCallStatus::Completed);
+        let text = (0..20).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join(
+            "
+",
+        );
+        tc.content = vec![model::ToolCallContent::from(text)];
+
+        let body = rendered_body_rows(&mut tc);
+
+        assert_eq!(body.len(), TOOL_BODY_MAX_LINES, "{name}: {body:?}");
+        assert!(body[0].contains("12 source lines hidden"), "{name}: {body:?}");
+        assert!(body.last().is_some_and(|row| row.ends_with("line 19")), "{name}: {body:?}");
+    }
+}
+
 #[test]
 fn wrapped_content_cap_keeps_permission_rows_visible() {
     let mut tc =
@@ -1862,7 +1913,6 @@ fn mcp_resource_links_render_summary_and_bounded_body_at_narrow_and_wide_widths(
             )]))),
     )];
 
-    assert_eq!(standard::content_summary(&tc), "Quarterly report");
     for width in [24, 120] {
         let body = standard::ToolBodyCursor::default().render(
             &tc,
@@ -1910,32 +1960,6 @@ fn read_tool_renders_head_hidden_marker_and_tail() {
     assert!(rendered_text.iter().any(|line| line.contains("5 lines hidden")));
     for hidden in ["line 3", "line 4", "line 5", "line 6", "line 7"] {
         assert!(!rendered_text.iter().any(|line| line.contains(hidden)));
-    }
-}
-
-#[test]
-fn compact_tools_render_only_summary_line() {
-    for sdk_tool_name in ["Agent", "Task", "WebSearch", "WebFetch", "ExitPlanMode"] {
-        let mut tc = test_tool_call(
-            &format!("tc-{sdk_tool_name}"),
-            sdk_tool_name,
-            model::ToolCallStatus::Completed,
-        );
-        tc.content = vec![model::ToolCallContent::from("first line\nsecond line".to_owned())];
-
-        let body = standard::ToolBodyCursor::default().render(
-            &tc,
-            80,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered: Vec<String> = body
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect();
-
-        assert_eq!(rendered.len(), 1);
-        assert!(rendered[0].contains("first line"));
-        assert!(!rendered[0].contains("second line"));
     }
 }
 
@@ -2174,40 +2198,35 @@ fn extract_tool_use_error_message_reads_inner_text() {
 }
 
 #[test]
-fn failed_tool_text_summary_reads_common_xml_error_wrappers() {
+fn failed_tool_text_content_reads_common_xml_error_wrappers() {
     let failed = model::ToolCallStatus::Failed;
+    let render = |status, text| {
+        render_failed_tool_text_content(status, text).map(|lines| rendered_line_texts(&lines))
+    };
     assert_eq!(
-        failed_tool_text_summary(
-            failed,
-            "<tool_use_error>Sibling tool call errored</tool_use_error>"
-        )
-        .as_deref(),
-        Some("Sibling tool call errored")
+        render(failed, "<tool_use_error>Sibling tool call errored</tool_use_error>"),
+        Some(vec!["Sibling tool call errored".to_owned()])
     );
     assert_eq!(
-        failed_tool_text_summary(
+        render(
             failed,
             "<error><code>-32603</code><message>Adapter process crashed</message></error>"
-        )
-        .as_deref(),
-        Some("Adapter process crashed")
-    );
-    assert_eq!(
-        failed_tool_text_summary(failed, "<fault>Remote call failed</fault>").as_deref(),
-        Some("Remote call failed")
-    );
-    assert_eq!(
-        failed_tool_text_summary(failed, "<custom_error>Wrapped failure</custom_error>").as_deref(),
-        Some("Wrapped failure")
-    );
-    assert_eq!(
-        failed_tool_text_summary(
-            model::ToolCallStatus::Completed,
-            "<message>Successful XML output</message>",
         ),
+        Some(vec!["Adapter process crashed".to_owned()])
+    );
+    assert_eq!(
+        render(failed, "<fault>Remote call failed</fault>"),
+        Some(vec!["Remote call failed".to_owned()])
+    );
+    assert_eq!(
+        render(failed, "<custom_error>Wrapped failure</custom_error>"),
+        Some(vec!["Wrapped failure".to_owned()])
+    );
+    assert_eq!(
+        render(model::ToolCallStatus::Completed, "<message>Successful XML output</message>"),
         None
     );
-    assert_eq!(failed_tool_text_summary(failed, "<message>missing close"), None);
+    assert_eq!(render(failed, "<message>missing close"), None);
 }
 
 #[test]
@@ -2218,119 +2237,6 @@ fn render_tool_use_error_content_shows_only_inner_text_lines() {
     assert_eq!(rendered.len(), 2);
     assert!(rendered.iter().any(|line| line == "Line A"));
     assert!(rendered.iter().any(|line| line == "Line B"));
-}
-
-#[test]
-fn content_summary_only_extracts_tool_use_error_for_failed_execute() {
-    let tc = ToolCallInfo {
-        id: "tc-1".into(),
-        source_message_uuids: Vec::new(),
-        title: "Bash".into(),
-        sdk_tool_name: "Bash".into(),
-        raw_input: None,
-        raw_input_bytes: 0,
-        locations: Vec::new(),
-        output_metadata: None,
-        task_metadata: None,
-        status: model::ToolCallStatus::Completed,
-        content: Vec::new(),
-        hidden: false,
-        terminal_id: Some("term-1".into()),
-        terminal_command: Some("echo done".into()),
-        terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
-        terminal_output_len: 0,
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
-        history: crate::app::ToolCallHistory::Live,
-    };
-    assert_eq!(content_summary(&tc), "done");
-}
-
-#[test]
-fn content_summary_extracts_tool_use_error_for_failed_execute() {
-    let tc = ToolCallInfo {
-        id: "tc-1".into(),
-        source_message_uuids: Vec::new(),
-        title: "Bash".into(),
-        sdk_tool_name: "Bash".into(),
-        raw_input: None,
-        raw_input_bytes: 0,
-        locations: Vec::new(),
-        output_metadata: None,
-        task_metadata: None,
-        status: model::ToolCallStatus::Failed,
-        content: Vec::new(),
-        hidden: false,
-        terminal_id: Some("term-1".into()),
-        terminal_command: Some("echo done".into()),
-        terminal_output: Some("<tool_use_error>bad</tool_use_error>\ndone".into()),
-        terminal_output_len: 0,
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
-        history: crate::app::ToolCallHistory::Live,
-    };
-    assert_eq!(content_summary(&tc), "bad");
-}
-
-#[test]
-fn content_summary_extracts_xml_message_for_failed_text_tool() {
-    let mut tc = test_tool_call("tc-web", "WebFetch", model::ToolCallStatus::Failed);
-    tc.content = vec![model::ToolCallContent::from(
-        "<error><message>Fetch failed</message></error>".to_owned(),
-    )];
-
-    assert_eq!(content_summary(&tc), "Fetch failed");
-}
-
-#[test]
-fn content_summary_uses_first_terminal_line_for_failed_execute() {
-    let tc = ToolCallInfo {
-        id: "tc-2".into(),
-        source_message_uuids: Vec::new(),
-        title: "Bash".into(),
-        sdk_tool_name: "Bash".into(),
-        raw_input: None,
-        raw_input_bytes: 0,
-        locations: Vec::new(),
-        output_metadata: None,
-        task_metadata: None,
-        status: model::ToolCallStatus::Failed,
-        content: Vec::new(),
-        hidden: false,
-        terminal_id: Some("term-2".into()),
-        terminal_command: Some("cd path with spaces".into()),
-        terminal_output: Some(
-            "Exit code 1\n/usr/bin/bash: line 1: cd: too many arguments\nmore detail".into(),
-        ),
-        terminal_output_len: 0,
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
-        history: crate::app::ToolCallHistory::Live,
-    };
-    assert_eq!(content_summary(&tc), "Exit code 1");
-}
-
-#[test]
-fn content_summary_uses_higher_limit_for_in_progress_agent() {
-    let mut tc = test_tool_call("tc-agent", "Agent", model::ToolCallStatus::InProgress);
-    let long_line = "a".repeat(150);
-    tc.content = vec![model::ToolCallContent::from(long_line.clone())];
-
-    assert_eq!(content_summary(&tc), long_line);
-}
-
-#[test]
-fn content_summary_keeps_normal_limit_for_completed_agent() {
-    let mut tc = test_tool_call("tc-agent-done", "Agent", model::ToolCallStatus::Completed);
-    let long_line = "a".repeat(150);
-    tc.content = vec![model::ToolCallContent::from(long_line)];
-
-    let summary = content_summary(&tc);
-    assert_eq!(summary.chars().count(), 60);
-    assert!(summary.ends_with("..."));
 }
 
 #[test]

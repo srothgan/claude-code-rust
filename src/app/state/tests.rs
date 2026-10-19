@@ -1136,7 +1136,7 @@ fn detached_calls_survive_turn_exits_but_finish_when_the_session_ends() {
         None,
     ));
     app.index_tool_call("web-1".to_owned(), 0, 0);
-    app.sync_tool_call_history("web-1");
+    app.sync_tool_call_history(0, 0);
     for status in [model::ToolCallStatus::Completed, model::ToolCallStatus::Failed] {
         app.finalize_turn_runtime_artifacts(status);
         let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[0] else {

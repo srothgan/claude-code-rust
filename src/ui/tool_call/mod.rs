@@ -42,12 +42,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 // Re-export submodule items used by tests.
 #[cfg(test)]
 use errors::{
-    extract_tool_use_error_message, failed_tool_text_summary, looks_like_internal_error,
+    extract_tool_use_error_message, looks_like_internal_error, render_failed_tool_text_content,
     render_tool_use_error_content, summarize_internal_error,
 };
 
 #[cfg(test)]
-use standard::{cap_write_diff_lines, content_summary};
+use standard::cap_write_diff_lines;
 
 pub(super) const TOOL_MAX_RENDER_LINES: usize = 10;
 pub(super) const TOOL_BODY_MAX_LINES: usize = TOOL_MAX_RENDER_LINES - 1;
@@ -116,9 +116,7 @@ impl ToolRowsCursor {
             self.finished = !standard::tool_call_has_body(tc);
             return vec![standard::render_tool_call_title(tc, context, width, spinner)];
         }
-        let depends_on_width = standard::tool_call_body_depends_on_width(tc);
-        let cached = if depends_on_width { tc.cache.get_for_width(width) } else { tc.cache.get() };
-        if let Some(cached) = cached {
+        if let Some(cached) = tc.cache.get_for_width(width) {
             self.finished = true;
             return cached.clone();
         }
@@ -144,11 +142,7 @@ impl ToolRowsCursor {
             return Vec::new();
         }
         self.finished = true;
-        if depends_on_width {
-            tc.cache.store_for_width(body.clone(), width);
-        } else {
-            tc.cache.store(body.clone());
-        }
+        tc.cache.store_for_width(body.clone(), width);
         body
     }
 }
