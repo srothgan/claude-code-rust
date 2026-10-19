@@ -463,26 +463,12 @@ mod tests {
 
     fn test_tool_call(sdk_tool_name: &str) -> ToolCallInfo {
         ToolCallInfo {
-            id: "tool-1".into(),
-            source_message_uuids: Vec::new(),
             title: "Tool".into(),
-            sdk_tool_name: sdk_tool_name.into(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: ToolCallStatus::InProgress,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: crate::app::BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(
+                "tool-1",
+                sdk_tool_name,
+                ToolCallStatus::InProgress,
+            )
         }
     }
 

@@ -354,8 +354,8 @@ mod tests {
     use super::*;
     use crate::agent::model::{McpServerConnectionStatus, McpServerStatus};
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, InlinePermission, MessageBlock, MessageRole,
-        ModeState, ToolCallInfo,
+        App, AppStatus, ChatMessage, InlinePermission, MessageBlock, MessageRole, ModeState,
+        ToolCallInfo,
     };
     use tokio::sync::oneshot;
 
@@ -535,23 +535,8 @@ mod tests {
         app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(ToolCallInfo {
-                id: "perm-1".into(),
-                source_message_uuids: Vec::new(),
                 title: "Read".into(),
-                sdk_tool_name: "Read".into(),
-                raw_input: None,
-                raw_input_bytes: 0,
-                locations: Vec::new(),
-                output_metadata: None,
-                task_metadata: None,
-                status: model::ToolCallStatus::Pending,
                 content: vec![],
-                hidden: false,
-                terminal_id: None,
-                terminal_command: None,
-                terminal_output: None,
-                terminal_output_len: 0,
-                cache: BlockCache::default(),
                 pending_permission: Some(InlinePermission {
                     options: vec![],
                     display: None,
@@ -560,8 +545,11 @@ mod tests {
                     selected_index: 0,
                     focused: true,
                 }),
-                pending_question: None,
-                history: crate::app::ToolCallHistory::Live,
+                ..crate::app::test_support::named_tool_call_info(
+                    "perm-1",
+                    "Read",
+                    model::ToolCallStatus::Pending,
+                )
             }))],
             None,
         ));

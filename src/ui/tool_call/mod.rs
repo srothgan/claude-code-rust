@@ -243,7 +243,7 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
         ));
     }
 
-    if matches!(tc.sdk_tool_name.as_str(), "Agent" | "Task") {
+    if model::is_agent_tool_name(&tc.sdk_tool_name) {
         if let Some(depth) = tc.task_spawn_depth() {
             badges.push(Span::styled(
                 format!("  [depth: {depth}]"),
@@ -415,7 +415,7 @@ fn ask_user_question_display_title(tc: &ToolCallInfo) -> Cow<'static, str> {
 #[cfg(test)]
 pub(super) mod test_support {
     use crate::agent::model;
-    use crate::app::{BlockCache, ToolCallInfo};
+    use crate::app::ToolCallInfo;
     use ratatui::text::Line;
 
     pub(super) fn tool_call(
@@ -427,26 +427,9 @@ pub(super) mod test_support {
         status: model::ToolCallStatus,
     ) -> ToolCallInfo {
         let mut tc = ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: title.to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, sdk_tool_name, status)
         };
         if let Some(content) = content {
             tc.content = vec![model::ToolCallContent::from(content)];

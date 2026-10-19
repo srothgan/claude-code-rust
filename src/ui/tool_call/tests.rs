@@ -1,30 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
-use crate::app::BlockCache;
 use pretty_assertions::assert_eq;
 use std::fmt::Write as _;
 fn test_tool_call(id: &str, sdk_tool_name: &str, status: model::ToolCallStatus) -> ToolCallInfo {
     ToolCallInfo {
-        id: id.to_owned(),
-        source_message_uuids: Vec::new(),
         title: id.to_owned(),
-        sdk_tool_name: sdk_tool_name.to_owned(),
-        raw_input: None,
-        raw_input_bytes: 0,
-        locations: Vec::new(),
-        output_metadata: None,
-        task_metadata: None,
-        status,
-        content: Vec::new(),
-        hidden: false,
-        terminal_id: None,
-        terminal_command: None,
-        terminal_output: None,
-        terminal_output_len: 0,
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
-        history: crate::app::ToolCallHistory::Live,
+        ..crate::app::test_support::named_tool_call_info(id, sdk_tool_name, status)
     }
 }
 
@@ -408,6 +389,7 @@ fn tool_title_cache_tracks_literal_rendering_and_display_context() {
         ("Write", ToolCallRenderContext::default(), "Visible title"),
     ] {
         tc.sdk_tool_name = tool_name.to_owned();
+        tc.kind = crate::app::test_support::test_tool_kind(tool_name);
         let mut rows = Vec::new();
         render_tool_call_cached(
             &mut tc,
@@ -1495,26 +1477,12 @@ fn ask_user_question_completed_body_falls_back_to_transcript_without_structured_
 #[test]
 fn bash_title_does_not_wrap_for_long_title() {
     let tc = ToolCallInfo {
-        id: "tc-1".into(),
-        source_message_uuids: Vec::new(),
         title: "echo very long command title with markdown **bold** and path /a/b/c/d/e/f".into(),
-        sdk_tool_name: "Bash".into(),
-        raw_input: None,
-        raw_input_bytes: 0,
-        locations: Vec::new(),
-        output_metadata: None,
-        task_metadata: None,
-        status: model::ToolCallStatus::Pending,
-        content: Vec::new(),
-        hidden: false,
-        terminal_id: None,
-        terminal_command: None,
-        terminal_output: None,
-        terminal_output_len: 0,
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
-        history: crate::app::ToolCallHistory::Live,
+        ..crate::app::test_support::named_tool_call_info(
+            "tc-1",
+            "Bash",
+            model::ToolCallStatus::Pending,
+        )
     };
 
     let top = standard::render_tool_call_title(
@@ -1704,7 +1672,7 @@ fn render_tool_call_cached_prefixes_hidden_subagent_child_permission_title() {
         "Write",
         model::ToolCallStatus::InProgress,
     );
-    tc.hidden = true;
+    tc.parent_tool_use_id = Some("parent-agent".into());
     tc.content = vec![model::ToolCallContent::from("running...".to_owned())];
     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
     tc.pending_permission = Some(crate::app::InlinePermission {
@@ -2278,28 +2246,17 @@ fn render_tool_use_error_content_shows_only_inner_text_lines() {
 #[test]
 fn render_execute_content_keeps_tail_output() {
     let tc = ToolCallInfo {
-        id: "tc-3".into(),
-        source_message_uuids: Vec::new(),
         title: "Bash".into(),
-        sdk_tool_name: "Bash".into(),
-        raw_input: None,
-        raw_input_bytes: 0,
-        locations: Vec::new(),
-        output_metadata: None,
-        task_metadata: None,
-        status: model::ToolCallStatus::Failed,
-        content: Vec::new(),
-        hidden: false,
         terminal_id: Some("term-3".into()),
         terminal_command: Some("cd path with spaces".into()),
         terminal_output: Some(
             (0..30).map(|idx| format!("line {idx}")).collect::<Vec<_>>().join("\n"),
         ),
-        terminal_output_len: 0,
-        cache: BlockCache::default(),
-        pending_permission: None,
-        pending_question: None,
-        history: crate::app::ToolCallHistory::Live,
+        ..crate::app::test_support::named_tool_call_info(
+            "tc-3",
+            "Bash",
+            model::ToolCallStatus::Failed,
+        )
     };
 
     let lines = execute::render_execute_content(

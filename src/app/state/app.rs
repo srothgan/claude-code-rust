@@ -49,9 +49,6 @@ pub struct App {
     pub(crate) file_index_event_rx: std_mpsc::Receiver<file_index::FileIndexEvent>,
     pub spinner_frame: usize,
     pub(crate) spinner_last_advance_at: Option<Instant>,
-    /// Tool scope keyed by tool call ID; used to distinguish main-agent, subagent roots,
-    /// and explicitly owned subagent child tools.
-    pub(crate) tool_call_scopes: HashMap<String, ToolCallScope>,
     /// Session-scoped tool interaction IDs, ordered by arrival; the first receives input.
     /// Background controls survive foreground turn exits and clear on session reset.
     pub pending_interaction_ids: Vec<String>,
@@ -277,7 +274,6 @@ impl App {
             file_index_event_rx: file_index_rx,
             spinner_frame: 0,
             spinner_last_advance_at: None,
-            tool_call_scopes: HashMap::default(),
             pending_interaction_ids: Vec::new(),
             focus: FocusManager::default(),
             keymap: ResolvedKeymap::defaults(),

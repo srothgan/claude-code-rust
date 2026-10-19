@@ -53,7 +53,7 @@ pub(crate) use session_identity::TranscriptUpdateSource;
 pub use session_runtime::SessionRuntimeState;
 pub use startup::StartupState;
 pub use tool_call_info::{
-    InlinePermission, InlineQuestion, SubagentPermissionContext, ToolCallInfo, is_execute_tool_name,
+    InlinePermission, InlineQuestion, SubagentPermissionContext, ToolCallInfo,
 };
 pub use transcript::Transcript;
 pub use turn::{ActiveCompaction, CompactionState, TurnState};
@@ -114,7 +114,7 @@ mod prelude {
     pub(super) use crate::app::{
         ChatPurgeReplayOptions, SurfaceDirtyState, TerminalLifecycleState,
     };
-    pub(super) use std::collections::{BTreeSet, HashMap};
+    pub(super) use std::collections::BTreeSet;
     pub(super) use std::path::{Path, PathBuf};
     pub(super) use std::sync::mpsc as std_mpsc;
     pub(super) use std::time::Instant;

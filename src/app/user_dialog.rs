@@ -11,7 +11,7 @@ use super::inline_interactions::{
     clear_inline_interaction_focus, focus_next_inline_interaction, focused_interaction_id,
     has_focused_user_dialog, pop_next_valid_interaction_id,
 };
-use super::{App, InvalidationLevel, MessageBlock};
+use super::{App, MessageBlock};
 use crate::agent::model;
 use crate::app::keymap::InteractionAction;
 use crate::app::keys::KeyOutcome;
@@ -85,9 +85,7 @@ fn move_dialog_selection(app: &mut App, delta: i32) {
         }
     }
     if changed {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.finish_block_change(mi, bi);
         app.request_chat_mutable_rebuild();
     }
 }
@@ -145,9 +143,7 @@ fn respond_dialog(app: &mut App, resolution: DialogResolution) {
         };
         dialog.resolve(outcome.clone());
         let _ = response_tx.send(model::RequestUserDialogResponse::new(outcome));
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.finish_block_change(mi, bi);
         app.request_chat_mutable_rebuild();
     }
 

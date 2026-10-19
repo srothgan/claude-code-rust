@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::App;
 use super::inline_interactions::{
     focus_next_inline_interaction, focused_interaction, focused_interaction_dirty_idx,
     focused_interaction_is_active, get_focused_interaction_tc, invalidate_if_changed,
     normalize_pending_interaction_queue, pop_next_valid_interaction_id,
 };
-use super::{App, InvalidationLevel, MessageBlock};
 use crate::agent::model;
 use crate::app::keymap::InteractionAction;
 use crate::app::keys::KeyOutcome;
@@ -18,8 +18,7 @@ pub(super) fn record_activity(app: &mut App, now: Instant) {
         let Some((mi, bi)) = app.lookup_tool_call(&id) else {
             continue;
         };
-        if let Some(MessageBlock::ToolCall(tool)) =
-            app.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
+        if let Some(tool) = app.tool_call_at_mut(mi, bi)
             && let Some(question) = tool.pending_question.as_mut()
         {
             question.last_activity = now;
@@ -463,17 +462,7 @@ fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
         return;
     };
 
-    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
-        return;
-    };
-    let Some(MessageBlock::ToolCall(tc)) =
-        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    else {
-        return;
-    };
-    let tc = tc.as_mut();
-    let mut invalidated = false;
-    if let Some(pending) = tc.pending_question.take() {
+    if let Some(pending) = app.mutate_tool_call(&tool_id, |tool| tool.pending_question.take()) {
         let selected_indices = if auto_continue {
             pending.selected_option_indices.iter().copied().collect()
         } else {
@@ -514,13 +503,7 @@ fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
                 ),
             ));
         }
-        tc.invalidate_render_cache();
-        invalidated = true;
-    }
-    if invalidated {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+
         app.request_chat_mutable_rebuild();
     }
 
@@ -532,23 +515,10 @@ fn respond_question_cancel(app: &mut App) {
         return;
     };
 
-    let Some((mi, bi)) = app.lookup_tool_call(&tool_id) else {
-        return;
-    };
-    let Some(MessageBlock::ToolCall(tc)) =
-        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    else {
-        return;
-    };
-    let tc = tc.as_mut();
-    if let Some(pending) = tc.pending_question.take() {
+    if let Some(pending) = app.mutate_tool_call(&tool_id, |tool| tool.pending_question.take()) {
         let _ = pending
             .response_tx
             .send(model::RequestQuestionResponse::new(model::RequestQuestionOutcome::Cancelled));
-        tc.invalidate_render_cache();
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
         app.request_chat_mutable_rebuild();
     }
 
@@ -558,35 +528,19 @@ fn respond_question_cancel(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        App, BlockCache, ChatMessage, InlineQuestion, MessageBlock, MessageRole, ToolCallInfo,
-    };
+    use crate::app::{App, ChatMessage, InlineQuestion, MessageBlock, MessageRole, ToolCallInfo};
     use pretty_assertions::assert_eq;
     use std::collections::BTreeSet;
     use tokio::sync::oneshot;
 
     fn test_tool_call(id: &str) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: format!("Tool {id}"),
-            sdk_tool_name: "AskUserQuestion".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::InProgress,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(
+                id,
+                "AskUserQuestion",
+                model::ToolCallStatus::InProgress,
+            )
         }
     }
 

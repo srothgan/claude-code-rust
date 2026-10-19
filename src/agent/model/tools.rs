@@ -6,6 +6,12 @@ use std::path::PathBuf;
 use super::content::{Content, ContentBlock, TextContent};
 use super::mcp::{McpResource, McpResourceLink};
 use super::tasks::TaskMetadata;
+
+#[must_use]
+pub fn is_agent_tool_name(name: &str) -> bool {
+    matches!(name, "Task" | "Agent")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {

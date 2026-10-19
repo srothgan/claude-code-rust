@@ -14,6 +14,7 @@ import {
   backgroundToolLaunchTaskIdFromResult,
   buildToolResultFields,
   createToolCall,
+  isAgentLikeToolName,
   isShellToolName,
 } from "./tooling.js";
 import { appendResourceLinks } from "./resource_links.js";
@@ -109,7 +110,7 @@ export function defersTaskNotificationCompletion(
   base: ToolCall | undefined,
 ): boolean {
   const baseToolName = toolName(base) ?? "";
-  return baseToolName === "Agent" || baseToolName === "Task" || isShellToolName(baseToolName);
+  return isAgentLikeToolName(baseToolName) || isShellToolName(baseToolName);
 }
 
 function classifyFailureKind(
@@ -588,7 +589,7 @@ export function emitToolResultUpdate(
     rawContent,
     rawResult,
   );
-  if ((baseToolName === "Agent" || baseToolName === "Task") &&
+  if ((isAgentLikeToolName(baseToolName)) &&
       (base?.status === "completed" || base?.status === "failed" || base?.status === "killed")) {
     const taskId = activeTaskIdForToolUse(session, toolUseId);
     if (taskId) {

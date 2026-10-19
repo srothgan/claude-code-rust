@@ -11,6 +11,8 @@ pub struct ToolCallInfo {
     /// The SDK tool name from `meta.claudeCode.toolName` when available.
     /// Falls back to a derived name when metadata is absent.
     pub sdk_tool_name: String,
+    /// Normalized execution category supplied by the bridge.
+    pub kind: model::ToolKind,
     pub raw_input: Option<serde_json::Value>,
     pub raw_input_bytes: usize,
     pub locations: Vec<model::ToolCallLocation>,
@@ -18,8 +20,8 @@ pub struct ToolCallInfo {
     pub task_metadata: Option<model::TaskMetadata>,
     pub status: model::ToolCallStatus,
     pub content: Vec<model::ToolCallContent>,
-    /// Hidden tool calls are subagent children - not rendered directly.
-    pub hidden: bool,
+    /// Explicit SDK parent linkage; also owns subagent visibility and scope.
+    pub parent_tool_use_id: Option<String>,
     /// Terminal ID if this is a shell SDK tool call with a running/completed terminal.
     pub terminal_id: Option<String>,
     /// The shell command that was executed (e.g. "echo hello && ls -la").
@@ -86,6 +88,7 @@ impl ToolCallInfo {
             source_message_uuids: self.source_message_uuids.clone(),
             title: self.title.clone(),
             sdk_tool_name: self.sdk_tool_name.clone(),
+            kind: self.kind,
             raw_input: self.raw_input.clone(),
             raw_input_bytes: self.raw_input_bytes,
             locations: self.locations.clone(),
@@ -93,7 +96,7 @@ impl ToolCallInfo {
             task_metadata: self.task_metadata.clone(),
             status: self.status,
             content: self.content.clone(),
-            hidden: self.hidden,
+            parent_tool_use_id: self.parent_tool_use_id.clone(),
             terminal_id: None,
             terminal_command: self.terminal_command.clone(),
             terminal_output: self.terminal_output.clone(),
@@ -151,7 +154,7 @@ impl ToolCallInfo {
 
     #[must_use]
     pub fn is_execute_tool(&self) -> bool {
-        is_execute_tool_name(&self.sdk_tool_name)
+        self.kind == model::ToolKind::Execute
     }
 
     #[must_use]
@@ -226,17 +229,29 @@ impl ToolCallInfo {
 
     #[must_use]
     pub fn hidden_unless_focused_interaction(&self) -> bool {
-        self.hidden && self.pending_permission.is_none() && self.pending_question.is_none()
+        self.is_subagent_child()
+            && self.pending_permission.is_none()
+            && self.pending_question.is_none()
     }
 
     #[must_use]
     pub fn is_hidden_focused_interaction(&self) -> bool {
-        self.hidden && (self.pending_permission.is_some() || self.pending_question.is_some())
+        self.is_subagent_child()
+            && (self.pending_permission.is_some() || self.pending_question.is_some())
     }
 
     #[must_use]
     pub fn is_subagent_root_tool(&self) -> bool {
-        !self.hidden && matches!(self.sdk_tool_name.as_str(), "Task" | "Agent")
+        matches!(self.scope(), super::ToolCallScope::SubagentRoot)
+    }
+
+    pub(crate) fn scope(&self) -> super::ToolCallScope {
+        super::ToolCallScope::for_tool(&self.sdk_tool_name, self.parent_tool_use_id.as_deref())
+    }
+
+    #[must_use]
+    pub fn is_subagent_child(&self) -> bool {
+        self.parent_tool_use_id.is_some()
     }
 
     /// Invalidate cached rendered lines for this tool call.
@@ -260,11 +275,6 @@ impl ToolCallInfo {
         self.locations = locations;
         true
     }
-}
-
-#[must_use]
-pub fn is_execute_tool_name(tool_name: &str) -> bool {
-    tool_name.eq_ignore_ascii_case("bash") || tool_name.eq_ignore_ascii_case("powershell")
 }
 
 #[must_use]
@@ -304,17 +314,4 @@ pub struct InlineQuestion {
     pub focused: bool,
     pub question_index: usize,
     pub total_questions: usize,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_execute_tool_name;
-
-    #[test]
-    fn execute_tool_names_include_supported_shells() {
-        assert!(is_execute_tool_name("Bash"));
-        assert!(is_execute_tool_name("PowerShell"));
-        assert!(is_execute_tool_name("powershell"));
-        assert!(!is_execute_tool_name("Shell"));
-    }
 }

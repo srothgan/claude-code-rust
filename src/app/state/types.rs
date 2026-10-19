@@ -374,6 +374,18 @@ pub enum ToolCallScope {
     SubagentChild { parent_tool_use_id: String },
 }
 
+impl ToolCallScope {
+    pub(crate) fn for_tool(tool_name: &str, parent: Option<&str>) -> Self {
+        if let Some(parent) = parent {
+            Self::SubagentChild { parent_tool_use_id: parent.to_owned() }
+        } else if crate::agent::model::is_agent_tool_name(tool_name) {
+            Self::SubagentRoot
+        } else {
+            Self::MainAgent
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionPoint {
     pub row: usize,

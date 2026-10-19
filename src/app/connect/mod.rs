@@ -28,7 +28,6 @@ use crate::agent::client::AgentConnection;
 use crate::agent::events::ClientEvent;
 use crate::agent::wire::SessionLaunchSettings;
 use crate::error::AppError;
-use std::collections::HashMap;
 use std::rc::Rc;
 use tokio::sync::{mpsc, oneshot};
 
@@ -155,7 +154,6 @@ pub(super) fn create_app_with_settings(
         file_index_event_rx,
         spinner_frame: 0,
         spinner_last_advance_at: None,
-        tool_call_scopes: HashMap::new(),
         pending_interaction_ids: Vec::new(),
         focus: FocusManager::default(),
         keymap: super::keymap::ResolvedKeymap::defaults(),

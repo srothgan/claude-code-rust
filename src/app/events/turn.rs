@@ -206,10 +206,7 @@ pub(super) fn handle_permission_request_event(
 
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
-    if let Some(MessageBlock::ToolCall(tc)) =
-        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    {
-        let tc = tc.as_mut();
+    if let Some(tc) = app.tool_call_at_mut(mi, bi) {
         tc.pending_permission = Some(InlinePermission {
             options: request.options,
             display: request.display,
@@ -256,9 +253,7 @@ pub(super) fn handle_permission_request_event(
     }
 
     if layout_dirty {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.finish_block_change(mi, bi);
         app.request_chat_mutable_rebuild();
     }
 }
@@ -415,10 +410,7 @@ pub(super) fn handle_question_request_event(
 
     let mut layout_dirty = false;
     let auto_focus = app.pending_interaction_ids.is_empty() && !app.has_draft_input_for_focus();
-    if let Some(MessageBlock::ToolCall(tc)) =
-        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    {
-        let tc = tc.as_mut();
+    if let Some(tc) = app.tool_call_at_mut(mi, bi) {
         tc.pending_question = Some(InlineQuestion {
             idle_timeout: request.idle_timeout_ms.map(std::time::Duration::from_millis),
             last_activity: std::time::Instant::now(),
@@ -472,9 +464,7 @@ pub(super) fn handle_question_request_event(
     }
 
     if layout_dirty {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.finish_block_change(mi, bi);
         app.request_chat_mutable_rebuild();
     }
 }
@@ -526,9 +516,7 @@ pub(super) fn handle_user_dialog_request_event(
         &session_id,
         Some(&request_id),
     );
-    app.sync_render_cache_slot(mi, bi);
-    app.recompute_message_retained_bytes(mi);
-    app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    app.finish_block_change(mi, bi);
     app.request_chat_mutable_rebuild();
     tracing::info!(
         target: crate::logging::targets::APP_PERMISSION,
@@ -1088,26 +1076,14 @@ mod tests {
         hidden: bool,
     ) -> crate::app::ToolCallInfo {
         crate::app::ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: title.to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status: model::ToolCallStatus::InProgress,
-            content: Vec::new(),
-            hidden,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: crate::app::BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            parent_tool_use_id: (hidden).then(|| "parent-agent".to_owned()),
+            ..crate::app::test_support::named_tool_call_info(
+                id,
+                sdk_tool_name,
+                model::ToolCallStatus::InProgress,
+            )
         }
     }
 
@@ -1438,26 +1414,12 @@ mod tests {
         app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(crate::app::ToolCallInfo {
-                id: tool_id.to_owned(),
-                source_message_uuids: Vec::new(),
                 title: "tool".to_owned(),
-                sdk_tool_name: "Bash".to_owned(),
-                raw_input: None,
-                raw_input_bytes: 0,
-                locations: Vec::new(),
-                output_metadata: None,
-                task_metadata: None,
-                status: model::ToolCallStatus::InProgress,
-                content: Vec::new(),
-                hidden: false,
-                terminal_id: None,
-                terminal_command: None,
-                terminal_output: None,
-                terminal_output_len: 0,
-                cache: crate::app::BlockCache::default(),
-                pending_permission: None,
-                pending_question: None,
-                history: crate::app::ToolCallHistory::Live,
+                ..crate::app::test_support::named_tool_call_info(
+                    tool_id,
+                    "Bash",
+                    model::ToolCallStatus::InProgress,
+                )
             }))],
             None,
         ));
@@ -1561,7 +1523,7 @@ mod tests {
     fn main_agent_permission_gets_no_subagent_context() {
         let mut app = App::test_default();
         push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, false));
-        app.register_tool_call_scope("bash-1".to_owned(), ToolCallScope::MainAgent);
+        crate::app::test_support::set_tool_scope(&mut app, "bash-1", ToolCallScope::MainAgent);
         let (tx, _rx) = tokio::sync::oneshot::channel();
 
         handle_permission_request_event(&mut app, permission_request("bash-1"), tx);
@@ -1587,9 +1549,10 @@ mod tests {
             ),
         );
         push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, true));
-        app.register_tool_call_scope("agent-1".to_owned(), ToolCallScope::SubagentRoot);
-        app.register_tool_call_scope(
-            "bash-1".to_owned(),
+        crate::app::test_support::set_tool_scope(&mut app, "agent-1", ToolCallScope::SubagentRoot);
+        crate::app::test_support::set_tool_scope(
+            &mut app,
+            "bash-1",
             ToolCallScope::SubagentChild { parent_tool_use_id: "agent-1".to_owned() },
         );
         let (tx, _rx) = tokio::sync::oneshot::channel();
@@ -1622,13 +1585,19 @@ mod tests {
         nested.status = model::ToolCallStatus::Detached;
         push_tool(&mut app, nested);
         push_tool(&mut app, tool_call_info("nested-bash", "Nested command", "Bash", None, true));
-        app.register_tool_call_scope("root-agent".to_owned(), ToolCallScope::SubagentRoot);
-        app.register_tool_call_scope(
-            "nested-agent".to_owned(),
+        crate::app::test_support::set_tool_scope(
+            &mut app,
+            "root-agent",
+            ToolCallScope::SubagentRoot,
+        );
+        crate::app::test_support::set_tool_scope(
+            &mut app,
+            "nested-agent",
             ToolCallScope::SubagentChild { parent_tool_use_id: "root-agent".to_owned() },
         );
-        app.register_tool_call_scope(
-            "nested-bash".to_owned(),
+        crate::app::test_support::set_tool_scope(
+            &mut app,
+            "nested-bash",
             ToolCallScope::SubagentChild { parent_tool_use_id: "nested-agent".to_owned() },
         );
 
@@ -1652,8 +1621,9 @@ mod tests {
     fn subagent_child_permission_missing_parent_falls_back_cleanly() {
         let mut app = App::test_default();
         push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, true));
-        app.register_tool_call_scope(
-            "bash-1".to_owned(),
+        crate::app::test_support::set_tool_scope(
+            &mut app,
+            "bash-1",
             ToolCallScope::SubagentChild { parent_tool_use_id: "missing-parent".to_owned() },
         );
         let (tx, _rx) = tokio::sync::oneshot::channel();
@@ -1685,8 +1655,9 @@ mod tests {
             ),
         );
         push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, true));
-        app.register_tool_call_scope(
-            "bash-1".to_owned(),
+        crate::app::test_support::set_tool_scope(
+            &mut app,
+            "bash-1",
             ToolCallScope::SubagentChild { parent_tool_use_id: "agent-1".to_owned() },
         );
         let (tx, _rx) = tokio::sync::oneshot::channel();

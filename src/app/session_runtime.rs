@@ -206,18 +206,11 @@ mod tests {
         request_forced_runtime_reload, request_runtime_reload, request_status_snapshot_refresh,
         tick_context_usage_refresh,
     };
-    use crate::agent::model;
     use crate::agent::wire::BridgeCommand;
     use crate::app::{App, AppStatus};
     use std::time::{Duration, Instant};
 
-    fn app_with_connection() -> (App, crate::agent::client::CommandReceiver) {
-        let mut app = App::test_default();
-        let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
-        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
-        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-        (app, rx)
-    }
+    use crate::app::test_support::app_with_connection;
 
     fn expect_context_usage_command(rx: &mut crate::agent::client::CommandReceiver) {
         let envelope = rx.try_recv().expect("context usage command");

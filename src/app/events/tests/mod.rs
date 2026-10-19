@@ -256,7 +256,7 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
                 id: tool_call.id.clone(),
                 title: tool_call.title.clone(),
                 status: tool_call.status,
-                hidden: tool_call.hidden,
+                hidden: tool_call.is_subagent_child(),
             }
         }
         MessageBlock::Welcome(block) => BlockSnapshot::Welcome {
@@ -353,6 +353,7 @@ fn transcript_retraction_removes_tool_blocks_and_rebuilds_indices() {
     let mut stale_tool = tool_call("tool-old", model::ToolCallStatus::Completed);
     stale_tool.source_message_uuids = vec!["assistant-tool".to_owned(), "user-result".to_owned()];
     stale_tool.sdk_tool_name = "Bash".to_owned();
+    stale_tool.kind = model::ToolKind::Execute;
     stale_tool.terminal_id = Some("term-old".to_owned());
     app.transcript.messages.push(assistant_msg(vec![
         MessageBlock::ToolCall(Box::new(stale_tool)),
@@ -438,28 +439,117 @@ fn shorten_unix_path() {
 }
 
 #[test]
-fn register_tool_call_scope_treats_agent_as_subagent_root() {
-    let mut app = make_test_app();
-    let scope = tool_calls::register_tool_call_scope(&mut app, "tool-agent", "Agent", None);
-    assert_eq!(scope, ToolCallScope::SubagentRoot);
+fn tool_metadata_updates_share_scope_with_live_and_historical_presentation() {
+    for name in ["Task", "Agent"] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCall(
+                model::ToolCall::new("tool", "Research")
+                    .kind(model::ToolKind::Think)
+                    .meta(serde_json::json!({"claudeCode": {"toolName": "Unknown"}})),
+            )),
+        );
+        assert_eq!(app.tool_call_scope("tool"), Some(ToolCallScope::MainAgent));
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(
+                model::ToolCallUpdate::new("tool", model::ToolCallUpdateFields::new())
+                    .meta(serde_json::json!({"claudeCode": {"toolName": name}})),
+            )),
+        );
+        assert_eq!(app.tool_call_scope("tool"), Some(ToolCallScope::SubagentRoot));
+        assert!(app.tool_call("tool").unwrap().is_subagent_root_tool());
+        for parent in ["parent-1", "parent-2"] {
+            handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::ToolCallUpdate(
+                    model::ToolCallUpdate::new(
+                        "tool",
+                        model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Detached),
+                    )
+                    .meta(serde_json::json!({"claudeCode": {"parentToolUseId": parent}})),
+                )),
+            );
+            let tool = app.tool_call("tool").unwrap();
+            assert_eq!(
+                app.tool_call_scope("tool"),
+                Some(ToolCallScope::SubagentChild { parent_tool_use_id: parent.to_owned() })
+            );
+            assert!(!tool.is_subagent_root_tool());
+            assert!(tool.hidden_unless_focused_interaction());
+            assert_eq!(tool.display().parent_tool_use_id.as_deref(), Some("parent-1"));
+            assert_eq!(tool.display().sdk_tool_name, name);
+        }
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "tool",
+                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
+            ))),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().parent_tool_use_id.as_deref(), Some("parent-2"));
+        let result = app
+            .transcript
+            .messages
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .find_map(|block| match block {
+                MessageBlock::ToolResult { tool, .. } if tool.id == "tool" => Some(tool),
+                _ => None,
+            })
+            .expect("detached completion in transcript");
+        assert_eq!(result.parent_tool_use_id.as_deref(), Some("parent-2"));
+        assert!(!result.is_subagent_root_tool());
+    }
 }
 
 #[test]
-fn register_tool_call_scope_treats_task_as_subagent_root() {
-    let mut app = make_test_app();
-    let scope = tool_calls::register_tool_call_scope(&mut app, "tool-task", "Task", None);
-    assert_eq!(scope, ToolCallScope::SubagentRoot);
-}
-
-#[test]
-fn register_tool_call_scope_uses_explicit_parent_for_subagent_child() {
-    let mut app = make_test_app();
-    let scope =
-        tool_calls::register_tool_call_scope(&mut app, "tool-child", "Bash", Some("tool-parent"));
-    assert_eq!(
-        scope,
-        ToolCallScope::SubagentChild { parent_tool_use_id: "tool-parent".to_owned() }
-    );
+fn execute_kind_owns_output_handling_across_initial_and_partial_events() {
+    for (name, kind, expected) in [
+        ("CustomExecutor", model::ToolKind::Execute, Some("initial")),
+        ("Bash", model::ToolKind::Other, None),
+        ("bash", model::ToolKind::Other, None),
+    ] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCall(
+                model::ToolCall::new("tool", "Command")
+                    .kind(kind)
+                    .raw_output(serde_json::json!("initial"))
+                    .meta(serde_json::json!({"claudeCode": {"toolName": name}})),
+            )),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().terminal_output.as_deref(), expected);
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
+                "tool",
+                model::ToolCallUpdateFields::new()
+                    .kind(model::ToolKind::Execute)
+                    .raw_output(serde_json::json!("updated")),
+            ))),
+        );
+        assert_eq!(app.tool_call("tool").unwrap().terminal_output.as_deref(), Some("updated"));
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ToolCallUpdate(
+                model::ToolCallUpdate::new(
+                    "tool",
+                    model::ToolCallUpdateFields::new()
+                        .status(model::ToolCallStatus::Detached)
+                        .raw_output(serde_json::json!("final")),
+                )
+                .meta(serde_json::json!({"claudeCode": {"toolName": "RenamedExecutor"}})),
+            )),
+        );
+        let tool = app.tool_call("tool").unwrap();
+        assert_eq!(tool.terminal_output.as_deref(), Some("final"));
+        assert!(tool.is_execute_tool());
+        assert!(tool.display().is_execute_tool());
+        assert_eq!(tool.display().terminal_output.as_deref(), Some("final"));
+    }
 }
 
 /// A cancelled subagent must not change the scope of the next foreground tool.
@@ -931,8 +1021,9 @@ fn late_tool_update_for_removed_tool_does_not_restore_scope_or_transcript() {
         model::ToolCallStatus::Completed,
     )))]));
     app.index_tool_call("tool-stale".into(), 0, 0);
-    app.register_tool_call_scope(
-        "tool-stale".into(),
+    crate::app::test_support::set_tool_scope(
+        &mut app,
+        "tool-stale",
         ToolCallScope::SubagentChild { parent_tool_use_id: "task-1".to_owned() },
     );
 
@@ -2031,7 +2122,8 @@ fn auth_required_clears_active_turn_runtime_tracking() {
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
+    app.index_tool_call("task-1".into(), 0, 0);
+    crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
     app.pending_interaction_ids.push("task-1".into());
     app.claim_focus_target(FocusTarget::Permission);
 
@@ -2099,7 +2191,8 @@ fn connection_failed_clears_active_turn_runtime_tracking() {
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
+    app.index_tool_call("task-1".into(), 0, 0);
+    crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
 
     handle_client_event(&mut app, ClientEvent::ConnectionFailed("bridge down".into()));
 
@@ -2119,7 +2212,8 @@ fn fatal_event_clears_active_turn_runtime_tracking() {
         model::ToolCallStatus::InProgress,
     )))]));
     app.bind_active_turn_assistant(0);
-    app.register_tool_call_scope("task-1".into(), ToolCallScope::SubagentRoot);
+    app.index_tool_call("task-1".into(), 0, 0);
+    crate::app::test_support::set_tool_scope(&mut app, "task-1", ToolCallScope::SubagentRoot);
 
     handle_client_event(
         &mut app,

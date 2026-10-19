@@ -762,7 +762,7 @@ function extractToolOutputMetadata(
     }
   }
 
-  if (toolName === "Agent" || toolName === "Task") {
+  if (isAgentLikeToolName(toolName)) {
     for (const candidate of candidates) {
       const resolvedModel = nonEmptyString(candidate.resolvedModel);
       const modelsUsed = orderedNonEmptyStrings(candidate.modelsUsed);

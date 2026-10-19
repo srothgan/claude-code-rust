@@ -82,7 +82,7 @@ fn hidden_subagent_permission_title_prefix(tc: &ToolCallInfo) -> Option<Span<'st
         .pending_permission
         .as_ref()
         .is_some_and(|permission| permission.subagent_context.is_some());
-    (tc.hidden && has_subagent_permission).then(|| {
+    (tc.is_subagent_child() && has_subagent_permission).then(|| {
         Span::styled("Subagent · ", Style::default().fg(theme::DIM).add_modifier(Modifier::BOLD))
     })
 }

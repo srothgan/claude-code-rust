@@ -110,6 +110,7 @@ impl super::App {
             .saturating_add(tc.id.capacity())
             .saturating_add(tc.title.capacity())
             .saturating_add(tc.sdk_tool_name.capacity())
+            .saturating_add(tc.parent_tool_use_id.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_id.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_command.as_ref().map_or(0, String::capacity))
             .saturating_add(tc.terminal_output.as_ref().map_or(0, String::capacity))
@@ -393,7 +394,6 @@ impl super::App {
                 }
             }
         }
-        self.tool_call_scopes.retain(|id, _| self.transcript.tool_call_index.contains_key(id));
         self.sync_pending_interaction_focus(pending_interaction_ids);
     }
 

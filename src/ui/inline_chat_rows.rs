@@ -1627,6 +1627,7 @@ mod tests {
         let mut tool = tool_call_block("expensive", false);
         let MessageBlock::ToolCall(tc) = &mut tool else { unreachable!() };
         tc.sdk_tool_name = "Read".into();
+        tc.kind = model::ToolKind::Read;
         tc.locations = vec![model::ToolCallLocation::new("source.rs")];
         tc.content = vec![model::ToolCallContent::from("fn main() {}\n".repeat(2000))];
         app.transcript.messages.push(assistant_blocks_message(vec![
@@ -1677,7 +1678,7 @@ mod tests {
         let MessageBlock::ToolCall(tc) = &mut app.transcript.messages[0].blocks[0] else {
             unreachable!()
         };
-        tc.hidden = true;
+        tc.parent_tool_use_id = Some("parent-agent".into());
         tc.cache.invalidate();
         assert!(cursor.next(&mut app, 80, &BTreeSet::new(), &control).is_none());
         assert!(control.cancelled());
@@ -1756,8 +1757,8 @@ mod tests {
     }
     use crate::agent::model;
     use crate::app::{
-        App, AppStatus, BlockCache, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock,
-        MessageRole, TextBlock, TextBlockSpacing, ToolCallInfo,
+        App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
+        TextBlock, TextBlockSpacing, ToolCallInfo,
     };
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -2054,6 +2055,7 @@ mod tests {
         };
         tool.title = title.to_owned();
         tool.sdk_tool_name = sdk_tool_name.to_owned();
+        tool.kind = crate::app::test_support::test_tool_kind(sdk_tool_name);
         block
     }
 
@@ -2161,26 +2163,9 @@ mod tests {
         focused_question: bool,
     ) -> MessageBlock {
         let mut tool = ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: "Child Tool".to_owned(),
-            sdk_tool_name: "Bash".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            parent_tool_use_id: (hidden).then(|| "parent-agent".to_owned()),
+            ..crate::app::test_support::named_tool_call_info(id, "Bash", status)
         };
 
         if focused_permission {
@@ -2505,6 +2490,7 @@ mod tests {
         };
         tool.title = "Deferred web fetch".to_owned();
         tool.sdk_tool_name = "WebFetch".to_owned();
+        tool.kind = model::ToolKind::Fetch;
         app.transcript.messages.push(assistant_blocks_message(vec![block]));
         app.index_tool_call("web-1".to_owned(), 0, 0);
         app.sync_tool_call_history(0, 0);
@@ -2991,6 +2977,7 @@ mod tests {
         };
         tool.title = "Running Tool".to_owned();
         tool.sdk_tool_name = "CustomTool".to_owned();
+        tool.kind = model::ToolKind::Other;
         let MessageBlock::ToolCall(tool) = &mut done else {
             unreachable!("named_tool_call_block returns a tool call");
         };

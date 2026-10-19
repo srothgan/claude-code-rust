@@ -251,7 +251,7 @@ fn sync_string(current: &mut String, next: String) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{BlockCache, ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, ToolCallInfo};
     use serde_json::json;
 
     fn task(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskItem {
@@ -272,26 +272,9 @@ mod tests {
         status: model::ToolCallStatus,
     ) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: title.to_owned(),
-            sdk_tool_name: sdk_tool_name.to_owned(),
             raw_input: Some(raw_input),
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, sdk_tool_name, status)
         }
     }
 

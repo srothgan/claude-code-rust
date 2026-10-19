@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::super::{
-    App, ChatMessage, ChatMessageId, InvalidationLevel, MessageBlock, MessageRole, NoticeBlock,
-    NoticeDedupKey, NoticeStage, SystemSeverity, TurnNoticeLocation, TurnNoticeRef,
+    App, ChatMessage, ChatMessageId, MessageBlock, MessageRole, NoticeBlock, NoticeDedupKey,
+    NoticeStage, SystemSeverity, TurnNoticeLocation, TurnNoticeRef,
 };
 
 #[derive(Clone)]
@@ -212,9 +212,7 @@ fn update_inline_notice(
     }
     notice.severity = severity;
     notice.replace_text(message);
-    app.sync_render_cache_slot(msg_idx, block_idx);
-    app.recompute_message_retained_bytes(msg_idx);
-    app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
+    app.finish_block_change(msg_idx, block_idx);
     true
 }
 
@@ -240,9 +238,7 @@ fn update_standalone_notice(
     msg.role = MessageRole::System(Some(severity));
     notice.severity = severity;
     notice.replace_text(message);
-    app.sync_render_cache_slot(msg_idx, 0);
-    app.recompute_message_retained_bytes(msg_idx);
-    app.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
+    app.finish_block_change(msg_idx, 0);
     true
 }
 

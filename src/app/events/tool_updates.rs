@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-use super::super::{App, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
+use super::super::{App, MessageBlock, ToolCallInfo};
 use super::tool_calls::{
     current_session_id, json_value_size, log_terminal_spawned, parent_tool_use_id_from_meta,
     sdk_tool_name_from_meta, tool_scope_name,
@@ -20,38 +20,24 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
         );
         return;
     };
-    if let Some(parent_tool_use_id) = parent_tool_use_id_from_meta(tcu.meta.as_ref()) {
-        app.register_tool_call_scope(
-            id_str.clone(),
-            ToolCallScope::SubagentChild { parent_tool_use_id: parent_tool_use_id.to_owned() },
-        );
-    }
-    let tool_scope = app.tool_call_scope(&id_str);
-    let (previous_status, previous_terminal_id) = tool_call_at(app, mi, bi)
+
+    let (previous_status, previous_terminal_id) = app
+        .tool_call_at(mi, bi)
         .map_or((None, None), |tc| (Some(tc.status), tc.terminal_id.clone()));
 
     let changed = apply_tool_call_update_to_indexed_block(app, mi, bi, tcu);
     let history_changed = app.sync_tool_call_history(mi, bi);
     let task_display_changed = crate::app::tasks::refresh_task_tool_display_at(app, mi, bi);
     if changed || history_changed || task_display_changed {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.finish_block_change(mi, bi);
     }
-    let Some(tc) = tool_call_at(app, mi, bi) else {
+    let Some(tc) = app.tool_call_at(mi, bi) else {
         return;
     };
     if changed {
-        log_tool_call_update_applied(app, tc, tcu, tool_scope.as_ref(), previous_status);
+        log_tool_call_update_applied(app, tc, tcu, previous_status);
     }
     log_command_update_applied(app, tc, previous_status, previous_terminal_id.as_deref());
-}
-
-fn tool_call_at(app: &App, mi: usize, bi: usize) -> Option<&ToolCallInfo> {
-    match app.transcript.messages.get(mi)?.blocks.get(bi)? {
-        MessageBlock::ToolCall(tc) => Some(tc.as_ref()),
-        _ => None,
-    }
 }
 
 fn apply_tool_call_update_to_indexed_block(
@@ -75,9 +61,12 @@ fn apply_tool_call_update_to_indexed_block(
     changed |= apply_tool_call_locations_update(tc, tcu.fields.locations.as_ref());
     changed |= apply_tool_call_output_metadata_update(tc, tcu.fields.output_metadata.as_ref());
     changed |= apply_tool_call_task_metadata_update(tc, tcu.fields.task_metadata.as_ref());
+    if let Some(kind) = tcu.fields.kind {
+        changed |= super::tool_calls::sync_if_changed(&mut tc.kind, &kind);
+    }
     changed |= apply_tool_call_raw_output_update(tc, tcu.fields.raw_output.as_ref());
     changed |= apply_tool_call_name_update(tc, tcu.meta.as_ref());
-    changed |= apply_tool_call_hidden_update(tc, tcu.meta.as_ref());
+    changed |= apply_tool_call_parent_update(tc, tcu.meta.as_ref());
     if changed {
         tc.invalidate_render_cache();
     }
@@ -212,12 +201,11 @@ fn apply_tool_call_name_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::
     true
 }
 
-fn apply_tool_call_hidden_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::Value>) -> bool {
-    if parent_tool_use_id_from_meta(meta).is_none() || tc.hidden {
+fn apply_tool_call_parent_update(tc: &mut ToolCallInfo, meta: Option<&serde_json::Value>) -> bool {
+    let Some(parent) = parent_tool_use_id_from_meta(meta) else {
         return false;
-    }
-    tc.hidden = true;
-    true
+    };
+    super::tool_calls::sync_if_changed(&mut tc.parent_tool_use_id, &Some(parent.to_owned()))
 }
 
 pub(super) fn raw_output_to_terminal_text(raw_output: &serde_json::Value) -> Option<String> {
@@ -246,12 +234,11 @@ fn log_tool_call_update_applied(
     app: &App,
     tc: &ToolCallInfo,
     tcu: &model::ToolCallUpdate,
-    tool_scope: Option<&ToolCallScope>,
     previous_status: Option<model::ToolCallStatus>,
 ) {
     let session_id = current_session_id(app);
     let log_spec = tool_update_log_spec(tc, tcu, previous_status);
-    let scope_name = tool_scope.map_or("unknown", tool_scope_name);
+    let scope_name = tool_scope_name(&tc.scope());
     let raw_output_chars = tcu.fields.raw_output.as_ref().and_then(|value| match value {
         serde_json::Value::String(text) => Some(text.chars().count()),
         _ => serde_json::to_string(value).ok().map(|text| text.chars().count()),
@@ -523,7 +510,7 @@ fn command_failure_kind(tc: &ToolCallInfo) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, BlockCache, ChatMessage, MessageBlock, MessageRole};
+    use crate::app::{App, ChatMessage, MessageBlock, MessageRole, ToolCallScope};
 
     fn make_bash_tool_call(
         id: &str,
@@ -531,26 +518,10 @@ mod tests {
         terminal_id: Option<&str>,
     ) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: format!("tool {id}"),
-            sdk_tool_name: "Bash".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
             terminal_id: terminal_id.map(str::to_owned),
             terminal_command: Some("echo test".to_owned()),
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, "Bash", status)
         }
     }
 
@@ -560,26 +531,8 @@ mod tests {
 
     fn make_task_tool_call(id: &str, status: model::ToolCallStatus) -> ToolCallInfo {
         ToolCallInfo {
-            id: id.to_owned(),
-            source_message_uuids: Vec::new(),
             title: format!("task {id}"),
-            sdk_tool_name: "Agent".to_owned(),
-            raw_input: None,
-            raw_input_bytes: 0,
-            locations: Vec::new(),
-            output_metadata: None,
-            task_metadata: None,
-            status,
-            content: Vec::new(),
-            hidden: false,
-            terminal_id: None,
-            terminal_command: None,
-            terminal_output: None,
-            terminal_output_len: 0,
-            cache: BlockCache::default(),
-            pending_permission: None,
-            pending_question: None,
-            history: crate::app::ToolCallHistory::Live,
+            ..crate::app::test_support::named_tool_call_info(id, "Agent", status)
         }
     }
 
@@ -705,6 +658,7 @@ mod tests {
         let mut app = App::test_default();
         let mut tool = make_task_tool_call("web-1", model::ToolCallStatus::InProgress);
         tool.sdk_tool_name = "WebFetch".to_owned();
+        tool.kind = model::ToolKind::Fetch;
         app.transcript.messages.push(ChatMessage::new(
             MessageRole::Assistant,
             vec![MessageBlock::ToolCall(Box::new(tool))],
@@ -853,7 +807,7 @@ mod tests {
             None,
         ));
         app.index_tool_call(tool_id.to_owned(), 0, 0);
-        app.register_tool_call_scope(tool_id.to_owned(), ToolCallScope::SubagentRoot);
+        crate::app::test_support::set_tool_scope(&mut app, tool_id, ToolCallScope::SubagentRoot);
 
         let update = model::ToolCallUpdate::new(
             tool_id,

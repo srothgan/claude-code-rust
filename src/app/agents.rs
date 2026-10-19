@@ -10,7 +10,7 @@
 use crate::agent::events::ClientEvent;
 use crate::agent::model::{TaskItem, TaskStatus};
 use crate::agent::types::{SubagentMessage, SubagentMessageRole};
-use crate::app::{App, FullscreenView, MessageBlock, SurfaceMode, ToolCallInfo, ToolCallScope};
+use crate::app::{App, FullscreenView, SurfaceMode, ToolCallInfo};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::{HashMap, HashSet};
 
@@ -183,36 +183,18 @@ pub(crate) fn saved_response<'a>(
 
 /// The Agent call that launched a subagent, when the transcript still holds it.
 pub(crate) fn launching_call<'a>(app: &'a App, task: &TaskItem) -> Option<&'a ToolCallInfo> {
-    let (message, block) = app.lookup_tool_call(task.source_tool_call_id.as_deref()?)?;
-    match app.transcript.messages.get(message)?.blocks.get(block)? {
-        MessageBlock::ToolCall(tool) => Some(tool),
-        _ => None,
-    }
+    app.tool_call(task.source_tool_call_id.as_deref()?)
 }
 
 /// The subagent's own tool calls the session has seen, newest first.
 pub(crate) fn recent_child_tools<'a>(app: &'a App, task: &TaskItem) -> Vec<&'a ToolCallInfo> {
     let Some(parent) = task.source_tool_call_id.as_deref() else { return Vec::new() };
     let mut children: Vec<_> = app
-        .tool_call_scopes
-        .iter()
-        .filter(|(_, scope)| {
-            matches!(scope, ToolCallScope::SubagentChild { parent_tool_use_id }
-                if parent_tool_use_id == parent)
-        })
-        .filter_map(|(id, _)| app.lookup_tool_call(id))
+        .indexed_tool_calls()
+        .filter(|(_, tool)| tool.parent_tool_use_id.as_deref() == Some(parent))
         .collect();
-    children.sort_unstable_by(|a, b| b.cmp(a));
-    children
-        .into_iter()
-        .take(RECENT_CHILD_TOOLS)
-        .filter_map(|(message, block)| {
-            match app.transcript.messages.get(message)?.blocks.get(block)? {
-                MessageBlock::ToolCall(tool) => Some(tool.as_ref()),
-                _ => None,
-            }
-        })
-        .collect()
+    children.sort_unstable_by_key(|(position, _)| std::cmp::Reverse(*position));
+    children.into_iter().take(RECENT_CHILD_TOOLS).map(|(_, tool)| tool).collect()
 }
 
 fn metadata_str<'a>(task: &'a TaskItem, key: &str) -> Option<&'a str> {

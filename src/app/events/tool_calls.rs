@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::{App, BlockCache, InvalidationLevel, MessageBlock, ToolCallInfo, ToolCallScope};
+use super::super::{App, BlockCache, MessageBlock, ToolCallInfo, ToolCallScope};
 use super::tool_updates::raw_output_to_terminal_text;
 use crate::agent::model;
 use crate::app::TranscriptUpdateSource;
 
 pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall, source: TranscriptUpdateSource) {
-    let id_str = tc.tool_call_id.clone();
     let sdk_tool_name = resolve_sdk_tool_name(tc.kind, tc.meta.as_ref());
     let parent_tool_use_id = parent_tool_use_id_from_meta(tc.meta.as_ref());
-    let scope = register_tool_call_scope(app, &id_str, &sdk_tool_name, parent_tool_use_id);
+    let scope = ToolCallScope::for_tool(&sdk_tool_name, parent_tool_use_id);
     log_tool_call_received(app, &tc, &scope, &sdk_tool_name);
 
     let tool_info = build_tool_info_from_tool_call(app, tc, sdk_tool_name, &scope);
@@ -19,9 +18,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall, source: Trans
     changed |= app.sync_tool_call_history(mi, bi);
     changed |= crate::app::tasks::refresh_task_tool_display_at(app, mi, bi);
     if changed {
-        app.sync_render_cache_slot(mi, bi);
-        app.recompute_message_retained_bytes(mi);
-        app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+        app.finish_block_change(mi, bi);
     }
 
     app.files_accessed += 1;
@@ -55,25 +52,6 @@ fn log_tool_call_received(
     );
 }
 
-pub(super) fn register_tool_call_scope(
-    app: &mut App,
-    id: &str,
-    sdk_tool_name: &str,
-    parent_tool_use_id: Option<&str>,
-) -> ToolCallScope {
-    let scope = if let Some(parent_tool_use_id) =
-        parent_tool_use_id.filter(|parent| !parent.trim().is_empty())
-    {
-        ToolCallScope::SubagentChild { parent_tool_use_id: parent_tool_use_id.to_owned() }
-    } else if matches!(sdk_tool_name, "Task" | "Agent") {
-        ToolCallScope::SubagentRoot
-    } else {
-        ToolCallScope::MainAgent
-    };
-    app.register_tool_call_scope(id.to_owned(), scope.clone());
-    scope
-}
-
 fn build_tool_info_from_tool_call(
     app: &App,
     tc: model::ToolCall,
@@ -84,7 +62,7 @@ fn build_tool_info_from_tool_call(
         model::ToolCallContent::Terminal(term) => Some(term.terminal_id.clone()),
         _ => None,
     });
-    let is_execute_tool = super::super::is_execute_tool_name(&sdk_tool_name);
+    let is_execute_tool = tc.kind == model::ToolKind::Execute;
     let initial_execute_output = if is_execute_tool {
         tc.raw_output.as_ref().and_then(raw_output_to_terminal_text)
     } else {
@@ -100,6 +78,7 @@ fn build_tool_info_from_tool_call(
             .collect(),
         title: shorten_tool_title(&tc.title, &app.cwd_raw),
         sdk_tool_name,
+        kind: tc.kind,
         raw_input: tc.raw_input,
         raw_input_bytes: 0,
         locations: tc.locations,
@@ -107,7 +86,10 @@ fn build_tool_info_from_tool_call(
         task_metadata: tc.task_metadata,
         status: tc.status,
         content: tc.content,
-        hidden: matches!(scope, ToolCallScope::SubagentChild { .. }),
+        parent_tool_use_id: match scope {
+            ToolCallScope::SubagentChild { parent_tool_use_id } => Some(parent_tool_use_id.clone()),
+            _ => None,
+        },
         terminal_id,
         terminal_command: None,
         terminal_output: None,
@@ -152,18 +134,16 @@ fn update_existing_tool_call(
     bi: usize,
     tool_info: &ToolCallInfo,
 ) -> bool {
-    let Some(MessageBlock::ToolCall(existing)) =
-        app.transcript.messages.get_mut(mi).and_then(|m| m.blocks.get_mut(bi))
-    else {
+    let Some(existing) = app.tool_call_at_mut(mi, bi) else {
         return false;
     };
-    let existing = existing.as_mut();
     let mut changed = false;
     changed |= sync_if_changed(&mut existing.title, &tool_info.title);
     changed |= sync_if_changed(&mut existing.status, &tool_info.status);
     changed |= sync_if_changed(&mut existing.content, &tool_info.content);
     changed |= sync_if_changed(&mut existing.sdk_tool_name, &tool_info.sdk_tool_name);
-    changed |= sync_if_changed(&mut existing.hidden, &tool_info.hidden);
+    changed |= sync_if_changed(&mut existing.kind, &tool_info.kind);
+    changed |= sync_if_changed(&mut existing.parent_tool_use_id, &tool_info.parent_tool_use_id);
     for source_message_uuid in &tool_info.source_message_uuids {
         changed |= existing.add_source_message_uuid(Some(source_message_uuid));
     }

@@ -86,7 +86,7 @@ pub use state::{
     UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
     UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
     UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content, is_execute_tool_name,
+    hash_text_block_content, hash_welcome_block_content,
 };
 pub(crate) use state::{
     BtwRequestState, BtwRequests, PendingUserMessage, PendingUserMessageInsertError,

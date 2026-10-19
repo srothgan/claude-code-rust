@@ -271,13 +271,7 @@ mod tests {
     use crate::agent::wire::BridgeCommand;
     use crate::app::{FullscreenView, SurfaceMode};
 
-    fn app_with_connection() -> (App, crate::agent::client::CommandReceiver) {
-        let mut app = App::test_default();
-        let (connection, rx) = crate::agent::client::AgentConnection::test_channel();
-        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
-        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-        (app, rx)
-    }
+    use crate::app::test_support::app_with_connection;
 
     #[test]
     fn initial_prompt_waits_for_session_selection_and_preserves_a_typed_draft() {

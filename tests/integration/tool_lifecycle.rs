@@ -222,8 +222,8 @@ async fn subagent_child_tools_use_explicit_parent_linkage_only() {
         Some(ToolCallScope::SubagentChild { parent_tool_use_id: "task-root".to_owned() })
     );
     assert_eq!(app.tool_call_scope("main-bash"), Some(ToolCallScope::MainAgent));
-    assert!(tool_call_block(&app, "child-bash").hidden);
-    assert!(!tool_call_block(&app, "main-bash").hidden);
+    assert!(tool_call_block(&app, "child-bash").is_subagent_child());
+    assert!(!tool_call_block(&app, "main-bash").is_subagent_child());
 }
 
 #[tokio::test]
@@ -234,7 +234,7 @@ async fn tool_call_update_parent_linkage_marks_existing_tool_hidden() {
         .kind(model::ToolKind::Execute)
         .status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
-    assert!(!tool_call_block(&app, "child-late").hidden);
+    assert!(!tool_call_block(&app, "child-late").is_subagent_child());
 
     let update = model::ToolCallUpdate::new("child-late", model::ToolCallUpdateFields::new())
         .meta(child_meta("task-root"));
@@ -244,7 +244,7 @@ async fn tool_call_update_parent_linkage_marks_existing_tool_hidden() {
         app.tool_call_scope("child-late"),
         Some(ToolCallScope::SubagentChild { parent_tool_use_id: "task-root".to_owned() })
     );
-    assert!(tool_call_block(&app, "child-late").hidden);
+    assert!(tool_call_block(&app, "child-late").is_subagent_child());
 }
 
 // --- Tool call lifecycle rendering policy ---

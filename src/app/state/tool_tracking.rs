@@ -1,14 +1,53 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use super::ToolCallInfo;
 use super::prelude::*;
 
 impl App {
+    pub(crate) fn tool_call_at(&self, mi: usize, bi: usize) -> Option<&ToolCallInfo> {
+        match self.transcript.messages.get(mi)?.blocks.get(bi)? {
+            MessageBlock::ToolCall(tool) => Some(tool),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn tool_call_at_mut(&mut self, mi: usize, bi: usize) -> Option<&mut ToolCallInfo> {
+        match self.transcript.messages.get_mut(mi)?.blocks.get_mut(bi)? {
+            MessageBlock::ToolCall(tool) => Some(tool),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn tool_call(&self, id: &str) -> Option<&ToolCallInfo> {
+        let (mi, bi) = self.lookup_tool_call(id)?;
+        self.tool_call_at(mi, bi)
+    }
+
+    /// Return `Some` when the mutation changed the tool, carrying any extracted value.
+    pub(crate) fn mutate_tool_call<T>(
+        &mut self,
+        id: &str,
+        mutate: impl FnOnce(&mut ToolCallInfo) -> Option<T>,
+    ) -> Option<T> {
+        let (mi, bi) = self.lookup_tool_call(id)?;
+        let tool = self.tool_call_at_mut(mi, bi)?;
+        let result = mutate(tool)?;
+        tool.invalidate_render_cache();
+        self.finish_block_change(mi, bi);
+        Some(result)
+    }
+
+    /// Complete a content change after the block's own render cache is invalidated.
+    pub(crate) fn finish_block_change(&mut self, mi: usize, bi: usize) {
+        self.sync_render_cache_slot(mi, bi);
+        self.recompute_message_retained_bytes(mi);
+        self.invalidate_layout(InvalidationLevel::MessageChanged(mi));
+    }
+
     /// Returns whether the tool block changed; the caller syncs its cache slot,
     /// retained bytes, and layout once together with its own changes.
     pub(crate) fn sync_tool_call_history(&mut self, mi: usize, bi: usize) -> bool {
-        let Some(MessageBlock::ToolCall(tool)) =
-            self.transcript.messages.get_mut(mi).and_then(|message| message.blocks.get_mut(bi))
-        else {
+        let Some(tool) = self.tool_call_at_mut(mi, bi) else {
             return false;
         };
         let was_frozen = tool.has_frozen_launch();
@@ -26,17 +65,19 @@ impl App {
         }
         true
     }
-    pub fn register_tool_call_scope(&mut self, id: String, scope: ToolCallScope) {
-        self.tool_call_scopes.insert(id, scope);
+
+    pub(crate) fn indexed_tool_calls(
+        &self,
+    ) -> impl Iterator<Item = ((usize, usize), &ToolCallInfo)> {
+        self.transcript
+            .tool_call_index
+            .values()
+            .filter_map(|&(mi, bi)| self.tool_call_at(mi, bi).map(|tool| ((mi, bi), tool)))
     }
 
     #[must_use]
     pub fn tool_call_scope(&self, id: &str) -> Option<ToolCallScope> {
-        self.tool_call_scopes.get(id).cloned()
-    }
-
-    pub fn clear_tool_scope_tracking(&mut self) {
-        self.tool_call_scopes.clear();
+        self.tool_call(id).map(ToolCallInfo::scope)
     }
 
     /// Look up the (`message_index`, `block_index`) for a tool call ID.
@@ -78,19 +119,17 @@ impl App {
     }
 
     fn tool_belongs_to_background_execution<'a>(&'a self, mut id: &'a str) -> bool {
-        for _ in 0..=self.tool_call_scopes.len() {
-            if self.lookup_tool_call(id).is_some_and(|(mi, bi)| {
-                matches!(&self.transcript.messages[mi].blocks[bi], MessageBlock::ToolCall(tool)
-                    if tool.status == model::ToolCallStatus::Detached)
-            }) {
-                return true;
-            }
-            let Some(ToolCallScope::SubagentChild { parent_tool_use_id }) =
-                self.tool_call_scopes.get(id)
-            else {
+        for _ in 0..=self.transcript.tool_call_index.len() {
+            let Some(tool) = self.tool_call(id) else {
                 return false;
             };
-            id = parent_tool_use_id;
+            if tool.status == model::ToolCallStatus::Detached {
+                return true;
+            }
+            let Some(parent) = tool.parent_tool_use_id.as_deref() else {
+                return false;
+            };
+            id = parent;
         }
         false
     }
@@ -243,10 +282,5 @@ impl App {
         };
         let _ = self.finalize_tool_calls(new_status, include_detached);
         let _ = self.clear_inline_tool_interactions_excluding(&preserved_tools);
-        // Tool scope belongs to the session: detached agents and their descendants
-        // can still emit events after the foreground turn ends.
-        if include_detached {
-            self.clear_tool_scope_tracking();
-        }
     }
 }
