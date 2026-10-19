@@ -2,14 +2,6 @@
 
 use super::prelude::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NoticeStage {
-    Informational,
-    Warning,
-    Rejected,
-    PlanLimitTurnError,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnNoticeLocation {
     Inline { msg_idx: usize, block_idx: usize },
@@ -19,7 +11,6 @@ pub enum TurnNoticeLocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnNoticeRef {
     pub dedup_key: NoticeDedupKey,
-    pub stage: NoticeStage,
     pub location: TurnNoticeLocation,
 }
 

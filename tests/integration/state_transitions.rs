@@ -401,6 +401,7 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
 
     let tc = model::ToolCall::new("tc-err", "Read file").status(model::ToolCallStatus::InProgress);
     send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
+    let reply_id = app.transcript.messages[0].id;
 
     send_client_event(
         &mut app,
@@ -416,20 +417,22 @@ async fn error_during_tool_calls_leaves_tool_calls_intact() {
     assert!(matches!(app.status, AppStatus::Error));
     // Tool call should remain indexed and preserved in the original assistant message.
     assert!(app.has_tool_call("tc-err"));
-    assert_eq!(app.transcript.messages.len(), 2, "assistant message + system error message");
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::Assistant));
-    assert_eq!(app.transcript.messages[0].blocks.len(), 2, "text + tool call preserved");
-    let Some(MessageBlock::ToolCall(tc)) = app.transcript.messages[0].blocks.get(1) else {
-        panic!("expected preserved tool call block");
+    let [reply] = app.transcript.messages.as_slice() else {
+        panic!("failure belongs to the original reply");
     };
+    assert_eq!(reply.id, reply_id);
+    assert!(matches!(reply.role, MessageRole::Assistant));
+    let [MessageBlock::Text(partial), MessageBlock::ToolCall(tc), MessageBlock::Notice(failure)] =
+        reply.blocks.as_slice()
+    else {
+        panic!("preserve partial output and tool call before the failure notice");
+    };
+    assert_eq!(partial.text, "working");
     assert_eq!(tc.id, "tc-err");
     assert_eq!(tc.status, model::ToolCallStatus::Failed, "in-progress tool should be failed");
 
-    assert!(matches!(app.transcript.messages[1].role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(block)) = app.transcript.messages[1].blocks.first() else {
-        panic!("expected system error text block");
-    };
-    assert!(block.text.contains("Turn failed: crashed"));
+    assert_eq!(failure.severity, claude_code_rust::app::SystemSeverity::Error);
+    assert!(failure.text.text.contains("Turn failed: crashed"));
 }
 
 #[tokio::test]

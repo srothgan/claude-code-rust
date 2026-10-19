@@ -281,7 +281,7 @@ fn queued_start_changes_owner_only_once_and_preserves_the_previous_response() {
 
 #[test]
 fn empty_response_exit_removes_its_owner_without_consuming_the_next_draft() {
-    for outcome in ["complete", "error", "cancel"] {
+    for outcome in ["complete", "cancel"] {
         let (mut app, mut receiver) = connected_app();
         submit(&mut app, &mut receiver, "Question");
         let owner = app.active_turn_assistant_idx().unwrap();
@@ -292,27 +292,214 @@ fn empty_response_exit_removes_its_owner_without_consuming_the_next_draft() {
             crate::app::input_submit::request_cancel(&mut app).unwrap();
         }
         assert_owner_has_no_rows(&mut app, owner);
-        let event = if outcome == "error" {
-            ClientEvent::TurnError {
-                session_id: "test-session".into(),
-                message: "Fixture failure".into(),
-                queued_turn_count: Some(0),
-                api_error_status: None,
-                terminal_reason: None,
-            }
-        } else {
-            turn_complete(None)
-        };
-        handle_client_event(&mut app, event);
+        handle_client_event(&mut app, turn_complete(None));
         assert!(app.transcript.messages.iter().all(|message| message.id != owner_id));
         assert_eq!(app.active_turn_assistant_idx(), None);
         assert!(app.turn.activity.is_none());
         assert_eq!(app.input.snapshot(), draft);
-        if outcome == "error" {
-            assert!(app.transcript.messages.iter().any(|message| {
-                matches!(message.role, MessageRole::System(_))
-                    && matches!(&message.blocks[0], MessageBlock::Text(block) if block.text.contains("Fixture failure"))
-            }));
+    }
+}
+
+fn fail_turn(app: &mut App, class: TurnErrorClass, message: &str) {
+    handle_client_event(
+        app,
+        ClientEvent::TurnErrorClassified {
+            session_id: "test-session".into(),
+            message: message.into(),
+            class,
+            queued_turn_count: Some(0),
+            api_error_status: None,
+            terminal_reason: Some(crate::agent::types::TerminalReason::ApiError),
+        },
+    );
+}
+
+fn assert_failure_layout(app: &mut App, owner: usize, width: u16) -> String {
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        widgets::{Paragraph, Widget},
+    };
+
+    let rendered =
+        serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None);
+    let segments =
+        rendered.segments().iter().filter(|segment| segment.msg_idx == owner).collect::<Vec<_>>();
+    let rows = segments
+        .iter()
+        .flat_map(|segment| rendered.segment_rows(segment).unwrap())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(rows.first().unwrap().trim().is_empty(), "reply has top spacing");
+    assert!(rows.last().unwrap().trim().is_empty(), "reply has bottom spacing");
+    let content = rows.iter().filter(|row| !row.trim().is_empty()).collect::<Vec<_>>();
+    assert!(content[0].starts_with(" \u{25cf} "), "reply owns its assistant marker");
+    assert_eq!(content.iter().filter(|row| row.contains('\u{25cf}')).count(), 1);
+    for row in &content[1..] {
+        assert!(row.starts_with("   "), "continuation aligns with reply text: {row:?}");
+    }
+
+    let notices = segments
+        .iter()
+        .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantNotice)
+        .collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1, "one rendered failure in this reply");
+    let area = Rect::new(0, 0, width, rendered.rows().len().try_into().unwrap());
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(rendered.rows().to_vec()).render(area, &mut buffer);
+    let notice = notices[0];
+    let mut colored_cells = 0;
+    for y in notice.start_row..notice.end_row {
+        for x in 3..width {
+            let cell = &buffer[(x, u16::try_from(y).unwrap())];
+            if !cell.symbol().trim().is_empty() {
+                assert_eq!(cell.fg, crate::ui::theme::STATUS_ERROR);
+                colored_cells += 1;
+            }
+        }
+    }
+    assert!(colored_cells > 0, "failure text must be visible");
+    let marker_y = segments[0].start_row + 1;
+    assert_eq!(buffer[(1, u16::try_from(marker_y).unwrap())].symbol(), "\u{25cf}");
+    assert_eq!(buffer[(1, u16::try_from(marker_y).unwrap())].fg, crate::ui::theme::ROLE_ASSISTANT);
+    rendered
+        .segment_rows(notice)
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<String>()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect()
+}
+
+#[test]
+fn repeated_rate_limit_failures_render_in_their_submitted_replies() {
+    const ERROR: &str = "You've hit your session limit · resets 1:30pm (Europe/Berlin)";
+    for send_first_update in [true, false] {
+        let (mut app, mut receiver) = connected_app();
+        let mut replies = Vec::new();
+        for (turn, prompt) in ["hello", "hi", "hi"].into_iter().enumerate() {
+            submit(&mut app, &mut receiver, prompt);
+            let owner = app.active_turn_assistant_idx().unwrap();
+            let owner_id = app.transcript.messages[owner].id;
+            if turn == 0 && send_first_update {
+                update(
+                    &mut app,
+                    model::SessionUpdate::RateLimitUpdate(
+                        serde_json::from_value(serde_json::json!({
+                            "status": "rejected", "rate_limit_type": "five_hour",
+                            "resets_at": 1_792_409_400.0,
+                        }))
+                        .unwrap(),
+                    ),
+                );
+                assert_owner_has_no_rows(&mut app, owner);
+            }
+            fail_turn(&mut app, TurnErrorClass::PlanLimit, ERROR);
+            assert_eq!(app.status, AppStatus::Ready);
+            let reply = &app.transcript.messages[owner];
+            assert_eq!(reply.id, owner_id, "retain the reserved reply");
+            assert!(matches!(reply.role, MessageRole::Assistant));
+            let [MessageBlock::Notice(notice)] = reply.blocks.as_slice() else {
+                panic!("exactly one notice belongs to this reply");
+            };
+            assert_eq!(notice.severity, SystemSeverity::Error);
+            assert!(notice.text.text.contains(ERROR), "preserve SDK explanation and reset time");
+            assert!(
+                !notice.text.text.contains("5-hour"),
+                "use this result, not earlier allowance data"
+            );
+            replies.push((owner, owner_id));
+            for &(index, id) in &replies {
+                assert_eq!(app.transcript.messages[index].id, id);
+                for width in [40, 100] {
+                    let visible = assert_failure_layout(&mut app, index, width);
+                    assert!(
+                        visible.contains(
+                            &ERROR.chars().filter(|ch| !ch.is_whitespace()).collect::<String>()
+                        ),
+                        "this reply must render the SDK explanation and reset time"
+                    );
+                }
+            }
+        }
+        assert_eq!(app.transcript.messages.len(), 6, "three submissions and their three replies");
+        for ((owner, _), prompt) in replies.into_iter().zip(["hello", "hi", "hi"]) {
+            let user = &app.transcript.messages[owner - 1];
+            assert!(matches!(user.role, MessageRole::User));
+            assert_eq!(first_block_text(user), prompt);
+        }
+    }
+}
+
+#[test]
+fn turn_failures_keep_partial_output_and_use_the_same_notice_renderer() {
+    for class in [
+        TurnErrorClass::PlanLimit,
+        TurnErrorClass::AuthRequired,
+        TurnErrorClass::AccountAccess,
+        TurnErrorClass::ModelUnavailable,
+        TurnErrorClass::TransientService,
+        TurnErrorClass::Internal,
+        TurnErrorClass::Other,
+    ] {
+        for partial in [false, true] {
+            let (mut app, mut receiver) = connected_app();
+            submit(&mut app, &mut receiver, "Question");
+            let owner = app.active_turn_assistant_idx().unwrap();
+            let owner_id = app.transcript.messages[owner].id;
+            if partial {
+                update(&mut app, text("Partial answer"));
+            }
+            app.input.set_text("Next unsent draft");
+            let draft = app.input.snapshot();
+            fail_turn(&mut app, class, "Fixture failure");
+            assert_eq!(app.input.snapshot(), draft);
+            assert_eq!(app.active_turn_assistant_idx(), None);
+            assert!(app.turn.activity.is_none());
+            assert_eq!(app.transcript.messages.len(), 2);
+            let reply = &app.transcript.messages[owner];
+            assert_eq!(reply.id, owner_id);
+            assert!(matches!(reply.role, MessageRole::Assistant));
+            if partial {
+                assert_eq!(first_block_text(reply), "Partial answer");
+            }
+            for width in [40, 100] {
+                assert_failure_layout(&mut app, owner, width);
+                if partial {
+                    let rendered = serialize_live_rows_with_boundaries_excluding(
+                        &mut app,
+                        width,
+                        &BTreeSet::new(),
+                        None,
+                    );
+                    let answer = rendered
+                        .segments()
+                        .iter()
+                        .find(|segment| {
+                            segment.msg_idx == owner
+                                && segment.kind == LiveRowBoundaryKind::AssistantText
+                        })
+                        .unwrap();
+                    let notice = rendered
+                        .segments()
+                        .iter()
+                        .find(|segment| {
+                            segment.msg_idx == owner
+                                && segment.kind == LiveRowBoundaryKind::AssistantNotice
+                        })
+                        .unwrap();
+                    assert!(answer.end_row <= notice.start_row, "failure follows partial output");
+                    assert!(
+                        rendered
+                            .segment_rows(answer)
+                            .unwrap()
+                            .iter()
+                            .any(|row| row.to_string().contains("Partial answer"))
+                    );
+                }
+            }
         }
     }
 }

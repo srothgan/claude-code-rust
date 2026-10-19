@@ -274,6 +274,81 @@ mod tests {
     use crate::app::test_support::app_with_connection;
 
     #[test]
+    fn rate_limit_failure_preserves_the_draft_and_allows_editing_and_manual_retry() {
+        use crate::agent::error_handling::TurnErrorClass;
+        use crate::app::events::handle_client_event;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        const IMAGE: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=";
+        let (mut app, mut rx) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.input.set_text("next draft");
+        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+            data: IMAGE.to_owned(),
+            mime_type: "image/png".to_owned(),
+        });
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionUpdate {
+                session_id: "session-1".into(),
+                update: model::SessionUpdate::RateLimitUpdate(
+                    serde_json::from_value(serde_json::json!({
+                        "status": "rejected", "rate_limit_type": "five_hour",
+                    }))
+                    .unwrap(),
+                ),
+            },
+        );
+        assert!(app.composer_access().can_edit());
+        assert!(app.composer_access().can_submit());
+        handle_client_event(
+            &mut app,
+            ClientEvent::TurnErrorClassified {
+                session_id: "session-1".into(),
+                message: "Session limit reached; resets in one minute".into(),
+                class: TurnErrorClass::PlanLimit,
+                queued_turn_count: Some(0),
+                api_error_status: Some(429),
+                terminal_reason: Some(crate::agent::types::TerminalReason::ApiError),
+            },
+        );
+        assert_eq!(app.input.text(), "next draft");
+        assert_eq!(app.pending_images[0].data, IMAGE);
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(
+                !matches!(envelope.command, BridgeCommand::Prompt { .. }),
+                "no automatic retry"
+            );
+        }
+        crate::app::keys::dispatch_key_by_focus(
+            &mut app,
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+        );
+        crate::app::keys::dispatch_key_by_focus(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.input.text(), "next draft!");
+        submit_input(&mut app);
+        let mut prompts = Vec::new();
+        while let Ok(envelope) = rx.try_recv() {
+            if let BridgeCommand::Prompt { session_id, chunks, .. } = envelope.command {
+                prompts.push((session_id, chunks));
+            }
+        }
+        assert_eq!(prompts.len(), 1, "manual retry sends exactly once");
+        assert_eq!(prompts[0].0, "session-1");
+        let chunks = &prompts[0].1;
+        assert_eq!(
+            chunks.iter().find(|chunk| chunk.kind == "text").unwrap().value,
+            serde_json::json!("next draft!")
+        );
+        assert_eq!(chunks.iter().find(|chunk| chunk.kind == "image").unwrap().value["data"], IMAGE);
+        assert!(app.input.is_empty());
+        assert!(app.pending_images.is_empty());
+    }
+
+    #[test]
     fn initial_prompt_waits_for_session_selection_and_preserves_a_typed_draft() {
         use clap::Parser;
         let cli = crate::Cli::try_parse_from(["claude-rs", "--resume", "--", "initial prompt"])

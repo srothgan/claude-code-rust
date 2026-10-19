@@ -1786,7 +1786,9 @@ export function handleResultMessage(
   const queuedTurnCount = nonNegativeIntegerField(message, "queued_turn_count");
 
   const subtype = typeof message.subtype === "string" ? message.subtype : "";
-  if (subtype === "success") {
+  // SDKResultSuccess also carries API failures: is_error marks the result
+  // text as an error, and terminal_reason describes how the turn ended.
+  if (subtype === "success" && message.is_error !== true && terminalReason !== "api_error") {
     session.lastAssistantError = undefined;
     finalizeOpenToolCalls(session, "completed");
     writeEvent({
@@ -1800,8 +1802,11 @@ export function handleResultMessage(
     return;
   }
 
-  const errors =
-    Array.isArray(message.errors) &&
+  const errors = subtype === "success"
+    ? (typeof message.result === "string" && message.result.trim().length > 0
+      ? [message.result]
+      : [])
+    : Array.isArray(message.errors) &&
     message.errors.every((entry) => typeof entry === "string")
       ? (message.errors as string[])
       : [];
@@ -1842,7 +1847,9 @@ export function handleResultMessage(
   }
   finalizeOpenToolCalls(session, "failed");
   const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
-  const fallback = subtype ? `turn failed: ${subtype}` : "turn failed";
+  const fallback = subtype === "success"
+    ? "turn failed: API error"
+    : subtype ? `turn failed: ${subtype}` : "turn failed";
   const apiErrorStatus = numberField(
     message,
     "api_error_status",

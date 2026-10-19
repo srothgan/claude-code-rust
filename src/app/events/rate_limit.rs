@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::super::{App, NoticeDedupKey, NoticeStage, RateLimitIncidentKey, SystemSeverity};
+use super::super::{App, NoticeDedupKey, RateLimitIncidentKey, SystemSeverity};
 use crate::agent::model;
 use std::time::Duration;
-
-const EXTRA_USAGE_REQUIRED_MESSAGE: &str = "Extra usage is required for 1M context. Use /extra-usage to enable it, /model to switch models or configure the context limit in Claude settings.";
 
 fn format_rate_limit_type(raw: &str) -> &str {
     match raw {
@@ -48,31 +46,11 @@ fn format_resets_at(epoch_secs: f64) -> String {
     format!("{countdown} at {h:02}:{m:02} UTC")
 }
 
-fn has_primary_rate_limit_context(update: &model::RateLimitUpdate) -> bool {
-    update.utilization.is_some() || update.rate_limit_type.is_some() || update.resets_at.is_some()
-}
-
-fn is_org_level_disabled_extra_usage_case(update: &model::RateLimitUpdate) -> bool {
-    matches!(update.status, model::RateLimitStatus::Rejected)
-        && !has_primary_rate_limit_context(update)
-        && update.is_using_overage == Some(false)
-        && update.overage_disabled_reason.as_deref() == Some("org_level_disabled")
-}
-
-pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> String {
-    if is_org_level_disabled_extra_usage_case(update) {
-        return EXTRA_USAGE_REQUIRED_MESSAGE.to_owned();
-    }
-
-    let is_rejected = matches!(update.status, model::RateLimitStatus::Rejected);
-
-    // Intro
-    let shared_group_pool = update.limit_scope.as_deref() == Some("group_pool");
-    let intro = match (is_rejected, shared_group_pool) {
-        (true, true) => "Shared group rate limit reached",
-        (false, true) => "Approaching shared group rate limit",
-        (true, false) => "Rate limit reached",
-        (false, false) => "Approaching rate limit",
+fn format_rate_limit_warning(update: &model::RateLimitUpdate) -> String {
+    let intro = if update.limit_scope.as_deref() == Some("group_pool") {
+        "Approaching shared group rate limit"
+    } else {
+        "Approaching rate limit"
     };
 
     // "you've used 91% of your 5-hour rate limit"
@@ -101,7 +79,7 @@ pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> Stri
         message.push_str(" Extra usage is unavailable.");
     } else if update.is_using_overage == Some(true) {
         message.push_str(" You are using your overage allowance.");
-    } else if !is_rejected && update.overage_enabled == Some(true) {
+    } else if update.overage_enabled == Some(true) {
         if matches!(
             update.overage_status,
             Some(model::RateLimitStatus::Allowed | model::RateLimitStatus::AllowedWarning)
@@ -121,7 +99,7 @@ pub(super) fn format_rate_limit_summary(update: &model::RateLimitUpdate) -> Stri
     message
 }
 
-pub(super) fn rate_limit_notice_key(update: &model::RateLimitUpdate) -> NoticeDedupKey {
+fn rate_limit_notice_key(update: &model::RateLimitUpdate) -> NoticeDedupKey {
     NoticeDedupKey::RateLimit(RateLimitIncidentKey {
         rate_limit_type: update.rate_limit_type.clone(),
         limit_scope: update.limit_scope.clone(),
@@ -137,7 +115,6 @@ fn reset_bucket_from_epoch_secs(value: f64) -> Option<u64> {
 }
 
 pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
-    app.session_runtime.last_rate_limit_update = Some(update.clone());
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "rate_limit_update_applied",
@@ -157,24 +134,14 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
     );
 
     match update.status {
-        model::RateLimitStatus::Allowed => {}
+        // Rejections are reported by the turn result, which carries its own error text.
+        model::RateLimitStatus::Allowed | model::RateLimitStatus::Rejected => {}
         model::RateLimitStatus::AllowedWarning => {
-            let summary = format_rate_limit_summary(update);
+            let summary = format_rate_limit_warning(update);
             super::notices::upsert_turn_notice(
                 app,
                 rate_limit_notice_key(update),
-                NoticeStage::Warning,
                 SystemSeverity::Warning,
-                &summary,
-            );
-        }
-        model::RateLimitStatus::Rejected => {
-            let summary = format_rate_limit_summary(update);
-            super::notices::upsert_turn_notice(
-                app,
-                rate_limit_notice_key(update),
-                NoticeStage::Rejected,
-                SystemSeverity::Error,
                 &summary,
             );
         }
@@ -183,7 +150,7 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
 
 #[cfg(test)]
 mod tests {
-    use super::format_rate_limit_summary;
+    use super::format_rate_limit_warning;
     use crate::agent::model::{RateLimitStatus, RateLimitUpdate};
 
     #[test]
@@ -202,7 +169,7 @@ mod tests {
                         "is_using_overage": false
                     }))
                     .expect("warning fixture");
-                    let summary = format_rate_limit_summary(&update);
+                    let summary = format_rate_limit_warning(&update);
                     let available = enabled == Some(true)
                         && matches!(
                             status,
@@ -223,64 +190,14 @@ mod tests {
     fn current_use_does_not_override_an_unavailable_allowance() {
         for disabled in [false, true] {
             let update: RateLimitUpdate = serde_json::from_value(serde_json::json!({
-                "status": "rejected", "overage_enabled": !disabled,
+                "status": "allowed_warning", "overage_enabled": !disabled,
                 "is_using_overage": true
             }))
-            .expect("rejection fixture");
-            let summary = format_rate_limit_summary(&update);
+            .expect("warning fixture");
+            let summary = format_rate_limit_warning(&update);
             assert_eq!(summary.contains("are using"), !disabled);
             assert!(!summary.contains("can continue"));
         }
-    }
-
-    #[test]
-    fn org_level_disabled_without_primary_context_uses_extra_usage_message() {
-        let update = RateLimitUpdate {
-            status: RateLimitStatus::Rejected,
-            error_code: None,
-            resets_at: None,
-            utilization: None,
-            rate_limit_type: None,
-            limit_scope: None,
-            overage_enabled: None,
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: Some("org_level_disabled".to_owned()),
-            is_using_overage: Some(false),
-            surpassed_threshold: None,
-            can_user_purchase_credits: None,
-            has_chargeable_saved_payment_method: None,
-        };
-
-        assert_eq!(
-            format_rate_limit_summary(&update),
-            "Extra usage is required for 1M context. Use /extra-usage to enable it, /model to switch models or configure the context limit in Claude settings."
-        );
-    }
-
-    #[test]
-    fn org_level_disabled_with_primary_context_keeps_normal_rate_limit_message() {
-        let update = RateLimitUpdate {
-            status: RateLimitStatus::Rejected,
-            error_code: None,
-            resets_at: Some(1_741_280_000.0),
-            utilization: None,
-            rate_limit_type: Some("five_hour".to_owned()),
-            limit_scope: None,
-            overage_enabled: None,
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: Some("org_level_disabled".to_owned()),
-            is_using_overage: Some(false),
-            surpassed_threshold: None,
-            can_user_purchase_credits: None,
-            has_chargeable_saved_payment_method: None,
-        };
-
-        let summary = format_rate_limit_summary(&update);
-        assert!(summary.contains("Rate limit reached"));
-        assert!(summary.contains("5-hour rate limit"));
-        assert!(!summary.contains("Extra usage is required for 1M context"));
     }
 
     #[test]
@@ -302,7 +219,7 @@ mod tests {
             has_chargeable_saved_payment_method: None,
         };
 
-        let summary = format_rate_limit_summary(&update);
+        let summary = format_rate_limit_warning(&update);
         assert!(summary.contains("7-day overage-included rate limit"));
         assert!(!summary.contains("seven_day_overage_included"));
     }

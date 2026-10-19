@@ -87,7 +87,7 @@ pub struct TurnState {
     pub cancel_requested: bool,
     /// Message index that owns the current main-assistant turn output.
     pub assistant_message_idx: Option<usize>,
-    /// Turn-local inline/system notices that may upgrade in place during the active turn.
+    /// Turn-local inline/system notices that may update in place during the active turn.
     pub notice_refs: Vec<TurnNoticeRef>,
 }
 

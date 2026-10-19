@@ -35,8 +35,6 @@ pub struct SessionRuntimeState {
     pub runtime_session_state: Option<model::RuntimeSessionState>,
     /// Latest prompt suggestion from the SDK, shown in the input hint band.
     pub prompt_suggestion: Option<String>,
-    /// Latest rate-limit telemetry from the SDK.
-    pub last_rate_limit_update: Option<model::RateLimitUpdate>,
     /// Account info from the bridge status snapshot (email, org, subscription).
     pub account_info: Option<model::AccountInfo>,
     /// The active session's title, as the bridge last read it through the
@@ -62,7 +60,6 @@ impl Default for SessionRuntimeState {
             fast_mode_disabled_reason: None,
             runtime_session_state: None,
             prompt_suggestion: None,
-            last_rate_limit_update: None,
             account_info: None,
             session_title: None,
         }

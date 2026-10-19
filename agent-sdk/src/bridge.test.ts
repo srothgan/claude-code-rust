@@ -9896,9 +9896,8 @@ test("handleResultMessage emits terminal reason on successful turn completion", 
   });
 });
 
-test("handleResultMessage preserves new SDK terminal reasons", () => {
+test("handleResultMessage preserves non-API SDK terminal reasons", () => {
   const terminalReasons = [
-    "api_error",
     "malformed_tool_use_exhausted",
     "budget_exhausted",
     "structured_output_retry_exhausted",

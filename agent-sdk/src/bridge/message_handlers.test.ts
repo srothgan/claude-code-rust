@@ -21,6 +21,60 @@ function taskScenario(run: (session: SessionState, emit: (message: Record<string
   finally { restore(); }
 }
 
+test("each API-rejected send reports its error even when only the first emits a rate limit update", () => taskScenario((session, emit, writes) => {
+  const errorText = "You've hit your session limit · resets 1:30pm (Europe/Berlin)";
+  for (const [index, prompt] of ["hello", "okay", "hello"].entries()) {
+    const before = writes.length;
+    const userUuid = `user-${index}`;
+    emit({ type: "user", uuid: userUuid, message: { role: "user", content: prompt } });
+    emit({ type: "assistant", error: "rate_limit", user_message_uuid: userUuid, message: { id: `reply-${index}`, content: [{ type: "text", text: errorText }] } });
+    if (index === 0) {
+      emit({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1792409400 } });
+    }
+    emit({ type: "result", subtype: "success", is_error: true, terminal_reason: "api_error", result: errorText, user_message_uuid: userUuid, queued_turn_count: 0 });
+    const events = writes.slice(before).map(line => JSON.parse(line));
+    assert.deepEqual(events.filter(event => event.event === "turn_error" || event.event === "turn_complete"), [{
+      event: "turn_error", session_id: session.sessionId, message: errorText,
+      error_kind: "plan_limit", assistant_error: "rate_limit", sdk_result_subtype: "success",
+      terminal_reason: "api_error", queued_turn_count: 0,
+    }]);
+    assert.equal(events.filter(event => event.update?.type === "rate_limit_update").length, index === 0 ? 1 : 0);
+    assert.equal(events.some(event => event.update?.type === "agent_message_chunk"), false, "the error is carried once through turn_error");
+  }
+}));
+
+test("either result failure signal reports API error text without an assistant or rate limit event", () => {
+  for (const failure of [{ is_error: true }, { terminal_reason: "api_error" }]) {
+    taskScenario((session, emit, writes) => {
+      session.toolCalls.set("pending", createToolCall("pending", "Read", {}, null));
+      emit({ type: "result", subtype: "success", result: "HTTP 429: request rejected", api_error_status: 429, ...failure });
+      const events = writes.map(line => JSON.parse(line));
+      const error = events.find(event => event.event === "turn_error");
+      assert.equal(error?.message, "HTTP 429: request rejected");
+      assert.equal(error?.error_kind, "plan_limit");
+      assert.equal(error?.api_error_status, 429);
+      assert.equal(events.some(event => event.event === "turn_complete"), false);
+      assert.equal(session.toolCalls.get("pending")?.status, "failed");
+    });
+  }
+});
+
+test("a successful recovery discards an earlier assistant error and does not leak it into the next failure", () => taskScenario((_session, emit, writes) => {
+  emit({ type: "assistant", error: "rate_limit", message: { content: [{ type: "text", text: "temporary rejection" }] } });
+  emit({ type: "assistant", message: { id: "recovered", content: [{ type: "text", text: "Recovered answer" }] } });
+  emit({ type: "result", subtype: "success", is_error: false, terminal_reason: "completed", result: "Recovered answer" });
+  const events = writes.map(line => JSON.parse(line));
+  assert.equal(events.filter(event => event.event === "turn_complete").length, 1);
+  assert.equal(events.some(event => event.event === "turn_error"), false);
+  assert.equal(events.find(event => event.update?.type === "agent_message_chunk")?.update.content.text, "Recovered answer");
+  emit({ type: "result", subtype: "error_during_execution", errors: ["A separate failure"] });
+  const nextError = JSON.parse(writes.at(-1) ?? "null");
+  assert.equal(nextError.event, "turn_error");
+  assert.equal(nextError.message, "A separate failure");
+  assert.equal(nextError.error_kind, "other");
+  assert.equal(nextError.assistant_error, undefined);
+}));
+
 test("SDK 0.3.302 run ordering rejects late lifecycle and inventory frames before all mutations", () => {
   for (const [taskType, toolName] of [["local_agent", "Agent"], ["local_bash", "Bash"], ["local_workflow", "Workflow"], ["local_mcp", "mcp__test__work"]]) {
     taskScenario((session, emit, writes) => {

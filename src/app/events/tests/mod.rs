@@ -1825,11 +1825,11 @@ fn turn_error_clears_manual_compaction_without_success_message() {
     else {
         panic!("expected system error message");
     };
-    let Some(MessageBlock::Text(block)) = blocks.first() else {
-        panic!("expected text block");
+    let Some(MessageBlock::Notice(block)) = blocks.first() else {
+        panic!("expected failure notice");
     };
-    assert!(block.text.contains("Turn failed: adapter failed"));
-    assert!(block.text.contains("Press Ctrl+Q to quit and try again"));
+    assert!(block.text.text.contains("Turn failed: adapter failed"));
+    assert!(block.text.text.contains("Press Ctrl+Q to quit and try again"));
 }
 
 fn turn_error_log_levels(cancelled: bool) -> Vec<(String, String)> {
@@ -1932,7 +1932,7 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
+    assert!(matches!(app.status, AppStatus::Ready));
     let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
         app.transcript.messages.last()
     else {
@@ -1941,8 +1941,8 @@ fn turn_error_plan_limit_shows_next_steps_guidance() {
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
-    assert!(text.contains("Next steps:"));
-    assert!(text.contains("Check quota/billing"));
+    assert!(text.contains("retry here"));
+    assert!(!text.contains("Input disabled"));
 }
 
 #[test]
@@ -1961,7 +1961,7 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
+    assert!(matches!(app.status, AppStatus::Ready));
     let Some(ChatMessage { role: MessageRole::System(_), blocks, .. }) =
         app.transcript.messages.last()
     else {
@@ -1970,7 +1970,8 @@ fn classified_turn_error_plan_limit_uses_guidance_without_text_matching() {
     assert!(matches!(blocks.first(), Some(MessageBlock::Notice(_))));
     let text = first_block_text(app.transcript.messages.last().expect("expected message"));
     assert!(text.contains("Turn blocked by account or plan limits"));
-    assert!(text.contains("Next steps:"));
+    assert!(text.contains("retry here"));
+    assert!(!text.contains("Input disabled"));
 }
 
 #[test]
@@ -2453,7 +2454,7 @@ fn fast_mode_disabled_reason_does_not_warn_when_unrequested_or_cooling_down() {
 }
 
 #[test]
-fn rate_limit_notices_dedup_and_upgrade_in_place() {
+fn rate_limit_warnings_do_not_duplicate_or_turn_into_failures() {
     let mut app = make_test_app();
 
     let warning_update = model::RateLimitUpdate {
@@ -2506,13 +2507,13 @@ fn rate_limit_notices_dedup_and_upgrade_in_place() {
     assert_eq!(app.transcript.messages.len(), 1);
     assert!(matches!(
         app.transcript.messages[0].role,
-        MessageRole::System(Some(SystemSeverity::Error))
+        MessageRole::System(Some(SystemSeverity::Warning))
     ));
-    assert!(first_block_text(&app.transcript.messages[0]).contains("Rate limit reached"));
+    assert!(first_block_text(&app.transcript.messages[0]).contains("Approaching rate limit"));
 }
 
 #[test]
-fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
+fn plan_limit_failure_preserves_the_warning_and_reports_its_own_error() {
     let mut app = make_test_app();
     app.status = AppStatus::Thinking;
     app.transcript.messages.push(user_msg("hello"));
@@ -2557,22 +2558,26 @@ fn plan_limit_turn_error_upgrades_inline_notice_in_active_assistant() {
         },
     );
 
-    assert!(matches!(app.status, AppStatus::Error));
-    assert_eq!(app.transcript.messages.len(), 2);
-    assert_eq!(app.transcript.messages[1].blocks.len(), 2);
-    let Some(MessageBlock::Notice(block)) = app.transcript.messages[1].blocks.get(1) else {
-        panic!("expected inline notice block");
+    assert!(matches!(app.status, AppStatus::Ready));
+    let [MessageBlock::Text(partial), MessageBlock::Notice(warning), MessageBlock::Notice(failure)] =
+        app.transcript.messages[1].blocks.as_slice()
+    else {
+        panic!("partial reply, allowance warning, and terminal failure belong to this response");
     };
-    assert_eq!(block.severity, SystemSeverity::Warning);
-    assert!(block.text.text.contains("Approaching rate limit"));
-    assert!(block.text.text.contains("Turn blocked by account or plan limits"));
+    assert_eq!(partial.text, "partial response");
+    assert_eq!(warning.severity, SystemSeverity::Warning);
+    assert!(warning.text.text.contains("Approaching rate limit"));
+    assert_eq!(failure.severity, SystemSeverity::Error);
+    assert!(failure.text.text.contains("HTTP 429 Too Many Requests"));
+    assert!(!failure.text.text.contains("Approaching rate limit"));
+    assert!(!failure.text.text.contains("5-hour"), "the error must not inherit allowance context");
     assert!(app.turn.notice_refs.is_empty());
 }
 
 #[test]
-fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
+fn allowance_warnings_in_later_turns_keep_older_notices() {
     let mut app = make_test_app();
-    app.session_runtime.last_rate_limit_update = Some(model::RateLimitUpdate {
+    let warning = model::RateLimitUpdate {
         status: model::RateLimitStatus::AllowedWarning,
         error_code: None,
         resets_at: Some(1_741_280_000.0),
@@ -2587,23 +2592,14 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
         surpassed_threshold: None,
         can_user_purchase_credits: None,
         has_chargeable_saved_payment_method: None,
-    });
+    };
     app.status = AppStatus::Thinking;
     app.transcript.messages.push(user_msg("first"));
     app.transcript.messages.push(assistant_msg(vec![]));
     app.bind_active_turn_assistant(1);
 
-    handle_client_event(
-        &mut app,
-        ClientEvent::TurnErrorClassified {
-            session_id: "test-session".to_owned(),
-            message: "HTTP 429 Too Many Requests".to_owned(),
-            class: TurnErrorClass::PlanLimit,
-            queued_turn_count: None,
-            api_error_status: None,
-            terminal_reason: None,
-        },
-    );
+    handle_client_event(&mut app, session_update(model::SessionUpdate::RateLimitUpdate(warning)));
+    handle_client_event(&mut app, turn_complete(None));
     assert_eq!(app.transcript.messages.len(), 2);
     let first_notice_text = match app.transcript.messages[1].blocks.as_slice() {
         [MessageBlock::Notice(block)] => block.text.text.clone(),
@@ -2618,7 +2614,7 @@ fn different_rate_limit_incident_in_later_turn_keeps_older_notice() {
     handle_client_event(
         &mut app,
         session_update(model::SessionUpdate::RateLimitUpdate(model::RateLimitUpdate {
-            status: model::RateLimitStatus::Rejected,
+            status: model::RateLimitStatus::AllowedWarning,
             error_code: None,
             resets_at: Some(1_741_290_000.0),
             utilization: None,

@@ -702,7 +702,6 @@ pub(crate) fn push_active_turn_submission_blocked_notice(app: &mut App, label: &
     notices::upsert_turn_notice(
         app,
         super::NoticeDedupKey::ActiveTurnSubmissionBlocked,
-        super::NoticeStage::Informational,
         SystemSeverity::Info,
         &message,
     );

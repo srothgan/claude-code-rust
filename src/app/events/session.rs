@@ -178,7 +178,6 @@ pub(super) fn handle_auth_required_event(
     app.bump_session_scope_epoch();
     app.clear_session_runtime_identity();
     super::compaction::reset(app);
-    app.session_runtime.last_rate_limit_update = None;
     app.turn.clear_cancel_state();
     app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
@@ -201,7 +200,6 @@ pub(super) fn handle_connection_failed_event(app: &mut App, msg: &str) {
     app.clear_session_runtime_identity();
     super::compaction::reset(app);
     app.turn.clear_cancel_state();
-    app.session_runtime.last_rate_limit_update = None;
     app.session_runtime.account_info = None;
     app.mcp = super::super::McpState::default();
     app.config.pending_session_title_change = None;

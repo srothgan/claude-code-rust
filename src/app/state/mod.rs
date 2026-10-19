@@ -57,7 +57,7 @@ pub use tool_call_info::{
 };
 pub use transcript::Transcript;
 pub use turn::{ActiveCompaction, CompactionState, TurnState};
-pub use turn_notices::{NoticeStage, TurnNoticeLocation, TurnNoticeRef};
+pub use turn_notices::{TurnNoticeLocation, TurnNoticeRef};
 pub(crate) use types::ComposerBlockReason;
 pub use types::{
     AppStatus, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState,

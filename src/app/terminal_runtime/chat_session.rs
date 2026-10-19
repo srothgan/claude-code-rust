@@ -1374,7 +1374,12 @@ fn render_composer_field(frame: &mut ratatui::Frame<'_>, area: Rect) -> input::I
 
 fn render_status_editor(frame: &mut ratatui::Frame<'_>, rows: &[Line<'static>], area: Rect) {
     let geometry = render_composer_field(frame, area);
-    let visible_rows = RowWindow::tail(rows.len(), geometry.text.height).slice(rows).to_vec();
+    let mut visible_rows = RowWindow::tail(rows.len(), geometry.text.height).slice(rows).to_vec();
+    // Prewrapped rows carry explicit backgrounds, including padded cells.
+    // The composer owns the field background; retain only their foreground styling.
+    for span in visible_rows.iter_mut().flat_map(|row| &mut row.spans) {
+        span.style = span.style.bg(theme::USER_MSG_BG);
+    }
     frame.render_widget(
         Paragraph::new(visible_rows).style(Style::default().bg(theme::USER_MSG_BG)),
         geometry.text,
@@ -1551,6 +1556,36 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn wrapped_error_status_keeps_the_composer_background_and_error_foreground() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Error;
+        app.input.set_text("Unsent draft with enough text to wrap on a narrow terminal");
+        for width in [20, 80] {
+            let rows = crate::ui::input_rows::blocked_input_lines(
+                &app,
+                crate::app::ComposerBlockReason::Error,
+                width,
+            )
+            .expect("error status");
+            let height = input::status_field_height(rows.len());
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| super::render_status_editor(frame, &rows, frame.area())).unwrap();
+            let buffer = terminal.backend().buffer();
+            for (index, cell) in buffer.content.iter().enumerate() {
+                assert_eq!(cell.bg, theme::USER_MSG_BG, "cell {index} at width {width}");
+            }
+            let text = input::compute_render_geometry(Rect::new(0, 0, width, height), 0).text;
+            let first = &buffer[(text.x, text.y)];
+            assert_eq!(first.symbol(), "I");
+            assert_eq!(first.fg, theme::STATUS_ERROR);
+            let draft_text: String = (text.y..text.bottom())
+                .flat_map(|y| (text.x..text.right()).map(move |x| buffer[(x, y)].symbol()))
+                .collect();
+            assert!(draft_text.contains("Unsent draft"));
+        }
+    }
 
     fn rows(count: usize) -> Vec<Line<'static>> {
         (0..count).map(|idx| Line::from(format!("row {idx}"))).collect()

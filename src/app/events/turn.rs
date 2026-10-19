@@ -2,11 +2,10 @@
 
 use super::super::{
     App, AppStatus, ChatMessage, FocusTarget, InlinePermission, InlineQuestion, InvalidationLevel,
-    MessageBlock, MessageRole, NoticeStage, SubagentPermissionContext, SystemSeverity, TextBlock,
-    ToolCallInfo, ToolCallScope, UserDialogBlock,
+    MessageBlock, MessageRole, SubagentPermissionContext, SystemSeverity, TextBlock, ToolCallInfo,
+    ToolCallScope, UserDialogBlock,
 };
 use super::compaction;
-use super::rate_limit::{format_rate_limit_summary, rate_limit_notice_key};
 use crate::agent::error_handling::{TurnErrorClass, classify_turn_error, summarize_internal_error};
 use crate::agent::model;
 use std::collections::BTreeSet;
@@ -16,10 +15,8 @@ const CONVERSATION_INTERRUPTED_HINT: &str =
     "Conversation interrupted. Tell the model how to proceed.";
 const TURN_ERROR_INPUT_LOCK_HINT: &str =
     "Input disabled after an error. Press Ctrl+Q to quit and try again.";
-const PLAN_LIMIT_NEXT_STEPS_HINT: &str = "Next steps:\n\
-1. Wait a few minutes and retry.\n\
-2. Reduce request size or request frequency.\n\
-3. Check quota/billing for your account or switch plans.";
+const PLAN_LIMIT_NEXT_STEPS_HINT: &str =
+    "You can keep editing and retry here when your allowance is available.";
 const AUTH_REQUIRED_NEXT_STEPS_HINT: &str = "Authentication required. Type /login to authenticate, or run `claude auth login` in a terminal.";
 
 pub(super) fn handle_btw_result_event(
@@ -680,20 +677,13 @@ pub(super) fn handle_turn_error_event(
     // The composer may already contain the next unsent message. An error in
     // the active turn does not consume that draft or its paste/image atoms.
     app.pending_submit = None;
-    app.status = AppStatus::Error;
-    let rate_limit_context = if matches!(error_class, TurnErrorClass::PlanLimit) {
-        app.session_runtime
-            .last_rate_limit_update
-            .clone()
-            .filter(|update| !matches!(update.status, model::RateLimitStatus::Allowed))
-    } else {
-        None
+    app.status = match error_class {
+        TurnErrorClass::PlanLimit => AppStatus::Ready,
+        _ => AppStatus::Error,
     };
-    let removed_tail_assistant = remove_empty_tail_assistant(app, exit.tail_assistant_idx);
-    push_turn_error_message(app, msg, error_class, rate_limit_context.as_ref());
-    if removed_tail_assistant.is_none() && exit.turn_was_active {
-        mark_turn_exit_assistant_layout_dirty(app, exit.tail_assistant_idx);
-    }
+    // A failed reply owns its notice even when no assistant text arrived. Keep
+    // that owner alive until the notice is attached, then release turn tracking.
+    push_turn_error_message(app, msg, error_class);
     app.turn.reset_for_turn_exit();
     request_post_turn_resize_purge_replay_if_needed(app);
     crate::app::session_runtime::request_context_usage_refresh(app);
@@ -952,79 +942,40 @@ fn mark_turn_exit_assistant_layout_dirty(app: &mut App, idx: Option<usize>) {
     }
 }
 
-fn push_turn_error_message(
-    app: &mut App,
-    error: &str,
-    class: TurnErrorClass,
-    rate_limit_context: Option<&model::RateLimitUpdate>,
-) {
-    match class {
+fn push_turn_error_message(app: &mut App, error: &str, class: TurnErrorClass) {
+    let message = match class {
         TurnErrorClass::PlanLimit => {
-            let base_message = {
-                let summary = summarize_internal_error(error);
-                format!(
-                    "Turn blocked by account or plan limits: {summary}\n\n{PLAN_LIMIT_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
-                )
-            };
-            let (severity, message, dedup_key) = if let Some(update) = rate_limit_context {
-                let prefix = format_rate_limit_summary(update);
-                let severity = match update.status {
-                    model::RateLimitStatus::AllowedWarning => SystemSeverity::Warning,
-                    model::RateLimitStatus::Rejected | model::RateLimitStatus::Allowed => {
-                        SystemSeverity::Error
-                    }
-                };
-                (severity, format!("{prefix}\n\n{base_message}"), rate_limit_notice_key(update))
-            } else {
-                (
-                    SystemSeverity::Error,
-                    base_message,
-                    super::super::NoticeDedupKey::RateLimit(super::super::RateLimitIncidentKey {
-                        rate_limit_type: None,
-                        limit_scope: None,
-                        resets_at_bucket: None,
-                    }),
-                )
-            };
-            super::notices::upsert_turn_notice(
-                app,
-                dedup_key,
-                NoticeStage::PlanLimitTurnError,
-                severity,
-                &message,
-            );
+            let summary = summarize_internal_error(error);
+            format!(
+                "Turn blocked by account or plan limits: {summary}\n\n{PLAN_LIMIT_NEXT_STEPS_HINT}"
+            )
         }
         TurnErrorClass::AuthRequired => {
-            let message =
-                format!("{AUTH_REQUIRED_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
-            super::push_system_message_with_severity(app, None, &message);
+            format!("{AUTH_REQUIRED_NEXT_STEPS_HINT}\n\n{TURN_ERROR_INPUT_LOCK_HINT}")
         }
         TurnErrorClass::AccountAccess => {
             let summary = summarize_internal_error(error);
-            let message = format!(
+            format!(
                 "The current account or organization cannot use the requested resource: {summary}\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
-            );
-            super::push_system_message_with_severity(app, None, &message);
+            )
         }
         TurnErrorClass::ModelUnavailable => {
             let summary = summarize_internal_error(error);
-            let message = format!(
+            format!(
                 "The selected model is unavailable: {summary}\n\nUse /model to choose another available model.\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
-            );
-            super::push_system_message_with_severity(app, None, &message);
+            )
         }
         TurnErrorClass::TransientService => {
             let summary = summarize_internal_error(error);
-            let message = format!(
+            format!(
                 "The service is temporarily overloaded or unavailable: {summary}\n\nWait a moment and retry.\n\n{TURN_ERROR_INPUT_LOCK_HINT}"
-            );
-            super::push_system_message_with_severity(app, None, &message);
+            )
         }
         TurnErrorClass::Internal | TurnErrorClass::Other => {
-            let message = format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}");
-            super::push_system_message_with_severity(app, None, &message);
+            format!("Turn failed: {error}\n\n{TURN_ERROR_INPUT_LOCK_HINT}")
         }
-    }
+    };
+    super::notices::emit_system_notice(app, SystemSeverity::Error, &message);
 }
 
 #[cfg(test)]
@@ -1342,21 +1293,8 @@ mod tests {
         assert_eq!(app.status, AppStatus::Error);
         assert!(app.active_turn_assistant_idx().is_none());
         assert_eq!(app.transcript.messages.len(), 2);
-        assert!(matches!(app.transcript.messages[1].role, MessageRole::System(_)));
-    }
-
-    #[test]
-    fn turn_error_removes_empty_tail_assistant_before_error_message() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Thinking;
-        app.transcript.messages.push(user_message("hello"));
-        app.transcript.messages.push(empty_assistant_message());
-
-        handle_turn_error_event(&mut app, "boom", None, None, None, None);
-
-        assert_eq!(app.transcript.messages.len(), 2);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
-        assert!(matches!(app.transcript.messages[1].role, MessageRole::System(None)));
+        assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
+        assert!(matches!(app.transcript.messages[1].blocks.as_slice(), [MessageBlock::Notice(_)]));
     }
 
     #[test]
