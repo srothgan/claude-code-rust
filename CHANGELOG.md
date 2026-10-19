@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.1] - 2026-10-19 [Changes][v0.16.1]
+
+### Fixes
+
+- **Tool output** (#500, @srothgan): Show actual shell, subagent, web, and plan results consistently before and after terminal resizing.
+- **Tool preview performance** (#501, @srothgan): Reduce rendering stalls in tool previews with long output lines.
+- **Turn errors** (#505, @srothgan): Show consistent errors for every failed reply, keep rate-limited input editable, and preserve the composer background.
+
+### Refactor
+
+- **SDK and tool cleanup** (#505, @srothgan): Consolidate duplicate SDK types and tool-state logic, and remove unused task tracking and cached error messages.
+
+### CI and Dependencies
+
+- **Dependency updates** (#502, #503, #504, @dependabot): Update `arboard` to `3.7.0`, `serde_json` to `1.0.154`, `tokio` to `1.53.3`, CodeQL action pins, and `actions/github-script` to `9.0.0`.
+
 ## [0.16.0] - 2026-10-18 [Changes][v0.16.0]
 
 A special thank-you to Ayush Sharma ([@ayush5harma](https://github.com/ayush5harma)) for his work and contributions. He has been the leading motivator behind this release, with his issues and ideas driving most of the work in 0.16.0.
@@ -990,6 +1006,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.16.1]: https://github.com/srothgan/claude-code-rust/compare/v0.16.0...v0.16.1
 [v0.16.0]: https://github.com/srothgan/claude-code-rust/compare/v0.15.2...v0.16.0
 [v0.15.2]: https://github.com/srothgan/claude-code-rust/compare/v0.15.1...v0.15.2
 [v0.15.1]: https://github.com/srothgan/claude-code-rust/compare/v0.15.0...v0.15.1
