@@ -3,8 +3,8 @@ Require claude-rs
 Set Shell "bash"
 Set FontFamily "DejaVu Sans Mono"
 Set FontSize 18
-Set Width 1200
-Set Height 600
+Set Width 1380
+Set Height 690
 Set Padding 6
 Set Margin 3
 Set MarginFill "#8b949e"

@@ -1,8 +1,26 @@
 # About
 
-Claude Code Rust is a native Rust terminal interface for Claude Code. It replaces the stock Node.js and React Ink terminal UI with a Ratatui-based binary while keeping Claude Code functionality routed through Anthropic's Agent SDK.
+Claude Code Rust (`claude-rs`) is an alternative terminal frontend for Claude Code, built in Rust on Ratatui. It runs sessions through Anthropic's official Agent SDK via a local bridge, with the same account, models, tools, file edits, permissions, MCP servers, skills and session history as Claude Code. Only the interface is different.
 
-The goal is a faster, lower-memory terminal experience with reliable scrollback, direct terminal rendering, native input handling, and a project-local configuration surface.
+Its main difference is how it renders: the conversation stays in your terminal's own scrollback, without flicker.
+
+## How It Renders
+
+Stock Claude Code has two renderers. The classic renderer keeps the conversation in terminal scrollback but redraws it as output streams, which can flicker or jump the scroll position. The [fullscreen renderer](https://code.claude.com/docs/en/fullscreen) avoids that by drawing on the alternate screen, like `vim`; terminal search, tmux copy mode and native text selection then no longer see the conversation unless you export it from transcript mode.
+
+Claude Code Rust renders inline instead. Finished messages and tool output are inserted into the terminal's scrollback once, and only the live area at the bottom of the screen, which holds the streaming reply, the composer and the footer, is redrawn. Your terminal's scrollbar, search, copy mode and click-and-drag selection work on the whole conversation.
+
+| | Stock classic | Stock fullscreen | Claude Code Rust |
+| --- | --- | --- | --- |
+| Conversation lives in | Terminal scrollback | Alternate screen | Terminal scrollback |
+| Flicker while streaming | Can flicker | No | No |
+| Terminal search and tmux copy mode | Yes | Only after exporting from transcript mode | Yes |
+| Native text selection | Yes | Mouse is captured by default | Yes |
+| Mouse controls in the app | No | Yes | No |
+
+Fullscreen views such as `/diff`, `/agents`, `/config` and `/help` use the alternate screen while they are open and return to the inline chat when closed.
+
+The comparison describes how each renderer works. There are no benchmarks of speed or memory against the stock interface yet.
 
 ## Project Status
 
@@ -36,6 +54,7 @@ The Rust TUI implements its own interface and uses the SDK's session capabilitie
 | Skills and SDK-advertised slash commands | SDK, when advertised | Use `/docs commands` for the current session's merged list. |
 | MCP status, authorization, and dynamic servers | Rust TUI and SDK | Persisted server removal additionally needs the CLI, as listed above. |
 | Inline edit diffs | Rust TUI | Tool output displays file changes. |
+| Git change review | Rust TUI | `/diff` opens a fullscreen, read-only viewer; see [Reviewing Git changes](commands.md#reviewing-git-changes). It does not open beside the conversation like the stock fullscreen diff panel. |
 | Shell completions and man pages | Native CLI | Generated from the CLI definitions; see [Usage](usage.md#shell-completions). |
 | Account login and logout | Installed Claude CLI | Invoked from `/login` and `/logout`. |
 | Plugin inventory and persistent management | Installed Claude CLI | Invoked from the plugin management interface. |
@@ -44,7 +63,6 @@ The Rust TUI implements its own interface and uses the SDK's session capabilitie
 | Whole-session background detach/attach and stock agent view | Unavailable in the Rust TUI | SDK background tasks are supported, but the stock `/background` and `claude agents` interface is not provided. |
 | Remote Control and stock IDE integrations | Unavailable in the Rust TUI | No equivalent to the stock `/remote-control` or `/ide` integration. Running in an IDE terminal still works. |
 | Vim input mode | Unavailable in the Rust TUI | The settings surface does not offer an editor-mode preference; see [unavailable settings](settings.md#unavailable-settings). |
-| Dedicated `/diff` review panel | Unavailable in the Rust TUI | Inline edit diffs remain available. |
 | Stock `/tui` renderer switch | Unavailable in the Rust TUI | Rendering and fullscreen settings screens are owned by the Rust application. |
 | Mouse interaction with app controls | Unavailable in the Rust TUI | Use keyboard controls. Terminal text selection and native scrollback depend on your terminal. |
 

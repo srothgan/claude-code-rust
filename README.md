@@ -1,6 +1,6 @@
 # Claude Code Rust
 
-A native Rust terminal interface for Claude Code. Drop-in replacement for Anthropic's stock Node.js/React Ink TUI, built for performance and a better user experience.
+An alternative terminal frontend for Claude Code, written in Rust. Your conversation stays in your terminal's own scrollback, without flicker.
 
 [![Version](https://img.shields.io/github/v/release/srothgan/claude-code-rust?label=version)](https://github.com/srothgan/claude-code-rust/releases/latest)
 [![CI](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml/badge.svg)](https://github.com/srothgan/claude-code-rust/actions/workflows/pr.yml)
@@ -9,7 +9,7 @@ A native Rust terminal interface for Claude Code. Drop-in replacement for Anthro
 
 ## About
 
-Claude Code Rust replaces the stock Claude Code terminal interface with a native Rust binary built on [Ratatui](https://ratatui.rs/). It connects to the same Claude API through a local Agent SDK bridge. Core Claude Code functionality works unchanged, including tool calls, file editing, terminal commands, and permissions.
+Claude Code Rust (`claude-rs`) is a terminal UI for Claude Code built on [Ratatui](https://ratatui.rs/). It runs your sessions through Anthropic's official Agent SDK via a local bridge, with the same account, models, tools, file edits, permissions, MCP servers, skills and session history as Claude Code itself. Only the interface is different.
 
 <p align="center">
   <img src="assets/demo.gif" alt="Claude Code Rust explaining the terminal problems its native Rust interface solves" width="900">
@@ -58,31 +58,43 @@ claude-rs --continue
 
 See [Usage](https://srothgan.github.io/claude-code-rust/usage.html) for startup flags, shell completion setup, and man pages.
 
-Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/).
+## Why use it
 
-> **Note — Agent SDK billing unchanged.** Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+Stock Claude Code offers two renderers, and each one gives something up. The classic renderer keeps the conversation in your terminal's scrollback but redraws it as output streams, which can flicker, jump the scroll position, or duplicate output in long sessions. The [fullscreen renderer](https://code.claude.com/docs/en/fullscreen) fixes that by moving the conversation to the alternate screen, where your terminal's search, tmux copy mode and native text selection no longer see it.
 
-## Why
+Claude Code Rust renders inline. Finished messages and tool output are written into your terminal's scrollback once, and only the live area at the bottom (the streaming reply, the composer and the footer) is redrawn.
 
-The stock Claude Code TUI runs on Node.js with React Ink, which renders by redrawing full frames over raw ANSI escape codes. Users widely report the following problems with it:
+| | Stock classic | Stock fullscreen | Claude Code Rust |
+| --- | --- | --- | --- |
+| Conversation lives in | Terminal scrollback | Alternate screen | Terminal scrollback |
+| Flicker while streaming | Can flicker | No | No |
+| Terminal search and tmux copy mode | Yes | Only after exporting from transcript mode | Yes |
+| Native text selection | Yes | Mouse is captured by default | Yes |
+| Mouse controls in the app | No | Yes | No |
 
-- **Flickering**: The whole view is redrawn on every status update, causing constant flicker (bad enough to crash editors' integrated terminals during long sessions)
-- **CPU**: Sustained high CPU even when idle, and runaway loops that spawn multiple background processes
-- **Memory**: 200-400MB baseline (and climbing with conversation length) vs ~20-50MB for a native binary
-- **Resize**: Window resizing leaves duplicated frames in scrollback, loses lines when shrinking, and can garble the display
-- **Input latency**: Keystrokes echo with visible delay as context fills up, and noticeably worse on Windows
-- **Scrollback**: Hijacks the terminal's native scrollback, erasing history you can no longer scroll back to
-- **Paste**: Large pastes can flood stdout and freeze the terminal
+That makes it a good fit if you:
 
-Claude Code Rust addresses these with a native terminal UI that uses diffed, direct terminal control via Crossterm and Ratatui, with no full-frame redraws and no React Ink rendering loop. There is no benchmark against the stock interface yet, so the improvements are based on daily use, not on measurements.
+- scroll, search and copy with your terminal or tmux rather than inside the app;
+- work in tmux, over SSH, or in Windows Terminal;
+- resize windows or split panes while Claude is working;
+- prefer a keyboard-driven interface with a single native binary.
+
+It is not a feature-for-feature copy of Claude Code. Some stock features are unavailable, and a few account and plugin operations still call the `claude` CLI. The [feature overview](https://srothgan.github.io/claude-code-rust/about.html#feature-overview) lists both. There are no benchmarks against the stock interface yet; the comparison above describes how each renderer works, not measured speed or memory.
+
+## What you get
+
+- **Core Claude Code workflow:** tool calls, inline edit diffs, permission prompts, plan mode, subagents and background tasks, MCP authorization, skills and SDK slash commands.
+- **Session tools:** a searchable `/resume` picker with forking, `/rewind`, `/compact`, `/export` to Markdown, and `/btw` side questions while a turn runs.
+- **Fullscreen views when you want them:** a Git diff viewer (`/diff`), subagent view (`/agents`), settings (`/config`), status, usage and help. These open on demand and close back to the inline chat.
+- **Supportability:** `claude-rs doctor`, redacted debug bundles, shell completions and man pages.
 
 ## Documentation
 
-The manual covers installation with scripts and npm, plus help, slash commands, keyboard shortcuts, settings, diagnostics, troubleshooting, building from source, architecture, and the changelog:
+Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/):
 
+- [About and feature overview](https://srothgan.github.io/claude-code-rust/about.html)
 - [Installation](https://srothgan.github.io/claude-code-rust/installation.html)
 - [Usage](https://srothgan.github.io/claude-code-rust/usage.html)
-- [Help](https://srothgan.github.io/claude-code-rust/help.html)
 - [Slash commands](https://srothgan.github.io/claude-code-rust/commands.html)
 - [Settings](https://srothgan.github.io/claude-code-rust/settings.html)
 - [Troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html)
@@ -99,6 +111,10 @@ Development follows new Agent SDK releases and problems found in daily use. The 
 ## Limitations
 
 Startup is still constrained by the upstream Claude Agent SDK runtime that this TUI wraps. The Rust interface itself is fast, but end-to-end readiness can still take noticeable time before a session is fully available. Improving that remains an active area of work.
+
+## Billing
+
+Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
 
 ## License
 

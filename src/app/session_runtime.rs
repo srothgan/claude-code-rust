@@ -3,7 +3,7 @@
 use crate::app::App;
 use std::time::{Duration, Instant};
 
-const CONTEXT_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(45);
+const CONTEXT_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 pub(crate) enum RuntimeReloadRequestOutcome {
     Requested,
