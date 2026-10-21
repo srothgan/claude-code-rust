@@ -1,30 +1,20 @@
 # About
 
-Claude Code Rust (`claude-rs`) is an alternative terminal frontend for Claude Code, built in Rust on Ratatui. It runs sessions through Anthropic's official Agent SDK via a local bridge, with the same account, models, tools, file edits, permissions, MCP servers, skills and session history as Claude Code. Only the interface is different.
+Claude Code Rust (`claude-rs`) is a keyboard-driven terminal interface for Claude Code. It uses Anthropic's Agent SDK for conversations, tools and session history, and provides its own interface for reading output, reviewing changes and managing sessions.
 
-Its main difference is how it renders: the conversation stays in your terminal's own scrollback, without flicker.
+Start with [Installation](installation.md) and [Your first session](usage.md). If you already use the app, go to [conversation tasks](conversations.md), [configuration](configure.md) or [troubleshooting](troubleshooting.md). Contributors should start with [Development](development.md).
 
 ## How It Renders
 
-Stock Claude Code has two renderers. The classic renderer keeps the conversation in terminal scrollback but redraws it as output streams, which can flicker or jump the scroll position. The [fullscreen renderer](https://code.claude.com/docs/en/fullscreen) avoids that by drawing on the alternate screen, like `vim`; terminal search, tmux copy mode and native text selection then no longer see the conversation unless you export it from transcript mode.
+The normal conversation renders inline: completed output enters your terminal's scrollback, while the streaming reply, composer and footer stay in the live area. Terminal search, selection and copy behavior remain available according to your terminal's capabilities.
 
-Claude Code Rust renders inline instead. Finished messages and tool output are inserted into the terminal's scrollback once, and only the live area at the bottom of the screen, which holds the streaming reply, the composer and the footer, is redrawn. Your terminal's scrollbar, search, copy mode and click-and-drag selection work on the whole conversation.
+Fullscreen views such as `/diff`, `/agents`, `/config` and `/help` use the alternate screen while open and return to the inline conversation when closed. App controls are keyboard-driven; see [Keyboard shortcuts](shortcuts.md).
 
-| | Stock classic | Stock fullscreen | Claude Code Rust |
-| --- | --- | --- | --- |
-| Conversation lives in | Terminal scrollback | Alternate screen | Terminal scrollback |
-| Flicker while streaming | Can flicker | No | No |
-| Terminal search and tmux copy mode | Yes | Only after exporting from transcript mode | Yes |
-| Native text selection | Yes | Mouse is captured by default | Yes |
-| Mouse controls in the app | No | Yes | No |
-
-Fullscreen views such as `/diff`, `/agents`, `/config` and `/help` use the alternate screen while they are open and return to the inline chat when closed.
-
-The comparison describes how each renderer works. There are no benchmarks of speed or memory against the stock interface yet.
+There are no speed or memory benchmarks against the stock Claude Code interface. The [architecture overview](architecture.md) explains the rendering boundary for contributors.
 
 ## Project Status
 
-The project is pre-1.0. The crate version in the root `Cargo.toml` and the [Changelog](changelog.md) are the source of truth for the current release.
+The project is pre-1.0 and under active development. Run `claude-rs --version` to identify your installed version and consult the [Changelog](changelog.md) for release changes. The website follows the repository's main branch, so it can describe changes newer than your installation.
 
 The project is useful today, but the runtime still depends on the upstream Claude Agent SDK bridge. Startup readiness, authentication behavior, billing, model availability, and service limits are controlled by Anthropic.
 
@@ -48,14 +38,14 @@ The Rust TUI implements its own interface and uses the SDK's session capabilitie
 | Feature | Availability | Details |
 | --- | --- | --- |
 | Conversations, tools, file edits, and permissions | Rust TUI and SDK | Core interactive workflow. |
-| Model, effort, permission mode, and agent selection | Rust TUI and SDK | Available through [startup flags](usage.md) and session controls. |
-| Resume, continue, compaction, and rewind | Rust TUI and SDK | Session startup and history controls; see [Usage](usage.md) and [Slash Commands](commands.md). |
+| Model, effort, permission mode, and agent selection | Rust TUI and SDK | Available through [startup flags](cli.md) and session controls. |
+| Resume, continue, compaction, and rewind | Rust TUI and SDK | Session startup and history controls; see [conversation tasks](conversations.md) and [Slash Commands](commands.md). |
 | Subagents and background tasks within a session | Rust TUI and SDK | SDK task activity and results are displayed in the conversation. This is distinct from detaching the entire session. |
 | Skills and SDK-advertised slash commands | SDK, when advertised | Use `/docs commands` for the current session's merged list. |
 | MCP status, authorization, and dynamic servers | Rust TUI and SDK | Persisted server removal additionally needs the CLI, as listed above. |
 | Inline edit diffs | Rust TUI | Tool output displays file changes. |
-| Git change review | Rust TUI | `/diff` opens a fullscreen, read-only viewer; see [Reviewing Git changes](commands.md#reviewing-git-changes). It does not open beside the conversation like the stock fullscreen diff panel. |
-| Shell completions and man pages | Native CLI | Generated from the CLI definitions; see [Usage](usage.md#shell-completions). |
+| Git change review | Rust TUI | `/diff` opens a fullscreen, read-only viewer; see [Reviewing Git changes](conversations.md#reviewing-git-changes). It does not open beside the conversation like the stock fullscreen diff panel. |
+| Shell completions and man pages | Native CLI | Generated from the CLI definitions; see [CLI reference](cli.md#shell-completions). |
 | Account login and logout | Installed Claude CLI | Invoked from `/login` and `/logout`. |
 | Plugin inventory and persistent management | Installed Claude CLI | Invoked from the plugin management interface. |
 | Session-only local plugin folders | Rust TUI and SDK | Load local folder in `/plugins`; no persistent installation. |
@@ -79,8 +69,4 @@ For official Claude documentation, use the Claude documentation:
 
 ## Billing Note
 
-Because Claude Code Rust uses the Agent SDK, usage should be treated as Agent SDK usage. Anthropic has paused the previously announced Agent SDK credit change. For now, Agent SDK usage, including `claude -p` and third-party apps like this one, still draws from normal Claude subscription limits.
-
-Check Anthropic's current support article before relying on billing assumptions:
-
-- [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+Usage is handled through Anthropic's Agent SDK. Billing, subscription allowances, API credits and service limits depend on Anthropic's current policy and your account. Check [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) before relying on a particular allowance. This project does not set those terms.

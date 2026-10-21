@@ -6,15 +6,13 @@ Install the Claude Code CLI and keep `claude` on `PATH` for the account and mana
 
 The recommended script install includes the application and its runtime dependencies. It does not require a Rust toolchain, Node.js, npm, or a separate Bun installation.
 
+Script archives and npm payloads support Linux x64/arm64 with glibc, Windows x64/arm64, and macOS x64/arm64. Linux musl distributions need a [source build](development.md).
+
 ## Install Script
 
 Install scripts are available in GitHub Releases starting with `v0.14.0` and are the recommended install path. They install a self-contained release without requiring npm, Node.js, or Bun on the user's machine.
 
 The scripts download a complete release archive from GitHub, verify the release archive integrity, install the native binary with the bundled private Bun runtime, Agent SDK bridge, and production `node_modules`, then run a quiet `claude-rs --version` check. Download diagnostics and strict runtime diagnostics are available with the opt-in verify flag.
-
-Interactive terminals display a fixed-width 20-cell progress bar while downloading the release archive and a spinner for other longer installation steps. Transferred size and total size are shown when they fit; the verify flag adds average speed and ETA, followed by the final transfer size, elapsed time, average speed, and HTTP status. Details that would wrap are omitted from the live line. Redirected output and CI remain plain and log-friendly, and `NO_COLOR` disables colored status output.
-
-On supported interactive terminals, confirmation prompts show `y Yes / N No` and accept either answer key immediately, without Enter. Other keys are ignored. Terminals without single-key input use a line prompt instead, where Enter selects No.
 
 **macOS/Linux:**
 
@@ -28,23 +26,16 @@ curl -fsSL https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scri
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubusercontent.com/srothgan/claude-code-rust/main/scripts/install/install.ps1' | iex"
 ```
 
-**The default Unix install layout is:**
+## Verify and start
 
-```text
-${XDG_DATA_HOME:-$HOME/.local/share}/claude-rs/
-$HOME/.local/bin/claude-rs
-$HOME/.local/share/man/man1/claude-rs*.1
+Open a new terminal if the installer changed PATH, then run:
+
+```bash
+claude-rs --version
+claude-rs doctor
 ```
 
-The app directory contains `claude-rs`, `claude-rs-bridge-bun`, `agent-sdk/`, and `node_modules/`. The file in `$HOME/.local/bin` is a launcher script that executes the app binary. Unix archives also contain manuals under `share/man/man1/`; the installer links them into the sibling `share/man/man1/` directory beside `bin`. Uninstall removes its own manual links and preserves manuals from other installations. See [Usage](usage.md#man-pages) for viewing manuals and generating them with npm or source installations.
-
-**The default Windows install layout is:**
-
-```text
-%LOCALAPPDATA%\Programs\claude-rs\
-```
-
-The Windows app directory is added to the user `Path` unless path modification is disabled.
+The first command should print the installed version. Review any failed doctor checks before starting; authentication failures have a separate [recovery guide](troubleshooting.md#login-and-authentication-failures). Continue with [Your first session](usage.md) once the command is available.
 
 ## Install From npm
 
@@ -58,7 +49,11 @@ claude-rs
 
 The npm option requires Node.js 24 and npm to install and run its JavaScript launcher. The package owns the `claude-rs` command, selects the matching platform payload with npm optional dependencies, and includes the private Bun runtime used by the Agent SDK bridge. A Rust toolchain and separate Bun installation are not required. No install-time binary download or `postinstall` script is used.
 
-Supported npm platforms are Linux x64/arm64 with glibc, Windows x64/arm64, and macOS x64/arm64.
+After installing through npm, follow [Verify and start](#verify-and-start).
+
+## Advanced script installation
+
+The options below apply to the script installer. For npm, use npm to select and manage the installed package version.
 
 ### Pinning a Release
 
@@ -74,6 +69,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm 'https://raw.githubu
 ```
 
 The version can include or omit the `v` prefix.
+
+If the selected release has no install archive, the script reports `install script is currently not available for this release`. Choose a release with script-install support or use another supported installation method.
 
 ### Reinstalling the Same Version
 
@@ -158,23 +155,39 @@ With the PowerShell one-liner, use the matching environment variables:
 
 After a successful install, an interactive run asks whether to start `claude-rs` immediately. This runs the installed binary directly, so it works even before a new shell picks up PATH changes. Use `--run`, `-Run`, or `CLAUDE_RS_RUN=1` to start it automatically after install.
 
+## Update the app
+
 When the startup update screen offers **Install update**, it detects whether the running executable is owned by a script or npm install and uses the same method. Script updates replace the existing app directory while preserving its launcher and PATH configuration. If the executable is not in a recognized install layout, the screen offers separate script and npm choices instead of guessing from PATH order.
 
 The `/config` setting Automatic updates defaults to Off, retaining that manual update screen. Turning it On skips the screen and installs an available newer version in the background after a normal exit. Update checks continue in either mode. Automatic installation uses only a recognized script or npm layout and selects the checked release version; an unrecognized source build is left untouched. See [Settings](settings.md#automatic-updates).
 
-### Supported Script Platforms
+## Installer behavior and layout
 
-Install archives are published for Linux x64/arm64 with glibc, Windows x64/arm64, and macOS x64/arm64.
+Interactive terminals display a fixed-width 20-cell progress bar while downloading the release archive and a spinner for other longer installation steps. Transferred size and total size are shown when they fit; the verify flag adds average speed and ETA, followed by the final transfer size, elapsed time, average speed, and HTTP status. Details that would wrap are omitted from the live line. Redirected output and CI remain plain and log-friendly, and `NO_COLOR` disables colored status output.
 
-Linux musl distributions are not supported by the install archives yet. Use npm if your platform has a matching package, or [build from source](development.md).
+On supported interactive terminals, confirmation prompts show `y Yes / N No` and accept either answer key immediately, without Enter. Other keys are ignored. Terminals without single-key input use a line prompt instead, where Enter selects No.
 
-The scripts do not require user-installed Node.js or Bun. If npm is available and a global `claude-code-rust` install is present, the installer identifies its location and offers to uninstall it through npm after the new script installation has passed verification. If the selected release does not contain install archives, the installer exits with:
+### Install layout
+
+**The default Unix install layout is:**
 
 ```text
-install script is currently not available for this release
+${XDG_DATA_HOME:-$HOME/.local/share}/claude-rs/
+$HOME/.local/bin/claude-rs
+$HOME/.local/share/man/man1/claude-rs*.1
 ```
 
-### Switching Install Methods
+The app directory contains `claude-rs`, `claude-rs-bridge-bun`, `agent-sdk/`, and `node_modules/`. The file in `$HOME/.local/bin` is a launcher script that executes the app binary. Unix archives also contain manuals under `share/man/man1/`; the installer links them into the sibling `share/man/man1/` directory beside `bin`. Uninstall removes its own manual links and preserves manuals from other installations. See [CLI reference](cli.md#man-pages) for viewing manuals and generating them with npm or source installations.
+
+**The default Windows install layout is:**
+
+```text
+%LOCALAPPDATA%\Programs\claude-rs\
+```
+
+The Windows app directory is added to the user `Path` unless path modification is disabled.
+
+## Switching Install Methods
 
 `claude-rs` is resolved by normal `PATH` order. npm and script installs use different app layouts, and one method does not automatically own files created by the other. If both are installed, whichever `claude-rs` appears first on `PATH` runs.
 

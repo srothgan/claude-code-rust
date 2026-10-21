@@ -24,7 +24,7 @@ See [Presentation and scrolling](settings.md#presentation-and-scrolling) for the
 
 ## Settings Surface
 
-The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](settings.md#opening-and-navigating), [Editing a value](settings.md#editing-a-value) and [Lists and structured settings](settings.md#lists-and-structured-settings).
+The fullscreen settings surface has its own keys for tabs, panes, search and editors. See [Opening and navigating](configure.md#opening-and-navigating), [Editing a value](configure.md#editing-a-value) and [Lists and structured settings](configure.md#lists-and-structured-settings).
 
 ## Plugins
 

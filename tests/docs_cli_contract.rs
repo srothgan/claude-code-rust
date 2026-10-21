@@ -2,8 +2,8 @@
 
 //! Drift check between the `claude-rs` CLI and the CLI Options table in the manual.
 //!
-//! Only long flag names and their order are enforced. Prose in the Purpose column
-//! is free to diverge, so documenting a flag well is never a test failure.
+//! Long flag names must match, without duplicates. Editorial grouping and prose
+//! in the Purpose column are independent of the parser's declaration order.
 
 use clap::CommandFactory;
 use claude_code_rust::Cli;
@@ -30,7 +30,7 @@ fn long_flag_in_cell(cell: &str) -> Option<String> {
 /// The manual is read from disk rather than with `include_str!` so docs are not
 /// embedded in any shipped artifact.
 fn documented_long_flags() -> Vec<String> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/usage.md");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/cli.md");
     let markdown = std::fs::read_to_string(path);
     assert!(markdown.is_ok(), "failed to read {path}");
     let markdown = markdown.unwrap_or_default();
@@ -77,17 +77,15 @@ fn docs_cli_options_table_matches_clap() {
     for flag in &expected {
         assert!(
             documented.contains(flag),
-            "--{flag} is a `claude-rs` option but is missing from the CLI Options table in docs/src/usage.md"
+            "--{flag} is a `claude-rs` option but is missing from the CLI Options table in docs/src/cli.md"
         );
     }
     for flag in &documented {
         assert!(
             expected.contains(flag),
-            "--{flag} is listed in the CLI Options table in docs/src/usage.md but is not a `claude-rs` option"
+            "--{flag} is listed in the CLI Options table in docs/src/cli.md but is not a `claude-rs` option"
         );
     }
-    assert_eq!(
-        documented, expected,
-        "the CLI Options table in docs/src/usage.md must list flags in `Cli` declaration order"
-    );
+    let unique: std::collections::HashSet<_> = documented.iter().collect();
+    assert_eq!(documented.len(), unique.len(), "the CLI Options table must not repeat flags");
 }

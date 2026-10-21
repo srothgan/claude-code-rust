@@ -4,20 +4,19 @@ Thank you for considering contributing to claude-code-rust! This document provid
 
 ## Code of Conduct
 
-This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
-By participating, you agree to uphold this code.
+This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you agree to uphold this code.
 
 ## How to Contribute
 
 ### Reporting Bugs
 
-- Use the [Bug Report](../../issues/new?template=bug_report.yml) issue template
+- Use the [Bug Report](https://github.com/srothgan/claude-code-rust/issues/new?template=bug_report.yml) issue template
 - Include reproduction steps, expected vs actual behavior, and environment details
-- Run with `RUST_LOG=debug` and include relevant log output
+- Follow [Useful Issue Reports](docs/src/diagnostics.md#useful-issue-reports) for redacted diagnostics; review collected material before sharing it
 
 ### Suggesting Features
 
-- Use the [Feature Request](../../issues/new?template=feature_request.yml) template
+- Use the [Feature Request](https://github.com/srothgan/claude-code-rust/issues/new?template=feature_request.yml) template
 - Check existing issues and discussions first
 - Describe the problem being solved, not just the desired solution
 
@@ -41,17 +40,7 @@ Once the scope is agreed:
 2. Create a feature branch from `main`: `git checkout -b feat/my-feature`
 3. Make your changes following the coding standards below
 4. Add or update tests as appropriate
-5. Ensure all checks pass:
-   ```bash
-   cargo fmt --all -- --check
-   cargo clippy --all-targets --all-features -- -D warnings
-   cargo test --all-features
-   cargo fetch --locked
-   ```
-   If you have the MSRV toolchain (`1.88.0`) installed, also verify:
-   ```bash
-   cargo +1.88.0 check --all-features
-   ```
+5. Run the checks for every affected area in [Test and validate changes](docs/src/testing.md), and report any checks you could not run.
 6. Commit using [Conventional Commits](https://www.conventionalcommits.org/):
    ```
    feat: add keyboard shortcut for tool collapse
@@ -62,10 +51,7 @@ Once the scope is agreed:
 
 ### Labels
 
-Labels use a `namespace: value` convention so they group visually and filter cleanly.
-Apply one `type:` label per issue or pull request. The exception is a dependency
-update that also carries a security fix, which takes `type: dependencies` and
-`type: security` together.
+Labels use a `namespace: value` convention so they group visually and filter cleanly. Apply one `type:` label per issue or pull request. The exception is a dependency update that also carries a security fix, which takes `type: dependencies` and `type: security` together.
 
 | Namespace | Values | Meaning |
 | --- | --- | --- |
@@ -73,8 +59,7 @@ update that also carries a security fix, which takes `type: dependencies` and
 | `area:` | `tui`, `core`, `agent-sdk`, `install`, `ci` | Which part of the project it touches. |
 | `status:` | `triage`, `blocked`, `needs-info`, `discussion`, `wontfix` | Where it sits in the workflow. |
 
-`good first issue` and `help wanted` stay unprefixed because GitHub uses them to
-populate the repository contribution page.
+`good first issue` and `help wanted` stay unprefixed because GitHub uses them to populate the repository contribution page.
 
 `status: triage` means an issue awaits initial maintainer assessment. Remove it after assessing the report and deciding its scope and classification; assignment and other labels do not establish that review is complete.
 
@@ -89,95 +74,11 @@ These commands ignore quoted text, code blocks, bot comments and PR threads. The
 
 Issue templates apply `type:` automatically, Dependabot applies `type: dependencies` plus the matching `area:` label from `.github/dependabot.yml`, and the weekly `Dependency Monitor` workflow applies `type: security` to the advisory issue it opens. `status: triage` is named in `.github/scripts/issue-triage.cjs` and `.github/workflows/dependency-monitor.yml`. Renaming any of those labels requires updating that config in the same change.
 
-## Development Setup
+## Development and validation
 
-### Prerequisites
-
-- Rust 1.88.0+ (install via https://rustup.rs)
-- npm for contributor JavaScript tooling and package scripts.
-- Bun for source runs, bridge runtime checks, and release packaging validation.
-
-### Clone and Build
-
-The Agent SDK bridge must be built before the app can spawn it:
-
-```bash
-git clone https://github.com/srothgan/claude-code-rust.git
-cd claude-code-rust
-npm ci --prefix agent-sdk
-npm run build --prefix agent-sdk
-cargo run
-
-# Run with debug logging
-RUST_LOG=debug cargo run
-```
-
-See [Development](docs/src/development.md) for release-mode source builds, the bundled Bun
-runtime layout, and manual bridge overrides.
-
-### Running CI Checks Locally
-
-These match the core checks in `.github/workflows/pr.yml`:
-
-The repository's `.cargo/config.toml` allows up to eight concurrent compilation jobs for builds, Clippy, and test compilation. This is a starting point for balancing speed and peak compiler/linker memory use, not a measured optimum or a universal Cargo recommendation. Without a configured limit, Cargo defaults to the number of logical CPUs. See [Cargo's build job settings](https://doc.rust-lang.org/cargo/reference/config.html#buildjobs).
-
-Override the default per command with `-j N`, for example `cargo clippy -j 4 --all-targets --all-features -- -D warnings`, or set `CARGO_BUILD_JOBS` in your environment to override the repository setting. Lower the limit if builds exhaust memory or cause swapping; increase it if memory and CPU capacity allow, and compare timings for the same workload. Run checks sequentially to avoid competing builds.
-
-Compilation jobs do not control test execution threads. Tests run in parallel by default; use `cargo test --all-features -- --test-threads=1` when serial test execution is required. The terminal regression CI job sets this explicitly. See [Cargo's test options](https://doc.rust-lang.org/cargo/commands/cargo-test.html#miscellaneous-options).
-
-```bash
-# Formatting
-cargo fmt --all -- --check
-
-# Linting
-cargo clippy --all-targets --all-features -- -D warnings
-
-# Tests
-cargo test --all-features
-
-# Lockfile integrity
-cargo fetch --locked
-
-# Cargo dependency policy
-cargo deny check bans licenses sources advisories
-
-# MSRV (requires the 1.88.0 toolchain)
-cargo +1.88.0 check --all-features
-```
-
-Additional GitHub-only checks include the separate PR title lint workflow,
-CodeQL analysis, path-aware package layout validation, scheduled cross-platform
-smoke tests, and release packaging validation.
-
-### Release And Packaging Changes
-
-Release workflow changes are maintainer-owned and should preserve the package architecture described in `docs/src/architecture.md`.
-Repository protection, workflow permission, and release approval policy are documented in `docs/src/governance.md`.
-
-Important invariants:
-
-- The root npm package must not use `postinstall` or install-time binary downloads.
-- The root npm package owns the `claude-rs` bin through `bin/claude-rs.js`.
-- Native binaries and private Bun runtimes live in platform-specific optional npm packages.
-- Platform packages must not expose their own npm `claude-rs` bin; otherwise npm can link the payload package over the root resolver.
-- Platform packages must publish before the root package for a given version.
-- npm publication must use Trusted Publishing, not a checked-in token or `NPM_TOKEN`.
-- npm and GitHub Release publication must pass through the `npm-release` environment approval gate.
-- Release artifacts should be generated, verified, packed, and smoke-tested before publication.
-
-For local package-layout validation, use the platform mapping in `scripts/shared/npm-package-config.mjs` rather than duplicating package names in docs:
-
-```bash
-npm ci
-npm ci --prefix agent-sdk
-npm run build --prefix agent-sdk
-node scripts/npm/generate-npm-packages.mjs
-node scripts/npm/verify-npm-packages.mjs
-node scripts/npm/smoke-npm-package-install.mjs --platform <platform> --real-binary --no-system-runtime
-node scripts/npm/smoke-npm-package-install.mjs --platform <platform> --registry-smoke --real-binary --no-system-runtime
-```
-
-Do not trigger releases, create tags, or publish npm packages from contributor PRs.
+- [Build and run locally](docs/src/development.md) covers prerequisites, dependency installation, source runs and bridge overrides.
+- [Test and validate changes](docs/src/testing.md) maps each changed area to local checks and CI jobs.
+- [Packaging and release invariants](docs/src/packaging.md) records artifact ownership and validation. Release workflow changes remain maintainer-owned; [Governance](docs/src/governance.md) owns publication approval policy.
 
 ## Coding Standards
 
@@ -196,34 +97,8 @@ Keep `AGENTS.md` limited to what applies to every contributor. Put your own tool
 
 ## Architecture
 
-The project is split into a Rust binary and an in-repo TypeScript bridge:
-
-```
-src/
-├── main.rs          # Entry point – CLI parsing, tokio runtime + LocalSet
-├── agent/           # Bridge spawning, NDJSON client, wire types, event handling
-├── app/             # Application state, event loop, config, permissions, input
-└── ui/              # Ratatui widgets – chat view, markdown, diffs, footer, themes
-
-agent-sdk/
-└── src/             # TypeScript NDJSON stdio bridge wrapping @anthropic-ai/claude-agent-sdk
-```
-
-**How the pieces connect:**
-
-1. `main.rs` boots a `tokio::task::LocalSet` (required because the bridge child
-   process handles are `!Send`) and hands control to `app::run_tui`.
-2. `agent::client::BridgeClient` spawns `agent-sdk/dist/bridge.js` as a child
-   process and communicates over **NDJSON on stdin/stdout**.
-3. The Rust side sends `CommandEnvelope`s (start session, submit prompt,
-   permission responses, …) and receives `EventEnvelope`s (assistant messages,
-   tool calls, errors, …).
-4. `app/` ties everything together: it owns the `App` state, routes terminal
-   events and bridge events through `tokio::sync::mpsc` channels, and drives the
-   TUI render loop.
-5. `ui/` is a pure rendering layer built on **Ratatui + Crossterm** (cross-platform).
+Read the [architecture overview](docs/src/architecture.md) for component boundaries, one prompt's end-to-end flow, and where changes belong. [Subsystem ownership and invariants](docs/src/subsystems.md) records the detailed state, persistence and failure guarantees.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the
-Apache-2.0 license, the same license as the project.
+By contributing, you agree that your contributions will be licensed under the Apache-2.0 license, the same license as the project.

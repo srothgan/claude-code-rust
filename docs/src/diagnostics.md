@@ -159,6 +159,10 @@ The bundle includes:
 
 The bundle excludes full config files, Claude credentials, environment dumps, and arbitrary project files. Redaction removes obvious credentials, and baseline logs omit common sensitive diagnostic fields. Detailed logs can still contain private conversation text, local file paths, command output, session identifiers, or project-specific context. Review a bundle before sharing it publicly.
 
+## Hook failures
+
+A hook that fails shows one warning in the transcript with its exit code and the start of its output, and the failure is also in the default log. Exit code 2 depends on the hook event, as in the [hook reference](https://code.claude.com/docs/en/hooks#exit-code-2-behavior-per-event). Where it is the hook's decision, such as blocking a tool call or a prompt, keeping Claude working, or handing the output to Claude after `PostToolUse`, it is not a failure and is recorded only in the detailed log; when nothing else shows that decision, as after `PostToolUse`, `PostToolUseFailure` or `PostToolBatch`, the transcript shows one line saying the hook returned a blocking error. Where Claude Code only shows the output to the user, ignores the exit code, or fails the operation on any non-zero exit (as `WorktreeCreate` does), and on events the reference does not list, it is reported as a failure. A hook cancelled by an interrupted turn is not reported at all.
+
 ## Failure Reports
 
 Top-level failures print a short issue-friendly report to stderr with a category, exit code, version, platform, latest discovered log path, and one next-step command. Bridge failures are categorized as spawn, initialization, stdout close, SDK/protocol failure, or timeout so support output points at the likely failing boundary.

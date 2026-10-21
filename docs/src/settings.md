@@ -1,74 +1,6 @@
-# Settings
+# Settings reference
 
-Claude Code Rust has a fullscreen settings surface with multiple tabs. These slash commands open that surface directly:
-
-| Command | Tab | Purpose |
-| --- | --- | --- |
-| `/config` | Settings → General | Edit saved defaults and everyday preferences. |
-| `/memory` | Settings → Memory | Configure context, checkpoints, automatic memory and plans. |
-| `/permissions` | Settings → Permissions | Configure saved permission defaults, rules and working directories. |
-| `/sandbox` | Settings → Sandbox | Configure sandbox execution, filesystem, network and credentials. |
-| `/hooks` | Settings → Hooks | Inspect and edit saved hook handlers without executing them. |
-| `/mcp` | MCP | Inspect live MCP server status and complete MCP authorization flows. |
-| `/plugins` | Plugins | Manage installed plugins, marketplace plugins, and marketplaces. |
-| `/status` | Status | Inspect session, account, authentication, and runtime status. |
-| `/usage` | Usage | Inspect quota and usage information reported by the active session. |
-| `/help` | Help | Open fullscreen in-app help. |
-
-The settings surface is session-aware. Settings load when the app's session starts, and some tabs need an active session before they can show live data.
-
-## Opening and navigating
-
-Every command in the table above opens the same fullscreen surface on a different starting tab. The tab order is:
-
-```text
-Settings -> Plugins -> Status -> Usage -> MCP -> Help
-```
-
-`Tab` moves to the next tab and `Shift+Tab` to the previous one. `Esc` closes the surface. `Enter` closes it as well wherever the selected item has no action of its own. The hint line at the bottom of the surface shows what `Enter` and `Esc` do at the current position. Each tab also has its own keys: the Plugins tab navigates plugin lists, the MCP tab opens server actions and authorization flows, the Status tab renames the session with `r` or generates a title with `g`, and the Usage tab refreshes with `r`.
-
-### Settings panes
-
-The Settings tab has a second row with six panes: General, Memory, Permissions, Sandbox, Hooks, and Workflows & Worktrees. Each pane is one alphabetical list. Focus moves between three areas stacked from top to bottom: the pane row, the search field, and the list.
-
-| Focus | Key | Action |
-| --- | --- | --- |
-| List | `Up` on the first item | Move to the search field. |
-| Search field | `Up` | Move to the pane row. |
-| Search field | `Down`, `Enter` | Move to the list. |
-| Pane row | `Left`, `Right` | Switch pane. |
-| Pane row | `Down` | Move to the search field. |
-| Pane row | `Enter` | Move to the list. |
-
-Each pane remembers its own selection. Switching to another top-level tab and back keeps the pane, selection and search.
-
-Below 30 columns or 12 rows the surface asks you to resize the window instead of drawing an unusable layout.
-
-### Search
-
-Press `/` to search the current pane. A setting matches when its label, description or setting ID contains every word you typed, ignoring case. Search covers only the current pane and never looks inside saved values such as hook commands, credential entries or environment values.
-
-| Key | Action |
-| --- | --- |
-| `Enter` in the search field | Move to the results. |
-| `Enter` on a result | Clear the query and keep that setting selected in the full list. |
-| `Esc` | Clear the query and return to the previous position. Without a query, `Esc` closes the surface. |
-
-Switching panes clears the search.
-
-## Help
-
-Use `/help` when you want fullscreen help inside the same tabbed surface. The Help tab has three sections:
-
-| Section | Shows |
-| --- | --- |
-| Shortcuts | Keyboard shortcuts for the current app state and focused UI context. |
-| Commands | App-owned slash commands plus slash commands advertised by the active SDK session. |
-| Subagents | Subagents advertised by the active SDK session, including model labels when provided. |
-
-Use `Left` and `Right` inside the Help tab to switch sections. Use `Up` and `Down` to move through rows in the active section.
-
-The Help tab is live UI, not a static manual page. Its Shortcuts section changes with focus and state, and its Commands and Subagents sections depend on what the active SDK session advertises.
+Use this page to look up saved scopes, setting keys, persistence and runtime behavior. For editing steps, start with [Configure claude-rs](configure.md). A saved value and the value running in the current session can differ.
 
 ## Where settings are saved
 
@@ -91,134 +23,6 @@ Set `CLAUDE_CONFIG_DIR` before startup to use an isolated Claude profile. User s
 Set `CLAUDE_RS_CONFIG_DIR` to select a separate directory for this app's preferences. They are read from and saved to `<directory>/settings.json`, including the footer layout, presentation preferences, notification categories and update preferences. An empty or unset value uses the normal OS config location. This override is independent of `CLAUDE_CONFIG_DIR`; diagnostics retain their normal location.
 
 The Settings tab shows saved values. A running session can differ, because workspace trust, managed policy, model capabilities, startup arguments and session commands also apply. The Status tab and the chat footer show what the session is running with.
-
-## Reading the list
-
-Each row shows a setting and its value, and a counter such as `1/27` shows the position in the pane. Below the list, `Description:` explains the selected setting and a context line states where its value comes from at the selected scope:
-
-| Context line | Meaning |
-| --- | --- |
-| `Saved in User` | The value is saved at the selected scope. |
-| `User value: … · Overridden by Project` | A value is saved at the selected scope, but another scope takes precedence. |
-| `From Project · Not set in User` | The value comes from another scope. |
-| `Using Default` | No scope sets a value. |
-| `Not set in User` | A list or structured setting has no entries at the selected scope. |
-| `Saved in User · Not loaded` | The file contains the value, but Claude did not load it. |
-| `· Also supplied by Project` | Another scope contributes as well, as with merged lists. |
-| `· Applies immediately`, `· Applies to new sessions` | When a saved change takes effect. |
-
-`Default` means that no scope sets a value. It does not say whether the built-in behavior is On or Off; where the built-in behavior is known, the description states it, for example `Default: On`.
-
-Read-only restrictions and settings-file errors appear as warnings below the description.
-
-Claude decides which settings files it loads: some invalid entries are ignored individually, while other schema errors exclude the whole file. `Not loaded` reports that outcome without naming the cause. Saving and resetting still work on any readable file, and correcting the offending value restores loading.
-
-## Editing a value
-
-| Key | Action |
-| --- | --- |
-| `Up`, `Down` | Select the previous or next setting. |
-| `Home`, `End` | Select the first or last setting. |
-| `Page Up`, `Page Down` | Move one page. |
-| `Left`, `Right` | Step through the choices of an On/Off or fixed-choice setting. The change is saved immediately. |
-| `Space` | Same as `Right` for fixed choices. Opens the editor for text, number, list and structured settings. |
-| `Enter` | On a list or structured setting, opens the editor, or opens it for inspection when the scope is read-only. On any other setting, closes the surface. |
-| `Delete` | Reset the setting at the selected scope. |
-| `s` | Cycle the save scope. |
-| `r` | Reload settings from disk. |
-
-Changes made with `Left`, `Right` or `Space` are saved as you make them, so closing with `Enter` or `Esc` discards nothing.
-
-The text editor used for settings such as Language takes `Enter` to save, `Ctrl+R` to reset and `Esc` to cancel.
-
-Reset removes the value saved at the selected scope. The row then shows the value from another scope, or `Default`. Reset does not write a replacement value and does not restore an earlier edit.
-
-While a save is in progress the row keeps showing the last confirmed value. A successful save shows `Saved.`
-
-Saving a default never changes the running session. Use `/model`, `/mode`, `/effort`, `/thinking`, `/agent`, `/fast` or `/ultracode` for the current session; see [Session Commands](commands.md#session-commands).
-
-## Lists and structured settings
-
-Permission rules, directory and domain lists, hook definitions and the structured sandbox settings open an editor instead of changing in place. The row in the main list shows how many entries are saved at the selected scope.
-
-The editor loads only the entries saved at the selected scope, not a merged view of all scopes, and keeps that scope until it closes.
-
-| Key | Action |
-| --- | --- |
-| `Up`, `Down`, `Home`, `End` | Move through entries or fields. |
-| `a` | Add an entry. |
-| `Enter`, `Space` | Edit the selected entry, open a nested group, or toggle an On/Off field. |
-| `Delete` | Remove the selected entry or optional field. |
-| `Ctrl+S` | Save the draft. |
-| `Ctrl+R` | Reset the whole setting at this scope. |
-| `Esc` | Go up one level. At the top level, discard the draft and close the editor. |
-| `Ctrl+J` | Switch to a JSON view of the same draft. |
-| `Ctrl+F` | Return from JSON to the form. The JSON must be valid. |
-
-While typing in a field:
-
-| Key | Action |
-| --- | --- |
-| `Enter` | Accept the field into the draft. |
-| `Esc` | Cancel the field. |
-| `Ctrl+U` | Clear the field. |
-| `Ctrl+J` | Insert a line break. |
-| `Up`, `Down`, `Left`, `Right` | Choose a value when the field offers fixed choices. |
-
-Rules for these structured editors:
-
-- Edits stay in a draft until `Ctrl+S`. Accepting a field does not write the file.
-- Many lists merge across scopes. Removing the last entry saves an explicit empty list, and entries from other scopes still apply. Reset removes the setting from this scope instead.
-- Invalid JSON or a value that Claude rejects keeps the draft open for correction. Nothing is written.
-- If the file changed on disk while the editor was open, the editor loads the latest version and keeps your draft. Save again to confirm.
-- If the session moves to another project while an editor is open, saving is blocked. Close the editor and open it again.
-- A scope that cannot be edited can still be opened for inspection.
-- Opening, browsing and validating never run hooks or credential helpers, and never read secret files or environment values. Header values and command arguments are redacted in summaries.
-- Fields that the form does not know are preserved when you save.
-
-### Editing permission rules
-
-In the Permissions pane, open Allow rules, Ask rules, Deny rules or Additional directories. Add one tool rule per entry, for example `Bash(npm test *)` or `Read(./src/**)`. A deny rule wins over an allow rule from any scope.
-
-### Editing hooks
-
-Hooks → Definitions shows a flat list with each hook's event, matcher and action.
-
-- `a` starts guided creation: choose an event, enter an optional matcher, choose an action, fill its required fields, then review. `Enter` on the review step adds the hook to the draft and opens its optional fields. `Esc` goes back one step and cancels at the first step.
-- `Enter` edits the selected hook.
-- `m` edits the matcher of the hook's group. Every hook in that group shares the matcher.
-- `Delete` removes only the selected hook.
-
-Hook actions are command, prompt, agent, HTTP and MCP tool. Event names come from the installed SDK. The JSON view shows the same definitions in the settings-file format:
-
-```json
-{
-  "PreToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [
-        { "type": "command", "command": "echo Check shell operation", "timeout": 10 }
-      ]
-    }
-  ]
-}
-```
-
-Saving replaces the `hooks` object at the selected scope. Hooks from other scopes keep merging in. Disable all is a separate On/Off setting.
-
-Command and HTTP actions offer **Failure policy** (`onFailure`): `continue` reports a failed hook and lets the guarded action proceed; `block` treats the failure as exit code 2. Failures include startup errors, timeouts, exit codes other than 0 or 2, and invalid JSON or JSON that does not match the hook schema. Unset uses `continue`. Select the field and press `Delete` to remove only that handler's override, then `Ctrl+S` to save.
-
-The SDK ignores this policy for asynchronous hooks and the Stop, SubagentStop, TaskCompleted and TeammateIdle events. It decides whether an event can block an action. Editing or validating the policy never executes a hook.
-
-### Editing sandbox settings
-
-Path, domain and command lists use the list editor. Credential protection, TLS termination, Ignored violations and Ripgrep command open forms:
-
-- Required fields are marked with `*`.
-- Fixed choices open a picker.
-- Credential entries take file paths and variable names, never secret values.
-- TLS termination takes both a CA certificate path and a CA key path, or neither.
-- Proxy ports accept whole numbers from 1 to 65535.
 
 ## Settings by pane
 
@@ -270,7 +74,7 @@ Idle compaction follows the SDK's settings cascade. Reset removes the preference
 | Auto mode during planning | `useAutoModeDuringPlan` | User and Local only. |
 | Disable bypass | `permissions.disableBypassPermissionsMode` | Removes the bypass permission mode. Reset removes this scope's restriction. |
 | Block outside reads | `permissions.blockReadsOutsideWorkingDirectories` | Blocks Read, Grep, Glob and LSP outside working directories. On in any scope wins. |
-| Allow rules, Ask rules, Deny rules | `permissions.allow`, `permissions.ask`, `permissions.deny` | See [Editing permission rules](#editing-permission-rules). |
+| Allow rules, Ask rules, Deny rules | `permissions.allow`, `permissions.ask`, `permissions.deny` | See [Editing permission rules](configure.md#editing-permission-rules). |
 | Additional directories | `permissions.additionalDirectories` | One directory per entry. |
 
 ### Sandbox
@@ -283,7 +87,7 @@ These settings are User only: Disable filesystem isolation, Strict domain allowl
 
 | Setting | Key | Notes |
 | --- | --- | --- |
-| Definitions | `hooks` | See [Editing hooks](#editing-hooks). |
+| Definitions | `hooks` | See [Editing hooks](configure.md#editing-hooks). |
 | Disable all | `disableAllHooks` | Disables settings and plugin hooks, including status-line execution. |
 | Allowed HTTP URLs | `allowedHttpHookUrls` | One URL pattern per entry; `*` is a wildcard. An empty list blocks all HTTP hooks. |
 | Allowed environment variables | `httpHookAllowedEnvVars` | Variable names that HTTP hook headers may interpolate. |
@@ -316,7 +120,7 @@ These General settings apply immediately, including to the conversation already 
 | Show turn duration | `showTurnDuration` | On / Off | Show one total elapsed time per completed response. Default: Off. |
 | Time format | `timeFormat` | Auto / 12-hour / 24-hour / 24-hour UTC | Format clock times. Elapsed durations are unaffected. |
 | Show activity in tab title | `presentation.showStatusInTerminalTab` | On / Off | Show a busy/idle icon beside the folder name in the terminal tab title. |
-| Skip the /copy picker | `presentation.copyFullResponse` | On / Off | Copy the complete response directly. See [Copying responses](commands.md#copying-responses). |
+| Skip the /copy picker | `presentation.copyFullResponse` | On / Off | Copy the complete response directly. See [Copying responses](conversations.md#copying-responses). |
 
 The first five are Claude settings and can be saved at User, Project or Local scope. The last two are app preferences and are always saved for the user.
 
@@ -328,21 +132,7 @@ The first five are Claude settings and can be saved at User, Project or Local sc
 
 ## Footer
 
-Open `/config` → General → Footer with `Enter` or `Space`. The chat footer uses one row with independently ordered left- and right-aligned groups. Changes save automatically, and the running footer changes after each successful save. Layout and colors load before the first frame and remain available while connecting or authenticating. You can edit the footer when authentication is required, before an agent session exists. The field-position counter appears in the dialog's top-right corner. The settings row shows `Default layout` until a layout is saved, then `Custom layout`.
-
-| Key | Action |
-| --- | --- |
-| `Up`, `Down` | Select a field. |
-| `Space` | Toggle visibility, preserving the field's side and position. |
-| `Left`, `Right` | Switch between Left and Right; append the field to the destination group. |
-| `Ctrl+Up`, `Ctrl+Down` | Move the field within its group; selection follows it. |
-| `C` | Expand or collapse the inline color palette for an eligible field. |
-| `Ctrl+R` | Remove the saved layout and restore defaults. |
-| `Esc` | Close after any pending changes finish saving. |
-
-You can keep editing while a save is in progress. Later edits are saved next, using the confirmed file revision. A failed save or conflict keeps your edits in the dialog and shows an error; `Enter` retries the save, and `Esc` discards the unsaved edits and closes. Session changes leave the active footer, editor draft, and local saves intact.
-
-Model, effort, working directory, Git branch, and context remaining support optional colors. Press `C` to expand a palette directly below the selected field. Arrow keys move between color boxes; the selected color name appears underneath. `Enter` applies and autosaves the choice, while `Esc` or `C` collapses the palette without applying it. Choose `Current` (`Home`) to restore the field's existing appearance. Permission mode, Fast mode, and Ultracode retain their fixed colors. Narrow windows show fewer boxes per row and keep the focused box visible.
+For the editing procedure and keys, see [Customize the footer](configure.md#customize-the-footer).
 
 Permission mode, model, effort, Ultracode, fast mode, running subagents, working directory, Git branch and context remaining are independent fields. Hiding the model does not hide effort or Ultracode; hiding the directory does not hide the branch. Fields appear only when their session data applies: effort requires a model that supports it, Ultracode requires verified effective state, running subagents requires at least one non-ambient subagent of the current session still running (one count per task across resumes, including stopping requests; see [`/agents`](commands.md#app-owned-commands)), and branch requires a Git branch.
 
@@ -402,7 +192,7 @@ The setting updates only `claude-rs`. It does not update a separately installed 
 - A missing settings file is created on the first save.
 - A file that contains invalid JSON, is not a JSON object, cannot be read, or is a symlink is blocked from editing. The app does not repair, replace or back up such a file.
 - Saving at Local scope inside a Git repository adds `.claude/settings.local.json` to the repository's private `.git/info/exclude` when needed. A Local settings file that Git already tracks is rejected.
-- Only the edited setting is validated. An unrelated invalid value elsewhere in the file does not block the save, but it can still prevent Claude from loading the file; see `Not loaded` under [Reading the list](#reading-the-list).
+- Only the edited setting is validated. An unrelated invalid value elsewhere in the file does not block the save, but it can still prevent Claude from loading the file; see `Not loaded` under [Reading the list](configure.md#reading-the-list).
 - A change made to the same setting by another program is detected before writing. The app reloads and keeps your draft. An editor that writes at the same instant without honoring the app's lock file can still overwrite a save.
 
 ## Offline inspection
@@ -416,29 +206,3 @@ claude-rs config export --output claude-rs-config.json
 ```
 
 The output covers User, Project and Local settings and the preferences file. Malformed files are reported, not rewritten. The commands read the files as they are on disk: they do not combine scopes and do not include managed policy. See [Config Inspection](diagnostics.md#config-inspection).
-
-## MCP
-
-The MCP tab shows live session-backed MCP state. Use `/mcp` to inspect servers, refresh status, complete authorization, reconnect servers, and handle SDK-provided MCP prompts when available.
-
-If no session is active, the tab asks you to open or resume a session first. If the active session reports no MCP servers, the tab shows an empty state rather than editing raw config files.
-
-MCP input requests open a dialog over this tab. Supported forms edit strings, numbers, whole numbers, booleans, single choices, and arrays of string choices, including titled choices and defaults. Required fields and supported length, numeric range, choice-count and date/email/URI/date-time constraints are validated before Accept. `false` and `0` are answers. Optional fields start omitted unless the server supplies a default; `Ctrl+O` includes or omits the focused optional field, so an included empty string differs from omission. Unsupported schemas show a reason and allow Decline or Cancel without offering Accept.
-
-Use `Tab`/`Shift+Tab` or `Up`/`Down` to move between fields and actions. Type or paste into text and numeric fields, use `Left`/`Right` for choices, and `Space` to toggle a boolean or the highlighted multi-choice option. `Enter` advances from a field or activates the selected action. `Ctrl+Enter` accepts when the terminal distinguishes it; navigating to Accept works in every terminal. `Esc` cancels. A validation or send error retains the draft for correction or retry.
-
-Overlapping requests wait in arrival order; the dialog shows the waiting count. A new request does not replace the form being edited. Only the active URL request opens a browser. SDK cancellation removes its matching request, including one still queued. A submitted dialog stays pending until its SDK callback settles, and prevents duplicate submission. Drafts remain in memory for the active session and are discarded on settlement or session teardown; form answers are not written as settings or diagnostic fields.
-
-## Plugins
-
-The Plugins tab is available through `/plugins`. It shows installed plugins, marketplace plugins, configured marketplaces, and Session attachments.
-
-Supported actions include enabling, disabling, updating, uninstalling, and installing plugins into user, project, or local scopes when those actions are available for the selected plugin.
-
-After plugin changes, the app requests a session runtime plugin reload when an active session is available.
-
-In the Session list, choose **Load local folder** or press `l` outside search. Enter the plugin directory, using an absolute path or a path relative to the session's working directory. The SDK loads it into the current session without installing it into a persistent scope or changing marketplaces. Confirmed folders show **Source: Session**, their folder, and the SDK's source and version when supplied. Select an existing folder and press Enter to load it again after editing its files; `r` reloads the current inventory.
-
-A reload that would invalidate the prompt cache opens an Apply/Decline confirmation. Until Apply, no requested folder is added. Apply submits the same folders; declining keeps the draft and the session's existing plugins. A rejected request keeps the draft for retry. A reload can apply with component errors: the app shows the SDK's error count and reconciles the confirmed plugins, commands, agents and MCP servers. A host reconciliation failure is reported separately and does not imply that the attachment was rolled back.
-
-Confirmed attachments are retained when the bridge replaces or resumes the same active session, including rewind. They are not persisted by the host: after restarting the app or switching away and returning, load the folders again. A fresh session does not inherit them. Before the first prompt after a replacement, press `r` in Session to obtain a new SDK inventory if it is not yet listed. Managed policy, remote environments or an already-running sandbox can reject local folder loading; the SDK's refusal is shown without a persistent-install fallback.

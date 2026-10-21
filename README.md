@@ -56,7 +56,7 @@ claude-rs --model opus --permission-mode plan "Review this project"
 claude-rs --continue
 ```
 
-See [Usage](https://srothgan.github.io/claude-code-rust/usage.html) for startup flags, shell completion setup, and man pages.
+Follow [Your first session](https://srothgan.github.io/claude-code-rust/usage.html) for a complete walkthrough. See the [CLI reference](https://srothgan.github.io/claude-code-rust/cli.html) for startup flags, shell completions and man pages.
 
 ## Why use it
 
@@ -90,15 +90,13 @@ It is not a feature-for-feature copy of Claude Code. Some stock features are una
 
 ## Documentation
 
-Full documentation is available at [srothgan.github.io/claude-code-rust](https://srothgan.github.io/claude-code-rust/):
+Choose a path through the [documentation](https://srothgan.github.io/claude-code-rust/):
 
-- [About and feature overview](https://srothgan.github.io/claude-code-rust/about.html)
-- [Installation](https://srothgan.github.io/claude-code-rust/installation.html)
-- [Usage](https://srothgan.github.io/claude-code-rust/usage.html)
-- [Slash commands](https://srothgan.github.io/claude-code-rust/commands.html)
-- [Settings](https://srothgan.github.io/claude-code-rust/settings.html)
-- [Troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html)
-- [Development](https://srothgan.github.io/claude-code-rust/development.html)
+- **Start using the app:** [Install](https://srothgan.github.io/claude-code-rust/installation.html) and complete [your first session](https://srothgan.github.io/claude-code-rust/usage.html).
+- **Work with it:** [Conversations](https://srothgan.github.io/claude-code-rust/conversations.html), [configuration](https://srothgan.github.io/claude-code-rust/configure.html), and [MCP servers and plugins](https://srothgan.github.io/claude-code-rust/integrations.html).
+- **Look something up:** [CLI reference](https://srothgan.github.io/claude-code-rust/cli.html), [slash commands](https://srothgan.github.io/claude-code-rust/commands.html), and [settings reference](https://srothgan.github.io/claude-code-rust/settings.html).
+- **Resolve a problem:** [Troubleshooting](https://srothgan.github.io/claude-code-rust/troubleshooting.html) and [diagnostics](https://srothgan.github.io/claude-code-rust/diagnostics.html).
+- **Contribute or maintain:** [Development](https://srothgan.github.io/claude-code-rust/development.html), [testing](https://srothgan.github.io/claude-code-rust/testing.html), [architecture](https://srothgan.github.io/claude-code-rust/architecture.html), and [contribution policy](CONTRIBUTING.md).
 
 For the design history, including the move from fullscreen to inline rendering in 0.12.0, see [I rebuilt Claude Code's terminal UI in Rust. Then I deleted 12,000 lines of it.](https://medium.com/@simonrothgang/i-rebuilt-claude-codes-terminal-ui-in-rust-then-i-deleted-12-000-lines-of-it-e8593a200452)
 
@@ -114,7 +112,7 @@ Startup is still constrained by the upstream Claude Agent SDK runtime that this 
 
 ## Billing
 
-Anthropic has paused the previously announced Agent SDK credit change. For now nothing changes: Claude Agent SDK usage (including `claude -p` and third-party apps like this one) still draws from your normal Claude subscription limits. See [Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+This app uses Anthropic's Agent SDK. See the [billing note](https://srothgan.github.io/claude-code-rust/about.html#billing-note) for the current upstream policy source and account-dependent limits.
 
 ## License
 
