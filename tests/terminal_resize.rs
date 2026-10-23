@@ -2986,7 +2986,7 @@ fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes()
 }
 
 #[test]
-fn a_custom_app_profile_can_hide_the_footer_count_without_hiding_subagents() {
+fn hiding_the_subagent_footer_count_keeps_the_subagents_view_accessible() {
     let mut test = TerminalTest::start_with_profile(
         "agents",
         3,
@@ -3000,7 +3000,13 @@ fn a_custom_app_profile_can_hide_the_footer_count_without_hiding_subagents() {
         },
     );
     test.send(b"\x1b[D");
-    test.wait_screen_with("Check the parser for edge cases", &["Subagents", "running"]);
+    test.wait_screen_with("Review parser", &["Subagents", "running"]);
+    // Ready can precede the task inventory. Opening an empty view does not
+    // select a subagent when its row later arrives, so choose it explicitly.
+    test.send(b"\x1b[A");
+    test.wait_until("selected subagent details", |test| {
+        test.screen().contains("Check the parser for edge cases")
+    });
     test.send(b"\x1b");
     test.wait_screen("Type a message");
     let footer =
