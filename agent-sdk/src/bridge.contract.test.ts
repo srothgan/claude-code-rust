@@ -721,10 +721,22 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
       ];
       const currentCommands = [...bootstrapCommands.slice(0, 2), { name: "current-plugin", description: "Current plugin", argumentHint: "[optional reason]" }];
       let clearCount = 0;
+      let permissionAbort;
       function push(value) { if (waiter) { const resolve = waiter; waiter = undefined; resolve({ value, done: false }); } else queue.push(value); }
       void (async () => {
         for await (const message of prompt) {
           const text = message.message?.content?.filter(block => block.type === "text").map(block => block.text).join("").trim();
+          if (text.startsWith("fixture permission ")) {
+            const toolUseID = text.slice("fixture permission ".length);
+            permissionAbort = new AbortController();
+            const result = await options.canUseTool("Bash", { command: "echo permission-fixture" }, {
+              toolUseID, signal: permissionAbort.signal,
+            });
+            record({ type: "permission-result", toolUseID, result });
+            push({ type: "result", subtype: "success", session_id: options.sessionId ?? options.resume,
+              uuid: "result-" + toolUseID, result: "Permission settled", user_message_uuid: message.uuid,
+              user_message_uuids: [message.uuid], permission_denials: [], usage: {}, modelUsage: {}, duration_ms: 1, num_turns: 1 });
+          }
           if (process.env.BACKGROUND_TASK_FIXTURE && text.startsWith("fixture task ")) {
             const steps = JSON.parse(process.env.BACKGROUND_TASK_FIXTURE);
             for (const event of steps[text.slice("fixture task ".length)] ?? []) push(event);
@@ -756,6 +768,7 @@ function ultracodeFixtureBridge(env: NodeJS.ProcessEnv = {}): { bridge: SpawnedB
           return new Promise(resolve => { waiter = resolve; });
         },
         close() { done = true; waiter?.({ done: true }); },
+        async interrupt() { permissionAbort?.abort(); return { still_queued: [] }; },
         async initializationResult() {
           if (sessionFixture) {
             effective = (await sdkResolveSettings({ cwd: options.cwd, settingSources: options.settingSources })).effective;
@@ -827,6 +840,70 @@ async function nextMatching(bridge: SpawnedBridge, matches: (event: BridgeEnvelo
 async function nextUltracode(bridge: SpawnedBridge): Promise<unknown> {
   const event = await nextMatching(bridge, event => (event.update as BridgeEnvelope)?.type === "ultracode_update");
   return (event.update as BridgeEnvelope).ultracode;
+}
+
+for (const scenario of ["allow", "deny", "cancel-before-answer", "answer-before-cancel"] as const) {
+  test(`spawned bridge permission callback settles correctly: ${scenario}`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "claude-rs-permission-"));
+    const journal = join(directory, "outcomes.jsonl");
+    const { bridge, cleanup } = ultracodeFixtureBridge({
+      STARTUP_JOURNAL: journal,
+      CLAUDE_CONFIG_DIR: join(directory, "profile"),
+    });
+    const events: BridgeEnvelope[] = [];
+    const waitFor = (kind: string) => nextMatching(bridge, event => {
+      events.push(event);
+      return event.event === kind;
+    });
+    const outcomes = () => (readFileSync(journal, "utf8").trim().split("\n")
+      .map(line => JSON.parse(line)) as Array<{ type: string; toolUseID: string; result: { behavior: string; toolUseID: string; updatedInput?: unknown } }>)
+      .filter(entry => entry.type === "permission-result");
+    try {
+      bridge.writeCommand({ command: "create_session", cwd: directory, launch_settings: { permission_mode: "default" } });
+      const connected = await waitFor("connected");
+      const sessionId = connected.session_id;
+      const prompt = (id: string) => bridge.writeCommand({ command: "prompt", session_id: sessionId,
+        message_uuid: id, chunks: [{ kind: "text", value: `fixture permission ${id}` }] });
+      const answer = (id: string, option: string) => ({ command: "permission_response", session_id: sessionId,
+        tool_call_id: id, outcome: { outcome: "selected", option_id: option } });
+      prompt("first-tool");
+      const request = await waitFor("permission_request");
+      assert.equal(request.session_id, sessionId);
+      assert.equal(((request.request as BridgeEnvelope).tool_call as BridgeEnvelope).tool_call_id, "first-tool");
+      assert.deepEqual(outcomes(), [], "the SDK callback must wait for the answer");
+
+      const reply = answer("first-tool", scenario === "deny" ? "reject_once" : "allow_once");
+      const cancel = { command: "cancel_turn", session_id: sessionId };
+      // One pipe write gives deterministic command order without timer-based races.
+      const commands = scenario === "cancel-before-answer" ? [cancel, reply]
+        : scenario === "answer-before-cancel" ? [reply, cancel] : [reply];
+      bridge.writeRaw(commands.map(command => `${JSON.stringify(command)}\n`).join(""));
+      await waitFor("turn_complete");
+      const first = outcomes();
+      assert.equal(first.length, 1, "one SDK continuation per permission request");
+      assert.equal(first[0].toolUseID, "first-tool");
+      assert.equal(first[0].result.toolUseID, "first-tool");
+      const allowed = scenario === "allow" || scenario === "answer-before-cancel";
+      assert.equal(first[0].result.behavior, allowed ? "allow" : "deny");
+      if (allowed) assert.deepEqual(first[0].result.updatedInput, { command: "echo permission-fixture" });
+      assert.equal(events.some(event => event.event === "interaction_cancelled" && event.interaction_id === "first-tool"),
+        scenario === "cancel-before-answer", "a settled answer must not subsequently be cancelled");
+
+      // A stale reply must neither resolve the next callback nor break the session.
+      prompt("next-tool");
+      const nextRequest = await waitFor("permission_request");
+      assert.equal(((nextRequest.request as BridgeEnvelope).tool_call as BridgeEnvelope).tool_call_id, "next-tool");
+      bridge.writeRaw([answer("first-tool", "allow_once"), answer("next-tool", "reject_once")]
+        .map(command => `${JSON.stringify(command)}\n`).join(""));
+      await waitFor("turn_complete");
+      assert.deepEqual(outcomes().map(entry => [entry.toolUseID, entry.result.behavior]),
+        [["first-tool", allowed ? "allow" : "deny"], ["next-tool", "deny"]]);
+      assert.ok(!events.some(event => event.event === "connection_failed"));
+    } finally {
+      await cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 }
 
 test("resume command restores the screenshot conversation without internal task XML", async () => {

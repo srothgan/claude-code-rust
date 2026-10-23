@@ -641,9 +641,9 @@ fn spawn_permission_response_forwarder(
             Ok(()) => {
                 tracing::info!(
                     target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "permission_response_forwarded",
-                    message = "permission response forwarded to bridge",
-                    outcome = "success",
+                    event_name = "permission_response_queued",
+                    message = "permission response queued for bridge writing",
+                    outcome = "queued",
                     session_id = %session_id_for_log,
                     tool_call_id = %tool_call_id_for_log,
                     selected_option = %selected_option,
@@ -652,8 +652,8 @@ fn spawn_permission_response_forwarder(
             Err(err) => {
                 tracing::error!(
                     target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "permission_response_forward_failed",
-                    message = "failed to forward permission response to bridge",
+                    event_name = "permission_response_enqueue_failed",
+                    message = "failed to queue permission response for bridge writing",
                     outcome = "failure",
                     session_id = %session_id_for_log,
                     tool_call_id = %tool_call_id_for_log,
@@ -702,9 +702,9 @@ fn spawn_question_response_forwarder(
             Ok(()) => {
                 tracing::info!(
                     target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "question_response_forwarded",
-                    message = "question response forwarded to bridge",
-                    outcome = "success",
+                    event_name = "question_response_queued",
+                    message = "question response queued for bridge writing",
+                    outcome = "queued",
                     session_id = %session_id_for_log,
                     tool_call_id = %tool_call_id_for_log,
                     selected_option_count,
@@ -713,8 +713,8 @@ fn spawn_question_response_forwarder(
             Err(err) => {
                 tracing::error!(
                     target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "question_response_forward_failed",
-                    message = "failed to forward question response to bridge",
+                    event_name = "question_response_enqueue_failed",
+                    message = "failed to queue question response for bridge writing",
                     outcome = "failure",
                     session_id = %session_id_for_log,
                     tool_call_id = %tool_call_id_for_log,
@@ -760,9 +760,9 @@ fn spawn_user_dialog_response_forwarder(
             Ok(()) => {
                 tracing::info!(
                     target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "user_dialog_response_forwarded",
-                    message = "user dialog response forwarded to bridge",
-                    outcome = "success",
+                    event_name = "user_dialog_response_queued",
+                    message = "user dialog response queued for bridge writing",
+                    outcome = "queued",
                     session_id = %session_id_for_log,
                     request_id = %request_id_for_log,
                     selected_option = %selected_option,
@@ -771,8 +771,8 @@ fn spawn_user_dialog_response_forwarder(
             Err(err) => {
                 tracing::error!(
                     target: crate::logging::targets::APP_PERMISSION,
-                    event_name = "user_dialog_response_forward_failed",
-                    message = "failed to forward user dialog response to bridge",
+                    event_name = "user_dialog_response_enqueue_failed",
+                    message = "failed to queue user dialog response for bridge writing",
                     outcome = "failure",
                     session_id = %session_id_for_log,
                     request_id = %request_id_for_log,

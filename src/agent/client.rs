@@ -8,7 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt as _, AsyncWrite, AsyncWriteExt as _, BufReader, BufWriter};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{Instrument as _, info_span};
@@ -296,8 +296,8 @@ impl Drop for BridgeClient {
     }
 }
 
-async fn run_command_writer(
-    mut stdin: BufWriter<ChildStdin>,
+async fn run_command_writer<W: AsyncWrite + Unpin>(
+    mut stdin: W,
     mut command_rx: CommandReceiver,
 ) -> anyhow::Result<()> {
     while let Some(command) = command_rx.recv().await {
@@ -1573,6 +1573,62 @@ mod tests {
                 content: None,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn permission_write_failure_after_enqueue_is_reported_while_stdout_stays_open() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let script = directory.path().join("open-stdout.cjs");
+        std::fs::write(&script, "setInterval(() => {}, 1000);\n").expect("write fixture");
+        let mut bridge = super::BridgeClient::spawn(&crate::agent::bridge::BridgeLauncher {
+            runtime_path: "node".into(),
+            script_path: script,
+        })
+        .expect("spawn fixture");
+        // Exercise the real writer and receive monitor with a controllable pipe.
+        // Closing fd 0 in a Node child is insufficient on Windows, where another
+        // inherited handle can keep the read end alive.
+        bridge.stop_writer().await;
+        let (connection, commands) = command_channel();
+        bridge.command_tx = connection.command_tx.clone();
+        let (writer, peer) = tokio::io::duplex(1024);
+        connection
+            .respond_to_permission(
+                "session-1".to_owned(),
+                "tool-1".to_owned(),
+                crate::agent::types::PermissionOutcome::Selected {
+                    option_id: "allow_once".to_owned(),
+                },
+            )
+            .await
+            .expect("answer admitted before pipe failure");
+        drop(peer);
+        bridge.writer_task = Some(tokio::spawn(super::run_command_writer(
+            tokio::io::BufWriter::new(writer),
+            commands,
+        )));
+        let received = tokio::time::timeout(Duration::from_secs(5), bridge.recv()).await;
+        let child_still_running = bridge.child.try_wait().expect("child status").is_none();
+        let retry = connection
+            .respond_to_permission(
+                "session-1".to_owned(),
+                "tool-1".to_owned(),
+                crate::agent::types::PermissionOutcome::Cancelled,
+            )
+            .await;
+        bridge.shutdown_and_wait(Duration::from_millis(50)).await.expect("reap fixture");
+        let error = received
+            .expect("writer failure must surface without waiting for stdout EOF")
+            .expect_err("failed delivery must terminate the connection");
+        assert!(child_still_running, "the fixture must keep stdout open during the failed write");
+        assert!(error.to_string().contains("bridge stdin writer failed"), "{error:#}");
+        assert!(
+            error.chain().any(|cause| cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::BrokenPipe)),
+            "{error:#}"
+        );
+        assert!(retry.is_err(), "a stopped writer must reject further answers before cleanup");
     }
 
     // The bridge's stderr is always piped, so it must always be drained: an unread pipe
