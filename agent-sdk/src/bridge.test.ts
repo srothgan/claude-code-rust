@@ -6317,13 +6317,12 @@ test("emitToolResultUpdate clears active subagent retry metadata", () => {
 });
 
 test("parseCommandEnvelope rejects missing required fields", () => {
-  assert.throws(
-    () =>
-      parseCommandEnvelope(
-        JSON.stringify({ command: "set_model", session_id: "s1" }),
-      ),
-    /set_model\.model must be a string/,
-  );
+  for (const [command, error] of [
+    [{ command: "set_model", session_id: "s1" }, /set_model\.model must be a string/],
+    [{ command: "export_session_history" }, /export_session_history\.session_id must be a string/],
+  ] as const) {
+    assert.throws(() => parseCommandEnvelope(JSON.stringify(command)), error);
+  }
 });
 
 test("parseCommandEnvelope validates question_response command", () => {
