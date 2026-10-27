@@ -34,6 +34,7 @@ type PtyWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 struct AppProfileFixture<'a> {
     inherited_directory: Option<&'a Path>,
     contents: Option<&'a str>,
+    pause_at_trust: bool,
 }
 
 #[allow(clippy::expect_used)]
@@ -291,6 +292,15 @@ impl TerminalTest {
         // One string per visible row: `contents()` joins rows the terminal
         // marks as wrapped, which ConPTY does for full-width box rows.
         test.trust_prompt = test.screen_rows().join("\n");
+        if app_profile.pause_at_trust {
+            return test;
+        }
+        test.accept_trust(has_initial_prompt);
+        test
+    }
+
+    fn accept_trust(&mut self, has_initial_prompt: bool) {
+        let test = self;
         test.send(b"y");
         if has_initial_prompt {
             test.wait_until("initial prompt", |test| !test.prompts().is_empty());
@@ -300,7 +310,6 @@ impl TerminalTest {
             // until the connected event has been applied and painted.
             test.wait_screen("[READY]");
         }
-        test
     }
 
     /// Puts a fake `claude` CLI that behaves as `mode` first on the app's PATH.
@@ -401,10 +410,10 @@ impl TerminalTest {
         let mut rows = Vec::new();
         for offset in (1..=screen.scrollback()).rev() {
             screen.set_scrollback(offset);
-            rows.push(screen.contents().lines().next().unwrap_or_default().to_owned());
+            rows.push(screen.rows(0, screen.size().1.get()).next().unwrap_or_default());
         }
         screen.set_scrollback(0);
-        rows.extend(screen.contents().lines().map(str::to_owned));
+        rows.extend(screen.rows(0, screen.size().1.get()));
         rows
     }
 
@@ -494,16 +503,20 @@ impl TerminalTest {
 
     /// Polls `probe` until it yields a value twice in a row, so a transient
     /// partial paint is not sufficient to advance the test.
-    fn wait_for<T>(&mut self, description: &str, probe: impl Fn(&Self) -> Option<T>) -> T {
+    fn wait_for<T: PartialEq>(
+        &mut self,
+        description: &str,
+        probe: impl Fn(&Self) -> Option<T>,
+    ) -> T {
         let started = Instant::now();
-        let mut observed = false;
+        let mut observed = None;
         while started.elapsed() < WAIT_LIMIT {
             match probe(self) {
-                Some(value) if observed => {
+                Some(value) if observed.as_ref() == Some(&value) => {
                     self.settled = true;
                     return value;
                 }
-                value => observed = value.is_some(),
+                value => observed = value,
             }
             assert!(
                 self.child.process.try_wait().expect("poll child").is_none(),
@@ -566,10 +579,15 @@ impl TerminalTest {
 
     /// Output written while the app exits is read after the exit is observed.
     fn wait_final_output(&self, needle: &str) -> String {
+        self.wait_final_output_since(0, needle)
+    }
+
+    fn wait_final_output_since(&self, offset: usize, needle: &str) -> String {
         let started = Instant::now();
         loop {
             let raw =
-                String::from_utf8_lossy(&self.output.lock().expect("output lock").raw).into_owned();
+                String::from_utf8_lossy(&self.output.lock().expect("output lock").raw[offset..])
+                    .into_owned();
             if raw.contains(needle) {
                 return raw;
             }
@@ -728,7 +746,7 @@ impl TerminalTest {
             else {
                 return false;
             };
-            test.screen().lines().skip(top).take(height).any(|line| line.contains(visible))
+            test.screen_rows().iter().skip(top).take(height).any(|line| line.contains(visible))
         });
     }
 
@@ -2933,6 +2951,7 @@ fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes()
         &[],
         AppProfileFixture {
             inherited_directory: Some(inherited.path()),
+            pause_at_trust: false,
             contents: Some(&preferences),
         },
     );
@@ -3183,4 +3202,518 @@ fn mcp_elicitation_forms_preserve_typed_answers_queue_focus_and_resize_controls(
         "request content is not diagnostic metadata"
     );
     test.shutdown();
+}
+
+// E4/E5 share one independent source oracle. Every retained source word is
+// compared in order; middle-row loss, duplication and truncation must fail.
+fn native_history_words() -> Vec<String> {
+    (1..=48)
+        .flat_map(|n| {
+            [
+                format!("NATIVE_ROW_{n:03}"),
+                format!("NATIVE_copper_{n:03}"),
+                format!("NATIVE_river_{n:03}"),
+                format!("NATIVE_END_{n:03}"),
+            ]
+        })
+        .collect()
+}
+
+fn destructive_clears(raw: &[u8]) -> Vec<Vec<u8>> {
+    [b"\x1b[2J".as_slice(), b"\x1b[3J", b"\x1bc"]
+        .into_iter()
+        .filter(|sequence| raw.windows(sequence.len()).any(|window| window == *sequence))
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
+fn alternate_transitions(raw: &[u8]) -> Vec<bool> {
+    raw.windows(8)
+        .filter_map(|window| match window {
+            b"\x1b[?1049h" => Some(true),
+            b"\x1b[?1049l" => Some(false),
+            _ => None,
+        })
+        .collect()
+}
+
+#[allow(clippy::expect_used, clippy::panic)]
+impl TerminalTest {
+    fn log_offset(&self) -> usize {
+        std::fs::read(self.temp.path().join("runtime.log")).expect("runtime log").len()
+    }
+
+    fn deliver_same_size_resize(&mut self, log_offset: usize) {
+        self.resize(SHORT_ROWS, COLS);
+        let received = |test: &Self| {
+            test.runtime_records_since(log_offset).iter().any(|r| {
+                r["event_name"] == "terminal_resize_same_size_ignored"
+                    && r["current_width"] == COLS
+                    && r["current_height"] == SHORT_ROWS
+            })
+        };
+        // This deadline only decides whether the native PTY coalesced the
+        // request. It never substitutes for actual application receipt below.
+        let started = Instant::now();
+        while !received(self) && started.elapsed() < Duration::from_millis(500) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if !received(self) {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let source = root.join("tests/fixtures/terminal-resize-event.rs");
+            let target = std::env::var_os("CARGO_TARGET_DIR")
+                .map_or_else(|| root.join("target"), PathBuf::from);
+            let helper = target.join(if cfg!(windows) {
+                "terminal-resize-event.exe"
+            } else {
+                "terminal-resize-event"
+            });
+            let stale = std::fs::metadata(&helper).and_then(|m| m.modified()).ok()
+                < std::fs::metadata(&source).and_then(|m| m.modified()).ok();
+            if stale {
+                let compiled = std::process::Command::new("rustc")
+                    .args(["--edition=2024", "-Dwarnings"])
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&helper)
+                    .output()
+                    .expect("compile native resize fixture");
+                assert!(
+                    compiled.status.success(),
+                    "native fixture compile: {}",
+                    String::from_utf8_lossy(&compiled.stderr)
+                );
+            }
+            let report = self.temp.path().join("native-resize-delivery.json");
+            let mut command = std::process::Command::new(&helper);
+            command
+                .arg(self.child.process.process_id().expect("owned app PID").to_string())
+                .arg(&report);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x0800_0000); // No extra console window.
+            }
+            let result = command.output().expect("deliver native resize event");
+            assert!(
+                result.status.success(),
+                "native resize fixture failed: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert!(report.exists(), "native fixture must record actual delivery");
+        }
+        self.wait_until("actual same-size native resize reached the application", received);
+    }
+
+    fn raw_offset(&self) -> usize {
+        self.output.lock().expect("output lock").raw.len()
+    }
+
+    fn raw_since(&self, offset: usize) -> Vec<u8> {
+        self.output.lock().expect("output lock").raw[offset..].to_vec()
+    }
+
+    fn physical_contents(&self) -> Vec<Vec<String>> {
+        let output = self.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        let (height, width) = screen.size();
+        (0..height.get())
+            .map(|row| {
+                (0..width.get())
+                    .map(|col| {
+                        let text = screen.cell(row, col).expect("physical cell").contents();
+                        if text.is_empty() { " ".to_owned() } else { text.to_owned() }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn native_words(&self) -> Vec<String> {
+        self.transcript_rows()
+            .iter()
+            .flat_map(|row| row.split_whitespace())
+            .filter(|word| {
+                ["NATIVE_ROW_", "NATIVE_copper_", "NATIVE_river_", "NATIVE_END_"]
+                    .iter()
+                    .any(|prefix| word.starts_with(*prefix))
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn wait_native_history(&mut self) {
+        self.wait_until("complete independently ordered native history", |test| {
+            test.native_words() == native_history_words()
+        });
+        let mut screen = self.output.lock().expect("output lock").parser.screen().clone();
+        screen.set_scrollback(usize::MAX);
+        assert!(screen.scrollback() > 0, "history must genuinely enter terminal scrollback");
+        assert!(
+            screen.rows(0, screen.size().1.get()).any(|row| row.contains("NATIVE_ROW_001")),
+            "the first source row must be retained in scrollback"
+        );
+    }
+
+    fn assert_native_history(&self) {
+        assert_eq!(self.native_words(), native_history_words(), "complete ordered history once");
+    }
+
+    fn region(&self, top: u16, bottom: u16, left: u16, right: u16) -> String {
+        let output = self.output.lock().expect("output lock");
+        let screen = output.parser.screen();
+        let (height, width) = screen.size();
+        (top..bottom.min(height.get()))
+            .map(|row| {
+                (left..right.min(width.get()))
+                    .filter_map(|col| screen.cell(row, col))
+                    .map(vt100::Cell::contents)
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn wait_native_composer(&mut self, offset: usize, first: &str, second: &str) {
+        self.wait_until("both draft lines in the current physical composer", |test| {
+            let records = test.runtime_records_since(offset);
+            let Some(draw) =
+                records.iter().rev().find(|r| r["event_name"] == "inline_chat_viewport_draw")
+            else {
+                return false;
+            };
+            let Some(top) = draw["editor_top"].as_u64().and_then(|n| u16::try_from(n).ok()) else {
+                return false;
+            };
+            let Some(height) = draw["editor_height"].as_u64().and_then(|n| u16::try_from(n).ok())
+            else {
+                return false;
+            };
+            let output = test.output.lock().expect("output lock");
+            let screen = output.parser.screen();
+            if draw["terminal_height"] != screen.size().0.get()
+                || draw["terminal_width"] != screen.size().1.get()
+            {
+                return false;
+            }
+            drop(output);
+            let composer = test.region(top, top + height, 0, u16::MAX);
+            composer.contains(first) && composer.contains(second)
+        });
+    }
+
+    fn seed_native_history(&mut self) {
+        self.submit("NATIVE_HISTORY_REQUEST", "NATIVE_HISTORY_REQUEST");
+        self.wait_turn_finished("NATIVE_END_048");
+        self.wait_native_history();
+        self.assert_prompts(&["NATIVE_HISTORY_REQUEST"]);
+    }
+
+    fn seed_native_draft(&mut self) {
+        let offset = self.log_offset();
+        self.paste("keep 界 🦀 e\u{301}\nsecond paragraph");
+        self.wait_native_composer(offset, "keep 界 🦀 e\u{301}", "second paragraph");
+        self.send(b"\x1b[D\x1b[D\x1b[D\x1b[D");
+        self.wait_until("native cursor at the known middle insertion point", |test| {
+            let output = test.output.lock().expect("output lock");
+            let screen = output.parser.screen();
+            let (cursor_row, cursor_col) = screen.cursor_position();
+            screen.rows(0, screen.size().1.get()).enumerate().any(|(row, text)| {
+                text.find("second paragraph").is_some_and(|start| {
+                    usize::from(cursor_row) == row
+                        && usize::from(cursor_col) == start + "second parag".len()
+                })
+            })
+        });
+        // A later edit at this independently known insertion point proves the
+        // retained cursor, rather than just finding draft substrings.
+    }
+
+    fn open_native_form(&mut self, id: &str) {
+        let offset = self.log_offset();
+        self.signal(id);
+        self.wait_until("real elicitation destination and its controls", |test| {
+            test.runtime_records_since(offset)
+                .iter()
+                .any(|r| r["event_name"] == "fullscreen_surface_draw")
+                && test.region(0, 30, 0, u16::MAX).contains(&format!("NATIVE FORM {id}"))
+                && test
+                    .screen_rows()
+                    .iter()
+                    .any(|row| row.contains("\u{203a} destination (required)"))
+                && test
+                    .screen_rows()
+                    .iter()
+                    .any(|row| row.trim_matches(['\u{2502}', ' ']).trim() == "Accept")
+                && test
+                    .screen_rows()
+                    .iter()
+                    .any(|row| row.trim_matches(['\u{2502}', ' ']).trim() == "Cancel")
+                && test.output.lock().expect("output lock").parser.screen().alternate_screen()
+        });
+        let offset = self.raw_offset();
+        self.send(b"\t");
+        self.wait_until("form action owns the selected row", |test| {
+            test.screen_rows().iter().any(|row| row.contains("\u{203a} Accept"))
+        });
+        self.send(b"\x1b[Z");
+        self.wait_until("form focus returns to its destination field", |test| {
+            test.screen_rows().iter().any(|row| row.contains("\u{203a} destination (required)"))
+        });
+        assert!(
+            alternate_transitions(&self.raw_since(offset)).is_empty(),
+            "repeated fullscreen frames must not churn native modes"
+        );
+    }
+
+    fn close_native_form(&mut self, id: &str) {
+        let journal_offset = self.journal().len();
+        self.send(b"\x1b");
+        self.wait_until("correlated form cancellation", |test| {
+            test.journal().iter().skip(journal_offset).any(|entry| {
+                entry["command"] == "elicitation_response"
+                    && entry["session_id"] == "fake-session"
+                    && entry["elicitation_request_id"] == id
+                    && entry["action"] == "cancel"
+                    && entry.get("content").is_none()
+            })
+        });
+        self.wait_until("application removed settled form", |test| {
+            !test.screen().contains(&format!("NATIVE FORM {id}"))
+        });
+        // Settlement closes the overlay; Escape then closes Config itself.
+        self.send(b"\x1b");
+    }
+
+    fn wait_native_chat(&mut self, offset: usize, second: &str) {
+        self.wait_native_composer(offset, "keep 界 🦀 e\u{301}", second);
+        assert!(!self.output.lock().expect("output lock").parser.screen().alternate_screen());
+        self.wait_native_history();
+    }
+
+    fn finish_native(&mut self) {
+        let offset = self.raw_offset();
+        self.shutdown();
+        self.wait_shutdown_screen();
+        // The actual session's final resume command follows native restoration.
+        // After successful exit it fences every earlier console write without
+        // assuming ConPTY EOF or waiting a fixed amount for a reader thread.
+        self.wait_final_output_since(offset, "claude-rs resume fake-session");
+        let output = self.output.lock().expect("output lock");
+        assert!(!output.parser.screen().alternate_screen());
+        assert!(!output.parser.screen().hide_cursor());
+    }
+}
+
+#[test]
+fn native_fullscreen_returns_preserve_ordered_history_draft_cursor_and_consume_resize() {
+    let mut test = TerminalTest::start("native-surfaces", 48);
+    test.seed_native_history();
+    test.seed_native_draft();
+    let offset = test.raw_offset();
+    test.open_native_form("form-unchanged");
+    let log_offset = test.log_offset();
+    test.close_native_form("form-unchanged");
+    test.wait_native_chat(log_offset, "second paragraph");
+    assert_eq!(alternate_transitions(&test.raw_since(offset)), [true, false]);
+    assert!(!test.raw_since(offset).windows(4).any(|w| w == b"\x1b[3J"));
+    let log_offset = test.log_offset();
+    test.paste("!");
+    test.wait_native_composer(log_offset, "keep 界 🦀 e\u{301}", "second parag!raph");
+
+    let offset = test.raw_offset();
+    test.open_native_form("form-resized");
+    test.resize_and_wait_for_draw(28, 61);
+    test.wait_until("resized form content and selected control at current dimensions", |test| {
+        test.region(0, 28, 0, 61).contains("NATIVE FORM form-resized")
+            && test.region(0, 28, 0, 61).contains("destination (required)")
+            && test.region(0, 28, 0, 61).contains("Accept")
+    });
+    let log_offset = test.log_offset();
+    test.close_native_form("form-resized");
+    test.wait_native_chat(log_offset, "second parag!raph");
+    let raw = test.raw_since(offset);
+    assert_eq!(alternate_transitions(&raw), [true, false]);
+    assert!(
+        raw.windows(4).any(|w| w == b"\x1b[3J"),
+        "changed size must actually purge stale history"
+    );
+    let rows = test.transcript_rows();
+    assert!(
+        rows.iter().any(|row| row.contains("NATIVE_ROW_024") && !row.contains("NATIVE_END_024")),
+        "history must wrap at the current narrow width"
+    );
+
+    let offset = test.raw_offset();
+    test.open_native_form("form-consumed");
+    let log_offset = test.log_offset();
+    test.close_native_form("form-consumed");
+    test.wait_native_chat(log_offset, "second parag!raph");
+    let raw = test.raw_since(offset);
+    assert_eq!(alternate_transitions(&raw), [true, false]);
+    assert!(!raw.windows(4).any(|w| w == b"\x1b[3J"), "consumed resize must not purge again");
+    let log_offset = test.log_offset();
+    test.paste("?");
+    test.wait_native_composer(log_offset, "keep 界 🦀 e\u{301}", "second parag!?raph");
+    test.assert_prompts(&["NATIVE_HISTORY_REQUEST"]);
+    test.submit_draft();
+    test.wait_turn_finished("NATIVE_SUBMISSION_APPLIED");
+    test.assert_prompts(&["NATIVE_HISTORY_REQUEST", "keep 界 🦀 e\u{301}\nsecond parag!?raph"]);
+    test.assert_native_history();
+    test.finish_native();
+    test.assert_native_history();
+}
+
+#[test]
+fn native_fullscreen_retargets_populated_diff_to_form_without_chat_or_mode_churn() {
+    let mut test = TerminalTest::start("native-surfaces", 48);
+    test.seed_native_history();
+    let initialized = std::process::Command::new("git")
+        .current_dir(test.project_dir())
+        .args(["init", "-q"])
+        .output()
+        .expect("initialize diff fixture");
+    assert!(initialized.status.success());
+    std::fs::write(test.project_dir().join("native.txt"), "NATIVE_DIFF_DESTINATION\n")
+        .expect("diff source");
+    let offset = test.raw_offset();
+    test.submit("/diff", "/diff");
+    test.wait_until("populated native diff content and controls", |test| {
+        test.region(3, 30, 30, COLS - 1).contains("NATIVE_DIFF_DESTINATION")
+            && test.region(0, 2, 0, COLS).contains("Git diff")
+            && test.region(30, SHORT_ROWS, 0, COLS).contains("refresh")
+            && test.output.lock().expect("output lock").parser.screen().alternate_screen()
+    });
+    assert_eq!(alternate_transitions(&test.raw_since(offset)), [true]);
+    let retarget_offset = test.raw_offset();
+    let log_offset = test.log_offset();
+    test.open_native_form("form-retarget");
+    assert!(!test.region(0, SHORT_ROWS, 0, COLS).contains("NATIVE_DIFF_DESTINATION"));
+    assert!(!test.region(0, 2, 0, COLS).contains("Git diff"));
+    assert!(alternate_transitions(&test.raw_since(retarget_offset)).is_empty());
+    let retarget_raw = test.raw_since(retarget_offset);
+    for chat_content in ["NATIVE_ROW_", "NATIVE_HISTORY_REQUEST", "Type a message", "[READY]"] {
+        assert!(
+            !String::from_utf8_lossy(&retarget_raw).contains(chat_content),
+            "retarget must not expose chat content: {chat_content}"
+        );
+    }
+    assert!(
+        !test
+            .runtime_records_since(log_offset)
+            .iter()
+            .any(|r| r["event_name"] == "inline_chat_viewport_draw"),
+        "retarget must never paint transient chat"
+    );
+    let log_offset = test.log_offset();
+    test.close_native_form("form-retarget");
+    test.wait_composer_text(log_offset, "Type a message");
+    test.wait_native_history();
+    assert_eq!(alternate_transitions(&test.raw_since(offset)), [true, false]);
+    test.assert_prompts(&["NATIVE_HISTORY_REQUEST"]);
+    test.submit("after retarget 界", "after retarget 界");
+    test.wait_turn_finished("NATIVE_SUBMISSION_APPLIED");
+    test.assert_prompts(&["NATIVE_HISTORY_REQUEST", "after retarget 界"]);
+    test.finish_native();
+    test.assert_native_history();
+}
+
+#[test]
+fn native_initial_fullscreen_trust_creates_usable_current_session_chat() {
+    let mut test = TerminalTest::start_with_profile(
+        "native-surfaces",
+        48,
+        None,
+        &[],
+        false,
+        &[],
+        AppProfileFixture { pause_at_trust: true, ..AppProfileFixture::default() },
+    );
+    assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
+    assert!(test.commands("create_session").is_empty(), "no session before trust");
+    assert!(
+        !test
+            .runtime_records_since(0)
+            .iter()
+            .any(|r| r["event_name"] == "inline_chat_terminal_initialized"),
+        "no suspended chat exists at initial fullscreen startup"
+    );
+    test.accept_trust(false);
+    let session = test.commands("create_session");
+    assert_eq!(session.len(), 1);
+    assert_eq!(session[0]["cwd"].as_str().map(Path::new), Some(test.project_dir().as_path()));
+    test.wait_composer_text(0, "Type a message");
+    assert!(!test.output.lock().expect("output lock").parser.screen().alternate_screen());
+    assert!(test.region(0, SHORT_ROWS, 0, COLS).contains("[READY]"));
+    test.submit("initial chat 界\nexact submission", "exact submission");
+    test.wait_turn_finished("NATIVE_END_048");
+    test.wait_native_history();
+    test.assert_prompts(&["initial chat 界\nexact submission"]);
+    assert_eq!(test.prompts()[0]["session_id"], "fake-session");
+    test.finish_native();
+    test.assert_native_history();
+}
+
+#[test]
+fn native_same_size_resize_in_chat_and_fullscreen_preserves_rows_and_never_purges() {
+    let mut test = TerminalTest::start("native-surfaces", 48);
+    test.seed_native_history();
+    test.seed_native_draft();
+    let chat_interval = test.raw_offset();
+    for fullscreen in [false, true] {
+        if fullscreen {
+            test.open_native_form("form-same-size");
+            // The subsequent native entry is an output fence for all pending
+            // chat work. Exclude the intentional alternate-screen clear.
+            let raw = test.raw_since(chat_interval);
+            let entry =
+                raw.windows(8).position(|w| w == b"\x1b[?1049h").expect("native entry fence");
+            assert!(
+                destructive_clears(&raw[..entry]).is_empty(),
+                "same-size chat resize must not clear even after later work drains"
+            );
+        }
+        let before = test.physical_contents();
+        let raw_offset = test.raw_offset();
+        let log_offset = test.log_offset();
+        test.deliver_same_size_resize(log_offset);
+        assert_eq!(test.physical_contents(), before, "same-size event preserves physical rows");
+        assert!(
+            destructive_clears(&test.raw_since(raw_offset)).is_empty(),
+            "same-size resize must not erase screen/history"
+        );
+        if fullscreen {
+            let log_offset = test.log_offset();
+            test.close_native_form("form-same-size");
+            test.wait_native_chat(log_offset, "second paragraph");
+            // Leave is another ordered native output fence. Its own transition
+            // may clear the visible screen, so only the preceding interval is E5.
+            let raw = test.raw_since(raw_offset);
+            let leave =
+                raw.windows(8).position(|w| w == b"\x1b[?1049l").expect("native leave fence");
+            assert!(
+                destructive_clears(&raw[..leave]).is_empty(),
+                "same-size fullscreen resize must not clear before return"
+            );
+            assert!(
+                !raw.windows(4).any(|w| w == b"\x1b[3J"),
+                "same-size fullscreen resize must not defer a purge"
+            );
+        } else {
+            test.assert_native_history();
+        }
+    }
+    // Positive control: a real changed size must request and emit purge/replay.
+    let offset = test.raw_offset();
+    test.resize_and_wait_for_draw(28, 61);
+    test.wait_native_history();
+    assert!(test.raw_since(offset).windows(4).any(|w| w == b"\x1b[3J"));
+    let log_offset = test.log_offset();
+    test.paste("!");
+    test.wait_native_composer(log_offset, "keep 界 🦀 e\u{301}", "second parag!raph");
+    test.submit_draft();
+    test.wait_turn_finished("NATIVE_SUBMISSION_APPLIED");
+    test.assert_prompts(&["NATIVE_HISTORY_REQUEST", "keep 界 🦀 e\u{301}\nsecond parag!raph"]);
+    test.finish_native();
+    test.assert_native_history();
 }

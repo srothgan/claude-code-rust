@@ -25,6 +25,7 @@ const pending = [];
 const record = entry => {
   if (JOURNAL) fs.appendFileSync(JOURNAL, `${JSON.stringify(entry)}\n`);
 };
+let nativeActions;
 const send = event => {
   record({ type: 'event', ...event });
   process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -233,6 +234,17 @@ function streamReply(messageUuid) {
       raw_input: item.input, locations: [], output_metadata: { presentation: item.presentation },
       meta: { claudeCode: { toolName: item.tool } },
     } } });
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    return;
+  }
+  if (SCENARIO === 'native-surfaces') {
+    const body = replyNumber === 1
+      ? Array.from({ length: 48 }, (_, i) => {
+          const id = String(i + 1).padStart(3, '0');
+          return `${i + 1}. NATIVE_ROW_${id} NATIVE_copper_${id} NATIVE_river_${id} NATIVE_END_${id}\n`;
+        }).join('')
+      : 'NATIVE_SUBMISSION_APPLIED';
+    send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: body }, source_message_uuid: null } });
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
     return;
   }
@@ -459,7 +471,7 @@ readline
           ] : null,
           restored_input: null,
         });
-        if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-')) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-') || SCENARIO === 'native-surfaces') send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'status-rename') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'clear', description: 'Clear conversation history', input_hint: null },
@@ -470,6 +482,18 @@ readline
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
+        }
+        if (SCENARIO === 'native-surfaces' && !nativeActions) {
+          let previous = '';
+          nativeActions = setInterval(() => {
+            const action = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+            if (!action || action === previous) return;
+            previous = action;
+            if (action.startsWith('form-')) send({ event: 'elicitation_request', session_id: SESSION,
+              request: { request_id: action, server_name: 'native-surface-peer', message: `NATIVE FORM ${action}`, mode: 'form',
+                requested_schema: { type: 'object', properties: { destination: { type: 'string' } }, required: ['destination'] }, field_order: ['destination'] } });
+            record({ type: 'barrier', name: action, session_id: SESSION });
+          }, INTERVAL_MS);
         }
         if (SCENARIO === 'agents') {
           sendTasks([
