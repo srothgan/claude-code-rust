@@ -65,6 +65,20 @@ test("a fresh native session reports the saved idle preference without an applie
   }
 });
 
+test("the installed SDK supports usage, settings, and SDK-rendered context without a model request", async () => {
+  const result = await probe("usage-context", "default");
+  assert.equal(result.hasSettings, true);
+  const usage = result.usage as { rate_limits_available: boolean; behaviors: unknown; session: { total_cost_usd: number } };
+  assert.equal(usage.rate_limits_available, false);
+  assert.equal(usage.behaviors, null);
+  assert.equal(usage.session.total_cost_usd, 0);
+  const context = result.context as { percentage: number; totalTokens: number; maxTokens: number };
+  assert.ok(Number.isFinite(context.percentage));
+  assert.ok(context.totalTokens >= 0);
+  assert.ok(context.maxTokens > 0);
+  assert.match(String(result.markdown), /context usage/i);
+});
+
 test("SDK 0.3.302 native streaming accumulates citation deltas into completed text blocks", async () => {
   const result = await probe("citations", "default");
   assert.equal(result.calls, 1);

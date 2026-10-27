@@ -269,7 +269,7 @@ export function buildPromptUserMessage(
   };
 }
 
-const EXPECTED_AGENT_SDK_VERSION = "0.3.302";
+const EXPECTED_AGENT_SDK_VERSION = "0.3.311";
 const require = createRequire(import.meta.url);
 
 export function resolveInstalledAgentSdkVersion(): string | undefined {

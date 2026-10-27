@@ -7,7 +7,7 @@ const [type, policy] = process.argv.slice(2),
   cwd = process.cwd();
 const citation = { type: "web_search_result_location", url: "https://example.test/citation-only", title: "Metadata source", encrypted_index: "fixture-only", cited_text: "Evidence" };
 const reply = type === "citations" ? "Evidence: [source](https://example.test/source)." : "HOOK-PROBE-OK";
-if (type === "idle") {
+if (type === "idle" || type === "usage-context") {
   fs.writeFileSync(
     path.join(cwd, ".claude/settings.json"),
     JSON.stringify(policy === "default" ? {} : { idleCompaction: policy === "true" }),
@@ -15,6 +15,9 @@ if (type === "idle") {
   // Initialization controls do not require submitting a prompt to a model.
   const q = query({
     prompt: (async function* () {
+      if (type === "usage-context") {
+        yield { type: "user", session_id: "", parent_tool_use_id: null, message: { role: "user", content: "/context" } };
+      }
       await new Promise(() => {});
     })(),
     options: {
@@ -30,9 +33,22 @@ if (type === "idle") {
   try {
     await q.initializationResult();
     const response = await q.getSettings();
-    console.log(
-      JSON.stringify({ effective: response.effective.idleCompaction, applied: response.applied.idleCompaction }),
-    );
+    if (type === "usage-context") {
+      const usage = await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+      const context = await q.getContextUsage({ detail: "summary" });
+      let markdown = "";
+      for await (const message of q) {
+        if (message.type === "assistant") {
+          markdown += message.message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+        }
+        if (message.type === "result") break;
+      }
+      console.log(JSON.stringify({ usage, context, markdown, hasSettings: !!response.effective }));
+    } else {
+      console.log(
+        JSON.stringify({ effective: response.effective.idleCompaction, applied: response.applied.idleCompaction }),
+      );
+    }
   } finally {
     clearTimeout(timeout);
     q.close();

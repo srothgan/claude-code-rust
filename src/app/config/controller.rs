@@ -34,6 +34,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     }
     refresh_status_tab(app);
     if app.config.active_tab == ConfigTab::Usage {
+        app.config.usage_scroll = 0;
         crate::app::usage::request_refresh_if_needed(app);
     }
     if app.config.active_tab == ConfigTab::Plugins {
@@ -75,6 +76,23 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     }
     if handle_settings_key(app, key) {
         return;
+    }
+    if app.config.active_tab == ConfigTab::Usage && key.modifiers.is_empty() {
+        let page = app.config.usage_visible_rows.max(1);
+        let scroll = app.config.usage_scroll;
+        let next = match key.code {
+            KeyCode::Up => Some(scroll.saturating_sub(1)),
+            KeyCode::Down => Some(scroll.saturating_add(1)),
+            KeyCode::PageUp => Some(scroll.saturating_sub(page)),
+            KeyCode::PageDown => Some(scroll.saturating_add(page)),
+            KeyCode::Home => Some(0),
+            KeyCode::End => Some(app.config.usage_max_scroll),
+            _ => None,
+        };
+        if let Some(next) = next {
+            app.config.usage_scroll = next.min(app.config.usage_max_scroll);
+            return;
+        }
     }
 
     match (key.code, key.modifiers) {
@@ -307,6 +325,7 @@ fn request_active_tab_side_effects(app: &mut App) {
     refresh_status_tab(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {
+        app.config.usage_scroll = 0;
         crate::app::usage::request_refresh_if_needed(app);
     }
     if app.config.active_tab == ConfigTab::Plugins {

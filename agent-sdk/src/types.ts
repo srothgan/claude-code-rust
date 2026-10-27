@@ -820,11 +820,19 @@ export interface StructuredSessionUsage {
 export interface StructuredActivityWindow {
   request_count: number;
   session_count: number;
+  recommendations?: StructuredUsageRecommendation[];
   behaviors: StructuredBehaviorAttribution[];
   agents: StructuredNamedAttribution[];
   skills: StructuredNamedAttribution[];
   plugins: StructuredNamedAttribution[];
   mcp_servers: StructuredNamedAttribution[];
+}
+
+export interface StructuredUsageRecommendation {
+  key: string;
+  pct: number;
+  title: string;
+  detail?: string;
 }
 
 export interface StructuredBehaviorAttribution {

@@ -151,7 +151,9 @@ fn config_help_text(app: &App, width: u16) -> String {
                 hints
             }
         }
-        ConfigTab::Usage => vec!["r refresh", "Tab/Shift+Tab tabs", "Enter close"],
+        ConfigTab::Usage => {
+            vec!["Up/Down/PgUp/PgDn scroll", "r refresh", "Tab/Shift+Tab tabs", "Enter close"]
+        }
         ConfigTab::Mcp => {
             vec!["Enter actions", "Up/Down select", "Tab/Shift+Tab tabs", "r refresh"]
         }

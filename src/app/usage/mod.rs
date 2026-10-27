@@ -160,6 +160,7 @@ fn map_activity_window(
     UsageActivityWindow {
         request_count: window.request_count,
         session_count: window.session_count,
+        recommendations: window.recommendations,
         behaviors: window
             .behaviors
             .into_iter()

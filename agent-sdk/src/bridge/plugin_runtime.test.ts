@@ -19,13 +19,17 @@ test("native plugin attachment, partial application, held Apply and explicit res
     windowsHide: true,
   });
   const result = JSON.parse(stdout);
-  assert.equal(result.sdk, "0.3.302");
+  assert.equal(result.sdk, "0.3.311");
   type Observation = {
     name: string;
     held?: boolean;
     error_count?: number;
     plugins?: Array<{ name: string; path: string }>;
     commands?: Array<{ name: string }>;
+    subtype?: string;
+    is_error?: boolean;
+    result?: string;
+    cache_impact?: { mcp_servers_added: string[] };
   };
   const observation = (name: string): Observation => {
     const entry = (result.results as Observation[]).find((entry) => entry.name === name);
@@ -40,8 +44,12 @@ test("native plugin attachment, partial application, held Apply and explicit res
   assert.ok(names(partial).includes("fixture-a"));
   assert.equal(names(partial).includes("fixture-b"), false);
   assert.ok(names(observation("retry-repaired")).includes("fixture-b"));
+  assert.equal(observation("turn").subtype, "success");
+  assert.equal(observation("turn").is_error, false);
+  assert.equal(observation("turn").result, "LOCAL-PROBE-OK");
   const held = observation("held-mcp");
   assert.equal(held.held, true);
+  assert.deepEqual(held.cache_impact?.mcp_servers_added, ["plugin:fixture-mcp:fixture"]);
   assert.equal(names(held).includes("fixture-mcp"), false);
   assert.ok(names(observation("apply-mcp")).includes("fixture-mcp"));
   assert.equal(names(observation("resume")).includes("fixture-a"), false);

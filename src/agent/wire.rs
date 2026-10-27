@@ -2156,6 +2156,31 @@ mod tests {
     }
 
     #[test]
+    fn usage_recommendations_preserve_optional_availability_and_sdk_fields() {
+        for recommendations in [
+            None,
+            Some(serde_json::json!([])),
+            Some(serde_json::json!([
+                {"key":"future_source", "pct":37.5, "title":"Review the source", "detail":"SDK explanation"}
+            ])),
+        ] {
+            let mut window = serde_json::json!({"request_count":4,"session_count":2});
+            if let Some(value) = &recommendations {
+                window["recommendations"] = value.clone();
+            }
+            let event: BridgeEvent = serde_json::from_value(serde_json::json!({
+                "event":"usage_snapshot", "session_id":"usage-session", "snapshot":{"activity_day":window}
+            })).expect("usage envelope");
+            let BridgeEvent::UsageSnapshot { snapshot: Some(snapshot), .. } = event else {
+                panic!("usage snapshot");
+            };
+            let day = snapshot.activity_day.expect("day");
+            let encoded = serde_json::to_value(day).expect("encoded day");
+            assert_eq!(encoded.get("recommendations"), recommendations.as_ref());
+        }
+    }
+
+    #[test]
     fn settings_categories_and_recursive_forms_cross_the_settings_result_wire() {
         let mut snapshot: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/settings-ui-catalog.json"))

@@ -98,6 +98,7 @@ fn maps_structured_sdk_usage_without_conflating_session_and_account_totals() {
         activity_day: Some(crate::agent::types::StructuredActivityWindow {
             request_count: 4,
             session_count: 2,
+            recommendations: None,
             behaviors: vec![crate::agent::types::StructuredBehaviorAttribution {
                 key: "long_context".to_owned(),
                 pct: 25.0,

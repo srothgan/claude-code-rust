@@ -138,6 +138,7 @@ pub struct SessionUsageSummary {
 pub struct UsageActivityWindow {
     pub request_count: u64,
     pub session_count: u64,
+    pub recommendations: Option<Vec<crate::agent::types::StructuredUsageRecommendation>>,
     pub behaviors: Vec<UsageBehaviorAttribution>,
     pub agents: Vec<UsageNamedAttribution>,
     pub skills: Vec<UsageNamedAttribution>,

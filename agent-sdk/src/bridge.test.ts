@@ -2471,6 +2471,26 @@ test("managed model inventory and pricing remain SDK-owned aggregate flows", () 
   );
 });
 
+test("usage recommendations distinguish unavailable, empty, and partially valid data", () => {
+  const window = (recommendations: unknown) => normalizeStructuredUsage({
+    behaviors: { day: { request_count: 2, session_count: 1, recommendations } },
+  }).activity_day;
+  for (const missing of [undefined, null, "invalid"]) {
+    assert.equal(window(missing)?.recommendations, undefined);
+  }
+  assert.deepEqual(window([])?.recommendations, []);
+  assert.deepEqual(window([
+    null,
+    { key: "plugin", pct: 30, title: "" },
+    { key: "plugin", pct: Number.NaN, title: "Invalid share" },
+    { key: "future", pct: 150, title: " Keep SDK wording ", detail: " Explanation " },
+    { key: "plugin", pct: -1, title: "Review this plugin", detail: 42 },
+  ])?.recommendations, [
+    { key: "future", pct: 100, title: "Keep SDK wording", detail: "Explanation" },
+    { key: "plugin", pct: 0, title: "Review this plugin" },
+  ]);
+});
+
 test("normalizeStructuredUsage isolates an incompatible root as an empty snapshot", () => {
   assert.deepEqual(normalizeStructuredUsage(null), {});
   assert.deepEqual(normalizeStructuredUsage("not-an-object"), {});
@@ -9058,7 +9078,7 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.302");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.311");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -9128,6 +9148,47 @@ test("usage attribution preserves both windows and future keys in the emitted re
     assert.equal(snapshot.activity_day?.request_count,20);
     assert.equal(snapshot.activity_week?.request_count,100);
   } finally {sessions.delete(session.sessionId);}
+});
+
+test("usage requests deliver day/week recommendations without applying SDK fixes", async () => {
+  const { readFileSync } = await import("node:fs");
+  const raw = JSON.parse(readFileSync(new URL("../../tests/fixtures/sdk-usage-recommendations.json", import.meta.url), "utf8"));
+  const session = makeSessionState();
+  const query = {
+    async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() {
+      assert.equal(this, query, "preserve the query receiver");
+      return raw;
+    },
+  };
+  session.query = query as unknown as SessionState["query"];
+  session.input.enqueue = () => assert.fail("usage must never enqueue corrective messages");
+  sessions.set(session.sessionId, session);
+  try {
+    const request = parseCommandEnvelope(JSON.stringify({ command: "get_usage", session_id: session.sessionId, request_id: "recommendations" }));
+    assert.ok(request.command.command === "get_usage");
+    const events = await captureBridgeEventsAsync(() => handleSessionDataCommand(
+      request.command as Extract<import("./types.js").BridgeCommand, { command: "get_usage" }>, request.requestId, {
+        generatePersistedSessionTitle, buildSessionMutationOptions, rewindTargetsFromSessionMessages,
+        handleRewind: async () => assert.fail("unused"),
+      },
+    ));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].session_id, session.sessionId);
+    assert.equal(events[0].request_id, "recommendations");
+    const snapshot = events[0].snapshot as import("./types.js").StructuredUsageSnapshot;
+    assert.deepEqual(snapshot.activity_day?.recommendations, [
+      { key: "max_effort", pct: 71, title: "Lower effort for routine work", detail: "Review /effort before your next task." },
+      { key: "plugin", pct: 53, title: "Review the Alpha plugin", detail: "Alpha contributes instructions to local requests." },
+      { key: "plugin", pct: 35, title: "Review the Beta plugin" },
+    ]);
+    assert.deepEqual(snapshot.activity_week?.recommendations, [
+      { key: "future_behavior", pct: 81, title: "Review the weekly workflow", detail: "This suggestion applies to the last seven days." },
+    ]);
+    assert.equal(snapshot.five_hour?.utilization, 42);
+    assert.equal(snapshot.session?.total_cost_usd, 1.25);
+  } finally {
+    sessions.delete(session.sessionId);
+  }
 });
 
 test("pinned SDK preserves supplied citations and the host delivers streamed and saved text once", {timeout:15000}, async (context) => {

@@ -14,6 +14,8 @@ for (const key of Object.keys(process.env))
   if (/^(ANTHROPIC_|CLAUDE_CODE_USE_|CLAUDE_CODE_OAUTH_TOKEN|CLAUDECODE$)/.test(key))
     delete process.env[key];
 process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+// Keep tool schemas in the prompt so adding an MCP server exercises the cache-impact hold.
+process.env.ENABLE_TOOL_SEARCH = "false";
 process.env.ANTHROPIC_AUTH_TOKEN = "local-fixture-token";
 const server = http.createServer(async (req, res) => {
   let raw = "";
@@ -31,7 +33,7 @@ const server = http.createServer(async (req, res) => {
     content: [],
     stop_reason: null,
     stop_sequence: null,
-    usage: { input_tokens: 10, output_tokens: 5 },
+    usage: { input_tokens: 10, cache_creation_input_tokens: 2048, output_tokens: 5 },
   };
   res.writeHead(200, { "Content-Type": "text/event-stream" });
   const send = (type, data) =>
@@ -144,6 +146,7 @@ try {
     if (m.type === "system" && m.subtype === "init")
       results.push({ name: "init-message", plugins: m.plugins });
     if (m.type === "result") {
+      results.push({ name: "turn", subtype: m.subtype, is_error: m.is_error, result: m.result });
       const c = plugin("fixture-mcp");
       const mcp = path.join(root, "mcp.mjs");
       fs.writeFileSync(
