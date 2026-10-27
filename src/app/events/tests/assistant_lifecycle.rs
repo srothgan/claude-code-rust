@@ -530,54 +530,254 @@ fn take_assistant_text_rows(
     rows
 }
 
-#[test]
-fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
+// AL10 consumes only the named owner's text; AL11's common collector stays unchanged.
+fn take_owner_table_rows(
+    app: &mut App,
+    owner: usize,
+    excluded: &mut BTreeSet<HistoryOutputId>,
+    width: u16,
+    stable_only: bool,
+) -> Vec<String> {
+    let rendered = serialize_live_rows_with_boundaries_excluding(app, width, excluded, None);
+    let mut rows = Vec::new();
+    for segment in rendered.segments().iter().filter(|segment| {
+        segment.msg_idx == owner && segment.kind == LiveRowBoundaryKind::AssistantText
+    }) {
+        if stable_only && segment.end_row > rendered.stable_row_count() {
+            continue;
+        }
+        rows.extend(
+            rendered
+                .segment_rows(segment)
+                .unwrap()
+                .iter()
+                .map(|row| row.to_string().trim_end().to_owned()),
+        );
+        excluded.extend(segment.ids.iter().cloned());
+    }
+    rows
+}
+
+fn assert_table_cells(rows: &[String], expected: &[(String, String)]) {
+    // Read displayed columns, joining only wrapped continuation lines within each cell.
+    // Expectations are authored from fixture meaning, never a Markdown parser/render.
+    let mut cells: Vec<(String, String)> = Vec::new();
+    for row in rows.iter().filter(|row| row.contains('\u{2502}')) {
+        let columns = row.split('\u{2502}').collect::<Vec<_>>();
+        assert_eq!(columns.len(), 4, "two displayed cells, including escaped literal pipes: {row}");
+        let left = columns[1].trim();
+        let right = columns[2].trim();
+        if left.is_empty() {
+            let previous = cells.last_mut().expect("wrapped cell follows its logical row");
+            if !right.is_empty() {
+                previous.1.push(' ');
+                previous.1.push_str(right);
+            }
+        } else {
+            cells.push((left.to_owned(), right.to_owned()));
+        }
+    }
+    assert_eq!(
+        cells, expected,
+        "header, every cell pair and logical row order in this owner's table"
+    );
+}
+
+type TableFixture = (&'static str, String, Vec<(String, String)>, bool);
+
+fn table_fixtures() -> [TableFixture; 4] {
     use std::fmt::Write as _;
 
-    let long_rows = (0..95).fold(String::new(), |mut rows, n| {
+    let mut long_table = "Name | Value\n--- | ---\n".to_owned();
+    let mut long_cells = vec![("Name".to_owned(), "Value".to_owned())];
+    let mut n = 0;
+    while long_table.len() <= crate::app::default_cache_split_policy().hard_limit_bytes {
         writeln!(
-            rows,
+            long_table,
             "entry_{n} | value_{n} with enough detail to exceed the streaming cache budget"
         )
         .unwrap();
-        rows
-    });
-    let fixtures = [
-        ("Introduction.\n\n\u{540d}\u{524d} | Value\n- | -\nred | one\nblue | two\n\nFinal paragraph.".to_owned(), "red", "one"),
-        ("Introduction.\n\n> Name | Value\n> --- | ---\n> red | `one\\|two`\n> blue | **three**\n\nFinal paragraph.".to_owned(), "red", "one|two"),
-        (format!("Introduction.\n\nName | Value\n--- | ---\n{long_rows}\nFinal paragraph."), "entry_94", "value_94"),
-    ];
-    for (source, name, value) in fixtures {
+        long_cells.push((
+            format!("entry_{n}"),
+            format!("value_{n} with enough detail to exceed the streaming cache budget"),
+        ));
+        n += 1;
+    }
+    let pairs = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(left, right)| ((*left).to_owned(), (*right).to_owned()))
+            .collect::<Vec<_>>()
+    };
+    [
+        (
+            "Introduction.\n\n",
+            "\u{540d}\u{524d} | Value\n- | -\nred | one\nblue | two\n".to_owned(),
+            pairs(&[("\u{540d}\u{524d}", "Value"), ("red", "one"), ("blue", "two")]),
+            false,
+        ),
+        (
+            "Introduction.\n\n",
+            "> Name | Value\n> --- | ---\n> red | `one\\|two`\n> blue | **three**\n".to_owned(),
+            pairs(&[("Name", "Value"), ("red", "one|two"), ("blue", "three")]),
+            false,
+        ),
+        ("Introduction.\n\n", long_table, long_cells, false),
+        (
+            "## Context usage\n\n",
+            "| Category | Tokens |\n| --- | ---: |\n| System | 100 |".to_owned(),
+            pairs(&[("Category", "Tokens"), ("System", "100")]),
+            true,
+        ),
+    ]
+}
+
+fn assert_context_table_source(app: &App, owner: usize) {
+    for block in &app.transcript.messages[owner].blocks {
+        let MessageBlock::Text(block) = block else { panic!("context source block") };
+        assert!(
+            block.has_source_message_uuid("context-assistant-1"),
+            "context UUID survives heading/table splits"
+        );
+    }
+    let canonical = app.transcript.messages[owner]
+        .blocks
+        .iter()
+        .map(|block| {
+            let MessageBlock::Text(block) = block else { panic!("context source block") };
+            block.text.as_str()
+        })
+        .collect::<String>();
+    assert_eq!(
+        canonical,
+        "## Context usage\n\n| Category | Tokens |\n| --- | ---: |\n| System | 100 |"
+    );
+}
+
+fn assert_table_neighbor_is_unconsumed(
+    app: &mut App,
+    neighbor: usize,
+    excluded: &BTreeSet<HistoryOutputId>,
+) {
+    let remaining = serialize_live_rows_with_boundaries_excluding(app, 36, excluded, None);
+    let rows = remaining
+        .segments()
+        .iter()
+        .filter(|segment| {
+            segment.msg_idx == neighbor && segment.kind == LiveRowBoundaryKind::AssistantText
+        })
+        .flat_map(|segment| remaining.segment_rows(segment).unwrap())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_table_cells(
+        &rows,
+        &[
+            ("Neighbor".to_owned(), "Other".to_owned()),
+            ("decoy".to_owned(), "untouched".to_owned()),
+        ],
+    );
+}
+
+#[test]
+fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
+    for (intro, table, expected_cells, context) in table_fixtures() {
+        let ending = "\n\nFinal paragraph.";
+        let source = format!("{intro}{table}{ending}");
         let mut whole = connected_app().0;
         update(&mut whole, model::SessionUpdate::AgentResponseStarted);
         update(&mut whole, text(&source));
+        let whole_owner = whole.active_turn_assistant_idx().unwrap();
         handle_client_event(&mut whole, turn_complete(None));
-        let expected = take_assistant_text_rows(&mut whole, &mut BTreeSet::new(), 36, false);
-        let row = expected.iter().find(|row| row.contains(name)).expect("table data row");
-        assert!(row.contains(value), "cells must remain associated on their table row: {row}");
-        assert!(!row.contains(&format!("{name} |")), "table delimiters must not render as source");
-        assert!(expected.iter().any(|row| row.contains('─')), "table header separator");
+        let whole_rows =
+            take_owner_table_rows(&mut whole, whole_owner, &mut BTreeSet::new(), 36, false);
+        assert_table_cells(&whole_rows, &expected_cells);
 
-        let chars = source.chars().collect::<Vec<_>>();
-        let chunk_sizes =
-            if chars.len() < 512 { [1, 17, chars.len()] } else { [113, 509, chars.len()] };
-        for chunk_size in chunk_sizes {
-            let mut app = connected_app().0;
-            update(&mut app, model::SessionUpdate::AgentResponseStarted);
-            let mut committed = Vec::new();
-            let mut excluded = BTreeSet::new();
-            for chunk in chars.chunks(chunk_size) {
-                update(&mut app, text(&chunk.iter().collect::<String>()));
-                committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, true));
-            }
-            assert!(
-                committed.iter().any(|row| row.contains("Introduction.")),
-                "completed prose should advance into scrollback while the table streams"
+        // One-character chunks bisect syntax; larger chunks cross paragraph/cache boundaries.
+        let chars = format!("{intro}{table}").chars().collect::<Vec<_>>();
+        let sizes =
+            if table.len() < 512 { vec![1, 17, chars.len()] } else { vec![113, 509, chars.len()] };
+        for chunk_size in sizes {
+            let (mut app, mut receiver) = connected_app();
+            submit(&mut app, &mut receiver, "Neighbor question");
+            update(
+                &mut app,
+                text(
+                    "Neighbor heading.\n\n| Neighbor | Other |\n| --- | --- |\n| decoy | untouched |",
+                ),
             );
+            let neighbor = app.active_turn_assistant_idx().unwrap();
+            let neighbor_id = app.transcript.messages[neighbor].id;
             handle_client_event(&mut app, turn_complete(None));
-            committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, false));
-            assert_eq!(committed, expected, "chunk size {chunk_size}");
-            assert_eq!(crate::app::copy::choices(&app)[0].text, source);
+            submit(&mut app, &mut receiver, "Show the requested table");
+            let owner = app.active_turn_assistant_idx().unwrap();
+            let owner_id = app.transcript.messages[owner].id;
+            let mut excluded = BTreeSet::new();
+            let mut committed = Vec::new();
+            for chunk in chars.chunks(chunk_size) {
+                let value = chunk.iter().collect::<String>();
+                let event = if context {
+                    model::SessionUpdate::AgentMessageChunk(
+                        model::ContentChunk::new(model::ContentBlock::Text(
+                            model::TextContent::new(value),
+                        ))
+                        .source_message_uuid(Some("context-assistant-1".to_owned())),
+                    )
+                } else {
+                    text(&value)
+                };
+                update(&mut app, event);
+                committed.extend(take_owner_table_rows(&mut app, owner, &mut excluded, 36, true));
+                assert!(
+                    committed.iter().all(|row| !row.contains('\u{2502}')),
+                    "an unfinished table cannot enter final history"
+                );
+            }
+            assert_eq!(app.active_turn_assistant_idx(), Some(owner));
+            assert_eq!(app.transcript.messages[owner].id, owner_id);
+            let heading = if context { "Context usage" } else { "Introduction." };
+            assert_eq!(
+                committed.iter().filter(|row| row.contains(heading)).count(),
+                1,
+                "completed heading/prose progresses once while the table remains mutable"
+            );
+            let live = serialize_live_rows_with_boundaries_excluding(&mut app, 36, &excluded, None);
+            let live_rows = live
+                .segments()
+                .iter()
+                .filter(|segment| {
+                    segment.msg_idx == owner && segment.kind == LiveRowBoundaryKind::AssistantText
+                })
+                .flat_map(|segment| live.segment_rows(segment).unwrap())
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            assert_table_cells(&live_rows, &expected_cells);
+            if context {
+                assert_context_table_source(&app, owner);
+            }
+            update(&mut app, text(ending));
+            committed.extend(take_owner_table_rows(&mut app, owner, &mut excluded, 36, true));
+            assert_table_cells(&committed, &expected_cells);
+            handle_client_event(&mut app, turn_complete(None));
+            committed.extend(take_owner_table_rows(&mut app, owner, &mut excluded, 36, true));
+            assert_table_cells(&committed, &expected_cells); // Completion must not duplicate a consumed table.
+            assert_eq!(committed.iter().filter(|row| row.contains(heading)).count(), 1);
+            assert_eq!(committed.iter().filter(|row| row.contains("Final paragraph.")).count(), 1);
+            assert_eq!(
+                committed, whole_rows,
+                "secondary chunk invariance, chunk size {chunk_size}"
+            );
+            assert!(
+                take_owner_table_rows(&mut app, owner, &mut excluded, 36, false).is_empty(),
+                "consumed owner text is excluded"
+            );
+            assert_table_neighbor_is_unconsumed(&mut app, neighbor, &excluded);
+            assert_eq!(app.transcript.messages[neighbor].id, neighbor_id);
+            let copied = crate::app::copy::choices(&app);
+            assert_eq!(
+                copied.first().expect("completed response copy choice").text,
+                source,
+                "full-response copy is the exact requested Markdown"
+            );
         }
     }
 }

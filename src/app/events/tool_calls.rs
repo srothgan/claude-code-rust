@@ -247,6 +247,21 @@ pub(super) fn shorten_tool_title(title: &str, cwd_raw: &str) -> String {
     // Ensure cwd ends with slash so we strip the separator too
     let with_sep = if cwd_norm.ends_with('/') { cwd_norm } else { format!("{cwd_norm}/") };
 
+    // The bridge emits Read/Write/Edit followed by one whole file_path, without
+    // quoting. Spaces and quotes inside that payload are pathname data.
+    if with_sep == "/" {
+        let path_start = ["Read ", "Write ", "Edit "]
+            .into_iter()
+            .find(|prefix| title_norm.starts_with(prefix))
+            .map_or(0, str::len);
+        if title_norm[path_start..].starts_with('/') {
+            let mut shortened = title_norm;
+            shortened.remove(path_start);
+            return shortened;
+        }
+        return title_norm;
+    }
+
     if title_norm.contains(&with_sep) {
         return title_norm.replace(&with_sep, "");
     }
@@ -371,5 +386,153 @@ pub(super) fn tool_kind_name(kind: model::ToolKind) -> &'static str {
         model::ToolKind::Fetch => "fetch",
         model::ToolKind::SwitchMode => "switch_mode",
         model::ToolKind::Other => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shorten_tool_title;
+
+    #[test]
+    fn root_title_preserves_separator_after_pathname_apostrophe() {
+        assert_eq!(
+            shorten_tool_title("Read /customers'/src/lib.rs", "/"),
+            "Read customers'/src/lib.rs",
+        );
+    }
+
+    #[test]
+    fn root_title_preserves_separator_after_pathname_space() {
+        assert_eq!(
+            shorten_tool_title("Read /customers /src/lib.rs", "/"),
+            "Read customers /src/lib.rs",
+        );
+    }
+
+    #[test]
+    fn root_title_preserves_separator_after_pathname_double_quote() {
+        assert_eq!(
+            shorten_tool_title("Write /customers\"/src/lib.rs", "/"),
+            "Write customers\"/src/lib.rs",
+        );
+    }
+
+    #[test]
+    fn root_title_preserves_separator_after_pathname_tab() {
+        assert_eq!(
+            shorten_tool_title("Edit /customers\t/src/lib.rs", "/"),
+            "Edit customers\t/src/lib.rs",
+        );
+    }
+
+    const TITLE_CASES: &[(&str, &str, &str, &str)] = &[
+        (
+            "unix path",
+            "Read /home/user/project/src/main.rs",
+            "/home/user/project",
+            "Read src/main.rs",
+        ),
+        (
+            "windows path",
+            r"Read C:\Users\me\project\src\main.rs",
+            r"C:\Users\me\project",
+            "Read src/main.rs",
+        ),
+        (
+            "unrelated path",
+            "Read /other/path/file.rs",
+            "/home/user/project",
+            "Read /other/path/file.rs",
+        ),
+        ("empty cwd", "Read /some/path/file.rs", "", "Read /some/path/file.rs"),
+        (
+            "trailing separator",
+            "Read /home/user/project/file.rs",
+            "/home/user/project/",
+            "Read file.rs",
+        ),
+        ("path-only title", "/home/user/project/file.rs", "/home/user/project", "file.rs"),
+        (
+            "mixed separators",
+            "Read C:/Users/me/project/src/lib.rs",
+            r"C:\Users\me\project",
+            "Read src/lib.rs",
+        ),
+        ("empty title", "", "/some/cwd", ""),
+        ("tool without a path", "Read", "/home/user", "Read"),
+        ("prose without a path", "Write something", "/proj", "Write something"),
+        (
+            "cwd without a following separator",
+            "/home/user/project",
+            "/home/user/project",
+            "/home/user/project",
+        ),
+        (
+            "similar directory component",
+            "Read /home/username/file.rs",
+            "/home/user",
+            "Read /home/username/file.rs",
+        ),
+        (
+            "nested relative suffix",
+            "Read /a/b/c/d/e/f/g/h/i/j.rs",
+            "/a/b/c/d/e/f/g",
+            "Read h/i/j.rs",
+        ),
+        ("multiple paths", "Diff /proj/a.rs /proj/b.rs", "/proj", "Diff a.rs b.rs"),
+        (
+            "spaces in cwd",
+            r"Read C:\Users\Simon Peter Rothgang\Desktop\project\src\main.rs",
+            r"C:\Users\Simon Peter Rothgang\Desktop\project",
+            "Read src/main.rs",
+        ),
+        (
+            "unicode in cwd",
+            "Read /home/\u{00fc}ser/\u{30d7}\u{30ed}\u{30b8}\u{30a7}\u{30af}\u{30c8}/src/lib.rs",
+            "/home/\u{00fc}ser/\u{30d7}\u{30ed}\u{30b8}\u{30a7}\u{30af}\u{30c8}",
+            "Read src/lib.rs",
+        ),
+        ("unix root", "Read /foo/bar.rs", "/", "Read foo/bar.rs"),
+        ("windows drive root", r"Read C:\src\main.rs", r"C:\", "Read src/main.rs"),
+        (
+            "case-sensitive cwd",
+            "Read /Home/User/Project/file.rs",
+            "/home/user/project",
+            "Read /Home/User/Project/file.rs",
+        ),
+        ("cwd prefix is not a component", "Read /project/file.rs", "/pro", "Read /project/file.rs"),
+        ("root with a path-only title", "/foo/bar.rs", "/", "foo/bar.rs"),
+        (
+            "root leaves unsupported multi-path display text unchanged",
+            "Diff /foo/a.rs /bar/b.rs",
+            "/",
+            "Diff /foo/a.rs /bar/b.rs",
+        ),
+        ("root preserves relative separators", "Read foo/bar.rs", "/", "Read foo/bar.rs"),
+        (
+            "root preserves literal quotes in a relative payload",
+            "Read \"/foo/bar.rs\"",
+            "/",
+            "Read \"/foo/bar.rs\"",
+        ),
+        (
+            "root preserves separators after spaces in a path-only title",
+            "/customers /src/lib.rs",
+            "/",
+            "customers /src/lib.rs",
+        ),
+        (
+            "root preserves separators in a relative payload after spaces",
+            "Read customers /src/lib.rs",
+            "/",
+            "Read customers /src/lib.rs",
+        ),
+    ];
+
+    #[test]
+    fn tool_titles_shorten_cwd_without_losing_path_components() {
+        for &(case, title, cwd, expected) in TITLE_CASES {
+            assert_eq!(shorten_tool_title(title, cwd), expected, "{case}");
+        }
     }
 }

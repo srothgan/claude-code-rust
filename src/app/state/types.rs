@@ -205,12 +205,10 @@ pub struct UsageState {
     pub last_attempted_source: Option<UsageSourceKind>,
 }
 
+// Keep the established context-usage names used by session consumers.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionUsageState {
-    pub last_compaction_trigger: Option<model::CompactionTrigger>,
-    pub last_compaction_pre_tokens: Option<u64>,
-    pub last_compaction_post_tokens: Option<u64>,
-    pub last_compaction_duration_ms: Option<u64>,
     pub context_usage_percent: Option<u8>,
     pub context_usage_in_flight: bool,
     pub context_usage_refresh_pending: bool,
