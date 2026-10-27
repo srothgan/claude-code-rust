@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.2] - 2026-10-27 [Changes][v0.16.2]
+
+### Features
+
+- **Usage view** (#531, @srothgan): Add usage recommendations, keyboard scrolling, and clearer formatting to `/usage`.
+
+### Fixes
+
+- **Context usage** (#508, @srothgan): Refresh context usage every five seconds during active turns.
+
+### Documentation
+
+- **Manual and demo** (#508, #509, @srothgan): Reorganize user and maintainer guides, expand feature documentation, and refresh the demo.
+
+### CI and Dependencies
+
+- **Agent SDK** (#531, @srothgan): Upgrade Agent SDK from `0.3.302` to `0.3.311`.
+- **Security updates** (#510, #527, #528, @srothgan): Update `hono`, `rustls-webpki`, `zod`, `body-parser`, `ip-address`, and `fast-uri`.
+- **npm workspace** (#528, @srothgan): Install root and bridge dependencies with one root `npm ci` and a shared lockfile.
+- **Regression coverage** (#512, @srothgan): Expand permission delivery and cancellation coverage and stabilize the hidden-footer subagent test.
+
 ## [0.16.1] - 2026-10-19 [Changes][v0.16.1]
 
 ### Fixes
@@ -1006,6 +1027,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.16.2]: https://github.com/srothgan/claude-code-rust/compare/v0.16.1...v0.16.2
 [v0.16.1]: https://github.com/srothgan/claude-code-rust/compare/v0.16.0...v0.16.1
 [v0.16.0]: https://github.com/srothgan/claude-code-rust/compare/v0.15.2...v0.16.0
 [v0.15.2]: https://github.com/srothgan/claude-code-rust/compare/v0.15.1...v0.15.2
