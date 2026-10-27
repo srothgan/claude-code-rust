@@ -5,6 +5,7 @@
 use portable_pty::{Child, CommandBuilder, ExitStatus, MasterPty, PtySize, native_pty_system};
 use serde_json::Value;
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -48,35 +49,18 @@ fn configure_test_profiles(command: &mut CommandBuilder, root: &Path) {
 }
 
 struct CapturedTerminal {
-    parser: vt100::Parser<ScrollbackCallbacks>,
+    parser: vt100::Parser,
     raw: Vec<u8>,
     ended: bool,
 }
 
-struct ScrollbackCallbacks;
+#[allow(clippy::expect_used)]
+fn terminal_dimension(value: u16) -> NonZeroU16 {
+    NonZeroU16::new(value).expect("terminal dimensions are non-zero")
+}
 
-impl vt100::Callbacks for ScrollbackCallbacks {
-    fn unhandled_csi(
-        &mut self,
-        screen: &mut vt100::Screen,
-        first_intermediate: Option<u8>,
-        second_intermediate: Option<u8>,
-        params: &[&[u16]],
-        command: char,
-    ) {
-        // vt100 handles ED 0/1/2 but not ED 3 (erase saved lines). Preserve the
-        // visible screen and modes while discarding scrollback, as a terminal does.
-        if command == 'J'
-            && first_intermediate.is_none()
-            && second_intermediate.is_none()
-            && params == [&[3][..]]
-        {
-            let (rows, cols) = screen.size();
-            let mut cleared = vt100::Parser::new(rows, cols, SCROLLBACK_ROWS);
-            cleared.process(&screen.state_formatted());
-            *screen = cleared.screen().clone();
-        }
-    }
+fn capture_parser(rows: u16, cols: u16) -> vt100::Parser {
+    vt100::Parser::new(terminal_dimension(rows), terminal_dimension(cols), SCROLLBACK_ROWS)
 }
 
 struct TestChild {
@@ -135,12 +119,7 @@ fn capture_output(
     writer: PtyWriter,
 ) -> Arc<Mutex<CapturedTerminal>> {
     let output = Arc::new(Mutex::new(CapturedTerminal {
-        parser: vt100::Parser::new_with_callbacks(
-            SHORT_ROWS,
-            COLS,
-            SCROLLBACK_ROWS,
-            ScrollbackCallbacks,
-        ),
+        parser: capture_parser(SHORT_ROWS, COLS),
         raw: Vec::new(),
         ended: false,
     }));
@@ -413,7 +392,7 @@ impl TerminalTest {
     fn screen_rows(&self) -> Vec<String> {
         let output = self.output.lock().expect("output lock");
         let screen = output.parser.screen();
-        screen.rows(0, screen.size().1).collect()
+        screen.rows(0, screen.size().1.get()).collect()
     }
 
     fn transcript_rows(&self) -> Vec<String> {
@@ -456,8 +435,13 @@ impl TerminalTest {
     /// Returns once the app has restored its output at the new size. Chat replay
     /// can draw several partial frames, so its first draw is not completion.
     fn resize_and_wait_for_draw(&mut self, rows: u16, cols: u16) {
-        let current = self.output.lock().expect("output lock").parser.screen().size();
-        assert_ne!(current, (rows, cols), "a draw at the current size proves no resize");
+        let (current_rows, current_cols) =
+            self.output.lock().expect("output lock").parser.screen().size();
+        assert_ne!(
+            (current_rows.get(), current_cols.get()),
+            (rows, cols),
+            "a draw at the current size proves no resize"
+        );
         let log_path = self.temp.path().join("runtime.log");
         let previous_length = std::fs::read(&log_path).expect("runtime log").len();
         self.resize(rows, cols);
@@ -757,7 +741,11 @@ impl TerminalTest {
 
     fn resize(&mut self, rows: u16, cols: u16) {
         self.mark_action();
-        self.output.lock().expect("output lock").parser.screen_mut().set_size(rows, cols);
+        self.output
+            .lock()
+            .expect("output lock")
+            .parser
+            .set_size(terminal_dimension(rows), terminal_dimension(cols));
         self.master.resize(pty_size(rows, cols)).expect("resize pty");
     }
 
@@ -2054,6 +2042,7 @@ fn git_diff_loads_refreshes_and_returns_to_chat_without_submitting_a_prompt() {
         let output = test.output.lock().expect("output lock");
         let screen = output.parser.screen();
         let (height, width) = screen.size();
+        let (height, width) = (height.get(), width.get());
         (3..height.min(u16::try_from(rows + 3).expect("test rows")))
             .map(|row| {
                 (u16::try_from(first_col).expect("test column")..width - 1)
@@ -2372,7 +2361,7 @@ fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
 
 #[test]
 fn scrollback_capture_honors_split_saved_lines_erasure_without_changing_visible_rows() {
-    let mut parser = vt100::Parser::new_with_callbacks(4, 20, SCROLLBACK_ROWS, ScrollbackCallbacks);
+    let mut parser = capture_parser(4, 20);
     parser.process(b"old row\r\nvisible 1\r\nvisible 2\r\nvisible 3\r\nvisible 4");
     let visible = parser.screen().contents();
     let cursor = parser.screen().cursor_position();
