@@ -6,11 +6,11 @@ Published npm platform packages run this bridge with the private `claude-rs-brid
 
 ## Local build
 
-Local maintainer builds require Node.js 24.
+Local maintainer builds require Node.js 24. The bridge is an npm workspace of the repository root, so install dependencies from the root lockfile:
 
 ```bash
-npm install
-npm run build
+npm ci            # from the repository root
+npm run build     # from agent-sdk/
 ```
 
 Build output is written to `dist/bridge.js`.

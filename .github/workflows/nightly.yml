@@ -232,9 +232,7 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            agent-sdk/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Download staged binaries
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -254,11 +252,8 @@ jobs:
           set -euo pipefail
           find dist-platform -type f \( -name 'claude-rs' -o -name 'claude-rs-bridge-bun' \) -exec chmod 755 {} +
 
-      - name: Install root dependencies
+      - name: Install dependencies
         run: npm ci
-
-      - name: Install agent-sdk dependencies
-        run: npm ci --prefix agent-sdk
 
       - name: Build agent-sdk bridge
         run: npm --prefix agent-sdk run build

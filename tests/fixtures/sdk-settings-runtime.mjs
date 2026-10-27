@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
-const { query } = await import("../../agent-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs");
+const { query } = await import("../../node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs");
 const [type, policy] = process.argv.slice(2),
   cwd = process.cwd();
 const citation = { type: "web_search_result_location", url: "https://example.test/citation-only", title: "Metadata source", encrypted_index: "fixture-only", cited_text: "Evidence" };

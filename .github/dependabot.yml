@@ -48,32 +48,9 @@ updates:
           - "minor"
           - "patch"
 
-  # npm dependencies (root package)
+  # npm dependencies (root package and the agent-sdk workspace, one lockfile)
   - package-ecosystem: "npm"
     directory: "/"
-    # The Agent SDK is tracked by the Agent SDK Update Monitor workflow
-    # (issue-based), so exclude it here to avoid duplicate PRs.
-    ignore:
-      - dependency-name: "@anthropic-ai/claude-agent-sdk"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    labels:
-      - "type: dependencies"
-      - "area: agent-sdk"
-    commit-message:
-      prefix: "chore"
-      include: "scope"
-    groups:
-      npm-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # npm dependencies (agent-sdk bridge)
-  - package-ecosystem: "npm"
-    directory: "/agent-sdk"
     # The Agent SDK is tracked by the Agent SDK Update Monitor workflow
     # (issue-based), so exclude it here to avoid duplicate PRs.
     ignore:

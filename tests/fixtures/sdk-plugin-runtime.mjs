@@ -56,7 +56,7 @@ const server = http.createServer(async (req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:" + server.address().port;
 const { query } = await import(
-  "../../agent-sdk/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs"
+  "../../node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs"
 );
 const options = {
   abortController: new AbortController(),
@@ -201,7 +201,7 @@ try {
         sdk: JSON.parse(
           fs.readFileSync(
             new URL(
-              "../../agent-sdk/node_modules/@anthropic-ai/claude-agent-sdk/package.json",
+              "../../node_modules/@anthropic-ai/claude-agent-sdk/package.json",
               import.meta.url,
             ),
           ),

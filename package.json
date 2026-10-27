@@ -32,6 +32,9 @@
     "LICENSE",
     "README.md"
   ],
+  "workspaces": [
+    "agent-sdk"
+  ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.302"
   },

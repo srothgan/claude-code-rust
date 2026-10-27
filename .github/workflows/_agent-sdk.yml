@@ -24,9 +24,11 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: agent-sdk/package-lock.json
+          cache-dependency-path: package-lock.json
 
+      # agent-sdk is an npm workspace; the root lockfile owns its dependencies.
       - name: Install dependencies
+        working-directory: .
         run: npm ci
 
       - name: Build bridge

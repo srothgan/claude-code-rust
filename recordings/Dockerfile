@@ -12,12 +12,14 @@ RUN --mount=type=cache,id=claude-rs-recording-cargo-registry,target=/usr/local/c
 
 FROM node:24-bookworm AS bridge-builder
 
-WORKDIR /source/agent-sdk
-COPY agent-sdk/package.json agent-sdk/package-lock.json ./
+WORKDIR /source
+# agent-sdk is an npm workspace; the root lockfile owns its dependencies.
+COPY package.json package-lock.json ./
+COPY agent-sdk/package.json ./agent-sdk/
 RUN --mount=type=cache,id=claude-rs-recording-npm,target=/root/.npm npm ci
-COPY agent-sdk/tsconfig.json ./
-COPY agent-sdk/src ./src
-RUN npm run build && npm prune --omit=dev
+COPY agent-sdk/tsconfig.json ./agent-sdk/
+COPY agent-sdk/src ./agent-sdk/src
+RUN npm --prefix agent-sdk run build && npm prune --omit=dev
 
 FROM oven/bun:1.3.14 AS bun-runtime
 
@@ -27,7 +29,7 @@ COPY --from=rust-builder /tmp/claude-rs /usr/local/bin/claude-rs
 COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/claude-rs-bridge-bun
 COPY --from=bridge-builder /source/agent-sdk/package.json /opt/claude-rs/agent-sdk/package.json
 COPY --from=bridge-builder /source/agent-sdk/dist /opt/claude-rs/agent-sdk/dist
-COPY --from=bridge-builder /source/agent-sdk/node_modules /opt/claude-rs/agent-sdk/node_modules
+COPY --from=bridge-builder /source/node_modules /opt/claude-rs/node_modules
 RUN chmod +x /usr/local/bin/claude-rs /usr/local/bin/claude-rs-bridge-bun && mkdir -p /root/.claude
 
 WORKDIR /workspace/claude-code-rust

@@ -22,12 +22,11 @@ Run these commands in a shell with Git, Cargo, npm and Bun available:
 git clone https://github.com/srothgan/claude-code-rust.git
 cd claude-code-rust
 npm ci
-npm ci --prefix agent-sdk
 npm run build --prefix agent-sdk
 cargo run -- --help
 ```
 
-The root and bridge each have their own lockfile. Root npm dependencies support repository tooling; the bridge build creates `agent-sdk/dist/bridge.js`. The final command compiles the Rust app and prints CLI help without starting a session.
+The bridge in `agent-sdk/` is an npm workspace, so the root `npm ci` installs the dependencies of both from the single root lockfile. The bridge build creates `agent-sdk/dist/bridge.js`. The final command compiles the Rust app and prints CLI help without starting a session.
 
 To start the interactive app from the same directory:
 
