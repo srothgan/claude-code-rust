@@ -56,7 +56,6 @@ pub(super) fn reset_for_conversation(
     app.status = super::super::AppStatus::Ready;
     app.session_runtime.runtime_session_state = None;
     app.session_runtime.prompt_suggestion = None;
-    app.files_accessed = 0;
     app.turn.reset_for_new_session();
     app.pending_interaction_ids.clear();
     app.clear_tool_call_index();
@@ -123,7 +122,6 @@ fn reset_session_identity_state(
     app.session_runtime.fast_mode_disabled_reason = fast_mode.disabled_reason;
     app.session_runtime.runtime_session_state = None;
     app.session_runtime.prompt_suggestion = None;
-    app.files_accessed = 0;
     app.turn.clear_cancel_state();
     app.session_runtime.account_info = None;
 }

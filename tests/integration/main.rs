@@ -6,4 +6,3 @@ mod helpers;
 
 mod permissions;
 mod state_transitions;
-mod tool_lifecycle;

@@ -20,8 +20,6 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall, source: Trans
     if changed {
         app.finish_block_change(mi, bi);
     }
-
-    app.files_accessed += 1;
 }
 
 fn log_tool_call_received(

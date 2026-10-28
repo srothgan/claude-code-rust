@@ -1377,48 +1377,95 @@ async fn mode_sets_command_pending_and_mode_update_restores_ready() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut app = App::test_default();
-            let _rx = attach_test_connection(&mut app);
+            let mut commands = attach_test_connection(&mut app);
             app.session_runtime.session_id = Some("sess-1".into());
-            app.session_runtime.mode = Some(super::super::ModeState {
-                current_mode_id: "default".to_owned(),
-                current_mode_name: "Default".to_owned(),
+            app.session_runtime.mode = Some(crate::app::ModeState {
+                current_mode_id: "default".into(),
+                current_mode_name: "Old default".into(),
                 available_modes: vec![
-                    super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-                    super::super::ModeInfo { id: "default".to_owned(), name: "Default".to_owned() },
+                    crate::app::ModeInfo { id: "default".into(), name: "Old default".into() },
+                    crate::app::ModeInfo { id: "plan".into(), name: "Old plan".into() },
                 ],
             });
-
-            let consumed = try_handle_submit(&mut app, "/mode plan");
-            assert!(consumed);
-            assert!(
-                matches!(app.status, AppStatus::CommandPending),
-                "expected CommandPending, got {:?}",
-                app.status
-            );
+            assert!(try_handle_submit(&mut app, "/mode plan"));
+            assert_eq!(app.status, AppStatus::CommandPending);
             assert_eq!(app.displayed_status(), AppStatus::Ready);
-
-            // Simulate mode-update ack arriving from bridge.
-            super::super::events::handle_client_event(
+            expect_mode_command(&mut commands, "plan").await;
+            crate::app::handle_client_event(
                 &mut app,
-                session_update(crate::agent::model::SessionUpdate::ModeStateUpdate(
-                    super::super::ModeState {
-                        current_mode_id: "plan".to_owned(),
-                        current_mode_name: "Plan".to_owned(),
-                        available_modes: vec![super::super::ModeInfo {
-                            id: "plan".to_owned(),
-                            name: "Plan".to_owned(),
-                        }],
-                    },
-                )),
+                session_update(model::SessionUpdate::ModeStateUpdate(crate::app::ModeState {
+                    current_mode_id: "plan".into(),
+                    current_mode_name: "Confirmed planning".into(),
+                    available_modes: vec![
+                        crate::app::ModeInfo {
+                            id: "plan".into(),
+                            name: "Confirmed planning".into(),
+                        },
+                        crate::app::ModeInfo {
+                            id: "acceptEdits".into(),
+                            name: "New editing choice".into(),
+                        },
+                    ],
+                })),
             );
-            assert!(
-                matches!(app.status, AppStatus::Ready),
-                "expected Ready after ModeStateUpdate ack, got {:?}",
-                app.status
-            );
+            assert_eq!(app.status, AppStatus::Ready);
             assert!(app.turn.pending_command_label.is_none());
+            let confirmed = app.session_runtime.mode.as_ref().unwrap();
+            assert_eq!(confirmed.current_mode_id, "plan");
+            assert_eq!(confirmed.current_mode_name, "Confirmed planning");
+            let candidates = argument_candidates(&app, "/mode", 0);
+            let choices: std::collections::BTreeMap<_, _> =
+                candidates.iter().map(|c| (c.insert_value.as_str(), c.primary.as_str())).collect();
+            assert_eq!(
+                choices,
+                std::collections::BTreeMap::from([
+                    ("plan", "Confirmed planning"),
+                    ("acceptEdits", "New editing choice")
+                ])
+            );
+            // Removed choices cannot be selected from completion; typed IDs remain bridge-validated.
+            app.input.set_text("/mode default");
+            let removed = requested_slash_state(&app).unwrap();
+            assert!(removed.candidates.is_empty());
+            assert!(commands.try_recv().is_err());
+            assert!(try_handle_submit(&mut app, "/mode acceptEdits"));
+            expect_mode_command(&mut commands, "acceptEdits").await;
+            assert_eq!(
+                app.session_runtime.mode.as_ref().unwrap().current_mode_id,
+                "plan",
+                "sending does not change confirmed state"
+            );
+            crate::app::handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::ModeStateUpdate(crate::app::ModeState {
+                    current_mode_id: "acceptEdits".into(),
+                    current_mode_name: "Confirmed editing".into(),
+                    available_modes: vec![crate::app::ModeInfo {
+                        id: "acceptEdits".into(),
+                        name: "Confirmed editing".into(),
+                    }],
+                })),
+            );
+            assert_eq!(app.status, AppStatus::Ready);
+            assert_eq!(
+                app.session_runtime.mode.as_ref().unwrap().current_mode_name,
+                "Confirmed editing"
+            );
+            assert!(commands.try_recv().is_err());
         })
         .await;
+}
+
+async fn expect_mode_command(commands: &mut crate::agent::client::CommandReceiver, expected: &str) {
+    let envelope =
+        tokio::time::timeout(std::time::Duration::from_secs(2), commands.recv_envelope())
+            .await
+            .expect("mode request deadline")
+            .expect("mode request");
+    assert!(
+        matches!(envelope.command,crate::agent::wire::BridgeCommand::SetMode{ref session_id,ref mode} if session_id=="sess-1"&&mode==expected)
+    );
+    assert!(commands.try_recv().is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]

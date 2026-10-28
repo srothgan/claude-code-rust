@@ -274,7 +274,6 @@ fn connected_resets_session_scoped_view_data() {
         assert!(matches!(app.status, AppStatus::Ready));
         assert_eq!(app.transcript.messages.len(), 1);
         assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-        assert_eq!(app.files_accessed, 0);
         assert!(app.usage.snapshot.is_none());
         assert!(app.session_runtime.account_info.is_none());
         assert!(app.plugins.installed.is_empty());
@@ -357,7 +356,6 @@ fn session_reset_fixture() -> (App, crate::agent::client::CommandReceiver) {
     let (mut app, commands) = app_with_bridge_connection();
     app.transcript.messages.push(user_msg("hello"));
     app.status = AppStatus::Running;
-    app.files_accessed = 9;
     app.usage.snapshot = Some(UsageSnapshot {
         source: UsageSourceKind::Oauth,
         fetched_at: std::time::SystemTime::now(),
@@ -597,7 +595,6 @@ fn session_replaced_resets_chat_and_transient_state() {
         .messages
         .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
     app.status = AppStatus::Running;
-    app.files_accessed = 9;
     app.pending_interaction_ids.push("perm-1".into());
     app.sdk_inventory.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
     app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
@@ -643,7 +640,6 @@ fn session_replaced_resets_chat_and_transient_state() {
     );
     assert_eq!(app.transcript.messages.len(), 1);
     assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert_eq!(app.files_accessed, 0);
     assert!(app.pending_interaction_ids.is_empty());
     assert!(app.sdk_inventory.tasks.is_empty());
     assert!(app.mention.is_none());

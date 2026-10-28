@@ -108,36 +108,78 @@ fn accepted_prompt_reserves_one_invisible_owner_until_the_first_visible_event() 
 
 #[test]
 fn a_complete_live_reply_without_a_stream_start_cannot_extend_committed_history() {
-    for result in [
-        text("Local command result"),
-        model::SessionUpdate::ToolCall(
-            model::ToolCall::new("new-tool", "New tool result")
-                .status(model::ToolCallStatus::Completed),
+    for (running, results, expected_text) in [
+        (false, vec![text("Local "), text("command result")], Some("Local command result")),
+        (
+            false,
+            vec![model::SessionUpdate::ToolCall(
+                model::ToolCall::new("new-tool", "New tool result")
+                    .status(model::ToolCallStatus::Completed),
+            )],
+            None,
+        ),
+        (
+            true,
+            vec![
+                text("New "),
+                text("live reply"),
+                model::SessionUpdate::ToolCall(
+                    model::ToolCall::new("new-tool", "New tool result")
+                        .status(model::ToolCallStatus::InProgress),
+                ),
+            ],
+            Some("New live reply"),
         ),
     ] {
         let (mut app, mut receiver) = connected_app();
         submit(&mut app, &mut receiver, "Previous question");
-        update(&mut app, text("Finished answer"));
+        update(&mut app, text("Finished "));
+        update(&mut app, text("answer"));
         let previous = app.active_turn_assistant_idx().unwrap();
         let previous_id = app.transcript.messages[previous].id;
         handle_client_event(&mut app, turn_complete(None));
         let history =
             serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
-        let committed =
-            history.segments().iter().flat_map(|segment| segment.ids.iter().cloned()).collect();
-        update(&mut app, result);
+        let committed = history.segments().iter().flat_map(|s| s.ids.iter().cloned()).collect();
+        if running {
+            update(
+                &mut app,
+                model::SessionUpdate::RuntimeSessionStateUpdate(
+                    model::RuntimeSessionState::Running,
+                ),
+            );
+        }
+        for result in results {
+            update(&mut app, result);
+        }
         let owner = app.active_turn_assistant_idx().unwrap();
         assert_ne!(app.transcript.messages[owner].id, previous_id);
         let remaining =
             serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed, None);
-        assert!(remaining.segments().iter().any(|segment| segment.msg_idx == owner));
-        let MessageBlock::Text(old) = &app.transcript.messages[previous].blocks[0] else {
-            panic!("previous answer");
-        };
-        assert_eq!(old.text, "Finished answer");
+        assert!(remaining.segments().iter().all(|s| s.msg_idx != previous));
+        assert!(remaining.segments().iter().any(|s| s.msg_idx == owner));
+        if let Some(expected) = expected_text {
+            assert_eq!(first_block_text(&app.transcript.messages[owner]), expected);
+            assert!(remaining.rows().iter().any(|r| r.to_string().contains(expected)));
+        }
+        if running || expected_text.is_none() {
+            assert_eq!(app.lookup_tool_call("new-tool").unwrap().0, owner);
+            assert!(remaining.rows().iter().any(|r| r.to_string().contains("New tool result")));
+        }
+        assert_eq!(app.transcript.messages[previous].id, previous_id);
+        assert_eq!(first_block_text(&app.transcript.messages[previous]), "Finished answer");
         assert_eq!(app.transcript.messages[previous].blocks.len(), 1);
-        assert_eq!(app.status, AppStatus::Ready, "complete output must not invent a running turn");
-        assert!(app.turn.activity.is_none());
+        assert_eq!(app.status, if running { AppStatus::Running } else { AppStatus::Ready });
+        assert_eq!(app.turn.activity.is_some(), running);
+        handle_client_event(&mut app, turn_complete(None));
+        assert_eq!(app.status, AppStatus::Ready);
+        assert_eq!(first_block_text(&app.transcript.messages[previous]), "Finished answer");
+        while let Ok(envelope) = receiver.try_recv() {
+            assert!(
+                matches!(envelope.command,BridgeCommand::GetContextUsage{ref session_id} if session_id=="test-session"),
+                "completion may refresh usage, but must not submit another turn"
+            );
+        }
     }
 }
 
@@ -433,8 +475,91 @@ fn repeated_rate_limit_failures_render_in_their_submitted_replies() {
     }
 }
 
+fn assert_timeout_preserves_its_tool_and_cannot_be_unlocked_by_liveness() {
+    let (mut app, mut receiver) = connected_app();
+    submit(&mut app, &mut receiver, "Earlier prompt");
+    update(&mut app, text("Earlier independent answer"));
+    handle_client_event(&mut app, turn_complete(None));
+    let prior =
+        serialize_live_rows_with_boundaries_excluding(&mut app, 100, &BTreeSet::new(), None);
+    let prior_id = app.transcript.messages[1].id;
+    submit(&mut app, &mut receiver, "Failing prompt");
+    let owner = app.active_turn_assistant_idx().unwrap();
+    let owner_id = app.transcript.messages[owner].id;
+    update(&mut app, text("Exact partial source"));
+    update(
+        &mut app,
+        model::SessionUpdate::ToolCall(
+            model::ToolCall::new("timeout-tool", "Timeout tool sentinel")
+                .status(model::ToolCallStatus::InProgress)
+                .content(vec!["Tool partial source".into()]),
+        ),
+    );
+    app.input.set_text("Unsent recovery draft");
+    handle_client_event(
+        &mut app,
+        ClientEvent::TurnError {
+            session_id: "test-session".into(),
+            message: "timeout fixture cause".into(),
+            queued_turn_count: None,
+            api_error_status: None,
+            terminal_reason: None,
+        },
+    );
+    assert_eq!(app.status, AppStatus::Error);
+    assert_eq!(app.transcript.messages[owner].id, owner_id);
+    assert_eq!(app.lookup_tool_call("timeout-tool").unwrap().0, owner);
+    let [MessageBlock::Text(partial), MessageBlock::ToolCall(tool), MessageBlock::Notice(notice)] =
+        app.transcript.messages[owner].blocks.as_slice()
+    else {
+        panic!("partial source then failed tool then its failure")
+    };
+    assert_eq!(partial.text, "Exact partial source");
+    assert_eq!(tool.id, "timeout-tool");
+    assert_eq!(tool.status, model::ToolCallStatus::Failed);
+    assert_eq!(tool.content, vec![model::ToolCallContent::from("Tool partial source")]);
+    assert!(notice.text.text.contains("timeout fixture cause"));
+    let rendered =
+        serialize_live_rows_with_boundaries_excluding(&mut app, 100, &BTreeSet::new(), None);
+    let error = rendered
+        .segments()
+        .iter()
+        .find(|s| s.msg_idx == owner && s.kind == LiveRowBoundaryKind::AssistantNotice)
+        .unwrap();
+    let tool = rendered
+        .segments()
+        .iter()
+        .find(|s| s.msg_idx == owner && s.kind == LiveRowBoundaryKind::AssistantTool)
+        .unwrap();
+    assert!(tool.end_row <= error.start_row);
+    assert!(
+        rendered
+            .segment_rows(error)
+            .unwrap()
+            .iter()
+            .any(|row| row.to_string().contains("timeout fixture cause"))
+    );
+    let old: Vec<_> = rendered
+        .segments()
+        .iter()
+        .filter(|s| s.msg_idx < owner - 1)
+        .flat_map(|s| rendered.segment_rows(s).unwrap().iter().cloned())
+        .collect();
+    assert_eq!(old, prior.rows());
+    assert_eq!(app.transcript.messages[1].id, prior_id);
+    update(
+        &mut app,
+        model::SessionUpdate::RuntimeSessionStateUpdate(model::RuntimeSessionState::Running),
+    );
+    assert_eq!(app.status, AppStatus::Error);
+    crate::app::input_submit::submit_input(&mut app);
+    assert_eq!(app.input.text(), "Unsent recovery draft");
+    assert!(receiver.try_recv().is_err(), "ordinary timeout cannot fabricate a retry Prompt");
+}
+
 #[test]
 fn turn_failures_keep_partial_output_and_use_the_same_notice_renderer() {
+    assert_timeout_preserves_its_tool_and_cannot_be_unlocked_by_liveness();
     for class in [
         TurnErrorClass::PlanLimit,
         TurnErrorClass::AuthRequired,

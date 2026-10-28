@@ -147,7 +147,6 @@ pub(super) fn create_app_with_settings(
         exit_error: None,
         cwd_raw: cwd.to_string_lossy().to_string(),
         cwd: cwd_display,
-        files_accessed: 0,
         event_tx,
         event_rx,
         file_index_event_tx,

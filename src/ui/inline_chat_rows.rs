@@ -3771,3 +3771,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;

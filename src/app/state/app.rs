@@ -39,7 +39,6 @@ pub struct App {
     pub exit_error: Option<crate::error::AppError>,
     pub(crate) cwd: String,
     pub cwd_raw: String,
-    pub files_accessed: usize,
     /// State scoped to the currently active turn (command spinner, cancel
     /// bookkeeping, turn-local notices).
     pub turn: TurnState,
@@ -265,7 +264,6 @@ impl App {
             exit_error: None,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
-            files_accessed: 0,
             event_tx: tx,
             event_rx: rx,
             file_index_event_tx: file_index_tx,

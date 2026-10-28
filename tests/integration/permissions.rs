@@ -156,13 +156,11 @@ async fn duplicate_permission_preserves_original_and_neighbor_response_ownership
 async fn turn_complete_resets_transient_state() {
     let mut app = test_app();
     app.status = AppStatus::Running;
-    app.files_accessed = 5;
     app.spinner_frame = 42;
 
     send_client_event(&mut app, turn_complete());
 
     assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0, "files_accessed should reset");
     // spinner_frame is a UI detail, not reset by TurnComplete (it's driven by tick)
     // pending_interaction_ids should be empty (no permissions were pending)
     assert!(app.pending_interaction_ids.is_empty());
