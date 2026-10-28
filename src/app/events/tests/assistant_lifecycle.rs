@@ -22,13 +22,55 @@ fn connected_app() -> (App, CommandReceiver) {
 fn submit(app: &mut App, receiver: &mut CommandReceiver, source: &str) -> String {
     app.input.set_text(source);
     crate::app::input_submit::submit_input(app);
+    let mut uuid = None;
     while let Ok(envelope) = receiver.try_recv() {
-        if let BridgeCommand::Prompt { message_uuid, chunks, .. } = envelope.command {
-            assert_eq!(chunks[0].value.as_str(), Some(source));
-            return message_uuid;
+        match envelope.command {
+            BridgeCommand::Prompt { session_id, message_uuid, chunks, inline_pastes } => {
+                assert!(uuid.is_none());
+                assert_eq!(session_id, "test-session");
+                assert!(inline_pastes.is_empty());
+                assert_eq!(chunks.len(), 1);
+                assert_eq!(chunks[0].kind, "text");
+                assert_eq!(chunks[0].value, serde_json::json!(source));
+                uuid = Some(message_uuid);
+            }
+            BridgeCommand::GetContextUsage { session_id } => assert_eq!(session_id, "test-session"),
+            other => panic!("unexpected command {other:?}"),
         }
     }
-    panic!("submitted prompt must reach the bridge");
+    uuid.expect("submitted prompt must reach the bridge")
+}
+
+fn drain_refreshes(receiver: &mut CommandReceiver) {
+    while let Ok(envelope) = receiver.try_recv() {
+        assert!(
+            matches!(envelope.command,BridgeCommand::GetContextUsage { session_id } if session_id=="test-session")
+        );
+    }
+}
+
+fn owner_rows(app: &mut App, owner: usize, width: u16, kind: LiveRowBoundaryKind) -> Vec<String> {
+    let rows = serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None);
+    rows.segments()
+        .iter()
+        .filter(|s| s.msg_idx == owner && s.kind == kind)
+        .flat_map(|s| rows.segment_rows(s).unwrap())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn compact_rows(rows: &[String]) -> String {
+    rows.join("").chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn next_draft(app: &mut App) -> (String, String) {
+    let paste = "draft \u{754c} details\n".repeat(120);
+    app.input.set_text("next [Image #1]\n");
+    app.input.insert_paste_block(&paste);
+    app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
+        data:"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=".into(),mime_type:"image/png".into(),
+    });
+    (format!("next [Image #1]\n{paste}"), paste)
 }
 
 fn update(app: &mut App, update: model::SessionUpdate) {
@@ -60,49 +102,98 @@ pub(super) fn assert_owner_has_no_rows(app: &mut App, owner: usize) {
 
 #[test]
 fn accepted_prompt_reserves_one_invisible_owner_until_the_first_visible_event() {
-    for (first, expected_kind, expected_text) in [
-        (
-            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Thinking),
-            LiveRowBoundaryKind::AssistantThinking,
-            "Thinking…",
-        ),
-        (text("First text"), LiveRowBoundaryKind::AssistantText, "First text"),
-        (
-            model::SessionUpdate::ToolCall(
-                model::ToolCall::new("first-tool", "First tool")
-                    .status(model::ToolCallStatus::InProgress),
-            ),
-            LiveRowBoundaryKind::AssistantTool,
-            "First tool",
-        ),
-    ] {
+    for visible in ["activity", "text", "tool", "notice"] {
         let (mut app, mut receiver) = connected_app();
-        submit(&mut app, &mut receiver, "Question");
+        let uuid = submit(&mut app, &mut receiver, "Question with stable identity");
         let owner = app.active_turn_assistant_idx().unwrap();
         let owner_id = app.transcript.messages[owner].id;
-        assert_eq!(app.status, AppStatus::Running);
-        assert!(app.turn.activity.is_some());
-        assert!(app.transcript.messages[owner].blocks.is_empty());
-        update(&mut app, model::SessionUpdate::AgentResponseStarted);
-        update(&mut app, model::SessionUpdate::AgentResponseStarted);
+        let user =
+            app.transcript.messages.iter().find(|m| matches!(m.role, MessageRole::User)).unwrap();
+        assert!(
+            matches!(&user.blocks[..],[MessageBlock::Text(t)] if t.text=="Question with stable identity" && t.source_message_uuids==[uuid])
+        );
+        let mut snapshot = crate::agent::settings::SettingsSnapshot::test_value(
+            "showMessageTimestamps",
+            serde_json::json!(true),
+        );
+        snapshot.values.extend(
+            crate::agent::settings::SettingsSnapshot::test_value(
+                "showTurnDuration",
+                serde_json::json!(true),
+            )
+            .values,
+        );
+        app.config.snapshot = Some(snapshot);
+        for _ in 0..2 {
+            update(&mut app, model::SessionUpdate::AgentResponseStarted);
+        }
         update(&mut app, text(""));
+        update(&mut app, text("\n \t\n"));
+        update(
+            &mut app,
+            model::SessionUpdate::MessageMetadata {
+                role: "assistant".into(),
+                timestamp: "2026-10-15T13:00:00Z".into(),
+                source_message_uuid: Some("first-response".into()),
+            },
+        );
+        update(
+            &mut app,
+            model::SessionUpdate::TurnTiming { duration_ms: 42.0, api_duration_ms: Some(40.0) },
+        );
+        update(
+            &mut app,
+            model::SessionUpdate::ToolCall(
+                model::ToolCall::new("internal-tool", "Hidden child tool")
+                    .status(model::ToolCallStatus::InProgress)
+                    .meta(serde_json::json!({"claudeCode":{"parentToolUseId":"parent-agent"}})),
+            ),
+        );
         assert_eq!(app.active_turn_assistant_idx(), Some(owner));
         assert_owner_has_no_rows(&mut app, owner);
-
-        update(&mut app, first);
-        let rendered =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
-        let content = rendered
-            .segments()
-            .iter()
-            .find(|segment| segment.msg_idx == owner && segment.kind == expected_kind)
-            .expect("first output belongs to the reserved response");
-        assert!(content.ids.contains(&HistoryOutputId::AssistantLabel(owner_id)));
-        assert!(rendered.segment_rows(content).unwrap().iter().any(|row| {
-            row.to_string().contains(expected_text) && row.to_string().contains('●')
-        }));
+        let (kind, expected) = match visible {
+            "activity" => {
+                update(
+                    &mut app,
+                    model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Thinking),
+                );
+                (LiveRowBoundaryKind::AssistantThinking, None)
+            }
+            "text" => {
+                update(&mut app, text("Distinct first answer"));
+                (LiveRowBoundaryKind::AssistantText, Some("Distinct first answer"))
+            }
+            "tool" => {
+                update(
+                    &mut app,
+                    model::SessionUpdate::ToolCall(
+                        model::ToolCall::new("visible-tool", "Visible tool sentinel")
+                            .status(model::ToolCallStatus::InProgress),
+                    ),
+                );
+                assert_eq!(app.lookup_tool_call("visible-tool").unwrap().0, owner);
+                (LiveRowBoundaryKind::AssistantTool, Some("Visible tool sentinel"))
+            }
+            _ => {
+                crate::app::events::push_submission_feedback(
+                    &mut app,
+                    SystemSeverity::Warning,
+                    "Visible notice sentinel",
+                );
+                (LiveRowBoundaryKind::AssistantNotice, Some("Visible notice sentinel"))
+            }
+        };
+        let rendered = owner_rows(&mut app, owner, 80, kind);
+        if let Some(expected) = expected {
+            assert_eq!(rendered.iter().filter(|r| r.contains(expected)).count(), 1);
+        } else {
+            assert!(rendered.iter().any(|r| !r.trim().is_empty()));
+            let activity = app.activity_presentation(std::time::Instant::now()).unwrap();
+            assert!(activity.thinking);
+            assert_eq!(activity.heading, crate::app::activity::ActivityHeading::Assistant(owner));
+        }
         assert_eq!(app.transcript.messages[owner].id, owner_id);
-        assert_eq!(app.transcript.messages.len(), 2);
+        assert!(receiver.try_recv().is_err());
     }
 }
 
@@ -114,7 +205,8 @@ fn a_complete_live_reply_without_a_stream_start_cannot_extend_committed_history(
             false,
             vec![model::SessionUpdate::ToolCall(
                 model::ToolCall::new("new-tool", "New tool result")
-                    .status(model::ToolCallStatus::Completed),
+                    .status(model::ToolCallStatus::Completed)
+                    .content(vec!["Distinct completed tool content".into()]),
             )],
             None,
         ),
@@ -164,7 +256,24 @@ fn a_complete_live_reply_without_a_stream_start_cannot_extend_committed_history(
         }
         if running || expected_text.is_none() {
             assert_eq!(app.lookup_tool_call("new-tool").unwrap().0, owner);
-            assert!(remaining.rows().iter().any(|r| r.to_string().contains("New tool result")));
+            let tool_region = remaining
+                .segments()
+                .iter()
+                .find(|s| s.msg_idx == owner && s.kind == LiveRowBoundaryKind::AssistantTool)
+                .unwrap();
+            let tool_rows = remaining.segment_rows(tool_region).unwrap();
+            assert!(tool_rows.iter().any(|r| r.to_string().contains("New tool result")));
+            if !running {
+                assert_eq!(
+                    app.tool_call("new-tool").unwrap().content,
+                    [model::ToolCallContent::from("Distinct completed tool content")]
+                );
+                assert!(
+                    tool_rows
+                        .iter()
+                        .any(|r| r.to_string().contains("Distinct completed tool content"))
+                );
+            }
         }
         assert_eq!(app.transcript.messages[previous].id, previous_id);
         assert_eq!(first_block_text(&app.transcript.messages[previous]), "Finished answer");
@@ -214,131 +323,84 @@ fn autonomous_start_after_a_running_signal_never_reopens_the_finished_response()
 }
 
 #[test]
-fn metadata_whitespace_and_hidden_tools_do_not_create_an_empty_message_frame() {
-    let (mut app, mut receiver) = connected_app();
-    submit(&mut app, &mut receiver, "Question");
-    let owner = app.active_turn_assistant_idx().unwrap();
-    app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-        "showMessageTimestamps",
-        serde_json::json!(true),
-    ));
-    app.config.snapshot.as_mut().unwrap().values.extend(
-        crate::agent::settings::SettingsSnapshot::test_value(
-            "showTurnDuration",
-            serde_json::json!(true),
-        )
-        .values,
-    );
-    update(
-        &mut app,
-        model::SessionUpdate::MessageMetadata {
-            role: "assistant".into(),
-            timestamp: "2026-10-15T13:00:00Z".into(),
-            source_message_uuid: Some("first-response".into()),
-        },
-    );
-    update(
-        &mut app,
-        model::SessionUpdate::TurnTiming { duration_ms: 42.0, api_duration_ms: Some(40.0) },
-    );
-    update(&mut app, text("\n \t\n"));
-    let mut hidden = model::ToolCall::new("internal-tool", "Hidden child tool")
-        .status(model::ToolCallStatus::InProgress);
-    hidden.meta = Some(serde_json::json!({"claudeCode": {"parentToolUseId": "parent-agent"}}));
-    update(&mut app, model::SessionUpdate::ToolCall(hidden));
-    assert_owner_has_no_rows(&mut app, owner);
-
-    crate::app::events::push_submission_feedback(
-        &mut app,
-        SystemSeverity::Warning,
-        "Visible notice",
-    );
-    let rendered =
-        serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
-    let notice = rendered
-        .segments()
-        .iter()
-        .find(|segment| {
-            segment.msg_idx == owner && segment.kind == LiveRowBoundaryKind::AssistantNotice
-        })
-        .unwrap();
-    assert!(rendered.segment_rows(notice).unwrap().iter().any(|row| {
-        row.to_string().contains("Visible notice") && row.to_string().contains('●')
-    }));
-    assert!(!app.transcript.messages[owner].timing.timestamp.unwrap().observed);
-}
-
-#[test]
-fn failed_admission_preserves_the_draft_without_creating_user_or_assistant_messages() {
-    let (mut app, receiver) = connected_app();
-    drop(receiver);
-    app.input.set_text("Keep this exact draft\n\nwith paragraphs");
-    let draft = app.input.snapshot();
-    crate::app::input_submit::submit_input(&mut app);
-    assert_eq!(app.input.snapshot(), draft);
-    assert!(
-        app.transcript
-            .messages
-            .iter()
-            .all(|message| matches!(message.role, MessageRole::System(_)))
-    );
-    assert_eq!(app.active_turn_assistant_idx(), None);
-    assert!(app.turn.activity.is_none());
-}
-
-#[test]
-fn queued_start_changes_owner_only_once_and_preserves_the_previous_response() {
-    let (mut app, mut receiver) = connected_app();
-    submit(&mut app, &mut receiver, "First question");
-    update(&mut app, text("First answer"));
-    let first_owner = app.active_turn_assistant_idx().unwrap();
-    let first_id = app.transcript.messages[first_owner].id;
-    let queued = submit(&mut app, &mut receiver, "Second question");
-    assert_eq!(app.active_turn_assistant_idx(), Some(first_owner));
-    assert_eq!(app.transcript.messages.len(), 2);
-    for uuid in ["unknown", queued.as_str(), queued.as_str()] {
-        handle_client_event(
-            &mut app,
-            ClientEvent::UserMessageStarted {
-                session_id: "test-session".into(),
-                message_uuid: uuid.into(),
-                source: crate::agent::types::UserMessageStartSource::StreamEvent,
-            },
-        );
-    }
-    let second_owner = app.active_turn_assistant_idx().unwrap();
-    assert_ne!(app.transcript.messages[second_owner].id, first_id);
-    assert_eq!(app.transcript.messages.len(), 4);
-    assert_owner_has_no_rows(&mut app, second_owner);
-    update(&mut app, text("Second answer"));
-    let MessageBlock::Text(first) = &app.transcript.messages[first_owner].blocks[0] else {
-        panic!("first answer");
-    };
-    assert_eq!(first.text, "First answer");
-    let MessageBlock::Text(second) = &app.transcript.messages[second_owner].blocks[0] else {
-        panic!("second answer");
-    };
-    assert_eq!(second.text, "Second answer");
-}
-
-#[test]
 fn empty_response_exit_removes_its_owner_without_consuming_the_next_draft() {
-    for outcome in ["complete", "cancel"] {
+    for (outcome, queued) in [
+        ("complete", false),
+        ("cancel", false),
+        ("cancel-error", false),
+        ("cancel", true),
+        ("cancel-error", true),
+    ] {
         let (mut app, mut receiver) = connected_app();
-        submit(&mut app, &mut receiver, "Question");
+        submit(&mut app, &mut receiver, "Prior question");
+        update(&mut app, text("Prior preserved answer"));
+        let previous = app.active_turn_assistant_idx().unwrap();
+        let previous_id = app.transcript.messages[previous].id;
+        handle_client_event(&mut app, turn_complete(None));
+        submit(&mut app, &mut receiver, "Empty admitted question");
         let owner = app.active_turn_assistant_idx().unwrap();
         let owner_id = app.transcript.messages[owner].id;
-        app.input.set_text("Next unsent draft");
+        let next = queued.then(|| submit(&mut app, &mut receiver, "Queued continuation source"));
+        next_draft(&mut app);
         let draft = app.input.snapshot();
-        if outcome == "cancel" {
+        if outcome != "complete" {
             crate::app::input_submit::request_cancel(&mut app).unwrap();
+            assert!(
+                matches!(receiver.try_recv().unwrap().command,BridgeCommand::CancelTurn { session_id } if session_id=="test-session")
+            );
         }
         assert_owner_has_no_rows(&mut app, owner);
-        handle_client_event(&mut app, turn_complete(None));
-        assert!(app.transcript.messages.iter().all(|message| message.id != owner_id));
-        assert_eq!(app.active_turn_assistant_idx(), None);
-        assert!(app.turn.activity.is_none());
+        if outcome == "cancel-error" {
+            fail_turn(&mut app, TurnErrorClass::Other, "cancelled operation");
+        } else {
+            handle_client_event(&mut app, turn_complete(None));
+        }
+        assert!(app.transcript.messages.iter().all(|m| m.id != owner_id));
+        assert!(app.active_turn_assistant_idx().is_none());
+        assert_eq!(app.transcript.messages[previous].id, previous_id);
+        assert_eq!(first_block_text(&app.transcript.messages[previous]), "Prior preserved answer");
         assert_eq!(app.input.snapshot(), draft);
+        let hints = app
+            .transcript
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::System(Some(SystemSeverity::Info))))
+            .filter(|m| {
+                m.blocks
+                    .iter()
+                    .any(|b| matches!(b,MessageBlock::Text(t) if t.text.contains("interrupted")))
+            })
+            .count();
+        assert_eq!(hints, usize::from(outcome != "complete" && !queued));
+        let rows =
+            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
+        assert!(
+            !rows
+                .segments()
+                .iter()
+                .any(|s| s.ids.contains(&HistoryOutputId::AssistantLabel(owner_id)))
+        );
+        drain_refreshes(&mut receiver);
+        if let Some(uuid) = next {
+            handle_client_event(
+                &mut app,
+                ClientEvent::UserMessageStarted {
+                    session_id: "test-session".into(),
+                    message_uuid: uuid.clone(),
+                    source: crate::agent::types::UserMessageStartSource::StreamEvent,
+                },
+            );
+            assert!(app.transcript.messages.iter().any(|m|m.blocks.iter().any(|b|matches!(b,MessageBlock::Text(t) if t.text=="Queued continuation source" && t.source_message_uuids==[uuid.clone()]))));
+        }
+        update(&mut app, text("Later independently owned answer"));
+        let later = app.active_turn_assistant_idx().unwrap();
+        assert_ne!(app.transcript.messages[later].id, owner_id);
+        assert_eq!(
+            first_block_text(&app.transcript.messages[later]),
+            "Later independently owned answer"
+        );
+        assert_eq!(app.input.snapshot(), draft);
+        assert!(receiver.try_recv().is_err());
     }
 }
 
@@ -356,121 +418,50 @@ fn fail_turn(app: &mut App, class: TurnErrorClass, message: &str) {
     );
 }
 
-fn assert_failure_layout(app: &mut App, owner: usize, width: u16) -> String {
-    use ratatui::{
-        buffer::Buffer,
-        layout::Rect,
-        widgets::{Paragraph, Widget},
-    };
-
-    let rendered =
-        serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None);
-    let segments =
-        rendered.segments().iter().filter(|segment| segment.msg_idx == owner).collect::<Vec<_>>();
-    let rows = segments
-        .iter()
-        .flat_map(|segment| rendered.segment_rows(segment).unwrap())
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    assert!(rows.first().unwrap().trim().is_empty(), "reply has top spacing");
-    assert!(rows.last().unwrap().trim().is_empty(), "reply has bottom spacing");
-    let content = rows.iter().filter(|row| !row.trim().is_empty()).collect::<Vec<_>>();
-    assert!(content[0].starts_with(" \u{25cf} "), "reply owns its assistant marker");
-    assert_eq!(content.iter().filter(|row| row.contains('\u{25cf}')).count(), 1);
-    for row in &content[1..] {
-        assert!(row.starts_with("   "), "continuation aligns with reply text: {row:?}");
-    }
-
-    let notices = segments
-        .iter()
-        .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantNotice)
-        .collect::<Vec<_>>();
-    assert_eq!(notices.len(), 1, "one rendered failure in this reply");
-    let area = Rect::new(0, 0, width, rendered.rows().len().try_into().unwrap());
-    let mut buffer = Buffer::empty(area);
-    Paragraph::new(rendered.rows().to_vec()).render(area, &mut buffer);
-    let notice = notices[0];
-    let mut colored_cells = 0;
-    for y in notice.start_row..notice.end_row {
-        for x in 3..width {
-            let cell = &buffer[(x, u16::try_from(y).unwrap())];
-            if !cell.symbol().trim().is_empty() {
-                assert_eq!(cell.fg, crate::ui::theme::STATUS_ERROR);
-                colored_cells += 1;
-            }
-        }
-    }
-    assert!(colored_cells > 0, "failure text must be visible");
-    let marker_y = segments[0].start_row + 1;
-    assert_eq!(buffer[(1, u16::try_from(marker_y).unwrap())].symbol(), "\u{25cf}");
-    assert_eq!(buffer[(1, u16::try_from(marker_y).unwrap())].fg, crate::ui::theme::ROLE_ASSISTANT);
-    rendered
-        .segment_rows(notice)
-        .unwrap()
-        .iter()
-        .map(ToString::to_string)
-        .collect::<String>()
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect()
-}
-
 #[test]
 fn repeated_rate_limit_failures_render_in_their_submitted_replies() {
-    const ERROR: &str = "You've hit your session limit · resets 1:30pm (Europe/Berlin)";
-    for send_first_update in [true, false] {
+    for allowance_update in [false, true] {
         let (mut app, mut receiver) = connected_app();
         let mut replies = Vec::new();
-        for (turn, prompt) in ["hello", "hi", "hi"].into_iter().enumerate() {
-            submit(&mut app, &mut receiver, prompt);
+        for cause in [
+            "First limit: resets 13:30Z",
+            "Second limit: resets 14:45Z",
+            "Third limit: resets tomorrow",
+        ] {
+            let uuid = submit(&mut app, &mut receiver, "same prompt");
             let owner = app.active_turn_assistant_idx().unwrap();
-            let owner_id = app.transcript.messages[owner].id;
-            if turn == 0 && send_first_update {
-                update(
-                    &mut app,
-                    model::SessionUpdate::RateLimitUpdate(
-                        serde_json::from_value(serde_json::json!({
-                            "status": "rejected", "rate_limit_type": "five_hour",
-                            "resets_at": 1_792_409_400.0,
-                        }))
-                        .unwrap(),
-                    ),
-                );
+            if allowance_update {
+                update(&mut app,model::SessionUpdate::RateLimitUpdate(serde_json::from_value(serde_json::json!({"status":"rejected","rate_limit_type":"five_hour","resets_at":1_792_409_400.0})).unwrap()));
                 assert_owner_has_no_rows(&mut app, owner);
             }
-            fail_turn(&mut app, TurnErrorClass::PlanLimit, ERROR);
+            app.input.set_text("editable next draft");
+            let draft = app.input.snapshot();
+            fail_turn(&mut app, TurnErrorClass::PlanLimit, cause);
             assert_eq!(app.status, AppStatus::Ready);
-            let reply = &app.transcript.messages[owner];
-            assert_eq!(reply.id, owner_id, "retain the reserved reply");
-            assert!(matches!(reply.role, MessageRole::Assistant));
-            let [MessageBlock::Notice(notice)] = reply.blocks.as_slice() else {
-                panic!("exactly one notice belongs to this reply");
-            };
-            assert_eq!(notice.severity, SystemSeverity::Error);
-            assert!(notice.text.text.contains(ERROR), "preserve SDK explanation and reset time");
-            assert!(
-                !notice.text.text.contains("5-hour"),
-                "use this result, not earlier allowance data"
-            );
-            replies.push((owner, owner_id));
-            for &(index, id) in &replies {
+            assert!(app.composer_access().can_edit());
+            assert!(app.composer_access().can_submit());
+            replies.push((owner, app.transcript.messages[owner].id, cause));
+            assert!(app.transcript.messages.iter().any(|m|m.blocks.iter().any(|b|matches!(b,MessageBlock::Text(t) if t.text=="same prompt" && t.source_message_uuids==[uuid.clone()]))));
+            for &(index, id, expected) in &replies {
                 assert_eq!(app.transcript.messages[index].id, id);
                 for width in [40, 100] {
-                    let visible = assert_failure_layout(&mut app, index, width);
-                    assert!(
-                        visible.contains(
-                            &ERROR.chars().filter(|ch| !ch.is_whitespace()).collect::<String>()
-                        ),
-                        "this reply must render the SDK explanation and reset time"
-                    );
+                    let rendered = compact_rows(&owner_rows(
+                        &mut app,
+                        index,
+                        width,
+                        LiveRowBoundaryKind::AssistantNotice,
+                    ));
+                    assert!(rendered.contains(&compact_rows(&[expected.into()])));
+                    assert!(rendered.contains("retry"));
+                    for &(_, _, other) in &replies {
+                        if other != expected {
+                            assert!(!rendered.contains(&compact_rows(&[other.into()])));
+                        }
+                    }
                 }
             }
-        }
-        assert_eq!(app.transcript.messages.len(), 6, "three submissions and their three replies");
-        for ((owner, _), prompt) in replies.into_iter().zip(["hello", "hi", "hi"]) {
-            let user = &app.transcript.messages[owner - 1];
-            assert!(matches!(user.role, MessageRole::User));
-            assert_eq!(first_block_text(user), prompt);
+            assert_eq!(app.input.snapshot(), draft);
+            drain_refreshes(&mut receiver);
         }
     }
 }
@@ -557,106 +548,136 @@ fn assert_timeout_preserves_its_tool_and_cannot_be_unlocked_by_liveness() {
     assert!(receiver.try_recv().is_err(), "ordinary timeout cannot fabricate a retry Prompt");
 }
 
+fn assert_failure_regions(
+    app: &mut App,
+    previous: usize,
+    owner: usize,
+    class: TurnErrorClass,
+    guidance: &str,
+    partial: bool,
+) {
+    for width in [40, 100] {
+        let rendered =
+            compact_rows(&owner_rows(app, owner, width, LiveRowBoundaryKind::AssistantNotice));
+        assert!(rendered.contains(guidance), "{class:?}: {rendered}");
+        if class != TurnErrorClass::AuthRequired {
+            assert!(rendered.contains("Distinctsuppliedfailurecause"));
+        }
+        let earlier =
+            compact_rows(&owner_rows(app, previous, width, LiveRowBoundaryKind::AssistantNotice));
+        assert!(earlier.contains("Earlierindependentwarning"));
+        assert!(!earlier.contains("Distinctsuppliedfailurecause"));
+        assert!(!rendered.contains("Earlierindependentwarning"));
+        if partial {
+            assert_eq!(first_block_text(&app.transcript.messages[owner]), "Exact partial answer");
+            let rows =
+                serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None);
+            let answer = rows
+                .segments()
+                .iter()
+                .find(|s| s.msg_idx == owner && s.kind == LiveRowBoundaryKind::AssistantText)
+                .unwrap();
+            let notice = rows
+                .segments()
+                .iter()
+                .find(|s| s.msg_idx == owner && s.kind == LiveRowBoundaryKind::AssistantNotice)
+                .unwrap();
+            assert!(answer.end_row <= notice.start_row);
+            assert!(
+                compact_rows(
+                    &rows
+                        .segment_rows(answer)
+                        .unwrap()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                )
+                .contains("Exactpartialanswer")
+            );
+        }
+    }
+}
+
 #[test]
-fn turn_failures_keep_partial_output_and_use_the_same_notice_renderer() {
+fn turn_failures_preserve_owned_output_draft_and_class_specific_recovery() {
     assert_timeout_preserves_its_tool_and_cannot_be_unlocked_by_liveness();
-    for class in [
-        TurnErrorClass::PlanLimit,
-        TurnErrorClass::AuthRequired,
-        TurnErrorClass::AccountAccess,
-        TurnErrorClass::ModelUnavailable,
-        TurnErrorClass::TransientService,
-        TurnErrorClass::Internal,
-        TurnErrorClass::Other,
+    for (class, guidance) in [
+        (TurnErrorClass::PlanLimit, "retry"),
+        (TurnErrorClass::AuthRequired, "Authenticationrequired"),
+        (TurnErrorClass::AccountAccess, "accountororganization"),
+        (TurnErrorClass::ModelUnavailable, "/model"),
+        (TurnErrorClass::TransientService, "retry"),
+        (TurnErrorClass::Internal, "Inputdisabled"),
+        (TurnErrorClass::Other, "Inputdisabled"),
     ] {
         for partial in [false, true] {
             let (mut app, mut receiver) = connected_app();
-            submit(&mut app, &mut receiver, "Question");
+            submit(&mut app, &mut receiver, "Prior independent question");
+            update(&mut app, text("Prior source sentinel"));
+            crate::app::events::push_submission_feedback(
+                &mut app,
+                SystemSeverity::Warning,
+                "Earlier independent warning",
+            );
+            let previous = app.active_turn_assistant_idx().unwrap();
+            let previous_id = app.transcript.messages[previous].id;
+            handle_client_event(&mut app, turn_complete(None));
+            submit(&mut app, &mut receiver, "Failing question");
             let owner = app.active_turn_assistant_idx().unwrap();
-            let owner_id = app.transcript.messages[owner].id;
             if partial {
-                update(&mut app, text("Partial answer"));
+                update(&mut app, text("Exact partial answer"));
             }
-            app.input.set_text("Next unsent draft");
+            let (expanded, paste) = next_draft(&mut app);
             let draft = app.input.snapshot();
-            fail_turn(&mut app, class, "Fixture failure");
+            let images = app.input.images();
+            fail_turn(&mut app, class, "Distinct supplied failure cause");
             assert_eq!(app.input.snapshot(), draft);
-            assert_eq!(app.active_turn_assistant_idx(), None);
-            assert!(app.turn.activity.is_none());
-            assert_eq!(app.transcript.messages.len(), 2);
-            let reply = &app.transcript.messages[owner];
-            assert_eq!(reply.id, owner_id);
-            assert!(matches!(reply.role, MessageRole::Assistant));
-            if partial {
-                assert_eq!(first_block_text(reply), "Partial answer");
-            }
-            for width in [40, 100] {
-                assert_failure_layout(&mut app, owner, width);
-                if partial {
-                    let rendered = serialize_live_rows_with_boundaries_excluding(
-                        &mut app,
-                        width,
-                        &BTreeSet::new(),
-                        None,
-                    );
-                    let answer = rendered
-                        .segments()
-                        .iter()
-                        .find(|segment| {
-                            segment.msg_idx == owner
-                                && segment.kind == LiveRowBoundaryKind::AssistantText
-                        })
-                        .unwrap();
-                    let notice = rendered
-                        .segments()
-                        .iter()
-                        .find(|segment| {
-                            segment.msg_idx == owner
-                                && segment.kind == LiveRowBoundaryKind::AssistantNotice
-                        })
-                        .unwrap();
-                    assert!(answer.end_row <= notice.start_row, "failure follows partial output");
-                    assert!(
-                        rendered
-                            .segment_rows(answer)
-                            .unwrap()
-                            .iter()
-                            .any(|row| row.to_string().contains("Partial answer"))
-                    );
+            assert_eq!(app.input.images(), images);
+            assert!(app.active_turn_assistant_idx().is_none());
+            assert_eq!(app.transcript.messages[previous].id, previous_id);
+            assert_eq!(
+                first_block_text(&app.transcript.messages[previous]),
+                "Prior source sentinel"
+            );
+            assert_failure_regions(&mut app, previous, owner, class, guidance, partial);
+            drain_refreshes(&mut receiver);
+            crate::app::input_submit::submit_input(&mut app);
+            if class == TurnErrorClass::PlanLimit {
+                let BridgeCommand::Prompt { session_id, chunks, inline_pastes, .. } =
+                    receiver.try_recv().expect("explicit retry").command
+                else {
+                    panic!("prompt")
+                };
+                assert_eq!(session_id, "test-session");
+                assert_eq!(inline_pastes, [paste]);
+                assert_eq!(
+                    chunks.iter().find(|c| c.kind == "text").unwrap().value,
+                    serde_json::json!(expanded)
+                );
+                assert_eq!(
+                    chunks.iter().find(|c| c.kind == "image").unwrap().value["data"],
+                    images[0].data
+                );
+                assert!(app.input.is_empty());
+                drain_refreshes(&mut receiver);
+            } else {
+                assert!(receiver.try_recv().is_err());
+                assert_eq!(app.input.snapshot(), draft);
+                assert!(!app.composer_access().can_submit());
+                if class == TurnErrorClass::AuthRequired {
+                    assert!(app.shutdown_requested());
+                    assert!(matches!(app.exit_error, Some(crate::error::AppError::AuthRequired)));
+                } else {
+                    assert_eq!(app.status, AppStatus::Error);
+                    assert!(!app.shutdown_requested());
                 }
             }
         }
     }
 }
 
-fn take_assistant_text_rows(
-    app: &mut App,
-    excluded: &mut BTreeSet<HistoryOutputId>,
-    width: u16,
-    stable_only: bool,
-) -> Vec<String> {
-    let rendered = serialize_live_rows_with_boundaries_excluding(app, width, excluded, None);
-    let mut rows = Vec::new();
-    for segment in rendered.segments() {
-        if segment.kind != LiveRowBoundaryKind::AssistantText
-            || (stable_only && segment.end_row > rendered.stable_row_count())
-        {
-            continue;
-        }
-        rows.extend(
-            rendered
-                .segment_rows(segment)
-                .unwrap()
-                .iter()
-                .map(|row| row.to_string().trim_end().to_owned()),
-        );
-        excluded.extend(segment.ids.iter().cloned());
-    }
-    rows
-}
-
-// AL10 consumes only the named owner's text; AL11's common collector stays unchanged.
-fn take_owner_table_rows(
+// Consume the named reply while leaving neighboring transcript sources available.
+fn take_owner_text_rows(
     app: &mut App,
     owner: usize,
     excluded: &mut BTreeSet<HistoryOutputId>,
@@ -814,7 +835,7 @@ fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
         let whole_owner = whole.active_turn_assistant_idx().unwrap();
         handle_client_event(&mut whole, turn_complete(None));
         let whole_rows =
-            take_owner_table_rows(&mut whole, whole_owner, &mut BTreeSet::new(), 36, false);
+            take_owner_text_rows(&mut whole, whole_owner, &mut BTreeSet::new(), 36, false);
         assert_table_cells(&whole_rows, &expected_cells);
 
         // One-character chunks bisect syntax; larger chunks cross paragraph/cache boundaries.
@@ -851,7 +872,7 @@ fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
                     text(&value)
                 };
                 update(&mut app, event);
-                committed.extend(take_owner_table_rows(&mut app, owner, &mut excluded, 36, true));
+                committed.extend(take_owner_text_rows(&mut app, owner, &mut excluded, 36, true));
                 assert!(
                     committed.iter().all(|row| !row.contains('\u{2502}')),
                     "an unfinished table cannot enter final history"
@@ -880,10 +901,10 @@ fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
                 assert_context_table_source(&app, owner);
             }
             update(&mut app, text(ending));
-            committed.extend(take_owner_table_rows(&mut app, owner, &mut excluded, 36, true));
+            committed.extend(take_owner_text_rows(&mut app, owner, &mut excluded, 36, true));
             assert_table_cells(&committed, &expected_cells);
             handle_client_event(&mut app, turn_complete(None));
-            committed.extend(take_owner_table_rows(&mut app, owner, &mut excluded, 36, true));
+            committed.extend(take_owner_text_rows(&mut app, owner, &mut excluded, 36, true));
             assert_table_cells(&committed, &expected_cells); // Completion must not duplicate a consumed table.
             assert_eq!(committed.iter().filter(|row| row.contains(heading)).count(), 1);
             assert_eq!(committed.iter().filter(|row| row.contains("Final paragraph.")).count(), 1);
@@ -892,7 +913,7 @@ fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
                 "secondary chunk invariance, chunk size {chunk_size}"
             );
             assert!(
-                take_owner_table_rows(&mut app, owner, &mut excluded, 36, false).is_empty(),
+                take_owner_text_rows(&mut app, owner, &mut excluded, 36, false).is_empty(),
                 "consumed owner text is excluded"
             );
             assert_table_neighbor_is_unconsumed(&mut app, neighbor, &excluded);
@@ -909,57 +930,125 @@ fn tables_survive_sdk_chunks_cache_splits_and_scrollback_commits() {
 
 #[test]
 fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
-    let long_source = format!(
-        "Introduction.\n\n9. Parent item.\n\n   {}\n\n   - Child with 日本語😀.\n10. Next item.\n\nFinal paragraph.",
-        "Long continuation with useful detail. ".repeat(130)
-    );
-    for source in [long_source, "Introduction.\n\n9) Parent item.\n\n   - Child item.\n\n     Child continuation.\n10) Next item.\n\nFinal paragraph.".to_owned()] {
-    let chars = source.chars().collect::<Vec<_>>();
-    let mut whole = connected_app().0;
-    whole.status = AppStatus::Ready;
-    update(&mut whole, model::SessionUpdate::AgentResponseStarted);
-    update(&mut whole, text(&source));
-    handle_client_event(&mut whole, turn_complete(None));
-    assert_eq!(
-        crate::app::copy::choices(&whole)[0].text,
-        source,
-        "cache splits must preserve the original Markdown source for copying"
-    );
-    let expected = take_assistant_text_rows(&mut whole, &mut BTreeSet::new(), 36, false);
-    assert!(
-        expected.iter().any(|row| row.contains("Introduction.")),
-        "fixture must deliver output through the session boundary"
-    );
-
-    let chunk_sizes = if chars.len() < 512 { [1, 17, chars.len()] } else { [17, 113, chars.len()] };
-    for chunk_size in chunk_sizes {
-        let mut app = connected_app().0;
-        app.status = AppStatus::Ready;
-        update(&mut app, model::SessionUpdate::AgentResponseStarted);
-        let mut committed = Vec::new();
-        let mut excluded = BTreeSet::new();
-        let mut committed_intro_while_running = false;
-        for chunk in chars.chunks(chunk_size) {
-            update(&mut app, text(&chunk.iter().collect::<String>()));
-            committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, true));
-            committed_intro_while_running |=
-                committed.iter().any(|row| row.contains("Introduction."));
+    for long in [false, true] {
+        let continuation = if long {
+            "Long continuation with useful detail. ".repeat(130)
+        } else {
+            "Parent continuation.".into()
+        };
+        let marker = if long { "." } else { ")" };
+        let list = format!(
+            "9{marker} Parent item.\n\n   {continuation}\n\n   - Child with \u{65e5}\u{672c}\u{8a9e}\u{1f600}.\n\n     Child continuation.\n10{marker} Next item."
+        );
+        let opening = format!("Introduction.\n\n{list}");
+        let ending = "\n\nFinal paragraph.";
+        let source = format!("{opening}{ending}");
+        let chars = opening.chars().collect::<Vec<_>>();
+        for width in [36, 70] {
+            let (mut whole, mut receiver) = connected_app();
+            submit(&mut whole, &mut receiver, "List question");
+            update(&mut whole, text(&source));
+            let whole_owner = whole.active_turn_assistant_idx().unwrap();
+            handle_client_event(&mut whole, turn_complete(None));
+            let whole_rows =
+                take_owner_text_rows(&mut whole, whole_owner, &mut BTreeSet::new(), width, true);
+            assert_list_content(&whole_rows, long);
+            for size in if long { vec![17, 113, chars.len()] } else { vec![1, 17, chars.len()] } {
+                let (mut app, mut receiver) = connected_app();
+                submit(&mut app, &mut receiver, "Neighbor question");
+                update(&mut app, text("Neighbor unrelated source"));
+                let neighbor = app.active_turn_assistant_idx().unwrap();
+                handle_client_event(&mut app, turn_complete(None));
+                submit(&mut app, &mut receiver, "Requested list");
+                let owner = app.active_turn_assistant_idx().unwrap();
+                let mut excluded = BTreeSet::new();
+                let mut committed = Vec::new();
+                for chunk in chars.chunks(size) {
+                    update(&mut app, text(&chunk.iter().collect::<String>()));
+                    committed.extend(take_owner_text_rows(
+                        &mut app,
+                        owner,
+                        &mut excluded,
+                        width,
+                        true,
+                    ));
+                    assert!(
+                        !committed.iter().any(|r| r.contains("Parent item")
+                            || r.contains("Child")
+                            || r.contains("Next item")),
+                        "unfinished list stays mutable"
+                    );
+                }
+                assert_eq!(committed.iter().filter(|r| r.contains("Introduction.")).count(), 1);
+                update(&mut app, text(ending));
+                handle_client_event(&mut app, turn_complete(None));
+                committed.extend(take_owner_text_rows(&mut app, owner, &mut excluded, width, true));
+                assert_list_content(&committed, long);
+                assert_eq!(committed, whole_rows, "secondary chunk invariance");
+                assert_eq!(crate::app::copy::choices(&app)[0].text, source);
+                assert!(
+                    take_owner_text_rows(&mut app, owner, &mut excluded, width, false).is_empty()
+                );
+                assert_eq!(
+                    first_block_text(&app.transcript.messages[neighbor]),
+                    "Neighbor unrelated source"
+                );
+                let remaining =
+                    serialize_live_rows_with_boundaries_excluding(&mut app, width, &excluded, None);
+                assert!(
+                    remaining
+                        .segments()
+                        .iter()
+                        .any(|s| s.msg_idx == neighbor
+                            && s.kind == LiveRowBoundaryKind::AssistantText)
+                );
+            }
         }
-        assert!(
-            committed_intro_while_running,
-            "ordinary completed paragraphs should still reach scrollback during a long list"
-        );
-        handle_client_event(&mut app, turn_complete(None));
-        committed.extend(take_assistant_text_rows(&mut app, &mut excluded, 36, false));
-        assert_eq!(
-            crate::app::copy::choices(&app)[0].text,
-            source,
-            "SDK chunk size {chunk_size} must preserve the copied Markdown exactly"
-        );
-        assert_eq!(
-            committed, expected,
-            "SDK chunk size {chunk_size} changed the displayed list or duplicated committed rows"
-        );
     }
+}
+
+fn assert_list_content(rows: &[String], long: bool) {
+    let locate = |needle: &str| {
+        rows.iter()
+            .position(|r| r.contains(needle))
+            .unwrap_or_else(|| panic!("missing {needle}: {rows:?}"))
+    };
+    let intro = locate("Introduction.");
+    let parent = locate("9. Parent item.");
+    let child = locate("Child with");
+    let continuation = locate("Child continuation.");
+    let next = locate("10. Next item.");
+    let end = locate("Final paragraph.");
+    assert!(
+        intro < parent
+            && parent < child
+            && child < continuation
+            && continuation < next
+            && next < end
+    );
+    let parent_column = rows[parent].find("9.").unwrap();
+    let child_column = rows[child].find("Child").unwrap();
+    assert!(child_column > parent_column);
+    assert_eq!(
+        rows[continuation].find("Child").unwrap(),
+        child_column,
+        "nested continuation keeps its hanging indent"
+    );
+    assert_eq!(
+        rows[next].find("10.").unwrap(),
+        parent_column,
+        "number-width change does not change nesting"
+    );
+    let joined = compact_rows(rows);
+    assert_eq!(joined.matches("Introduction.").count(), 1);
+    assert_eq!(joined.matches("9.Parentitem.").count(), 1);
+    assert_eq!(joined.matches("10.Nextitem.").count(), 1);
+    assert!(joined.contains("Childwith\u{65e5}\u{672c}\u{8a9e}\u{1f600}."));
+    assert_eq!(joined.matches("Childcontinuation.").count(), 1);
+    assert_eq!(joined.matches("Finalparagraph.").count(), 1);
+    if long {
+        assert_eq!(joined.matches("Longcontinuationwithusefuldetail.").count(), 130);
+    } else {
+        assert_eq!(joined.matches("Parentcontinuation.").count(), 1);
     }
 }

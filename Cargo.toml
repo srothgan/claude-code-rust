@@ -132,3 +132,7 @@ str_to_string = "warn"
 
 [lints.rust]
 unsafe_code = "warn"
+
+# Keep list continuation paragraphs aligned until the fix ships upstream.
+[patch.crates-io]
+tui-markdown = { path = "third-party/tui-markdown" }

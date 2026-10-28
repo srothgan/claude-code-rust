@@ -1059,13 +1059,10 @@ mod tests {
         deliver_main_text(&mut app, "Main response");
         let owner = app.active_turn_assistant_idx().unwrap();
         for index in 0..crate::app::state::PendingUserMessages::CAPACITY {
-            app.pending_user_messages
-                .try_push_sending(super::super::PendingUserMessage::sending(
-                    format!("queued-{index}"),
-                    format!("queued message {index}"),
-                    vec![],
-                ))
-                .unwrap();
+            let text = format!("queued message {index}\ncontinued");
+            app.input.set_text(&text);
+            submit_input(&mut app);
+            expect_prompt(&mut rx, &text, &[], false);
         }
         let pending: Vec<_> = app.pending_user_messages.iter().cloned().collect();
         let users = user_sources(&app);
@@ -1095,7 +1092,7 @@ mod tests {
             user_sources(&app),
             users
                 .into_iter()
-                .chain([("queued message 0".into(), vec!["queued-0".into()])])
+                .chain([("queued message 0\ncontinued".into(), vec![pending[0].uuid.clone()])])
                 .collect::<Vec<_>>()
         );
         assert_eq!(assistant_text(&app, owner), "Main response");

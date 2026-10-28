@@ -980,43 +980,7 @@ fn push_turn_error_message(app: &mut App, error: &str, class: TurnErrorClass) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        App, ChatPurgeReplayOptions, ChatRebuildKind, SurfaceMode, TerminalLifecycleState,
-    };
-
-    fn empty_assistant_message() -> ChatMessage {
-        ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
-    }
-
-    fn user_message(text: &str) -> ChatMessage {
-        ChatMessage::new(
-            MessageRole::User,
-            vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
-        )
-    }
-
-    fn pending_message(
-        uuid: &str,
-        text: &str,
-        images: Vec<crate::app::clipboard_image::ImageAttachment>,
-    ) -> crate::app::PendingUserMessage {
-        crate::app::PendingUserMessage::sending(uuid.to_owned(), text.to_owned(), images)
-    }
-
-    fn image(data: &str) -> crate::app::clipboard_image::ImageAttachment {
-        crate::app::clipboard_image::ImageAttachment {
-            data: data.to_owned(),
-            mime_type: "image/png".to_owned(),
-        }
-    }
-
-    fn message_text(message: &ChatMessage) -> Option<&str> {
-        let MessageBlock::Text(text) = message.blocks.first()? else {
-            return None;
-        };
-        Some(text.text.as_str())
-    }
+    use crate::app::App;
 
     fn pending_permission_context(
         app: &App,
@@ -1031,274 +995,325 @@ mod tests {
         tool.pending_permission.as_ref().and_then(|permission| permission.subagent_context.clone())
     }
 
-    #[test]
-    fn turn_complete_removes_empty_tail_assistant() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Thinking;
-        app.transcript.messages.push(user_message("hello"));
-        app.transcript.messages.push(empty_assistant_message());
-
-        handle_turn_complete_event(&mut app, None, None);
-
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
+    fn deliver(app: &mut App, event: crate::agent::events::ClientEvent) {
+        crate::app::events::handle_client_event(app, event);
     }
 
-    #[test]
-    fn queued_receipt_is_uuid_keyed_and_idempotent() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("one", "first", Vec::new()))
-                .is_ok()
+    fn live_text(app: &mut App, text: &str) {
+        crate::app::test_support::deliver_update(
+            app,
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new(text)),
+            )),
         );
+    }
 
-        handle_user_message_queued_event(&mut app, "one");
-        handle_user_message_queued_event(&mut app, "one");
-        handle_user_message_queued_event(&mut app, "unknown");
+    fn started(app: &mut App, uuid: &str) {
+        deliver(
+            app,
+            crate::agent::events::ClientEvent::UserMessageStarted {
+                session_id: "session-1".into(),
+                message_uuid: uuid.into(),
+                source: crate::agent::types::UserMessageStartSource::StreamEvent,
+            },
+        );
+    }
 
-        assert!(!app.pending_user_messages.mark_queued("one"));
-        assert_eq!(app.pending_user_messages.len(), 1);
+    fn assert_prompt(
+        rx: &mut crate::agent::client::CommandReceiver,
+        expected: &str,
+        images: &[crate::app::clipboard_image::ImageAttachment],
+    ) -> String {
+        use crate::agent::wire::BridgeCommand;
+        let mut prompt = None;
+        while let Ok(envelope) = rx.try_recv() {
+            match envelope.command {
+                BridgeCommand::Prompt { session_id, message_uuid, chunks, inline_pastes } => {
+                    assert!(prompt.is_none(), "one user action sends one prompt");
+                    assert_eq!(session_id, "session-1");
+                    assert!(inline_pastes.is_empty());
+                    assert_eq!(
+                        chunks
+                            .iter()
+                            .filter(|c| c.kind == "text")
+                            .map(|c| &c.value)
+                            .collect::<Vec<_>>(),
+                        [&serde_json::json!(expected)]
+                    );
+                    let actual_images: Vec<_> =
+                        chunks.iter().filter(|c| c.kind == "image").collect();
+                    assert_eq!(actual_images.len(), images.len());
+                    for (actual, expected) in actual_images.iter().zip(images) {
+                        assert_eq!(actual.value["data"], expected.data);
+                        assert_eq!(actual.value["mime_type"], expected.mime_type);
+                    }
+                    assert_eq!(chunks.len(), images.len() + 1);
+                    prompt = Some(message_uuid);
+                }
+                BridgeCommand::GetContextUsage { session_id } => {
+                    assert_eq!(session_id, "session-1");
+                }
+                other => panic!("unexpected command {other:?}"),
+            }
+        }
+        prompt.expect("prompt delivered")
+    }
+
+    fn admit(
+        app: &mut App,
+        rx: &mut crate::agent::client::CommandReceiver,
+        text: &str,
+        images: &[crate::app::clipboard_image::ImageAttachment],
+    ) -> String {
+        app.input.set_text(text);
+        app.input.image_payloads = images.to_vec();
+        crate::app::input_submit::submit_input(app);
+        assert_prompt(rx, text, images)
+    }
+
+    fn source_pairs(app: &App) -> Vec<(String, Vec<String>)> {
+        app.transcript
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::User))
+            .flat_map(|m| &m.blocks)
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some((t.text.clone(), t.source_message_uuids.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn response_source(app: &App, owner: usize) -> String {
+        app.transcript.messages[owner]
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn colored_image(red: u8) -> crate::app::clipboard_image::ImageAttachment {
+        use base64::Engine as _;
+        let pixels = image::RgbaImage::from_pixel(1, 1, image::Rgba([red, 30, 90, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::app::clipboard_image::ImageAttachment {
+            data: base64::engine::general_purpose::STANDARD.encode(png.into_inner()),
+            mime_type: "image/png".into(),
+        }
+    }
+
+    fn reject(app: &mut App, uuid: &str) {
+        deliver(
+            app,
+            crate::agent::events::ClientEvent::UserMessageRejected {
+                session_id: "session-1".into(),
+                message_uuid: uuid.into(),
+                reason: "fixture admission refused".into(),
+            },
+        );
     }
 
     #[test]
     fn correlated_start_commits_each_message_in_the_coalesced_prefix_once() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("one", "first", Vec::new()))
-                .is_ok()
-        );
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("two", "second", Vec::new()))
-                .is_ok()
-        );
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("three", "third", Vec::new()))
-                .is_ok()
-        );
-
-        handle_user_message_started_event(
+        use crate::agent::events::ClientEvent;
+        let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+        let first = admit(&mut app, &mut rx, "original question", &[]);
+        live_text(&mut app, "Original reply");
+        let original = app.active_turn_assistant_idx().unwrap();
+        let sources =
+            ["first queued line\ncontinued", "second queued source", "third unstarted source"];
+        let ids: Vec<_> =
+            sources.iter().map(|source| admit(&mut app, &mut rx, source, &[])).collect();
+        let pending: Vec<_> = app
+            .pending_user_messages
+            .iter()
+            .map(|p| (p.uuid.clone(), p.text.clone(), p.images.clone()))
+            .collect();
+        for uuid in [&ids[1], &ids[1], "unknown"] {
+            deliver(
+                &mut app,
+                ClientEvent::UserMessageQueued {
+                    session_id: "session-1".into(),
+                    message_uuid: uuid.into(),
+                },
+            );
+        }
+        deliver(
             &mut app,
-            "two",
-            crate::agent::types::UserMessageStartSource::CommandLifecycle,
+            ClientEvent::TurnInterruptReceipt {
+                session_id: "session-1".into(),
+                still_queued: vec![ids[1].clone(), "unknown".into()],
+            },
         );
-
-        assert_eq!(app.pending_user_messages.len(), 1);
+        started(&mut app, "unknown");
+        assert_eq!(source_pairs(&app), [("original question".into(), vec![first.clone()])]);
         assert_eq!(
-            app.pending_user_messages.iter().next().map(|message| message.uuid.as_str()),
-            Some("three")
+            app.pending_user_messages
+                .iter()
+                .map(|p| (p.uuid.clone(), p.text.clone(), p.images.clone()))
+                .collect::<Vec<_>>(),
+            pending
         );
-        assert_eq!(app.transcript.messages.len(), 4);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
-        assert_eq!(message_text(&app.transcript.messages[0]), Some("first"));
-        assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
-        assert_eq!(message_text(&app.transcript.messages[2]), Some("second"));
-        assert!(matches!(app.transcript.messages[3].role, MessageRole::Assistant));
-        assert_eq!(app.active_turn_assistant_idx(), Some(3));
-        assert_eq!(app.status, AppStatus::Running);
-
-        handle_user_message_started_event(
-            &mut app,
-            "two",
-            crate::agent::types::UserMessageStartSource::Result,
-        );
-        handle_user_message_started_event(
-            &mut app,
-            "unknown",
-            crate::agent::types::UserMessageStartSource::Assistant,
-        );
+        live_text(&mut app, " continues before queued start");
+        assert_eq!(app.active_turn_assistant_idx(), Some(original));
+        started(&mut app, &ids[1]);
+        let owner = app.active_turn_assistant_idx().unwrap();
+        assert_ne!(owner, original);
+        let expected = vec![
+            ("original question".into(), vec![first]),
+            (sources[0].into(), vec![ids[0].clone()]),
+            (sources[1].into(), vec![ids[1].clone()]),
+        ];
+        assert_eq!(source_pairs(&app), expected);
         assert_eq!(
-            app.transcript.messages.len(),
-            4,
-            "duplicate and unknown acknowledgements must be inert"
+            app.pending_user_messages
+                .iter()
+                .map(|p| (p.uuid.as_str(), p.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(ids[2].as_str(), sources[2])]
         );
-        assert_eq!(app.pending_user_messages.len(), 1);
+        for uuid in [&ids[0], &ids[1], "unknown"] {
+            started(&mut app, uuid);
+            assert_eq!(app.active_turn_assistant_idx(), Some(owner));
+            assert_eq!(source_pairs(&app), expected);
+        }
+        live_text(&mut app, "Coalesced response belongs to second");
+        assert_eq!(response_source(&app, owner), "Coalesced response belongs to second");
+        assert_eq!(response_source(&app, original), "Original reply continues before queued start");
+        started(&mut app, &ids[2]);
+        let final_owner = app.active_turn_assistant_idx().unwrap();
+        live_text(&mut app, "Third independent response");
+        assert_ne!(final_owner, owner);
+        assert_eq!(response_source(&app, final_owner), "Third independent response");
+        assert_eq!(
+            source_pairs(&app),
+            expected
+                .into_iter()
+                .chain([(sources[2].into(), vec![ids[2].clone()])])
+                .collect::<Vec<_>>()
+        );
+        assert!(app.pending_user_messages.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+
+    fn reconnect_recovered_draft(
+        app: &mut App,
+        rx: &mut crate::agent::client::CommandReceiver,
+        directory: &std::path::Path,
+    ) {
+        let (connection, receiver) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+        *rx = receiver;
+        deliver(
+            app,
+            crate::agent::events::ClientEvent::Connected {
+                session_id: "session-1".into(),
+                cwd: directory.to_string_lossy().into_owned(),
+                current_model: model::CurrentModel::new("model", "model", "model")
+                    .authoritative(true),
+                available_models: vec![],
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
+                ultracode: None,
+                history_updates: vec![],
+            },
+        );
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(matches!(envelope.command,
+                crate::agent::wire::BridgeCommand::GetMcpSnapshot { session_id }
+                | crate::agent::wire::BridgeCommand::GetStatusSnapshot { session_id }
+                | crate::agent::wire::BridgeCommand::GetContextUsage { session_id }
+                | crate::agent::wire::BridgeCommand::InspectSettings { session_id, .. }
+                if session_id == "session-1"));
+        }
     }
 
     #[test]
     fn rejected_message_restores_ordered_payload_before_newer_draft() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message(
-                    "one",
-                    "old [Image #7]",
-                    vec![image("old-image")],
-                ))
-                .is_ok()
-        );
-        app.input.set_text("new [Image #1]");
-        app.input.image_payloads.push(image("new-image"));
-
-        handle_user_message_rejected_event(&mut app, "one", "session input is closed");
-
-        assert!(app.pending_user_messages.is_empty());
-        assert_eq!(app.input.text(), "old [Image #1]\nnew [Image #2]");
-        assert_eq!(app.input.image_payloads, vec![image("old-image"), image("new-image")]);
-        let Some(MessageBlock::Notice(notice)) =
-            app.transcript.messages.last().and_then(|message| message.blocks.last())
-        else {
-            panic!("expected rejection notice");
-        };
-        assert!(notice.text.text.contains("has been restored"));
-        assert!(notice.text.text.contains("session input is closed"));
-    }
-
-    #[test]
-    fn interrupt_receipt_marks_only_known_survivors_without_evicting_pending_messages() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("one", "first", Vec::new()))
-                .is_ok()
-        );
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("two", "second", Vec::new()))
-                .is_ok()
-        );
-
-        handle_turn_interrupt_receipt_event(&mut app, &["two".to_owned(), "unknown".to_owned()]);
-
-        assert_eq!(app.pending_user_messages.len(), 2);
-        assert!(app.pending_user_messages.mark_queued("one"));
-        assert!(!app.pending_user_messages.mark_queued("two"));
-    }
-
-    #[test]
-    fn recovering_all_pending_messages_preserves_fifo_text_and_image_order() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("one", "first [Image #9]", vec![image("one")],))
-                .is_ok()
-        );
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("two", "second [Image #8]", vec![image("two")],))
-                .is_ok()
-        );
-        app.input.set_text("draft [Image #1]");
-        app.input.image_payloads.push(image("draft"));
-
-        recover_all_pending_user_messages(&mut app);
-
-        assert!(app.pending_user_messages.is_empty());
-        assert_eq!(app.input.text(), "first [Image #1]\nsecond [Image #2]\ndraft [Image #3]");
-        assert_eq!(app.input.image_payloads, vec![image("one"), image("two"), image("draft")]);
-    }
-
-    #[test]
-    fn cancelled_turn_error_removes_empty_tail_assistant_before_hint() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Thinking;
-        app.turn.cancel_requested = true;
-        app.transcript.messages.push(user_message("hello"));
-        app.transcript.messages.push(empty_assistant_message());
-
-        handle_turn_error_event(&mut app, "cancelled", None, None, None, None);
-
-        assert_eq!(app.transcript.messages.len(), 2);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
-        assert!(matches!(
-            app.transcript.messages[1].role,
-            MessageRole::System(Some(SystemSeverity::Info))
-        ));
-    }
-
-    #[test]
-    fn cancelled_turn_with_pending_message_suppresses_interrupted_hint() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Thinking;
-        app.turn.cancel_requested = true;
-        app.transcript.messages.push(user_message("hello"));
-        app.transcript.messages.push(empty_assistant_message());
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(pending_message("queued", "continue with this", Vec::new(),))
-                .is_ok()
-        );
-
-        handle_turn_error_event(&mut app, "cancelled", None, None, None, None);
-
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
-        assert_eq!(app.pending_user_messages.len(), 1);
-    }
-
-    #[test]
-    fn turn_error_preserves_the_next_draft_and_attachments() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        app.transcript.messages.push(user_message("first prompt"));
-        app.transcript.messages.push(empty_assistant_message());
-        app.bind_active_turn_assistant_to_tail();
-        app.input.set_text("next [Image #1]\n");
-        app.input.insert_paste_block(&"draft 界 🦀\n".repeat(120));
-        app.input.image_payloads.push(image("draft"));
-        let before = app.input.snapshot();
-        let images_before = app.input.image_payloads.clone();
-
-        handle_turn_error_event(&mut app, "service unavailable", None, None, None, None);
-
-        assert_eq!(app.input.snapshot(), before);
-        assert_eq!(app.input.image_payloads, images_before);
-        assert_eq!(app.status, AppStatus::Error);
-        assert!(app.active_turn_assistant_idx().is_none());
-        assert_eq!(app.transcript.messages.len(), 2);
-        assert!(matches!(app.transcript.messages[1].role, MessageRole::Assistant));
-        assert!(matches!(app.transcript.messages[1].blocks.as_slice(), [MessageBlock::Notice(_)]));
-    }
-
-    #[test]
-    fn turn_complete_keeps_canonical_assistant_and_clears_active_owner() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Thinking;
-        app.transcript.messages.push(user_message("hello"));
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::Text(TextBlock::from_complete("done"))],
-            None,
-        ));
-        app.bind_active_turn_assistant(1);
-
-        handle_turn_complete_event(&mut app, None, None);
-
-        assert_eq!(app.status, AppStatus::Ready);
-        assert_eq!(app.active_turn_assistant_idx(), None);
-        assert_eq!(app.transcript.messages.len(), 2);
-        let Some(MessageBlock::Text(text)) = app.transcript.messages[1].blocks.first() else {
-            panic!("expected assistant text block");
-        };
-        assert_eq!(text.text, "done");
-    }
-
-    #[test]
-    fn turn_complete_runs_final_resize_purge_replay_after_stream_time_resize() {
-        let mut app = App::test_default();
-        app.surface_dirty = crate::app::SurfaceDirtyState::default();
-        app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-        app.status = AppStatus::Running;
-        app.transcript.messages.push(user_message("hello"));
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::Text(TextBlock::from_complete("streamed"))],
-            None,
-        ));
-        app.bind_active_turn_assistant(1);
-        app.chat_render.mark_resize_purge_replay_during_turn();
-
-        handle_turn_complete_event(&mut app, None, None);
-
-        assert_eq!(
-            app.surface_dirty.chat.rebuild,
-            ChatRebuildKind::PurgeReplay(ChatPurgeReplayOptions::post_turn_resize())
-        );
-        assert!(app.surface_dirty.chat.repaint);
-        assert!(!app.chat_render.resize_purge_replay_after_turn);
+        use crate::agent::events::ClientEvent;
+        for cause in ["rejection", "authentication", "connection"] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+            admit(&mut app, &mut rx, "main question", &[]);
+            live_text(&mut app, "Main response");
+            let original = app.active_turn_assistant_idx().unwrap();
+            let old = colored_image(10);
+            let other = colored_image(20);
+            let draft = colored_image(30);
+            let one = admit(&mut app, &mut rx, "old [Image #1]", std::slice::from_ref(&old));
+            let two = admit(&mut app, &mut rx, "neighbor [Image #1]", std::slice::from_ref(&other));
+            app.input.set_text("new \u{754c} [Image #1] trailing");
+            app.input.image_payloads.push(draft.clone());
+            let reset = || {
+                if cause == "authentication" {
+                    ClientEvent::AuthRequired {
+                        method_name: "login".into(),
+                        method_description: "fixture login needed".into(),
+                    }
+                } else {
+                    ClientEvent::ConnectionFailed("fixture bridge exit".into())
+                }
+            };
+            if cause == "rejection" {
+                reject(&mut app, &one);
+            } else {
+                deliver(&mut app, reset());
+                if cause == "connection" {
+                    assert!(app.transcript.messages.iter().any(|message| {
+                        matches!(message.role, MessageRole::System(_))
+                            && message.blocks.iter().any(|block| matches!(block,
+                                MessageBlock::Text(text) if text.text.contains("fixture bridge exit")))
+                    }));
+                }
+            }
+            let (expected, images) = if cause == "rejection" {
+                ("old [Image #1]\nnew \u{754c} [Image #2] trailing", vec![old, draft])
+            } else {
+                (
+                    "old [Image #1]\nneighbor [Image #2]\nnew \u{754c} [Image #3] trailing",
+                    vec![old, other, draft],
+                )
+            };
+            assert_eq!(app.input.text(), expected);
+            assert_eq!(app.input.images(), images);
+            if cause == "rejection" {
+                assert_eq!(
+                    app.pending_user_messages
+                        .iter()
+                        .map(|p| (p.uuid.as_str(), p.text.as_str()))
+                        .collect::<Vec<_>>(),
+                    [(two.as_str(), "neighbor [Image #1]")]
+                );
+                reject(&mut app, "unknown");
+                reject(&mut app, &one);
+                assert!(app.transcript.messages[original].blocks.iter().any(|b|matches!(b,MessageBlock::Notice(n) if n.text.text.contains("fixture admission refused"))));
+                started(&mut app, &two);
+                live_text(&mut app, "Neighbor still answers");
+                assert_eq!(
+                    response_source(&app, app.active_turn_assistant_idx().unwrap()),
+                    "Neighbor still answers"
+                );
+            } else {
+                assert!(app.pending_user_messages.is_empty());
+                deliver(&mut app, reset());
+                crate::app::input_submit::submit_input(&mut app);
+                assert!(rx.try_recv().is_err(), "reset is not a usable connection");
+                // A new successful connection is required before the recovered composer can be sent.
+                reconnect_recovered_draft(&mut app, &mut rx, directory.path());
+            }
+            assert_eq!(app.input.text(), expected);
+            assert_eq!(app.input.images(), images);
+            crate::app::test_support::press(&mut app, crossterm::event::KeyCode::Char('!'));
+            assert_eq!(app.input.text(), format!("{expected}!"));
+            crate::app::input_submit::submit_input(&mut app);
+            assert_prompt(&mut rx, &format!("{expected}!"), &images);
+            assert!(app.input.is_empty());
+        }
     }
 
     fn event_tool(id: &str, title: &str, name: &str, parent: Option<&str>) -> model::ToolCall {
@@ -1497,5 +1512,28 @@ mod tests {
         press(&mut app, crossterm::event::KeyCode::Enter);
         assert_permission_response(&mut receiver, "nested-command-once");
         assert!(commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn recovered_tenth_image_preserves_cursor_editing_and_exact_attachment_order() {
+        let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+        admit(&mut app, &mut rx, "main question", &[]);
+        live_text(&mut app, "Working reply");
+        let mut images: Vec<_> = (1..=9).map(colored_image).collect();
+        let source = "queued [Image #1] [Image #2] [Image #3] [Image #4] [Image #5] [Image #6] [Image #7] [Image #8] [Image #9]";
+        let uuid = admit(&mut app, &mut rx, source, &images);
+        let tenth = colored_image(10);
+        images.push(tenth.clone());
+        app.input.set_text("new \u{754c}\u{1f980} [Image #1] trailing");
+        app.input.image_payloads.push(tenth);
+        reject(&mut app, &uuid);
+        let restored = format!("{source}\nnew \u{754c}\u{1f980} [Image #10] trailing");
+        assert_eq!(app.input.text(), restored);
+        assert_eq!(app.input.images(), images);
+        crate::app::test_support::press(&mut app, crossterm::event::KeyCode::Char('!'));
+        assert_eq!(app.input.text(), format!("{restored}!"));
+        crate::app::input_submit::submit_input(&mut app);
+        assert_prompt(&mut rx, &format!("{restored}!"), &images);
+        assert!(app.input.is_empty());
     }
 }
