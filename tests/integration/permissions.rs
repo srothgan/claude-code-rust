@@ -150,75 +150,87 @@ async fn duplicate_permission_preserves_original_and_neighbor_response_ownership
     );
 }
 
-// --- TurnComplete transient state reset ---
+// --- Confirmed session inventory across completed turns ---
 
 #[tokio::test]
-async fn turn_complete_resets_transient_state() {
+async fn confirmed_task_and_mode_inventory_survives_completion_and_accepts_next_turn_updates() {
+    use claude_code_rust::app::{ModeInfo, ModeState};
     let mut app = test_app();
-    app.status = AppStatus::Running;
-    app.spinner_frame = 42;
-
-    send_client_event(&mut app, turn_complete());
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    // spinner_frame is a UI detail, not reset by TurnComplete (it's driven by tick)
-    // pending_interaction_ids should be empty (no permissions were pending)
-    assert!(app.pending_interaction_ids.is_empty());
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_clear_messages() {
-    let mut app = test_app();
-
-    let chunk =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("hello")));
-    send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(chunk)));
-    assert_eq!(app.transcript.messages.len(), 1);
-
-    send_client_event(&mut app, turn_complete());
-
-    assert_eq!(app.transcript.messages.len(), 1, "messages should persist across turns");
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_clear_tool_call_index() {
-    let mut app = test_app();
-
-    let tc =
-        model::ToolCall::new("tc-persist", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.has_tool_call("tc-persist"));
-
-    send_client_event(&mut app, turn_complete());
-
-    assert!(app.has_tool_call("tc-persist"), "tool_call_index should persist across turns");
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_clear_tasks() {
-    let mut app = test_app();
-
-    app.sdk_inventory.tasks.push(task_item("task-1", "Test task", model::TaskStatus::InProgress));
-
-    send_client_event(&mut app, turn_complete());
-
-    assert_eq!(app.sdk_inventory.tasks.len(), 1, "tasks should persist across turns");
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_affect_mode() {
-    let mut app = test_app();
-
-    app.session_runtime.mode = Some(claude_code_rust::app::ModeState {
+    let original = vec![
+        task_item("alpha", "Alpha confirmed", model::TaskStatus::Pending),
+        task_item("beta", "Beta confirmed", model::TaskStatus::InProgress),
+    ];
+    let mode = ModeState {
         current_mode_id: "plan".into(),
-        current_mode_name: "Plan".into(),
-        available_modes: vec![claude_code_rust::app::ModeInfo {
-            id: "plan".into(),
-            name: "Plan".into(),
-        }],
-    });
-
+        current_mode_name: "Confirmed planning".into(),
+        available_modes: vec![
+            ModeInfo { id: "plan".into(), name: "Confirmed planning".into() },
+            ModeInfo { id: "acceptEdits".into(), name: "Editing choice".into() },
+        ],
+    };
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::TaskStateUpdate(
+            model::TaskStateUpdate::new(model::TaskUpdateSource::List)
+                .tasks(original.clone())
+                .complete_snapshot(true),
+        )),
+    );
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ModeStateUpdate(mode.clone())),
+    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::AgentResponseStarted));
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("First turn answer")),
+        ))),
+    );
+    assert_ne!(app.status, AppStatus::Ready);
     send_client_event(&mut app, turn_complete());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.sdk_inventory.tasks, original);
+    assert_mode(&app, &mode);
+    send_client_event(&mut app, session_update(model::SessionUpdate::AgentResponseStarted));
+    let changed = task_item("alpha", "Alpha completed", model::TaskStatus::Completed);
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::TaskStateUpdate(
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Update)
+                .tasks(vec![changed.clone()]),
+        )),
+    );
+    let replacement = ModeState {
+        current_mode_id: "acceptEdits".into(),
+        current_mode_name: "Confirmed editing".into(),
+        available_modes: vec![ModeInfo {
+            id: "acceptEdits".into(),
+            name: "Confirmed editing".into(),
+        }],
+    };
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ModeStateUpdate(replacement.clone())),
+    );
+    assert_eq!(app.sdk_inventory.tasks, vec![changed, original[1].clone()]);
+    assert_mode(&app, &replacement);
+    send_client_event(&mut app, turn_complete());
+    assert_mode(&app, &replacement);
+    assert_eq!(app.status, AppStatus::Ready);
+}
 
-    assert!(app.session_runtime.mode.is_some(), "mode should persist across turns");
+fn assert_mode(app: &claude_code_rust::app::App, expected: &claude_code_rust::app::ModeState) {
+    assert_eq!(
+        app.session_runtime.mode.as_ref().map(|mode| (
+            &mode.current_mode_id,
+            &mode.current_mode_name,
+            mode.available_modes.iter().map(|m| (&m.id, &m.name)).collect::<Vec<_>>()
+        )),
+        Some((
+            &expected.current_mode_id,
+            &expected.current_mode_name,
+            expected.available_modes.iter().map(|m| (&m.id, &m.name)).collect::<Vec<_>>()
+        ))
+    );
 }
