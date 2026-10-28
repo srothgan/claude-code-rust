@@ -4035,3 +4035,49 @@ fn settings_parse_error_is_recorded_in_the_default_log() {
         "Settings parse error in settings.json at permissions.allow: Expected array"
     );
 }
+
+#[test]
+fn clearing_the_composer_discards_held_input_and_allows_a_fresh_prompt() {
+    use crate::agent::wire::BridgeCommand;
+    use crate::app::test_support::{EventClock, press};
+    for (prefix, typed) in [("old draft ", "ab"), ("old draft ", "abc"), ("", "ab"), ("", "abc")] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text(prefix);
+        for ch in typed.chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        assert!(!app.shutdown_requested());
+        assert!(app.input.is_empty());
+        if let Some(action) = app.paste.burst.tick(clock.at(1)) {
+            crate::app::apply_paste_burst_flush(&mut app, action);
+        }
+        crate::app::finalize_pending_paste_event(&mut app);
+        assert!(app.input.is_empty(), "cleared text must not return on the next tick");
+        assert!(commands.try_recv().is_err());
+        for (i, ch) in "fresh".chars().enumerate() {
+            clock.at_millis(1500 + u64::try_from(i).unwrap() * 300);
+            press(&mut app, KeyCode::Char(ch));
+        }
+        clock.at(4);
+        press(&mut app, KeyCode::Enter);
+        let BridgeCommand::Prompt { session_id, chunks, .. } =
+            commands.try_recv().expect("fresh Prompt").command
+        else {
+            panic!("expected Prompt")
+        };
+        assert_eq!(session_id, "test-session");
+        assert_eq!(
+            chunks.iter().filter(|c| c.kind == "text").map(|c| c.value.clone()).collect::<Vec<_>>(),
+            [serde_json::json!("fresh")]
+        );
+        while let Ok(envelope) = commands.try_recv() {
+            assert!(!matches!(envelope.command, BridgeCommand::Prompt { .. }));
+        }
+    }
+}

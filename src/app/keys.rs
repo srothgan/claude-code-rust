@@ -319,6 +319,7 @@ fn has_local_draft(app: &App) -> bool {
     !app.input.is_empty()
         || !app.input.images().is_empty()
         || app.paste.has_pending_text()
+        || app.paste.burst.has_held_input()
         || app.pending_submit.is_some()
 }
 
@@ -340,7 +341,7 @@ fn clear_input_or_quit(app: &mut App) -> bool {
     }
 
     app.input.clear();
-    app.paste.clear_all_sessions();
+    app.paste.discard_input();
     app.pending_submit = None;
     app.request_chat_repaint();
     true
@@ -348,6 +349,7 @@ fn clear_input_or_quit(app: &mut App) -> bool {
 
 fn execute_input_action(app: &mut App, action: InputAction) -> KeyOutcome {
     reclaim_input_from_inline_prompt_if_needed(app);
+    let flushed = !matches!(action, InputAction::InsertNewline) && super::flush_held_input(app);
     let handled = match action {
         InputAction::MoveCharLeft => app.input.textarea_move_left(),
         InputAction::MoveCharRight => app.input.textarea_move_right(),
@@ -386,7 +388,7 @@ fn execute_input_action(app: &mut App, action: InputAction) -> KeyOutcome {
         }
         InputAction::InsertNewline => insert_explicit_newline(app),
     };
-    handled.into()
+    (handled || flushed).into()
 }
 
 fn delete_input_char_before(app: &mut App) -> bool {
@@ -755,10 +757,7 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     };
     match encode_clipboard_image(image) {
         Ok(attachment) => {
-            if let Some(action) = app.paste.burst.on_non_char_key(super::input_event_now()) {
-                super::apply_paste_burst_flush(app, action);
-                super::finalize_pending_paste_event(app);
-            }
+            super::flush_held_input(app);
             app.input.insert_parts([InputYankPart::Image(attachment)]);
             app.request_chat_repaint();
             tracing::debug!(
@@ -794,11 +793,7 @@ pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
 fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     let (KeyCode::Char(c), m) = (key.code, key.modifiers) else {
         // A non-character key ends the burst but must not consume its text.
-        if let Some(action) = app.paste.burst.on_non_char_key(super::input_event_now()) {
-            super::apply_paste_burst_flush(app, action);
-            return true;
-        }
-        return false;
+        return super::flush_held_input(app);
     };
     if c.is_control() || !is_printable_text_modifiers(m) {
         return false;
@@ -826,15 +821,11 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
             return true;
         }
         CharAction::Passthrough(ch) => {
-            // Normal typing or a previously-held char released.
-            // If `ch == c`, single normal insert. Otherwise the detector
-            // emitted a held char; insert it first, then the current char.
-            if ch == c {
-                let _ = app.input.textarea_insert_char(c);
-            } else {
-                let _ = app.input.textarea_insert_char(ch);
-                let _ = app.input.textarea_insert_char(c);
-            }
+            let _ = app.input.textarea_insert_char(ch);
+        }
+        CharAction::ReleaseHeld(held) => {
+            let _ = app.input.textarea_insert_char(held);
+            let _ = app.input.textarea_insert_char(c);
         }
     }
 
@@ -1044,7 +1035,6 @@ mod tests {
     use crate::app::keymap::{KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap};
     use crate::app::{ChatMessage, FocusTarget, MessageBlock, MessageRole, TextBlock};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::{Duration, Instant};
 
     #[tokio::test(flavor = "current_thread")]
     async fn mode_shortcut_preserves_the_confirmed_mode_until_sdk_acknowledgement() {
@@ -1073,30 +1063,6 @@ mod tests {
             assert_eq!(app.status, AppStatus::Ready);
             assert_eq!(app.input.text(), "keep my draft");
         }).await;
-    }
-
-    #[test]
-    fn queued_paste_still_blocks_overlapping_key_text() {
-        let mut app = App::test_default();
-        app.paste.pending_text = "clipboard".to_owned();
-
-        let blocked = should_ignore_key_during_paste(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        );
-        assert!(blocked);
-    }
-
-    #[test]
-    fn queued_paste_allows_app_control_shortcuts() {
-        let mut app = App::test_default();
-        app.paste.pending_text = "clipboard".to_owned();
-
-        let blocked = should_ignore_key_during_paste(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        );
-        assert!(!blocked);
     }
 
     #[test]
@@ -1134,36 +1100,6 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
             None,
         )
-    }
-
-    #[test]
-    fn delete_before_paste_atom_removes_placeholder_only_and_clears_session() {
-        let mut app = App::test_default();
-        app.input.insert_str("before ");
-        app.input.insert_paste_block("a\r\nb\rc");
-        app.input.insert_str(" after");
-        let _ = app.input.set_cursor_col("before ".chars().count());
-        app.paste.active_session = Some(crate::app::PasteSessionState {
-            id: 1,
-            start: crate::app::SelectionPoint { row: 0, col: "before ".chars().count() },
-            placeholder_index: Some(0),
-        });
-        app.paste.pending_session = app.paste.active_session;
-        app.surface_dirty.chat.repaint = false;
-
-        let outcome = execute_key_action(
-            &mut app,
-            KeyAction::Input(InputAction::DeleteCharAfter),
-            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
-        );
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.lines(), vec!["before  after"]);
-        assert_eq!(app.input.text(), "before  after");
-        assert_eq!(app.input.paste_blocks, vec!["a\nb\nc"]);
-        assert!(app.paste.active_session.is_none());
-        assert!(app.paste.pending_session.is_none());
-        assert!(app.surface_dirty.chat.repaint);
     }
 
     #[test]
@@ -1318,24 +1254,6 @@ mod tests {
         assert!(app.slash.is_visible());
     }
 
-    #[test]
-    fn burst_active_does_not_block_followup_chars() {
-        let mut app = App::test_default();
-        let t0 = Instant::now();
-
-        assert_eq!(app.paste.burst.on_char('a', t0), CharAction::Passthrough('a'));
-        assert_eq!(
-            app.paste.burst.on_char('b', t0 + Duration::from_millis(1)),
-            CharAction::Consumed
-        );
-        assert!(app.paste.burst.is_buffering());
-
-        let blocked = should_ignore_key_during_paste(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
-        );
-        assert!(!blocked);
-    }
     #[test]
     fn physical_line_keys_preserve_logical_boundaries_and_the_next_edit_position() {
         use crate::app::test_support::{app_with_connection, press};

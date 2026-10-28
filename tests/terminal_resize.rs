@@ -64,6 +64,18 @@ fn capture_parser(rows: u16, cols: u16) -> vt100::Parser {
     vt100::Parser::new(terminal_dimension(rows), terminal_dimension(cols), SCROLLBACK_ROWS)
 }
 
+fn screen_region(screen: &vt100::Screen, top: u16, bottom: u16, left: u16, right: u16) -> String {
+    // Terminal cursor movement can leave blank cells without stored text. The
+    // row reader preserves those spaces and handles wide-character continuations.
+    let (height, width) = screen.size();
+    screen
+        .rows(left, right.min(width.get()).saturating_sub(left))
+        .skip(usize::from(top))
+        .take(usize::from(bottom.min(height.get()).saturating_sub(top)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 struct TestChild {
     process: Box<dyn Child + Send + Sync>,
     writer: PtyWriter,
@@ -2378,6 +2390,20 @@ fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
 }
 
 #[test]
+fn captured_regions_preserve_cursor_skipped_spaces_and_unicode_without_neighboring_rows() {
+    let mut parser = capture_parser(4, 40);
+    parser.process(
+        "outside\r\n\u{2502} NATIVE\x1b[1CFORM\x1b[1C\u{754c} e\u{301} \u{2502}\r\noutside"
+            .as_bytes(),
+    );
+    assert_eq!(
+        screen_region(parser.screen(), 1, 2, 2, 21),
+        "NATIVE FORM \u{754c} e\u{301} \u{2502}"
+    );
+    assert_eq!(screen_region(parser.screen(), 1, 2, 9, 13), "FORM");
+}
+
+#[test]
 fn scrollback_capture_honors_split_saved_lines_erasure_without_changing_visible_rows() {
     let mut parser = capture_parser(4, 20);
     parser.process(b"old row\r\nvisible 1\r\nvisible 2\r\nvisible 3\r\nvisible 4");
@@ -3362,16 +3388,7 @@ impl TerminalTest {
     fn region(&self, top: u16, bottom: u16, left: u16, right: u16) -> String {
         let output = self.output.lock().expect("output lock");
         let screen = output.parser.screen();
-        let (height, width) = screen.size();
-        (top..bottom.min(height.get()))
-            .map(|row| {
-                (left..right.min(width.get()))
-                    .filter_map(|col| screen.cell(row, col))
-                    .map(vt100::Cell::contents)
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        screen_region(screen, top, bottom, left, right)
     }
 
     fn wait_native_composer(&mut self, offset: usize, first: &str, second: &str) {

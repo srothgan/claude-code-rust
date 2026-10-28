@@ -462,7 +462,7 @@ fn prepare_app_shutdown(app: &mut App) {
     }
     app.input.clear();
     app.btw.clear();
-    app.paste.clear_all_sessions();
+    app.paste.discard_input();
     app.pending_submit = None;
     app.mention = None;
     app.slash.clear();
@@ -639,6 +639,16 @@ fn input_event_now() -> Instant {
         return now;
     }
     Instant::now()
+}
+
+/// Finish detector-held source at its original cursor before an action preserves the draft.
+fn flush_held_input(app: &mut App) -> bool {
+    let Some(action) = app.paste.burst.on_non_char_key(input_event_now()) else {
+        return false;
+    };
+    apply_paste_burst_flush(app, action);
+    finalize_pending_paste_event(app);
+    true
 }
 
 /// Apply buffered input through the shared timer and non-character action owner.

@@ -159,7 +159,11 @@ impl EventClock {
     }
 
     pub(crate) fn at(&self, seconds: u64) -> std::time::Instant {
-        let now = self.start + std::time::Duration::from_secs(seconds);
+        self.at_millis(seconds * 1000)
+    }
+
+    pub(crate) fn at_millis(&self, millis: u64) -> std::time::Instant {
+        let now = self.start + std::time::Duration::from_millis(millis);
         EVENT_CLOCK.with(|clock| clock.set(Some(now)));
         now
     }

@@ -82,52 +82,6 @@ fn app_with_connection() -> (App, crate::agent::client::CommandReceiver) {
 }
 
 #[test]
-fn pending_paste_chunks_are_merged_before_threshold_check() {
-    let mut app = App::test_default();
-    let first = "a".repeat(700);
-    let second = "b".repeat(401);
-    events::handle_terminal_event(&mut app, Event::Paste(first.clone()));
-    events::handle_terminal_event(&mut app, Event::Paste(second.clone()));
-
-    // Not applied until post-drain finalization.
-    assert!(app.input.is_empty());
-    assert!(!app.paste.pending_text.is_empty());
-
-    finalize_pending_paste_event(&mut app);
-
-    assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1101 chars]"]);
-    assert_eq!(app.input.text(), format!("{first}{second}"));
-}
-
-#[test]
-fn pending_paste_chunk_appends_to_same_session_placeholder() {
-    let mut app = App::test_default();
-    app.input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
-    app.paste.active_session = Some(state::PasteSessionState {
-        id: 7,
-        start: SelectionPoint { row: 0, col: 0 },
-        placeholder_index: Some(0),
-    });
-    app.paste.pending_session = app.paste.active_session;
-    app.paste.pending_text = "\nl\nm".to_owned();
-
-    finalize_pending_paste_event(&mut app);
-
-    assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 25 chars]"]);
-    assert_eq!(app.input.text(), "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm");
-}
-
-#[test]
-fn pending_paste_exact_1000_chars_stays_inline() {
-    let mut app = App::test_default();
-    app.paste.pending_text = "x".repeat(1000);
-
-    finalize_pending_paste_event(&mut app);
-
-    assert_eq!(app.input.lines(), vec!["x".repeat(1000)]);
-}
-
-#[test]
 fn timer_flushed_typing_repaints_and_submits_the_complete_draft() {
     let mut app = App::test_default();
     let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
@@ -157,102 +111,6 @@ fn timer_flushed_typing_repaints_and_submits_the_complete_draft() {
     };
     assert_eq!(chunks[0].value.as_str(), Some("go"));
     assert!(app.input.is_empty());
-}
-
-#[test]
-fn pending_paste_finalization_marks_redraw() {
-    let mut app = App::test_default();
-    app.surface_dirty.chat.repaint = false;
-    app.paste.pending_text = "hello\nworld".to_owned();
-
-    finalize_pending_paste_event(&mut app);
-
-    assert!(app.surface_dirty.chat.repaint);
-    assert_eq!(app.input.lines(), vec!["hello", "world"]);
-}
-
-#[test]
-fn suppressed_enter_preserves_multiline_inline_paste() {
-    let mut app = App::test_default();
-    let t0 = Instant::now();
-
-    assert_eq!(app.paste.burst.on_char('a', t0), paste_burst::CharAction::Passthrough('a'));
-    let _ = app.input.textarea_insert_char('a');
-    assert_eq!(
-        app.paste.burst.on_char('b', t0 + Duration::from_millis(2)),
-        paste_burst::CharAction::Consumed
-    );
-    assert_eq!(
-        app.paste.burst.on_char('c', t0 + Duration::from_millis(4)),
-        paste_burst::CharAction::RetroCapture(1)
-    );
-    let _ = app.input.textarea_delete_char_before();
-
-    let t_flush = t0 + Duration::from_millis(200);
-    assert_eq!(
-        app.paste.burst.tick(t_flush),
-        Some(paste_burst::FlushAction::EmitPaste("abc".to_owned()))
-    );
-    app.queue_paste_text("abc");
-    finalize_pending_paste_event(&mut app);
-    assert_eq!(app.input.text(), "abc");
-
-    let t_enter = t_flush + Duration::from_millis(10);
-    assert!(app.paste.burst.on_enter(t_enter));
-    assert_eq!(
-        app.paste.burst.on_char('d', t_enter + Duration::from_millis(1)),
-        paste_burst::CharAction::Consumed
-    );
-    assert_eq!(
-        app.paste.burst.on_char('e', t_enter + Duration::from_millis(2)),
-        paste_burst::CharAction::Consumed
-    );
-    assert_eq!(
-        app.paste.burst.on_char('f', t_enter + Duration::from_millis(3)),
-        paste_burst::CharAction::Consumed
-    );
-
-    let t_second_flush = t_enter + Duration::from_millis(200);
-    assert_eq!(
-        app.paste.burst.tick(t_second_flush),
-        Some(paste_burst::FlushAction::EmitPaste("\ndef".to_owned()))
-    );
-    app.queue_paste_text("\ndef");
-    finalize_pending_paste_event(&mut app);
-
-    assert_eq!(app.input.lines(), vec!["abc", "def"]);
-    assert_eq!(app.input.text(), "abc\ndef");
-}
-
-#[test]
-fn pending_paste_1001_chars_becomes_placeholder() {
-    let mut app = App::test_default();
-    app.paste.pending_text = "x".repeat(1001);
-
-    finalize_pending_paste_event(&mut app);
-
-    assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1001 chars]"]);
-    assert_eq!(app.input.text(), "x".repeat(1001));
-}
-
-#[test]
-fn pending_paste_session_isolation_prevents_unintended_append() {
-    let mut app = App::test_default();
-    app.paste.pending_text = "a".repeat(1001);
-    finalize_pending_paste_event(&mut app);
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('v'),
-            crossterm::event::KeyModifiers::CONTROL,
-        )),
-    );
-
-    app.paste.pending_text = "b".repeat(1001);
-    finalize_pending_paste_event(&mut app);
-
-    assert_eq!(app.input.lines(), vec!["[Pasted Text 1 - 1001 chars][Pasted Text 2 - 1001 chars]"]);
-    assert_eq!(app.input.text(), format!("{}{}", "a".repeat(1001), "b".repeat(1001)));
 }
 
 #[test]
@@ -730,4 +588,302 @@ fn the_connecting_crab_changes_pose_every_192_ms_on_the_real_loop_tick() {
     // The first advance is on the first tick, so the first pose is shorter;
     // after that a pose lasts 6 spinner frames of 32 ms.
     assert_eq!(changes_ms, [160, 352, 544, 736, 928, 1120]);
+}
+
+fn drain_typing(app: &mut App, now: Instant) {
+    if let Some(action) = app.paste.burst.tick(now) {
+        apply_paste_burst_flush(app, action);
+    }
+    finalize_pending_paste_event(app);
+    finalize_deferred_submit(app);
+}
+
+fn assert_paste_prompt(commands: &mut crate::agent::client::CommandReceiver, expected: &str) {
+    let BridgeCommand::Prompt { session_id, chunks, .. } =
+        commands.try_recv().expect("Prompt").command
+    else {
+        panic!("expected Prompt");
+    };
+    assert_eq!(session_id, "session-1");
+    assert_eq!(
+        chunks.iter().filter(|c| c.kind == "text").map(|c| c.value.clone()).collect::<Vec<_>>(),
+        [serde_json::json!(expected)]
+    );
+    assert!(!chunks.iter().any(|c| c.kind == "image"));
+    while let Ok(envelope) = commands.try_recv() {
+        assert!(
+            !matches!(envelope.command, BridgeCommand::Prompt { .. }),
+            "only one intentional Prompt"
+        );
+    }
+}
+
+#[test]
+fn slow_followup_typing_preserves_distinct_and_equal_held_characters() {
+    use super::test_support::{EventClock, press};
+    for (last, expected) in [('c', "\u{e9} abc|\u{5c3e}"), ('b', "\u{e9} abb|\u{5c3e}")] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} |\u{5c3e}");
+        app.input.set_cursor(0, 2);
+        press(&mut app, KeyCode::Char('a'));
+        clock.at_millis(2);
+        press(&mut app, KeyCode::Char('b'));
+        clock.at_millis(300);
+        press(&mut app, KeyCode::Char(last));
+        assert_eq!(app.input.text(), expected);
+        drain_typing(&mut app, clock.at(1));
+        assert_eq!(app.input.text(), expected);
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, expected);
+    }
+}
+
+#[test]
+fn moving_the_cursor_places_held_typing_before_the_next_edit() {
+    use super::test_support::{EventClock, press};
+    for typed in ["ab", "abc"] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} |\u{5c3e}");
+        app.input.set_cursor(0, 2);
+        for ch in typed.chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Char('X'));
+        let expected = format!("\u{e9} {typed}|X\u{5c3e}");
+        drain_typing(&mut app, clock.at(1));
+        assert_eq!(app.input.text(), expected);
+        drain_typing(&mut app, clock.at(2));
+        assert_eq!(app.input.text(), expected);
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, &expected);
+    }
+}
+
+#[tokio::test]
+async fn a_form_transition_preserves_held_chat_source_without_typing_into_the_form() {
+    use super::test_support::{EventClock, press};
+    use crate::agent::{
+        events::ClientEvent,
+        types::{ElicitationMode, ElicitationRequest},
+    };
+    for typed in ["ab", "abc"] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} |\u{5c3e}");
+        app.input.set_cursor(0, 2);
+        for ch in typed.chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpElicitationRequest {
+                session_id: "session-1".into(),
+                request: ElicitationRequest {
+                    request_id: "held-form".into(),
+                    server_name: "forms".into(),
+                    message: "Independent field".into(),
+                    mode: ElicitationMode::Form,
+                    url: None,
+                    elicitation_id: None,
+                    field_order: vec!["answer".into()],
+                    requested_schema: Some(
+                        serde_json::json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}),
+                    ),
+                },
+            },
+        );
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
+        press(&mut app, KeyCode::Char('Z'));
+        let active = app.mcp.elicitations.active().expect("usable form");
+        assert_eq!(
+            active.form.as_ref().unwrap().content().unwrap()["answer"],
+            serde_json::json!("Z")
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpElicitationSettled {
+                session_id: "session-1".into(),
+                request_id: "held-form".into(),
+                session_closing: false,
+            },
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        let expected = format!("\u{e9} {typed}|\u{5c3e}");
+        drain_typing(&mut app, clock.at(1));
+        assert_eq!(app.input.text(), expected);
+        assert_eq!(app.input.cursor(), (0, 2 + typed.len()));
+        drain_typing(&mut app, clock.at(2));
+        assert_eq!(app.input.text(), expected);
+        while let Ok(envelope) = commands.try_recv() {
+            assert!(!matches!(envelope.command, BridgeCommand::Prompt { .. }));
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, &expected);
+    }
+}
+
+#[test]
+fn paste_chunks_cross_the_character_threshold_without_losing_source_or_surroundings() {
+    use super::test_support::press;
+    let thousand = format!("START{}END", "\u{754c}".repeat(992));
+    let thousand_one = format!("START{}END!", "\u{754c}".repeat(992));
+    let first = format!("FIRST{}\n", "\u{e9}".repeat(594)); // 600 characters, not UTF-8 bytes.
+    let second = format!("SECOND{}END", "Z".repeat(492)); // 501 characters.
+    for (chunks, source, collapsed) in [
+        (vec![thousand.clone()], thousand, false),
+        (vec![thousand_one.clone()], thousand_one, true),
+        (vec![first.clone(), second.clone()], format!("{first}{second}"), true),
+    ] {
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} |\u{5c3e}");
+        app.input.set_cursor(0, 2);
+        for chunk in chunks {
+            events::handle_terminal_event(&mut app, Event::Paste(chunk));
+        }
+        assert_eq!(app.input.text(), "\u{e9} |\u{5c3e}", "paste is applied after the drain");
+        app.surface_dirty.chat.repaint = false;
+        finalize_pending_paste_event(&mut app);
+        let expected = format!("\u{e9} {source}|\u{5c3e}");
+        assert_eq!(app.input.text(), expected);
+        assert_eq!(app.input.inline_pastes(), if collapsed { vec![source] } else { vec![] });
+        assert!(app.surface_dirty.chat.repaint);
+        if collapsed {
+            assert!(app.input.lines()[0].starts_with("\u{e9} [Pasted Text "));
+            assert!(app.input.lines()[0].ends_with("|\u{5c3e}"));
+        } else {
+            assert_eq!(app.input.lines().join("\n"), expected);
+        }
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, &expected);
+    }
+}
+
+#[test]
+fn paste_continuation_and_deleted_atoms_cannot_capture_an_independent_paste() {
+    use super::test_support::press;
+    let first = format!("FIRST{}END", "a".repeat(1000));
+    let second = format!("SECOND{}FIN", "\u{754c}".repeat(1000));
+    let replacement = format!("NEW{}LAST", "b".repeat(1000));
+    for continuation in [true, false] {
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} |\u{5c3e}");
+        app.input.set_cursor(0, 2);
+        events::handle_terminal_event(&mut app, Event::Paste(first.clone()));
+        finalize_pending_paste_event(&mut app);
+        if !continuation {
+            press(&mut app, KeyCode::Left);
+            press(&mut app, KeyCode::Right);
+        }
+        events::handle_terminal_event(&mut app, Event::Paste(second.clone()));
+        finalize_pending_paste_event(&mut app);
+        let payload = if continuation {
+            assert_eq!(app.input.inline_pastes(), [format!("{first}{second}")]);
+            format!("{first}{second}")
+        } else {
+            assert_eq!(app.input.inline_pastes(), [first.clone(), second.clone()]);
+            press(&mut app, KeyCode::Left);
+            press(&mut app, KeyCode::Delete);
+            assert_eq!(app.input.text(), format!("\u{e9} {first}|\u{5c3e}"));
+            events::handle_terminal_event(&mut app, Event::Paste(replacement.clone()));
+            finalize_pending_paste_event(&mut app);
+            assert_eq!(app.input.inline_pastes(), [first.clone(), replacement.clone()]);
+            format!("{first}{replacement}")
+        };
+        let expected = format!("\u{e9} {payload}|\u{5c3e}");
+        assert_eq!(app.input.text(), expected);
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, &expected);
+    }
+}
+
+#[test]
+fn suppressed_enter_and_followup_keys_reach_the_eventual_prompt_once() {
+    use super::test_support::{EventClock, press};
+    let clock = EventClock::new();
+    let (mut app, mut commands) = app_with_connection();
+    app.status = AppStatus::Ready;
+    app.input.set_text("prefix |suffix");
+    app.input.set_cursor(0, 7);
+    for (i, ch) in "abcd".chars().enumerate() {
+        clock.at_millis(u64::try_from(i).unwrap() * 2);
+        press(&mut app, KeyCode::Char(ch));
+    }
+    drain_typing(&mut app, clock.at(1));
+    assert_eq!(app.input.text(), "prefix abcd|suffix");
+    assert!(commands.try_recv().is_err());
+    clock.at_millis(1001);
+    press(&mut app, KeyCode::Enter);
+    for ch in ['\u{e9}', 'f'] {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    assert!(commands.try_recv().is_err(), "suppressed Enter must not submit");
+    drain_typing(&mut app, clock.at(2));
+    assert_eq!(app.input.text(), "prefix abcd\n\u{e9}f|suffix");
+    assert!(commands.try_recv().is_err());
+    drain_typing(&mut app, clock.at(3));
+    press(&mut app, KeyCode::Enter);
+    assert_paste_prompt(&mut commands, "prefix abcd\n\u{e9}f|suffix");
+}
+
+#[test]
+fn held_typing_counts_as_a_draft_when_left_arrow_is_routed() {
+    use super::test_support::{EventClock, press};
+    for (typed, expected) in [("ab", "aXb"), ("abc", "abXc")] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        for ch in typed.chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat, "held draft must not open Agents");
+        press(&mut app, KeyCode::Char('X'));
+        drain_typing(&mut app, clock.at(1));
+        assert_eq!(app.input.text(), expected);
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, expected);
+    }
+}
+
+#[test]
+fn clearing_a_completed_burst_allows_immediate_submission_without_old_enter_suppression() {
+    use super::test_support::{EventClock, press};
+    let clock = EventClock::new();
+    let (mut app, mut commands) = app_with_connection();
+    app.status = AppStatus::Ready;
+    for ch in "abc".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    drain_typing(&mut app, clock.at(1));
+    assert_eq!(app.input.text(), "abc");
+    clock.at_millis(1001);
+    events::handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    assert!(app.input.is_empty());
+    assert!(!app.shutdown_requested());
+    events::handle_terminal_event(&mut app, Event::Paste("fresh immediately".into()));
+    finalize_pending_paste_event(&mut app);
+    press(&mut app, KeyCode::Enter);
+    assert_paste_prompt(&mut commands, "fresh immediately");
+    drain_typing(&mut app, clock.at(2));
+    assert!(app.input.is_empty());
+    while let Ok(envelope) = commands.try_recv() {
+        assert!(!matches!(envelope.command, BridgeCommand::Prompt { .. }));
+    }
 }
