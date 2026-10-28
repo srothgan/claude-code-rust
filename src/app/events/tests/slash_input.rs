@@ -954,3 +954,39 @@ fn assert_replacement_refreshes(rx: &mut crate::agent::client::CommandReceiver, 
         }
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn dismissed_effort_help_stays_closed_until_explicit_completion_after_model_refresh() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (mut app, mut rx) = app_with_bridge_connection();
+            seed_effort(&mut app);
+            draft(&mut app, "/effort lo");
+            assert!(app.slash.is_visible());
+            key(&mut app, KeyCode::Esc);
+            assert!(hint_rows(&app).is_empty());
+            handle_client_event(
+                &mut app,
+                session_update(model::SessionUpdate::CurrentModelUpdate(
+                    model::CurrentModelUpdate::new(
+                        test_current_model("haiku").supports_effort(true).supported_effort_levels(
+                            vec![model::EffortLevel::Medium, model::EffortLevel::Low],
+                        ),
+                    ),
+                )),
+            );
+            assert_eq!(app.input.text(), "/effort lo");
+            assert_eq!(app.focus_owner(), FocusOwner::Input);
+            assert!(hint_rows(&app).is_empty());
+            assert!(commands(&mut rx).is_empty());
+            key(&mut app, KeyCode::Tab);
+            assert_eq!(app.input.text(), "/effort low ");
+            assert!(commands(&mut rx).is_empty());
+            enter(&mut app);
+            assert!(
+                matches!(received(&mut rx).await, BridgeCommand::SetEffort { session_id, effort }
+                if session_id == "test-session" && effort.as_deref() == Some("low"))
+            );
+        })
+        .await;
+}

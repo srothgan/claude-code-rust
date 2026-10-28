@@ -4081,3 +4081,267 @@ fn clearing_the_composer_discards_held_input_and_allows_a_fresh_prompt() {
         }
     }
 }
+
+fn select_slash_for_render(app: &mut App, target: &str) {
+    let limit = app.slash.visible().expect("slash menu").candidates.len();
+    for _ in 0..limit {
+        let menu = app.slash.visible().expect("slash menu");
+        if menu.candidates[menu.dialog.selected].insert_value == target {
+            return;
+        }
+        completion_key(app, KeyCode::Down);
+    }
+    panic!("missing slash target {target}");
+}
+
+fn assert_selected_slash_row(app: &App, target: &str) {
+    let rows = crate::ui::input_rows::build_composer_hint_rows(app);
+    let selected =
+        rows.iter().filter(|r| r.spans.iter().any(|s| s.content.trim() == ">")).collect::<Vec<_>>();
+    let [row] = selected.as_slice() else { panic!("one visible selected candidate required") };
+    assert!(row.to_string().contains(target), "selection must belong to {target}: {row:?}");
+}
+
+#[test]
+fn slash_completion_rows_follow_scrolling_and_deliberate_selection() {
+    for (source, target, expected) in
+        [("/help", "/a-help", "/a-help "), ("/effort high", "xhigh", "/effort xhigh ")]
+    {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![model::AvailableCommand::new(
+                    "a-help",
+                    "Competing plugin",
+                )]),
+            )),
+        );
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::CurrentModelUpdate(
+                model::CurrentModelUpdate::new(
+                    model::CurrentModel::new("opus", "Opus", "Opus")
+                        .supports_effort(true)
+                        .supported_effort_levels(vec![
+                            model::EffortLevel::High,
+                            model::EffortLevel::XHigh,
+                        ]),
+                ),
+            )),
+        );
+        app.input.set_text(source);
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::End);
+        select_slash_for_render(&mut app, target);
+        assert_selected_slash_row(&app, target);
+        completion_key(&mut app, KeyCode::Enter);
+        assert_eq!(app.pending_submit.as_ref().expect("handoff").lines.join("\n"), expected);
+    }
+    for target in ["/aaa-74", "/new-session", "/docs"] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(
+                    (0..75)
+                        .map(|i| {
+                            model::AvailableCommand::new(format!("aaa-{i:02}"), "Plugin command")
+                        })
+                        .collect(),
+                ),
+            )),
+        );
+        app.input.set_text("/");
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::Right);
+        assert!(
+            !crate::ui::input_rows::build_composer_hint_rows(&app)
+                .iter()
+                .any(|r| r.to_string().contains(target))
+        );
+        select_slash_for_render(&mut app, target);
+        assert_selected_slash_row(&app, target);
+        assert!(
+            !crate::ui::input_rows::build_composer_hint_rows(&app)
+                .iter()
+                .any(|r| r.to_string().contains("/aaa-00"))
+        );
+        completion_key(&mut app, if target == "/docs" { KeyCode::Enter } else { KeyCode::Tab });
+        assert_eq!(app.input.text(), format!("{target} "));
+        assert!(app.pending_submit.is_none());
+        if target == "/docs" {
+            assert!(
+                crate::ui::input_rows::build_composer_hint_rows(&app)
+                    .iter()
+                    .any(|r| r.to_string().contains("commands"))
+            );
+        }
+    }
+}
+
+#[test]
+fn opaque_sdk_argument_help_renders_the_active_commands_hint() {
+    for (input, expected, other) in [
+        ("/clear ", "[conversation label]", "<deployment target>"),
+        ("/reset ", "[conversation label]", "<deployment target>"),
+        ("/ship staging", "<deployment target>", "[conversation label]"),
+    ] {
+        let mut app = make_test_app();
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::AvailableCommandsUpdate(
+                model::AvailableCommandsUpdate::new(vec![
+                    model::AvailableCommand::new("clear", "Clear")
+                        .aliases(vec!["reset".into()])
+                        .input_hint("[conversation label]"),
+                    model::AvailableCommand::new("deploy", "Deploy")
+                        .aliases(vec!["ship".into()])
+                        .input_hint("<deployment target>"),
+                ]),
+            )),
+        );
+        app.input.set_text(input);
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::End);
+        assert!(crate::ui::input_rows::build_composer_hint_rows(&app).is_empty());
+        for _ in 0..2 {
+            completion_key(&mut app, KeyCode::Tab);
+            let rows = crate::ui::input_rows::build_composer_hint_rows(&app);
+            assert!(rows.iter().any(|r| r.to_string().contains(expected)));
+            assert!(rows.iter().all(|r| !r.to_string().contains(other)));
+            assert!(
+                rows.iter().all(|r| r.spans.iter().all(|s| s.content.trim() != ">")),
+                "opaque hint is not a selectable value"
+            );
+            assert_eq!(app.input.text(), input);
+            assert!(app.pending_submit.is_none());
+        }
+        completion_key(&mut app, KeyCode::Enter);
+        assert_eq!(app.pending_submit.as_ref().expect("handoff").lines.join("\n"), input);
+    }
+}
+
+fn await_correlated_file_search(app: &mut App, query: &str, expected: &[&str]) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = app
+            .file_index_event_rx
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("correlated matcher result");
+        let crate::app::file_index::FileIndexEvent::MatchResult(result) = event else {
+            panic!("the completed fixture index only emits matcher results");
+        };
+        // A matcher can answer before loading its initial index. The normal
+        // result consumer schedules a follow-up for that incomplete answer.
+        let settled = result.query == query
+            && result.generation == app.file_index.generation
+            && result.index_version == app.file_index.index_version
+            && result.status == crate::app::file_index::FileIndexStatus::Complete;
+        // Use the same consumer as file_index::drain_events, including its
+        // sequence check. Requeueing could drain a newer result unseen here.
+        if mention::apply_match_result(app, result) && settled {
+            break;
+        }
+    }
+    let menu = app.mention.as_ref().expect("active mention");
+    assert_eq!(menu.query, query);
+    let actual = menu
+        .candidates
+        .iter()
+        .map(|c| c.rel_path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual, expected.iter().copied().collect());
+}
+
+#[test]
+fn spaced_file_completion_distinguishes_literal_paths_from_selected_matches() {
+    for matching in [false, true] {
+        let clock = crate::app::test_support::EventClock::new();
+        let (mut app, mut commands) = app_with_bridge_connection();
+        let fixture = tempfile::tempdir().expect("fixture root");
+        app.cwd_raw = fixture.path().to_string_lossy().into_owned();
+        app.file_index.root = Some(fixture.path().to_path_buf());
+        app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
+        app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
+        for path in ["docs/manual path.md", "docs/manual peer.md", "other.txt"] {
+            app.file_index.entries.insert(
+                path.into(),
+                crate::app::file_index::FileCandidate {
+                    rel_path: path.into(),
+                    rel_path_lower: path.into(),
+                    basename_lower: path.rsplit('/').next().unwrap().into(),
+                    depth: usize::from(path.contains('/')),
+                },
+            );
+        }
+        app.input.set_text("@");
+        app.input.set_cursor(0, 0);
+        completion_key(&mut app, KeyCode::Right);
+        completion_key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.input.text(), "@ ");
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        app.input.set_text("open @docs/manual keep suffix");
+        app.input.set_cursor(0, 16);
+        completion_key(&mut app, KeyCode::Right);
+        await_correlated_file_search(
+            &mut app,
+            "docs/manual",
+            &["docs/manual path.md", "docs/manual peer.md"],
+        );
+        clock.at(1);
+        completion_key(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.input.text(), "open @docs/manual  keep suffix");
+        assert!(app.pending_submit.is_none());
+        for (i, ch) in (if matching { "p" } else { "missing" }).chars().enumerate() {
+            clock.at_millis(1500 + u64::try_from(i).unwrap() * 300);
+            completion_key(&mut app, KeyCode::Char(ch));
+        }
+        let (query, expected) = if matching {
+            ("docs/manual p", &["docs/manual path.md", "docs/manual peer.md"][..])
+        } else {
+            ("docs/manual missing", &[][..])
+        };
+        await_correlated_file_search(&mut app, query, expected);
+        if matching {
+            for _ in 0..2 {
+                let menu = app.mention.as_ref().unwrap();
+                if menu.candidates[menu.dialog.selected].rel_path == "docs/manual peer.md" {
+                    break;
+                }
+                completion_key(&mut app, KeyCode::Down);
+            }
+            assert_completion_menu(&app, expected, Some("docs/manual peer.md"));
+        }
+        completion_key(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.input.text(),
+            if matching {
+                "open @'docs/manual peer.md' keep suffix"
+            } else {
+                "open @'docs/manual missing' keep suffix"
+            }
+        );
+        assert_eq!(app.input.cursor(), (0, 27));
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
+        clock.at(5);
+        completion_key(&mut app, KeyCode::Right);
+        completion_key(&mut app, KeyCode::Char('!'));
+        assert_eq!(
+            app.input.text(),
+            if matching {
+                "open @'docs/manual peer.md' !keep suffix"
+            } else {
+                "open @'docs/manual missing' !keep suffix"
+            }
+        );
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
+    }
+}

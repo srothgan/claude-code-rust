@@ -1033,66 +1033,8 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 mod tests {
     use super::*;
     use crate::app::keymap::{KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap};
-    use crate::app::{ChatMessage, FocusTarget, MessageBlock, MessageRole, TextBlock};
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
     use crossterm::event::{KeyCode, KeyModifiers};
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn mode_shortcut_preserves_the_confirmed_mode_until_sdk_acknowledgement() {
-        tokio::task::LocalSet::new().run_until(async {
-            let mut app = App::test_default();
-            let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
-            app.session_runtime.conn = Some(std::rc::Rc::new(connection));
-            app.session_runtime.session_id = Some("session-1".into());
-            let available_modes = vec![crate::app::ModeInfo { id: "default".into(), name: "Default".into() }, crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }];
-            app.session_runtime.mode = Some(crate::app::ModeState { current_mode_id: "default".into(), current_mode_name: "Default".into(), available_modes: available_modes.clone() });
-            app.input.set_text("keep my draft");
-            let cycle = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-            handle_normal_key(&mut app, cycle);
-            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "default");
-            assert_eq!(app.status, AppStatus::CommandPending);
-            tokio::task::yield_now().await;
-            assert!(matches!(commands.try_recv().expect("mode change").command, crate::agent::wire::BridgeCommand::SetMode { mode, .. } if mode == "plan"));
-            crate::app::handle_client_event(&mut app, crate::agent::events::ClientEvent::SessionUpdate { session_id: "session-1".into(), update: crate::agent::model::SessionUpdate::ModeStateUpdate(crate::app::ModeState { current_mode_id: "plan".into(), current_mode_name: "Plan".into(), available_modes }) });
-            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "plan");
-            assert_eq!(app.status, AppStatus::Ready);
-            handle_normal_key(&mut app, cycle);
-            tokio::task::yield_now().await;
-            assert!(matches!(commands.try_recv().expect("second change").command, crate::agent::wire::BridgeCommand::SetMode { mode, .. } if mode == "default"));
-            crate::app::handle_client_event(&mut app, crate::agent::events::ClientEvent::SlashCommandError { session_id: Some("session-1".into()), message: "SDK rejected mode".into() });
-            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "plan");
-            assert_eq!(app.status, AppStatus::Ready);
-            assert_eq!(app.input.text(), "keep my draft");
-        }).await;
-    }
-
-    #[test]
-    fn terminal_suspend_action_returns_runtime_command() {
-        let mut app = App::test_default();
-
-        let outcome = execute_key_action(
-            &mut app,
-            KeyAction::Terminal(TerminalAction::Suspend),
-            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
-        );
-
-        assert_eq!(outcome, KeyOutcome::Runtime(RuntimeCommand::SuspendProcess));
-    }
-
-    #[test]
-    fn input_action_returns_handled_outcome() {
-        let mut app = App::test_default();
-        app.input.set_text("ab");
-        let _ = app.input.set_cursor(0, 2);
-
-        let outcome = execute_key_action(
-            &mut app,
-            KeyAction::Input(InputAction::MoveCharLeft),
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-        );
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor_col(), 1);
-    }
 
     fn user_message(text: &str) -> ChatMessage {
         ChatMessage::new(
@@ -1100,28 +1042,6 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
             None,
         )
-    }
-
-    #[test]
-    fn autocomplete_backspace_uses_atom_side_effects() {
-        let mut app = App::test_default();
-        app.input.set_text("[Image #1]");
-        let _ = app.input.set_cursor_col("[Image #1]".chars().count());
-        app.input.image_payloads = vec![crate::app::clipboard_image::ImageAttachment {
-            data: "image".to_owned(),
-            mime_type: "image/png".to_owned(),
-        }];
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.claim_focus_target(FocusTarget::Mention);
-        app.surface_dirty.chat.repaint = false;
-
-        let outcome =
-            handle_mention_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert!(app.input.is_empty());
-        assert!(app.input.image_payloads.is_empty());
-        assert!(app.surface_dirty.chat.repaint);
     }
 
     #[test]
@@ -1140,118 +1060,6 @@ mod tests {
 
         assert_eq!(outcome, KeyOutcome::Handled(true));
         assert_eq!(app.input.text(), "x");
-    }
-
-    #[test]
-    fn autocomplete_focus_routes_keys_to_active_slash_state() {
-        let mut app = App::test_default();
-        app.slash.show(slash::SlashState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: "d".to_owned(),
-            context: slash::SlashContext::CommandName,
-            candidates: vec![
-                slash::SlashCandidate {
-                    insert_value: "/config".to_owned(),
-                    primary: "/config".to_owned(),
-                    secondary: None,
-                },
-                slash::SlashCandidate {
-                    insert_value: "/docs".to_owned(),
-                    primary: "/docs".to_owned(),
-                    secondary: None,
-                },
-            ],
-            placeholder: None,
-            dialog: crate::app::dialog::DialogState::default(),
-        });
-        app.claim_focus_target(FocusTarget::Mention);
-
-        let handled =
-            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-
-        assert!(handled.changed());
-        let slash = app.slash.visible().expect("slash autocomplete should stay active");
-        assert_eq!(slash.dialog.selected, 1);
-    }
-
-    #[test]
-    fn mention_space_key_remains_part_of_active_query() {
-        let mut app = App::test_default();
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-        mention::activate(&mut app);
-
-        let outcome =
-            handle_mention_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-
-        assert!(outcome.changed());
-        let mention = app.mention.as_ref().expect("mention should stay active");
-        assert_eq!(mention.query, " ");
-    }
-
-    #[test]
-    fn chat_input_tab_commits_literal_mention_without_candidates() {
-        let mut app = App::test_default();
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-        mention::activate(&mut app);
-        app.input.set_text("@docs/manual path");
-        let _ = app.input.set_cursor(0, "@docs/manual path".chars().count());
-        mention::update_query(&mut app);
-
-        let outcome =
-            handle_chat_input_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert!(app.mention.is_none());
-        assert_eq!(app.input.text(), "@'docs/manual path' ");
-        assert_eq!(app.committed_mentions.len(), 1);
-        assert_eq!(app.committed_mentions[0].text, "@'docs/manual path'");
-    }
-
-    #[test]
-    fn autocomplete_tab_still_confirms_mention_candidate() {
-        let mut app = App::test_default();
-        app.input.set_text("@src");
-        let mut mention = mention::MentionState::new(
-            0,
-            0,
-            "src".to_owned(),
-            vec![crate::app::file_index::FileCandidate {
-                rel_path: "src/lib.rs".to_owned(),
-                rel_path_lower: "src/lib.rs".to_owned(),
-                basename_lower: "lib.rs".to_owned(),
-                depth: 1,
-            }],
-        );
-        mention.replace_end_col = "@src".chars().count();
-        app.mention = Some(mention);
-        app.claim_focus_target(FocusTarget::Mention);
-
-        let outcome =
-            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert!(app.mention.is_none());
-        assert_eq!(app.input.text(), "@'src/lib.rs' ");
-        assert!(app.committed_mentions.is_empty());
-    }
-
-    #[test]
-    fn bare_slash_enter_confirms_visible_candidate() {
-        let mut app = App::test_default();
-        app.input.set_text("/");
-        let _ = app.input.set_cursor(0, 1);
-        slash::sync_with_cursor(&mut app);
-        app.claim_focus_target(FocusTarget::Mention);
-
-        let handled =
-            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        assert!(handled.changed());
-        assert_eq!(app.input.text(), "/agent ");
-        assert!(app.slash.is_visible());
     }
 
     #[test]

@@ -124,28 +124,47 @@ async fn shift_arrows_and_shift_tab_cycle_modes_in_both_directions() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let (mut app, mut commands) = session_app();
-
-            shift(&mut app, KeyCode::Left);
-            assert_eq!(app.status, AppStatus::CommandPending);
-            assert_eq!(current_mode(&app), "default");
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("plan")));
-            ack_mode(&mut app, "plan");
-            assert_eq!(app.status, AppStatus::Ready);
-
-            shift(&mut app, KeyCode::Right);
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("default")));
-            ack_mode(&mut app, "default");
-
-            shift(&mut app, KeyCode::BackTab);
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("acceptEdits")));
-            ack_mode(&mut app, "acceptEdits");
-
-            shift(&mut app, KeyCode::Left);
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("default")));
-            ack_mode(&mut app, "default");
-
-            assert_eq!(current_mode(&app), "default");
-            assert_composer_intact(&app);
+            for (code, old, target, accepted) in [
+                (KeyCode::Left, "default", "plan", true),
+                (KeyCode::Right, "plan", "default", false),
+                (KeyCode::Right, "plan", "default", true),
+                (KeyCode::BackTab, "default", "acceptEdits", true),
+                (KeyCode::Left, "acceptEdits", "default", true),
+            ] {
+                shift(&mut app, code);
+                let request =
+                    tokio::time::timeout(Duration::from_secs(2), commands.recv_envelope())
+                        .await
+                        .expect("bounded mode request")
+                        .expect("mode request")
+                        .command;
+                assert_eq!(
+                    request,
+                    BridgeCommand::SetMode {
+                        session_id: "test-session".into(),
+                        mode: target.into()
+                    }
+                );
+                assert_eq!(current_mode(&app), old);
+                assert_eq!(app.status, AppStatus::CommandPending);
+                if accepted {
+                    ack_mode(&mut app, target);
+                } else {
+                    reject_pending_change(&mut app, "SDK rejected mode");
+                }
+                assert_eq!(current_mode(&app), if accepted { target } else { old });
+                assert_eq!(app.status, AppStatus::Ready);
+                assert_composer_intact(&app);
+                assert_eq!(app.input.cursor(), (0, 4));
+                assert_eq!(
+                    app.input.image_payloads,
+                    [crate::app::clipboard_image::ImageAttachment {
+                        data: "image".into(),
+                        mime_type: "image/png".into()
+                    }]
+                );
+                assert!(commands.try_recv().is_err());
+            }
         })
         .await;
 }
