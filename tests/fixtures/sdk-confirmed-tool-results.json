@@ -1,0 +1,58 @@
+[
+  {
+    "id": "wakeup-stop-empty",
+    "tool": "ScheduleWakeup",
+    "input": { "delaySeconds": 300, "prompt": "requested future wakeup" },
+    "result": { "stopped": true, "cancelledWakeups": 0, "scheduledFor": 1780662896000, "clampedDelaySeconds": 300, "wasClamped": false },
+    "fields": [ ["Stopped", "yes"], ["Cancelled wakeups", "0"] ],
+    "text": "Stopped: yes\nCancelled wakeups: 0"
+  },
+  {
+    "id": "wakeup-stop-many",
+    "tool": "ScheduleWakeup",
+    "input": { "stop": true },
+    "result": { "stopped": true, "cancelledWakeups": 3, "scheduledFor": 0, "clampedDelaySeconds": 0, "wasClamped": false },
+    "fields": [ ["Stopped", "yes"], ["Cancelled wakeups", "3"] ],
+    "text": "Stopped: yes\nCancelled wakeups: 3"
+  },
+  {
+    "id": "wakeup-stop-unknown-count",
+    "tool": "ScheduleWakeup",
+    "input": { "stop": true },
+    "result": { "stopped": true, "scheduledFor": 0, "clampedDelaySeconds": 0, "wasClamped": false },
+    "fields": [ ["Stopped", "yes"] ],
+    "text": "Stopped: yes"
+  },
+  {
+    "id": "worktree-keep",
+    "tool": "ExitWorktree",
+    "input": { "action": "remove" },
+    "result": { "action": "keep", "worktreePath": "/fixture/worktree/kept", "originalCwd": "/fixture/original/kept", "worktreeBranch": "retained-branch", "message": "Kept actual worktree" },
+    "fields": [ ["Action", "keep"], ["Worktree", "/fixture/worktree/kept"], ["Restored directory", "/fixture/original/kept"], ["Branch", "retained-branch"] ],
+    "text": "Action: keep\nWorktree: /fixture/worktree/kept\nRestored directory: /fixture/original/kept\nBranch: retained-branch"
+  },
+  {
+    "id": "worktree-remove-zero",
+    "tool": "ExitWorktree",
+    "input": { "action": "keep" },
+    "result": { "action": "remove", "worktreePath": "/fixture/worktree/zero", "originalCwd": "/fixture/original/zero", "discardedFiles": 0, "discardedCommits": 7, "message": "Removed actual worktree" },
+    "fields": [ ["Action", "remove"], ["Worktree", "/fixture/worktree/zero"], ["Restored directory", "/fixture/original/zero"], ["Discarded files", "0"], ["Discarded commits", "7"] ],
+    "text": "Action: remove\nWorktree: /fixture/worktree/zero\nRestored directory: /fixture/original/zero\nDiscarded files: 0\nDiscarded commits: 7"
+  },
+  {
+    "id": "worktree-remove-counts",
+    "tool": "ExitWorktree",
+    "input": { "action": "keep" },
+    "result": { "action": "remove", "worktreePath": "/fixture/worktree/many", "originalCwd": "/fixture/original/many", "discardedFiles": 5, "discardedCommits": 2, "message": "Removed actual worktree" },
+    "fields": [ ["Action", "remove"], ["Worktree", "/fixture/worktree/many"], ["Restored directory", "/fixture/original/many"], ["Discarded files", "5"], ["Discarded commits", "2"] ],
+    "text": "Action: remove\nWorktree: /fixture/worktree/many\nRestored directory: /fixture/original/many\nDiscarded files: 5\nDiscarded commits: 2"
+  },
+  {
+    "id": "repl-literal-channels",
+    "tool": "REPL",
+    "input": { "code": "REQUESTED-CODE-MUST-NOT-APPEAR" },
+    "result": { "stdout": "first stdout\nImages: [1,2]\nResult: literal stdout value\n\nlast stdout  ", "stderr": "stderr only\nDocuments: [fake]\n", "result": { "actual": false, "count": 9 }, "images": [{ "base64": "PRIVATE-IMAGE-A" }, { "base64": "PRIVATE-IMAGE-B" }], "documents": [{ "base64": "PRIVATE-DOCUMENT" }] },
+    "fields": [ ["Stdout", "first stdout\nImages: [1,2]\nResult: literal stdout value\n\nlast stdout  "], ["Stderr", "stderr only\nDocuments: [fake]\n"], ["Result", "{\"actual\":false,\"count\":9}"], ["Images", "2"], ["Documents", "1"] ],
+    "text": "Stdout: first stdout\nImages: [1,2]\nResult: literal stdout value\n\nlast stdout  \nStderr: stderr only\nDocuments: [fake]\n\nResult: {\"actual\":false,\"count\":9}\nImages: 2\nDocuments: 1"
+  }
+]

@@ -120,24 +120,11 @@ export function permissionResultFromOutcome(
     }
     if (outcome.option_id === "allow_session") {
       const sessionSuggestions = scopedSuggestions.session;
-      const fallbackSuggestions: PermissionUpdate[] | undefined =
-        sessionSuggestions.length > 0
-          ? sessionSuggestions
-          : toolName
-            ? [
-                {
-                  type: "addRules",
-                  rules: [{ toolName }],
-                  behavior: "allow",
-                  destination: "session",
-                },
-              ]
-            : undefined;
       return {
         behavior: "allow",
         updatedInput: inputData,
-        ...(fallbackSuggestions && fallbackSuggestions.length > 0
-          ? { updatedPermissions: fallbackSuggestions }
+        ...(sessionSuggestions.length > 0
+          ? { updatedPermissions: sessionSuggestions }
           : {}),
         toolUseID: toolCallId,
       };

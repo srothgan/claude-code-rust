@@ -63,10 +63,11 @@ export function classifyTurnErrorKind(
       return "account_access";
     case "model_not_found":
       return "model_unavailable";
+    case "invalid_request":
+      return "other";
     case "overloaded":
     case "server_error":
       return "transient_service";
-    case "invalid_request":
     case "max_output_tokens":
     case "unknown":
     case undefined:
@@ -93,8 +94,10 @@ export function setFastModeSnapshotIfChanged(
   stateValue: unknown,
   disabledReasonValue: unknown,
 ): boolean {
-  if (parseFastModeState(stateValue)) fastModeObservations.begin(session);
-  const nextState = parseFastModeState(stateValue) ?? session.fastModeState;
+  const observedState = parseFastModeState(stateValue);
+  if (!observedState && disabledReasonValue === undefined) return false;
+  if (observedState) fastModeObservations.begin(session);
+  const nextState = observedState ?? session.fastModeState;
   const nextDisabledReason = parseFastModeDisabledReason(disabledReasonValue);
   if (
     nextState === session.fastModeState &&

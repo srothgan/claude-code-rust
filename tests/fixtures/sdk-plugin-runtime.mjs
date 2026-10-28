@@ -295,8 +295,13 @@ import fs from "node:fs";
 import readline from "node:readline";
 const journal = ${JSON.stringify(journal)}, stop = ${JSON.stringify(stop)};
 const record = entry => fs.appendFileSync(journal, JSON.stringify({pid:process.pid,...entry})+"\\n");
-record({kind:"start"});
 process.on("exit", () => record({kind:"exit"}));
+// Native POSIX shutdown signals otherwise bypass Node's exit event.
+for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => {
+  record({kind:"signal",signal});
+  process.exit(0);
+});
+record({kind:"start"});
 const watcher = fs.watch(${JSON.stringify(root)}, () => { if(fs.existsSync(stop)) process.exit(0); });
 if(fs.existsSync(stop)) process.exit(0);
 const input = readline.createInterface({input:process.stdin});
@@ -336,6 +341,8 @@ input.on("line", line => {
       Date.now() < readyDeadline
     );
     results.push({ name: "applied-status", servers });
+    // Await our peer's exit before closing the SDK process that owns its transport.
+    await stopPeers();
     await closeQuery(first.q);
     for (const [name, extra] of [
       ["resume", { resume: sessionId }],
@@ -371,9 +378,12 @@ input.on("line", line => {
   clearTimeout(timer);
   inputs.forEach((input) => input.close());
   try {
-    for (const q of queries) await closeQuery(q);
-    await drainChildren();
-    await stopPeers();
+    try {
+      await stopPeers();
+    } finally {
+      for (const q of queries) await closeQuery(q);
+      await drainChildren();
+    }
   } finally {
     try {
       if (server) {

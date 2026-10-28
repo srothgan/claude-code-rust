@@ -2,7 +2,6 @@ import { inspectSettings, mutateSetting } from "./bridge/settings_service.js";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve as resolvePluginPath } from "node:path";
-import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -76,10 +75,6 @@ import { applySessionEffort, applySessionAgent, applySessionFastMode, emitAgentC
 // Re-exports: all symbols that tests and external consumers import from bridge.js.
 export { AsyncQueue } from "./bridge/shared.js";
 export { asRecordOrNull } from "./bridge/shared.js";
-export {
-  CACHE_SPLIT_POLICY,
-  previewKilobyteLabel,
-} from "./bridge/cache_policy.js";
 export {
   buildToolResultFields,
   createToolCall,
@@ -344,8 +339,10 @@ export async function handleReloadPluginsCommand(
       "reload_plugins",
       requestId,
     );
+    if (session.closing) return;
     emitRuntimeReloadCompleted(session.sessionId, requestId, errorCount);
   } catch (error) {
+    if (session.closing) return;
     const message = error instanceof Error ? error.message : String(error);
     bridgeLogger.warn({
       target: LOG_TARGETS.APP_SESSION,
@@ -1126,13 +1123,9 @@ function main(): void {
     fields: { pid: process.pid },
   });
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    crlfDelay: Number.POSITIVE_INFINITY,
-  });
   const commandScheduler = new BridgeCommandScheduler();
 
-  rl.on("line", (line) => {
+  const dispatchLine = (line: string): void => {
     if (line.trim().length === 0) {
       return;
     }
@@ -1170,9 +1163,26 @@ function main(): void {
     }
 
     scheduleBridgeCommand(commandScheduler, parsed);
+  };
+  // Node readline also recognizes Unicode LS/PS. Those are valid JSON string data,
+  // so only LF (with an optional preceding CR) may delimit an NDJSON record.
+  const fragments: string[] = [];
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk: string) => {
+    let start = 0;
+    for (let end = chunk.indexOf("\n"); end >= 0; end = chunk.indexOf("\n", start)) {
+      fragments.push(chunk.slice(start, end));
+      const line = fragments.join("");
+      fragments.length = 0;
+      dispatchLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+      start = end + 1;
+    }
+    if (start < chunk.length) fragments.push(chunk.slice(start));
   });
 
-  rl.on("close", () => {
+  process.stdin.on("end", () => {
+    if (fragments.length > 0) dispatchLine(fragments.join(""));
+
     commandScheduler.stopAccepting();
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_LIFECYCLE,

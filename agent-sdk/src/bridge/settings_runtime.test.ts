@@ -49,7 +49,7 @@ async function probe(
     assert.ok(line, "native probe response");
     return { ...JSON.parse(line), cwd };
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

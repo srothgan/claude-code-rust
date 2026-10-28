@@ -426,6 +426,7 @@ function handleInformationalSystemMessage(
   }
   const level = typeof msg.level === "string" ? msg.level : "info";
   const toolUseId = typeof msg.tool_use_id === "string" ? msg.tool_use_id : "";
+  if (level === "info" && msg.prevent_continuation !== true) return;
   if (!shouldEmitInformationalMessage(session, level, content, toolUseId)) {
     return;
   }
@@ -441,9 +442,7 @@ function handleInformationalSystemMessage(
       emitSystemNoticeUpdate(session, "warning", content);
       return;
     case "info":
-      if (msg.prevent_continuation === true) {
-        emitSystemNoticeUpdate(session, "warning", content);
-      }
+      emitSystemNoticeUpdate(session, "warning", content);
       return;
     default:
       bridgeLogger.debug({
@@ -946,7 +945,7 @@ export function taskSystemToolFields(
   const finalStatus =
     status === "completed"
       ? "completed"
-      : status === "stopped"
+      : status === "stopped" || status === "killed"
         ? "killed"
         : "failed";
   const deferCompletion =
@@ -1836,9 +1835,10 @@ export function handleResultMessage(
     return;
   }
   const assistantError = session.lastAssistantError;
-  const authHint = assistantError === "invalid_request"
-    ? undefined
-    : errors.find((entry) => looksLikeAuthRequired(entry));
+  const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
+  const authHint = errorKind === "auth_required"
+    ? errors.find((entry) => looksLikeAuthRequired(entry))
+    : undefined;
   if (authHint) {
     emitAuthRequired(session, authHint);
   }
@@ -1846,7 +1846,6 @@ export function handleResultMessage(
     emitAuthRequired(session);
   }
   finalizeOpenToolCalls(session, "failed");
-  const errorKind = classifyTurnErrorKind(subtype, errors, assistantError);
   const fallback = subtype === "success"
     ? "turn failed: API error"
     : subtype ? `turn failed: ${subtype}` : "turn failed";

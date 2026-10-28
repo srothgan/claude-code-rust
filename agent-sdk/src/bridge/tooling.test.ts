@@ -1,13 +1,63 @@
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import {
-  CACHE_SPLIT_POLICY,
   buildToolResultFields,
   createToolCall,
-  normalizeToolResultText,
-  previewKilobyteLabel,
-  unwrapToolUseResult,
 } from "../bridge.js";
+
+function assertTextProjection(
+  fields: ReturnType<typeof buildToolResultFields>,
+  expected?: string,
+  status = "completed",
+): string {
+  assert.equal(fields.status, status);
+  const text = String(fields.raw_output ?? "");
+  assert.ok(text.length > 0);
+  if (expected !== undefined) assert.equal(text, expected);
+  assert.deepEqual(fields.content, [{ type: "content", content: { type: "text", text } }]);
+  return text;
+}
+
+function projectInUtc(
+  name: string,
+  input: Record<string, unknown>,
+  result: unknown,
+): ReturnType<typeof buildToolResultFields> {
+  const child = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import {readFileSync} from "node:fs";import {buildToolResultFields,createToolCall} from ${JSON.stringify(new URL("../bridge.js", import.meta.url).href)};const [name,input,result]=JSON.parse(readFileSync(0,"utf8"));process.stdout.write(JSON.stringify(buildToolResultFields(false,result,createToolCall("utc",name,input))));`,
+    ],
+    {
+      input: JSON.stringify([name, input, result]),
+      encoding: "utf8",
+      env: { ...process.env, TZ: "UTC" },
+      timeout: 10_000,
+      windowsHide: true,
+    },
+  );
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+  return JSON.parse(child.stdout);
+}
+
+function sectionValues(
+  fields: ReturnType<typeof buildToolResultFields>,
+  id: string,
+): Record<string, string> {
+  const sections = fields.output_metadata?.presentation?.sections ?? [];
+  const found = sections.filter((section) =>
+    section.fields.some((field) => field.label === "Schedule ID" && field.value.value === id),
+  );
+  assert.equal(found.length, 1, `one section for ${id}`);
+  return Object.fromEntries(
+    (found[0]?.fields ?? []).map((field) => [field.label, field.value.value]),
+  );
+}
 
 test("createToolCall builds edit diff content", () => {
   const toolCall = createToolCall("tc-1", "Edit", {
@@ -29,19 +79,6 @@ test("createToolCall builds edit diff content", () => {
   });
 });
 
-test("createToolCall preserves parent tool linkage metadata", () => {
-  const toolCall = createToolCall(
-    "tc-child",
-    "Bash",
-    { command: "echo hi" },
-    "tc-parent",
-  );
-
-  assert.deepEqual(toolCall.meta, {
-    claudeCode: { toolName: "Bash", parentToolUseId: "tc-parent" },
-  });
-});
-
 test("createToolCall builds write preview diff content", () => {
   const toolCall = createToolCall("tc-w", "Write", {
     file_path: "src/new-file.ts",
@@ -59,257 +96,169 @@ test("createToolCall builds write preview diff content", () => {
   ]);
 });
 
-test("createToolCall includes search and webfetch context in title", () => {
-  const glob = createToolCall("tc-g", "Glob", {
-    pattern: "**/*.md",
-    path: "notes",
-  });
-  assert.equal(glob.title, "Glob **/*.md in notes");
-
-  const grep = createToolCall("tc-grep", "Grep", {
-    pattern: "TODO",
-    path: "src",
-    glob: "**/*.rs",
-    output_mode: "content",
-    "-i": true,
-    "-C": 2,
-    type: "rust",
-    head_limit: 10,
-    offset: 5,
-    multiline: true,
-  });
-  assert.equal(
-    grep.title,
-    "Grep TODO in src (glob **/*.rs, type rust, content, case-insensitive, context 2, limit 10, offset 5, multiline)",
-  );
-
-  const fetch = createToolCall("tc-f", "WebFetch", {
-    url: "https://example.com",
-  });
-  assert.equal(fetch.title, "WebFetch https://example.com");
-});
-
-test("createToolCall builds Agent title from name and type without description fallback", () => {
-  const named = createToolCall("tc-agent-name", "Agent", {
-    description: "review changes",
-    prompt: "Review the branch",
-    name: " review-worker ",
-    subagent_type: " general-purpose ",
-    model: " opus ",
-  });
-  const typed = createToolCall("tc-agent-type", "Agent", {
-    description: "inspect state",
-    prompt: "Inspect the runtime",
-    subagent_type: " general-purpose ",
-    model: " sonnet ",
-  });
-  const describedOnly = createToolCall("tc-agent-description", "Agent", {
-    description: "should not become title",
-    prompt: "Review",
-  });
-
-  assert.equal(named.title, "Agent: review-worker");
-  assert.equal(typed.title, "Agent: general-purpose");
-  assert.equal(describedOnly.title, "Agent");
-});
-
-test("createToolCall builds worktree titles from input rules", () => {
-  const namedEnter = createToolCall("tc-enter-name", "EnterWorktree", {
-    name: "feature-auth",
-  });
-  assert.equal(namedEnter.kind, "other");
-  assert.equal(namedEnter.title, "feature-auth");
-
-  const pathEnter = createToolCall("tc-enter-path", "EnterWorktree", {
-    path: "C:\\repo\\.worktrees\\feature-auth",
-  });
-  assert.equal(pathEnter.kind, "other");
-  assert.equal(pathEnter.title, "EnterWorktree");
-
-  const exit = createToolCall("tc-exit", "ExitWorktree", {
-    action: "remove",
-    discard_changes: true,
-  });
-  assert.equal(exit.kind, "other");
-  assert.equal(exit.title, "ExitWorktree");
-});
-
-test("createToolCall maps cron tools to other kind with stable titles", () => {
-  for (const toolName of ["CronCreate", "CronDelete", "CronList"]) {
-    const toolCall = createToolCall(`tc-${toolName}`, toolName, {
-      cron: "30 9 * * 1",
-      prompt: "Send weekly status",
-      id: "schedule-1",
-    });
-    assert.equal(toolCall.kind, "other");
-    assert.equal(toolCall.title, toolName);
-  }
-});
-
-test("createToolCall maps ScheduleWakeup to other kind with stable title", () => {
-  const toolCall = createToolCall("tc-wakeup", "ScheduleWakeup", {
-    delaySeconds: 90,
-    reason: "Poll again after warmup",
-    prompt: "/loop check status",
-  });
-
-  assert.equal(toolCall.kind, "other");
-  assert.equal(toolCall.title, "ScheduleWakeup");
-});
-
-test("createToolCall maps PushNotification to other kind with stable title", () => {
-  const toolCall = createToolCall("tc-push-notification", "PushNotification", {
-    message: "Build finished",
-    status: "proactive",
-  });
-
-  assert.equal(toolCall.kind, "other");
-  assert.equal(toolCall.title, "PushNotification");
-});
-
-test("createToolCall maps RemoteTrigger to other kind and action title", () => {
-  const toolCall = createToolCall("tc-remote-trigger", "RemoteTrigger", {
-    action: " run ",
-    trigger_id: "deploy-prod",
-  });
-
-  assert.equal(toolCall.kind, "other");
-  assert.equal(toolCall.title, "RemoteTrigger: run");
-});
-
-test("createToolCall uses RemoteTrigger fallback title without action", () => {
-  const toolCall = createToolCall(
-    "tc-remote-trigger-fallback",
-    "RemoteTrigger",
-    {
-      trigger_id: "deploy-prod",
+test("search and fetch titles associate each supplied context value with its own operation", () => {
+  const input = {
+      pattern: "UNIQUE_PATTERN",
+      path: "source-target",
+      glob: "**/*.rs",
+      type: "rust",
+      output_mode: "content",
+      "-i": true,
+      "-C": 3,
+      head_limit: 17,
+      offset: 9,
+      multiline: true,
     },
-  );
-
-  assert.equal(toolCall.kind, "other");
-  assert.equal(toolCall.title, "RemoteTrigger");
+    before = structuredClone(input),
+    grep = createToolCall("grep", "Grep", input);
+  for (const value of [
+    "UNIQUE_PATTERN",
+    "source-target",
+    "**/*.rs",
+    "type rust",
+    "mode content",
+    "case-insensitive",
+    "context 3",
+    "limit 17",
+    "offset 9",
+    "multiline",
+  ])
+    assert.ok(grep.title.includes(value === "mode content" ? "content" : value), value);
+  assert.deepEqual(grep.raw_input, before);
+  assert.deepEqual(input, before);
+  const glob = createToolCall("glob", "Glob", { pattern: "**/*.md", path: "notes-target" });
+  assert.ok(glob.title.includes("**/*.md"));
+  assert.ok(glob.title.includes("notes-target"));
+  const bare = createToolCall("bare", "Grep", { pattern: "bare-pattern" });
+  assert.ok(bare.title.includes("bare-pattern"));
+  for (const invented of ["glob ", "type ", "limit ", "offset ", "context "])
+    assert.ok(!bare.title.includes(invented));
+  const scoped = createToolCall("scoped", "Glob", { path: "scope-only" });
+  assert.ok(scoped.title.includes("scope-only"));
+  const url = "https://example.test/exact/path?q=one%20two#fragment",
+    fetch = createToolCall("fetch", "WebFetch", { url, prompt: "not-the-url" });
+  assert.ok(fetch.title.includes(url));
+  assert.ok(!fetch.title.includes("not-the-url"));
+  assert.deepEqual(fetch.raw_input, { url, prompt: "not-the-url" });
 });
 
-test("createToolCall maps REPL to other kind and code title", () => {
-  const toolCall = createToolCall("tc-repl", "REPL", {
-    code: "  await inspectState()  ",
-    description: "Inspect runtime state",
-    timeout: 45_000,
-  });
-
-  assert.equal(toolCall.kind, "other");
-  assert.equal(toolCall.title, "REPL: await inspectState()");
-});
-
-test("createToolCall uses REPL fallback title instead of description", () => {
-  const toolCall = createToolCall("tc-repl-fallback", "REPL", {
-    description: "Inspect runtime state",
-  });
-
-  assert.equal(toolCall.kind, "other");
-  assert.equal(toolCall.title, "REPL");
-});
-
-test("createToolCall maps Monitor to other kind and description title", () => {
-  const toolCall = createToolCall("tc-monitor", "Monitor", {
-    description: "watch deploy logs",
-    timeout_ms: 30000,
-    persistent: false,
-    command: "tail -f deploy.log",
-  });
-
-  assert.equal(toolCall.kind, "other");
-  assert.equal(toolCall.title, "Monitor: watch deploy logs");
-});
-
-test("createToolCall maps Workflow to other kind and name title", () => {
-  const namedWorkflow = createToolCall("tc-workflow", "Workflow", {
-    name: "spec",
-    args: { topic: "rendering" },
-  });
-  const fallbackWorkflow = createToolCall("tc-workflow-fallback", "Workflow", {
-    script:
-      "export const meta = { name: 'inline', description: 'Run', phases: [] };",
-  });
-
-  assert.equal(namedWorkflow.kind, "other");
-  assert.equal(namedWorkflow.title, "Workflow: spec");
-  assert.equal(fallbackWorkflow.kind, "other");
-  assert.equal(fallbackWorkflow.title, "Workflow");
-});
-
-test("createToolCall maps Skill to other kind and formats its name for display", () => {
-  const cases = [
-    ["claude-api", "Skill: Claude API"],
-    ["dataviz", "Skill: Dataviz"],
-    [" frontend-design:frontend-design ", "Skill: Frontend Design"],
-    ["keybindings_help", "Skill: Keybindings Help"],
-    ["strava-coach", "Skill: Strava Coach"],
-    ["github:gh-fix-ci", "Skill: GitHub / GH Fix CI"],
-    ["mobile:iOS-debug", "Skill: Mobile / iOS Debug"],
-    ["future-widget", "Skill: Future Widget"],
-    ["future::widget", "Skill: future::widget"],
-    ["future.widget", "Skill: future.widget"],
+test("compact tool titles choose named inputs without promoting distractor fields to identity", () => {
+  const rows: Array<{
+    tool: string;
+    input: Record<string, unknown>;
+    expected?: string;
+    absent: string[];
+  }> = [
+    {
+      tool: "EnterWorktree",
+      input: { name: "chosen-tree", path: "wrong-path" },
+      expected: "chosen-tree",
+      absent: ["wrong-path"],
+    },
+    { tool: "EnterWorktree", input: { path: "not-a-tree-name" }, absent: ["not-a-tree-name"] },
+    {
+      tool: "RemoteTrigger",
+      input: { action: " run ", trigger_id: "wrong-trigger" },
+      expected: "run",
+      absent: ["wrong-trigger"],
+    },
+    { tool: "RemoteTrigger", input: { trigger_id: "not-an-action" }, absent: ["not-an-action"] },
+    {
+      tool: "REPL",
+      input: { code: "  await selectedCode()  ", description: "wrong-description" },
+      expected: "await selectedCode()",
+      absent: ["wrong-description"],
+    },
+    {
+      tool: "REPL",
+      input: { description: "not-executable-code" },
+      absent: ["not-executable-code"],
+    },
+    {
+      tool: "Monitor",
+      input: { description: "watch selected logs", command: "wrong-command", timeout_ms: 30000 },
+      expected: "watch selected logs",
+      absent: ["wrong-command"],
+    },
+    {
+      tool: "Workflow",
+      input: { name: "chosen-workflow", script: "wrong-script-name" },
+      expected: "chosen-workflow",
+      absent: ["wrong-script-name"],
+    },
+    { tool: "Workflow", input: { script: "not-a-declared-name" }, absent: ["not-a-declared-name"] },
   ];
-
-  for (const [skill, expectedTitle] of cases) {
-    const toolCall = createToolCall(`tc-skill-${skill}`, "Skill", { skill });
-    assert.equal(toolCall.kind, "other");
-    assert.equal(toolCall.title, expectedTitle);
+  for (const [index, row] of rows.entries()) {
+    const before = structuredClone(row.input),
+      tool = createToolCall(`title-${index}`, row.tool, row.input);
+    if (row.expected) assert.ok(tool.title.includes(row.expected), row.tool);
+    else assert.ok(tool.title.includes(row.tool));
+    for (const value of row.absent) assert.ok(!tool.title.includes(value), row.tool);
+    assert.deepEqual(tool.raw_input, before);
+    assert.deepEqual(row.input, before);
   }
-  const incompleteSkill = createToolCall("tc-skill-incomplete", "Skill", {});
-
-  assert.equal(incompleteSkill.title, "Skill");
 });
 
-test("createToolCall maps project and artifact tools to compact titles", () => {
-  const projectInfo = createToolCall("tc-project-info", "Projects", {
-    method: "project_info",
-  });
-  const projectRead = createToolCall("tc-project-read", "Projects", {
-    method: "project_read",
-    path: "claude/notes.md",
-  });
-  const projectSearch = createToolCall("tc-project-search", "Projects", {
-    method: "project_search",
-    query: "migration",
-  });
-  const artifactWithLabel = createToolCall("tc-artifact-label", "Artifact", {
-    file_path: "C:/work/report.html",
-    favicon: "R",
-    label: "report-v2",
-    description: "Quarterly report",
-  });
-  const artifactFallback = createToolCall("tc-artifact-path", "Artifact", {
-    file_path: "C:/work/report.html",
-    favicon: "R",
-  });
-  const rolePicker = createToolCall(
-    "tc-role-picker",
-    "ShowOnboardingRolePicker",
-    {},
-  );
-
-  assert.equal(projectInfo.kind, "other");
-  assert.equal(projectInfo.title, "Projects: info");
-  assert.equal(projectRead.title, "Projects: read claude/notes.md");
-  assert.equal(projectSearch.title, "Projects: search migration");
-  assert.equal(artifactWithLabel.kind, "other");
-  assert.equal(artifactWithLabel.title, "Artifact: report-v2");
-  assert.equal(
-    (artifactWithLabel.raw_input as Record<string, unknown>).description,
-    "Quarterly report",
-  );
-  assert.equal(artifactFallback.title, "Artifact: C:/work/report.html");
-  assert.equal(rolePicker.kind, "other");
-  assert.equal(rolePicker.title, "ShowOnboardingRolePicker");
+test("skill display normalization preserves distinct lexical rules and the original execution identifier", () => {
+  const rows = [
+    ["claude-api", "Claude API"],
+    ["keybindings_help", "Keybindings Help"],
+    [" frontend-design:frontend-design ", "Frontend Design"],
+    ["github:gh-fix-ci", "GitHub / GH Fix CI"],
+    ["mobile:iOS-debug", "Mobile / iOS Debug"],
+    ["future::widget", "future::widget"],
+    ["future.widget", "future.widget"],
+  ];
+  for (const [skill, display] of rows) {
+    const tool = createToolCall(`skill-${skill}`, "Skill", { skill });
+    assert.ok(tool.title.endsWith(display));
+    assert.deepEqual(tool.raw_input, { skill });
+  }
+  const missing = createToolCall("missing", "Skill", {});
+  assert.ok(missing.title.includes("Skill"));
+  assert.deepEqual(missing.raw_input, {});
 });
 
-test("createToolCall maps EnterPlanMode to switch_mode kind with stable title", () => {
-  const toolCall = createToolCall("tc-enter-plan-mode", "EnterPlanMode", {});
-
-  assert.equal(toolCall.kind, "switch_mode");
-  assert.equal(toolCall.title, "EnterPlanMode");
+test("project and artifact titles identify the selected target while retaining complete original input", () => {
+  const rows = [
+    {
+      tool: "Projects",
+      input: { method: "project_read", path: "claude/actual-notes.md", query: "wrong-query" },
+      expected: ["read", "claude/actual-notes.md"],
+      absent: ["wrong-query"],
+    },
+    {
+      tool: "Projects",
+      input: { method: "project_search", query: "chosen-query", description: "wrong-description" },
+      expected: ["search", "chosen-query"],
+      absent: ["wrong-description"],
+    },
+    {
+      tool: "Artifact",
+      input: {
+        label: "selected-report",
+        file_path: "C:/work/source.html",
+        description: "Detailed source description",
+        favicon: "R",
+      },
+      expected: ["selected-report"],
+      absent: ["C:/work/source.html", "Detailed source description"],
+    },
+    {
+      tool: "Artifact",
+      input: { file_path: "C:/work/fallback.html", description: "not-a-label" },
+      expected: ["C:/work/fallback.html"],
+      absent: ["not-a-label"],
+    },
+  ];
+  for (const [index, row] of rows.entries()) {
+    const before = structuredClone(row.input),
+      tool = createToolCall(`target-${index}`, row.tool, row.input);
+    for (const value of row.expected) assert.ok(tool.title.includes(value));
+    for (const value of row.absent) assert.ok(!tool.title.includes(value));
+    assert.deepEqual(tool.raw_input, before);
+    assert.deepEqual(row.input, before);
+  }
 });
 
 test("buildToolResultFields extracts plain-text output", () => {
@@ -324,324 +273,209 @@ test("buildToolResultFields extracts plain-text output", () => {
   ]);
 });
 
-test("new SDK tools retain generic inputs and structured outputs losslessly", () => {
-  const feedbackInput = {
-    type: "bug",
-    title: "Feedback draft",
-    details: "Reproduction details",
-    area: "/feedback",
-  };
-  const feedback = createToolCall("tc-feedback", "SendFeedback", feedbackInput);
-  const feedbackOutput = {
-    success: true,
-    message: "Feedback queued for review.",
-  };
-  const feedbackFields = buildToolResultFields(
-    false,
-    feedbackOutput,
-    feedback,
-    feedbackOutput,
-  );
-
-  assert.deepEqual(feedback.raw_input, feedbackInput);
-  assert.equal(feedbackFields.raw_output, JSON.stringify(feedbackOutput));
-  assert.deepEqual(feedbackFields.content, [
+test("generic object and array results preserve nested values without mutating authored inputs", () => {
+  const rows = [
     {
-      type: "content",
-      content: { type: "text", text: JSON.stringify(feedbackOutput) },
-    },
-  ]);
-
-  const refreshInput = { server: "docs" };
-  const refresh = createToolCall("tc-refresh", "RefreshMcpTools", refreshInput);
-  const refreshOutput = [
-    {
-      server: "docs",
-      status: "refreshed",
-      toolCount: 3,
-      added: ["lookup"],
-      removed: ["legacy_lookup"],
+      name: "SendFeedback",
+      input: { type: "bug", title: "Feedback draft", details: "Reproduction details" },
+      output: {
+        success: false,
+        count: 0,
+        message: "",
+        nested: { list: [null, false, { token: "kept" }] },
+      },
     },
     {
-      server: "offline",
-      status: "not_connected",
-      error: "No live connection",
+      name: "RefreshMcpTools",
+      input: { server: "docs", options: { force: false } },
+      output: [
+        { server: "docs", toolCount: 0, added: ["lookup"], removed: [] },
+        { server: "offline", status: "not_connected", error: "No live connection" },
+      ],
     },
   ];
-  const refreshFields = buildToolResultFields(
-    false,
-    refreshOutput,
-    refresh,
-    refreshOutput,
-  );
+  for (const [index, row] of rows.entries()) {
+    const inputBefore = structuredClone(row.input),
+      expected = structuredClone(row.output),
+      tool = createToolCall(`generic-${index}`, row.name, row.input),
+      fields = buildToolResultFields(false, row.output, tool, row.output),
+      text = assertTextProjection(fields);
+    assert.deepEqual(JSON.parse(text), expected);
+    assert.deepEqual(tool.raw_input, inputBefore);
+    assert.deepEqual(row.input, inputBefore);
+    assert.deepEqual(row.output, expected);
+  }
+});
 
-  assert.deepEqual(refresh.raw_input, refreshInput);
-  assert.equal(refreshFields.raw_output, JSON.stringify(refreshOutput));
-  assert.deepEqual(refreshFields.content, [
+test("Grep projects independent content and correctly labeled authoritative totals without invented counts", () => {
+  const base = createToolCall("grep", "Grep", { pattern: "needle", output_mode: "content" });
+  const rows = [
     {
-      type: "content",
-      content: { type: "text", text: JSON.stringify(refreshOutput) },
-    },
-  ]);
-
-  const proposalInput = {
-    proposals: [
-      {
-        name: "diagnose-bridge",
-        kind: "new",
-        description: "Diagnose the bridge",
-        evidence: ["memory/bridge.md"],
-        skillMd: "---\nname: diagnose-bridge\n---\n",
+      result: {
+        mode: "content",
+        content: "a.rs:7:needle\nb.rs:9:needle",
+        filenames: ["a.rs", "b.rs"],
+        numFiles: 2,
+        totalFiles: 7,
+        numMatches: 11,
+        numLines: 2,
+        totalLines: 19,
+        appliedLimit: 37,
+        appliedOffset: 5,
       },
-    ],
-  };
-  const proposal = createToolCall("tc-propose", "ProposeSkills", proposalInput);
-  const proposalOutput = { proposalCount: 1 };
-  const proposalFields = buildToolResultFields(
-    false,
-    proposalOutput,
-    proposal,
-    proposalOutput,
-  );
-
-  assert.deepEqual(proposal.raw_input, proposalInput);
-  assert.equal(proposalFields.raw_output, JSON.stringify(proposalOutput));
-  assert.deepEqual(proposalFields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: JSON.stringify(proposalOutput) },
+      body: "a.rs:7:needle\nb.rs:9:needle",
+      labels: [/7 files/, /11 matches/, /19 lines/, /mode content/, /limit 37/, /offset 5/],
+      absent: [/2 files/, /2 lines/],
     },
-  ]);
-});
-
-test("buildToolResultFields renders structured Grep output", () => {
-  const base = createToolCall("tc-grep", "Grep", {
-    pattern: "TODO",
-    path: "src",
-    output_mode: "content",
-  });
-  const fields = buildToolResultFields(false, "raw SDK text", base, {
-    mode: "content",
-    numFiles: 2,
-    filenames: ["src/a.rs", "src/b.rs"],
-    content: "src/a.rs:1:TODO\nsrc/b.rs:2:TODO",
-    numLines: 2,
-    numMatches: 2,
-    appliedLimit: 250,
-  });
-
-  const expected =
-    "src/a.rs:1:TODO\nsrc/b.rs:2:TODO\nSummary: 2 files, 2 matches, 2 lines, mode content, limit 250";
-  assert.equal(fields.status, "completed");
-  assert.equal(fields.raw_output, expected);
-  assert.deepEqual(fields.content, [
-    { type: "content", content: { type: "text", text: expected } },
-  ]);
-});
-
-test("buildToolResultFields prefers target Grep totals over legacy counts", () => {
-  const base = createToolCall("tc-grep-totals", "Grep", {
-    pattern: "TODO",
-    path: "src",
-    output_mode: "content",
-  });
-  const fields = buildToolResultFields(false, "raw SDK text", base, {
-    mode: "content",
-    numFiles: 2,
-    totalFiles: 5,
-    filenames: ["src/a.rs", "src/b.rs"],
-    content: "src/a.rs:1:TODO\nsrc/b.rs:2:TODO",
-    numLines: 2,
-    totalLines: 9,
-    numMatches: 2,
-  });
-
-  assert.equal(
-    fields.raw_output,
-    "src/a.rs:1:TODO\nsrc/b.rs:2:TODO\nSummary: 5 files, 2 matches, 9 lines, mode content",
-  );
-});
-
-test("buildToolResultFields omits a contradictory legacy zero Grep file count", () => {
-  const base = createToolCall("tc-grep-unreported-files", "Grep", {
-    pattern: "ToolCallInfo",
-    path: "src",
-    output_mode: "content",
-  });
-  const fields = buildToolResultFields(false, "raw SDK text", base, {
-    mode: "content",
-    numFiles: 0,
-    filenames: [],
-    content: "src/app/mod.rs:1:ToolCallInfo\nsrc/ui/mod.rs:2:ToolCallInfo",
-    numLines: 239,
-    totalLines: 239,
-  });
-
-  assert.equal(
-    fields.raw_output,
-    "src/app/mod.rs:1:ToolCallInfo\nsrc/ui/mod.rs:2:ToolCallInfo\nSummary: 239 lines, mode content",
-  );
-});
-
-test("buildToolResultFields ignores malformed Grep totals without losing output", () => {
-  const base = createToolCall("tc-grep-invalid-totals", "Grep", {
-    pattern: "TODO",
-    output_mode: "content",
-  });
-  const fields = buildToolResultFields(false, "raw SDK text", base, {
-    mode: "content",
-    numFiles: 2,
-    totalFiles: -5,
-    filenames: ["src/a.rs", "src/b.rs"],
-    content: "src/a.rs:1:TODO",
-    numLines: 1,
-    totalLines: "many",
-  });
-
-  assert.equal(
-    fields.raw_output,
-    "src/a.rs:1:TODO\nSummary: 2 files, 1 line, mode content",
-  );
-});
-
-test("buildToolResultFields renders structured empty Grep output", () => {
-  const base = createToolCall("tc-grep-empty", "Grep", {
-    pattern: "<rare string>",
-    output_mode: "content",
-  });
-  const fields = buildToolResultFields(false, "No matches found", base, {
-    mode: "content",
-    numFiles: 0,
-    filenames: [],
-    content: "",
-    numLines: 0,
-  });
-
-  const expected = "No matches found\nSummary: 0 files, 0 lines, mode content";
-  assert.equal(fields.raw_output, expected);
-  assert.deepEqual(fields.content, [
-    { type: "content", content: { type: "text", text: expected } },
-  ]);
-});
-
-test("buildToolResultFields renders structured Glob output", () => {
-  const base = createToolCall("tc-glob", "Glob", {
-    pattern: "**/*.rs",
-    path: "src",
-  });
-  const fields = buildToolResultFields(false, "", base, {
-    durationMs: 12,
-    numFiles: 2,
-    filenames: ["src/main.rs", "src/lib.rs"],
-    truncated: false,
-  });
-
-  const expected = "2 files found\nsrc/main.rs\nsrc/lib.rs\nDuration: 12ms";
-  assert.equal(fields.status, "completed");
-  assert.equal(fields.raw_output, expected);
-  assert.deepEqual(fields.content, [
-    { type: "content", content: { type: "text", text: expected } },
-  ]);
-});
-
-test("normalizeToolResultText collapses persisted-output payload to first meaningful line", () => {
-  const normalized = normalizeToolResultText(`
-<persisted-output>
-  │ Output too large (132.5KB). Full output saved to: C:\\tmp\\tool-results\\bbf63b9.txt
-  │
-  │ Preview (first 2KB):
-  │
-  │ {"huge":"payload"}
-  │ ...
-  │ </persisted-output>
-`);
-  assert.equal(
-    normalized,
-    "Output too large (132.5KB). Full output saved to: C:\\tmp\\tool-results\\bbf63b9.txt",
-  );
-});
-
-test("normalizeToolResultText does not sanitize non-error output", () => {
-  const text =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
-  assert.equal(normalizeToolResultText(text), text);
-});
-
-test("normalizeToolResultText sanitizes exact SDK rejection payloads for errors", () => {
-  const cancelledText =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
-  assert.equal(
-    normalizeToolResultText(cancelledText, true),
-    "Cancelled by user.",
-  );
-
-  const deniedText =
-    "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task.";
-  assert.equal(normalizeToolResultText(deniedText, true), "Permission denied.");
-});
-
-test("normalizeToolResultText sanitizes SDK rejection prefixes with user follow-up", () => {
-  const cancelledWithUserMessage =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nPlease skip this";
-  assert.equal(
-    normalizeToolResultText(cancelledWithUserMessage, true),
-    "Cancelled by user.",
-  );
-
-  const deniedWithUserMessage =
-    "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user said:\nNot now";
-  assert.equal(
-    normalizeToolResultText(deniedWithUserMessage, true),
-    "Permission denied.",
-  );
-});
-
-test("normalizeToolResultText does not sanitize substring matches in error output", () => {
-  const bashOutput = "grep output: doesn't want to proceed with this tool use";
-  assert.equal(normalizeToolResultText(bashOutput, true), bashOutput);
-});
-
-test("cache split policy defaults stay aligned with UI thresholds", () => {
-  assert.equal(CACHE_SPLIT_POLICY.softLimitBytes, 1536);
-  assert.equal(CACHE_SPLIT_POLICY.hardLimitBytes, 4096);
-  assert.equal(CACHE_SPLIT_POLICY.previewLimitBytes, 2048);
-  assert.equal(previewKilobyteLabel(CACHE_SPLIT_POLICY), "2KB");
-});
-
-test("buildToolResultFields uses normalized persisted-output text", () => {
-  const fields = buildToolResultFields(
-    false,
-    `<persisted-output>
-      │ Output too large (14KB). Full output saved to: C:\\tmp\\tool-results\\x.txt
-      │
-      │ Preview (first 2KB):
-      │ {"k":"v"}
-      │ </persisted-output>`,
-  );
-  assert.equal(
-    fields.raw_output,
-    "Output too large (14KB). Full output saved to: C:\\tmp\\tool-results\\x.txt",
-  );
-  assert.deepEqual(fields.content, [
     {
-      type: "content",
-      content: {
-        type: "text",
-        text: "Output too large (14KB). Full output saved to: C:\\tmp\\tool-results\\x.txt",
+      result: {
+        mode: "content",
+        content: "c.rs:4:needle",
+        numFiles: 3,
+        totalFiles: -1,
+        numLines: 1,
+        totalLines: "invalid",
       },
+      body: "c.rs:4:needle",
+      labels: [/3 files/, /1 line/],
+      absent: [/invalid/, /-1 files/],
     },
-  ]);
+    {
+      result: {
+        mode: "content",
+        content: "visible.rs:1:needle",
+        numFiles: 0,
+        filenames: [],
+        numLines: 17,
+      },
+      body: "visible.rs:1:needle",
+      labels: [/17 lines/],
+      absent: [/0 files/],
+    },
+    {
+      result: { mode: "content", content: "", numFiles: 0, filenames: [], numLines: 0 },
+      body: "No matches found",
+      labels: [/0 files/, /0 lines/],
+      absent: [],
+    },
+    {
+      result: { mode: "count", content: "counted.rs:13", numMatches: 13, numFiles: 4 },
+      body: "counted.rs:13",
+      labels: [/13 matches/, /4 files/, /mode count/],
+      absent: [],
+    },
+    {
+      result: { mode: "files_with_matches", filenames: ["x/one.rs", "y/two.rs"], numFiles: 9 },
+      body: "x/one.rs\ny/two.rs",
+      labels: [/9 files/, /mode files\b/],
+      absent: [],
+    },
+  ];
+  for (const row of rows) {
+    const fields = buildToolResultFields(false, "DISTINCT-RAW-FALLBACK", base, row.result),
+      text = assertTextProjection(fields);
+    assert.ok(text.includes(row.body));
+    assert.ok(!text.includes("DISTINCT-RAW-FALLBACK"));
+    for (const label of row.labels) assert.match(text, label);
+    for (const absent of row.absent) assert.doesNotMatch(text, absent);
+  }
 });
 
-test("buildToolResultFields sanitizes SDK rejection text only for failed results", () => {
-  const sdkRejectionText =
-    "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+test("Glob associates the supplied filenames with reported totals, duration and upstream truncation", () => {
+  const base = createToolCall("glob", "Glob", { pattern: "**/*.rs", path: "src" });
+  const rows = [
+    {
+      result: {
+        durationMs: 23,
+        numFiles: 9,
+        filenames: ["src/first.rs", "src/second.rs"],
+        truncated: false,
+      },
+      names: ["src/first.rs", "src/second.rs"],
+      total: /9 files/,
+      duration: /23ms/,
+      truncated: false,
+    },
+    {
+      result: { durationMs: 0, numFiles: 0, filenames: [], truncated: false },
+      names: [],
+      total: /No files found/,
+      duration: /0ms/,
+      truncated: false,
+    },
+    {
+      result: { durationMs: 31, numFiles: 50, filenames: ["partial/only.rs"], truncated: true },
+      names: ["partial/only.rs"],
+      total: /50 files/,
+      duration: /31ms/,
+      truncated: true,
+    },
+  ];
+  for (const row of rows) {
+    const text = assertTextProjection(
+      buildToolResultFields(false, "wrong fallback", base, row.result),
+    );
+    assert.match(text, row.total);
+    assert.match(text, row.duration);
+    for (const name of row.names) assert.ok(text.includes(name));
+    assert.equal(/truncated/i.test(text), row.truncated);
+    assert.ok(!text.includes("wrong fallback"));
+  }
+  const malformed = assertTextProjection(
+    buildToolResultFields(false, "", base, {
+      durationMs: "bad",
+      numFiles: -1,
+      filenames: ["kept.rs"],
+      truncated: false,
+    }),
+  );
+  assert.ok(malformed.includes("kept.rs"));
+  assert.ok(!malformed.includes("bad"));
+  assert.doesNotMatch(malformed, /-1 files/);
+});
 
-  const successFields = buildToolResultFields(false, sdkRejectionText);
-  assert.equal(successFields.raw_output, sdkRejectionText);
+test("standalone SDK persisted-output wrappers reduce to their supplied location while ordinary markup remains literal", () => {
+  const location =
+    "Output too large (14KB). Full output saved to: C:\\tmp\\tool-results\\literal.txt";
+  const wrappers = [
+    `<persisted-output>\n\u2502 ${location}\n\u2502 Preview (first 2KB):\n\u2502 PREVIEW-SENTINEL\n\u2502 </persisted-output>`,
+    `  <persisted-output>\r\n | ${location}\r\n | Preview (first 2KB):\r\n | PREVIEW-SENTINEL\r\n </persisted-output>  `,
+  ];
+  for (const wrapper of wrappers) {
+    const text = assertTextProjection(buildToolResultFields(false, wrapper), location);
+    assert.ok(!text.includes("PREVIEW-SENTINEL"));
+  }
+  for (const ordinary of [
+    `Leading explanation\n<persisted-output>\n${location}\nExample body\n</persisted-output>\nTrailing literal line`,
+    `<persisted-output>\n${location}\nmissing closing tag`,
+    "<persisted-output>ordinary example without a saved-output receipt</persisted-output>",
+  ]) {
+    const tool = createToolCall("literal-markup", "mcp__docs__example", {});
+    assertTextProjection(buildToolResultFields(false, ordinary, tool), ordinary);
+  }
+});
 
-  const errorFields = buildToolResultFields(true, sdkRejectionText);
-  assert.equal(errorFields.raw_output, "Cancelled by user.");
+test("native cancellation and denial are compact only on failure while ordinary diagnostics remain exact", () => {
+  const cancelled =
+      "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.",
+    denied =
+      "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Try a different approach or report the limitation to complete your task.",
+    cancelledFollowUp =
+      "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). To tell you how to proceed, the user said:\nSkip this",
+    deniedFollowUp =
+      "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). The user said:\nNot now";
+  for (const [input, expected] of [
+    [cancelled, "Cancelled by user."],
+    [cancelledFollowUp, "Cancelled by user."],
+    [denied, "Permission denied."],
+    [deniedFollowUp, "Permission denied."],
+  ]) {
+    assertTextProjection(buildToolResultFields(true, input), expected, "failed");
+    assertTextProjection(buildToolResultFields(false, input), input);
+  }
+  const unrelated =
+    "Compiler diagnostic: doesn't want to proceed with this tool use; preserve the surrounding cause.";
+  assertTextProjection(buildToolResultFields(true, unrelated), unrelated, "failed");
 });
 
 test("buildToolResultFields maps structured Write output to diff content", () => {
@@ -674,167 +508,86 @@ test("buildToolResultFields maps structured Write output to diff content", () =>
       repository: "acme/project",
     },
   ]);
-});
-
-test("buildToolResultFields preserves staged Write and Edit results", () => {
-  for (const [toolName, input, result] of [
-    [
-      "Write",
-      { file_path: "src/main.ts", content: "new" },
-      { type: "update", filePath: "src/main.ts", content: "new", originalFile: "old", structuredPatch: [], staged: true },
-    ],
-    [
-      "Edit",
-      { file_path: "src/main.ts", old_string: "old", new_string: "new" },
-      { filePath: "src/main.ts", oldString: "old", newString: "new", replaceAll: false, staged: true },
-    ],
-  ] as const) {
-    const fields = buildToolResultFields(false, result, createToolCall(`tc-${toolName}`, toolName, input));
-    assert.equal(fields.status, "completed");
-    assert.equal(fields.output_metadata?.staged, true);
+  for (const staged of [undefined, true]) {
+    const result = {
+      type: "update",
+      filePath: "confirmed.ts",
+      content: "CONFIRMED\r\n",
+      originalFile: "ORIGINAL\n",
+      structuredPatch: [],
+      gitDiff: { repository: "other/repo" },
+      ...(staged === undefined ? {} : { staged }),
+    };
+    for (const representation of [result, JSON.stringify(result)]) {
+      const actual = buildToolResultFields(false, "receipt", base, representation);
+      assert.equal(actual.status, "completed");
+      assert.deepEqual(actual.content, [
+        {
+          type: "diff",
+          old_path: "confirmed.ts",
+          new_path: "confirmed.ts",
+          old: "ORIGINAL\n",
+          new: "CONFIRMED\r\n",
+          repository: "other/repo",
+        },
+      ]);
+      assert.equal(actual.output_metadata?.staged, staged);
+    }
   }
 });
 
-test("buildToolResultFields distinguishes new, unchanged, and unavailable Write diffs", () => {
-  const base = createToolCall("tc-write-cases", "Write", {
-    file_path: "src/main.ts",
-    content: "new",
+test("Write outcomes distinguish confirmed creation, unchanged bytes and unavailable originals", () => {
+  const base = createToolCall("write-outcomes", "Write", {
+    file_path: "requested.ts",
+    content: "REQUESTED",
   });
-  const created = buildToolResultFields(
-    false,
-    {
-      type: "create",
-      filePath: "src/new.ts",
-      content: "created",
-      originalFile: null,
-      structuredPatch: [],
-    },
-    base,
-  );
+  const created = buildToolResultFields(false, "confirmation", base, {
+    type: "create",
+    filePath: "actual/new.ts",
+    content: "ACTUAL\r\n",
+    originalFile: null,
+    structuredPatch: [],
+  });
+  assert.equal(created.status, "completed");
   assert.deepEqual(created.content, [
     {
       type: "diff",
-      old_path: "src/new.ts",
-      new_path: "src/new.ts",
+      old_path: "actual/new.ts",
+      new_path: "actual/new.ts",
       old: "",
-      new: "created",
+      new: "ACTUAL\r\n",
     },
   ]);
-
-  const unchanged = buildToolResultFields(
-    false,
-    {
-      type: "update",
-      filePath: "src/main.ts",
-      content: "same",
-      originalFile: "same",
-      structuredPatch: [],
-    },
-    base,
-  );
-  assert.equal(unchanged.raw_output, "No changes to src/main.ts.");
-  assert.equal(unchanged.content?.at(0)?.type, "content");
-
-  for (const gitPatch of [undefined, ""]) {
-    const unavailable = buildToolResultFields(
-      false,
-      {
-        type: "update",
-        filePath: "src/huge.ts",
-        content: "replacement",
-        originalFile: null,
-        structuredPatch: [],
-        ...(gitPatch === undefined
-          ? {}
-          : { gitDiff: { patch: gitPatch, status: "modified" } }),
-      },
-      base,
-    );
-    assert.equal(
-      unavailable.raw_output,
-      "Updated src/huge.ts; the previous content was unavailable, so a diff could not be displayed.",
-    );
-    assert.equal(
-      unavailable.content?.some((content) => content.type === "diff"),
-      false,
-    );
-  }
-
-  const ambiguous = buildToolResultFields(
-    false,
-    {
-      filePath: "src/ambiguous.ts",
-      content: "replacement",
+  const unchanged = buildToolResultFields(false, "confirmation", base, {
+    type: "update",
+    filePath: "actual/same.ts",
+    content: "UNCHANGED\n",
+    originalFile: "UNCHANGED\n",
+    structuredPatch: [],
+  });
+  const unchangedText = assertTextProjection(unchanged);
+  assert.match(unchangedText, /No changes/);
+  assert.ok(unchangedText.includes("actual/same.ts"));
+  for (const variant of [{ type: "update" }, { type: "update", gitDiff: { patch: "" } }, {}]) {
+    const fields = buildToolResultFields(false, "confirmation", base, {
+      ...variant,
+      filePath: "actual/unavailable.ts",
+      content: "CONFIRMED",
       originalFile: null,
       structuredPatch: [],
-    },
-    base,
-  );
-  assert.equal(
-    ambiguous.raw_output,
-    "Updated src/ambiguous.ts; the previous content was unavailable, so a diff could not be displayed.",
-  );
-  assert.equal(ambiguous.content?.some((content) => content.type === "diff"), false);
-});
-
-test("buildToolResultFields replays structured Write output from transcript JSON", () => {
-  const base = createToolCall("tc-write-replay", "Write", {
-    file_path: "src/replayed.ts",
-    content: "new",
+    });
+    const text = assertTextProjection(fields);
+    assert.ok(text.includes("actual/unavailable.ts"));
+    assert.match(text, /previous content.*unavailable/);
+    assert.doesNotMatch(text, /Created|REQUESTED/);
+  }
+  const failed = buildToolResultFields(true, "WRITE-DENIED", base, {
+    type: "create",
+    filePath: "actual/new.ts",
+    content: "STALE",
+    originalFile: null,
   });
-  const fields = buildToolResultFields(
-    false,
-    JSON.stringify({
-      type: "update",
-      filePath: "src/replayed.ts",
-      content: "new",
-      originalFile: "old",
-      structuredPatch: [],
-    }),
-    base,
-  );
-
-  assert.deepEqual(fields.content, [
-    {
-      type: "diff",
-      old_path: "src/replayed.ts",
-      new_path: "src/replayed.ts",
-      old: "old",
-      new: "new",
-    },
-  ]);
-});
-
-test("buildToolResultFields preserves Edit diff content from input and structured repository", () => {
-  const base = createToolCall("tc-e", "Edit", {
-    file_path: "src/main.ts",
-    old_string: "old",
-    new_string: "new",
-  });
-  const fields = buildToolResultFields(
-    false,
-    [{ text: "Updated successfully" }],
-    base,
-    {
-      result: {
-        filePath: "src/main.ts",
-        gitDiff: {
-          repository: "acme/project",
-        },
-      },
-    },
-  );
-  assert.equal(fields.status, "completed");
-  assert.deepEqual(fields.content, [
-    {
-      type: "diff",
-      old_path: "src/main.ts",
-      new_path: "src/main.ts",
-      old: "old",
-      new: "new",
-      repository: "acme/project",
-    },
-  ]);
+  assertTextProjection(failed, "WRITE-DENIED", "failed");
 });
 
 test("buildToolResultFields maps structured Edit output to whole-file diff content", () => {
@@ -971,226 +724,141 @@ test("buildToolResultFields maps structured Edit output to whole-file diff conte
     buildToolResultFields(false, block.content, base, block).content,
     diff("four", "4a\n4b"),
   );
-});
-
-test("buildToolResultFields ignores model-facing Bash stale read hints", () => {
-  const base = createToolCall("tc-bash", "Bash", { command: "npm test" });
-  const fields = buildToolResultFields(
-    false,
-    {
-      stdout: "real stdout",
-      stderr: "",
-      interrupted: false,
-      staleReadFileStateHint: "src/main.rs changed while command ran",
-    },
-    base,
-    {
-      result: {
-        stdout: "real stdout",
-        stderr: "",
-        interrupted: false,
-        staleReadFileStateHint: "src/main.rs changed while command ran",
-      },
-    },
-  );
-
-  assert.equal(fields.raw_output, "real stdout");
-  assert.equal(fields.output_metadata, undefined);
-});
-
-test("buildToolResultFields maps PowerShell structured output like shell output", () => {
-  const base = createToolCall("tc-powershell", "PowerShell", {
-    command: "Get-ChildItem",
+  const fragment = createToolCall("fragment", "Edit", {
+    file_path: "fragment.ts",
+    old_string: "OLD-FRAGMENT",
+    new_string: "NEW-FRAGMENT",
   });
-  const fields = buildToolResultFields(
-    false,
+  const projected = buildToolResultFields(false, "Edit receipt", fragment, {
+    result: { filePath: "fragment.ts", gitDiff: { repository: "fragment/repo" }, staged: true },
+  });
+  assert.equal(projected.status, "completed");
+  assert.equal(projected.output_metadata?.staged, true);
+  assert.deepEqual(projected.content, [
     {
-      stdout: "stdout line",
-      stderr: "stderr line",
-      interrupted: true,
+      type: "diff",
+      old_path: "fragment.ts",
+      new_path: "fragment.ts",
+      old: "OLD-FRAGMENT",
+      new: "NEW-FRAGMENT",
+      repository: "fragment/repo",
     },
-    base,
-    {
-      result: {
-        stdout: "stdout line",
-        stderr: "stderr line",
-        interrupted: true,
-      },
-    },
-  );
-
-  assert.equal(
-    fields.raw_output,
-    "stdout line\nstderr line\nCommand was aborted before completion.",
-  );
-  assert.equal(fields.output_metadata, undefined);
+  ]);
 });
 
-test("buildToolResultFields adds Bash auto-backgrounded metadata and message", () => {
-  const base = createToolCall("tc-bash-bg", "Bash", {
-    command: "npm run watch",
-  });
-  const fields = buildToolResultFields(
-    false,
+test("Bash and PowerShell preserve actual diagnostic streams while excluding model-only hints", () => {
+  for (const name of ["Bash", "PowerShell"]) {
+    for (const failed of [false, true]) {
+      const fields = buildToolResultFields(
+        failed,
+        "MODEL-FACING-FALLBACK",
+        createToolCall(name, name, { command: "probe" }),
+        {
+          stdout: `${name}-OUT\nsecond`,
+          stderr: `${name}-ERR`,
+          interrupted: true,
+          staleReadFileStateHint: "PRIVATE-STALE-HINT",
+        },
+      );
+      const text = assertTextProjection(fields, undefined, failed ? "failed" : "completed");
+      assert.ok(text.includes(`${name}-OUT\nsecond`));
+      assert.ok(text.includes(`${name}-ERR`));
+      assert.match(text, /abort|interrupt/i);
+      assert.doesNotMatch(
+        JSON.stringify(fields),
+        /MODEL-FACING-FALLBACK|PRIVATE-STALE-HINT|staleReadFileStateHint/,
+      );
+    }
+  }
+});
+
+test("Bash background receipts retain output, task identity and independently observed reason and timing", () => {
+  const rows = [
     {
-      stdout: "",
-      stderr: "",
-      interrupted: false,
-      backgroundTaskId: "task-42",
-      assistantAutoBackgrounded: true,
-    },
-    base,
-    {
-      result: {
-        stdout: "",
-        stderr: "",
-        interrupted: false,
-        backgroundTaskId: "task-42",
+      input: {
+        timedOutAfterMs: 10_000.9,
+        backgroundCwdHint: " actual cwd unchanged ",
+        backgroundEndsWithFinalResponse: true,
         assistantAutoBackgrounded: true,
       },
-    },
-  );
-
-  assert.equal(
-    fields.raw_output,
-    "Command was auto-backgrounded by assistant mode with ID: task-42.",
-  );
-  assert.deepEqual(fields.output_metadata, {
-    bash: {
-      assistant_auto_backgrounded: true,
-    },
-  });
-});
-
-test("buildToolResultFields preserves Bash timeout and cwd metadata", () => {
-  const base = createToolCall("tc-bash-timeout", "Bash", {
-    command: "npm run watch",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      stdout: "watching",
-      stderr: "",
-      interrupted: false,
-      backgroundTaskId: "task-43",
-      timedOutAfterMs: 10_000.9,
-      backgroundCwdHint: " session cwd unchanged ",
-      backgroundEndsWithFinalResponse: true,
-    },
-    base,
-  );
-
-  assert.equal(
-    fields.raw_output,
-    "watching\nCommand was auto-backgrounded after 10,000 ms with ID: task-43.",
-  );
-  assert.deepEqual(fields.output_metadata, {
-    bash: {
-      timed_out_after_ms: 10_000,
-      background_cwd_hint: "session cwd unchanged",
-      background_ends_with_final_response: true,
-    },
-  });
-});
-
-test("buildToolResultFields rejects malformed Bash timeout metadata", () => {
-  const base = createToolCall("tc-bash-invalid-timeout", "Bash", {
-    command: "npm run watch",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      stdout: "",
-      stderr: "",
-      interrupted: false,
-      backgroundTaskId: "task-44",
-      timedOutAfterMs: -1,
-      backgroundCwdHint: " ",
-    },
-    base,
-  );
-
-  assert.equal(
-    fields.raw_output,
-    "Command is running in background with ID: task-44.",
-  );
-  assert.equal(fields.output_metadata, undefined);
-});
-
-test("buildToolResultFields maps structured ReadMcpResource output to typed resource content", () => {
-  const base = createToolCall("tc-mcp", "ReadMcpResource", {
-    server: "docs",
-    uri: "file://manual.pdf",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      contents: [
-        {
-          uri: "file://manual.pdf",
-          mimeType: "application/pdf",
-          text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
-          blobSavedTo: "C:\\tmp\\manual.pdf",
-        },
-      ],
-    },
-    base,
-    {
-      result: {
-        contents: [
-          {
-            uri: "file://manual.pdf",
-            mimeType: "application/pdf",
-            text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
-            blobSavedTo: "C:\\tmp\\manual.pdf",
-          },
-        ],
+      metadata: {
+        timed_out_after_ms: 10_000,
+        background_cwd_hint: "actual cwd unchanged",
+        background_ends_with_final_response: true,
+        assistant_auto_backgrounded: true,
       },
+      reason: /10,000/,
     },
-  );
-
-  assert.equal(fields.status, "completed");
-  assert.deepEqual(fields.content, [
+    { input: { timedOutAfterMs: 0 }, metadata: { timed_out_after_ms: 0 }, reason: /0 ms/ },
     {
-      type: "mcp_resource",
-      uri: "file://manual.pdf",
-      mime_type: "application/pdf",
-      text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
-      blob_saved_to: "C:\\tmp\\manual.pdf",
+      input: { assistantAutoBackgrounded: true },
+      metadata: { assistant_auto_backgrounded: true },
+      reason: /assistant/i,
     },
-  ]);
+    { input: { backgroundedByUser: true }, metadata: undefined, reason: /user/i },
+    { input: {}, metadata: undefined, reason: /background/i },
+    {
+      input: { timedOutAfterMs: -1, backgroundCwdHint: " " },
+      metadata: undefined,
+      reason: /background/i,
+    },
+    {
+      input: { timedOutAfterMs: Number.POSITIVE_INFINITY },
+      metadata: undefined,
+      reason: /background/i,
+    },
+  ];
+  for (const [index, row] of rows.entries()) {
+    const id = `actual-task-${index}`,
+      out = `launch-output-${index}`;
+    const fields = buildToolResultFields(
+      false,
+      "MODEL-FALLBACK",
+      createToolCall(id, "Bash", { command: "watch" }),
+      { stdout: out, stderr: "", interrupted: false, backgroundTaskId: id, ...row.input },
+    );
+    const text = assertTextProjection(fields, undefined, "detached");
+    assert.ok(text.includes(id));
+    assert.ok(text.includes(out));
+    assert.match(text, row.reason);
+    assert.doesNotMatch(text, /MODEL-FALLBACK/);
+    assert.deepEqual(fields.output_metadata?.bash, row.metadata);
+    if (index >= 5) assert.doesNotMatch(text, /-1|Infinity|after .*ms/);
+  }
 });
 
-test("buildToolResultFields restores ReadMcpResource blob paths from transcript JSON text", () => {
-  const base = createToolCall("tc-mcp-history", "ReadMcpResource", {
-    server: "docs",
-    uri: "file://manual.pdf",
-  });
-  const transcriptJson = JSON.stringify({
+test("MCP resources preserve each text or saved blob with its own URI, MIME type and payload", () => {
+  const result = {
     contents: [
-      {
-        uri: "file://manual.pdf",
-        mimeType: "application/pdf",
-        text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
-        blobSavedTo: "C:\\tmp\\manual.pdf",
-      },
+      null,
+      { uri: "file://guide.md", mimeType: "text/markdown", text: "GUIDE-BODY" },
+      { uri: "file://figure.png", mimeType: "image/png", blobSavedTo: "C:/owned/figure.png" },
+      { text: "INVALID-NO-URI" },
     ],
-  });
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-mcp-history",
-    content: transcriptJson,
-  });
-
-  assert.deepEqual(fields.content, [
-    {
-      type: "mcp_resource",
-      uri: "file://manual.pdf",
-      mime_type: "application/pdf",
-      text: "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf",
-      blob_saved_to: "C:\\tmp\\manual.pdf",
-    },
-  ]);
+  };
+  for (const structured of [result, JSON.stringify(result)]) {
+    const fields = buildToolResultFields(
+      false,
+      "MODEL-FALLBACK",
+      createToolCall("resources", "ReadMcpResource", { server: "docs", uri: "file://root" }),
+      structured,
+    );
+    assert.equal(fields.status, "completed");
+    assert.deepEqual(fields.content, [
+      {
+        type: "mcp_resource",
+        uri: "file://guide.md",
+        mime_type: "text/markdown",
+        text: "GUIDE-BODY",
+      },
+      {
+        type: "mcp_resource",
+        uri: "file://figure.png",
+        mime_type: "image/png",
+        blob_saved_to: "C:/owned/figure.png",
+      },
+    ]);
+  }
 });
 
 test("buildToolResultFields marks ReadMcpResource error output as failed", () => {
@@ -1215,560 +883,220 @@ test("buildToolResultFields marks ReadMcpResource error output as failed", () =>
       content: { type: "text", text: "Error: resource not found" },
     },
   ]);
-});
-
-test("buildToolResultFields renders structured ReadMcpResourceDir listings", () => {
-  const base = createToolCall("tc-mcp-dir", "ReadMcpResourceDir", {
-    server: "docs",
-    uri: "file://manuals/",
-  });
-  const fields = buildToolResultFields(
+  const directory = buildToolResultFields(
     false,
-    {
-      resources: [
-        {
-          name: "guide.md",
-          uri: "file://manuals/guide.md",
-          mimeType: "text/markdown",
-        },
-        {
-          name: "images",
-          uri: "file://manuals/images",
-          mimeType: "inode/directory",
-        },
-        {
-          name: "readme",
-          uri: "file://manuals/readme",
-        },
-      ],
-    },
-    base,
+    { resources: [], error: "directory permission denied" },
+    createToolCall("directory-error", "ReadMcpResourceDir", {}),
   );
-
-  const expected =
-    "guide.md - file://manuals/guide.md (text/markdown)\n" +
-    "images - file://manuals/images (directory)\n" +
-    "readme - file://manuals/readme";
-  assert.equal(fields.status, "completed");
-  assert.equal(fields.raw_output, expected);
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: expected },
-    },
-  ]);
+  assertTextProjection(directory, "Error: directory permission denied", "failed");
 });
 
-test("buildToolResultFields renders empty ReadMcpResourceDir listings", () => {
-  const base = createToolCall("tc-mcp-dir-empty", "ReadMcpResourceDir", {
-    server: "docs",
-    uri: "file://empty/",
-  });
-  const fields = buildToolResultFields(false, { resources: [] }, base);
-
-  assert.equal(fields.status, "completed");
-  assert.equal(fields.raw_output, "No resources found.");
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: "No resources found." },
-    },
-  ]);
-});
-
-test("buildToolResultFields marks ReadMcpResourceDir error output as failed", () => {
-  const base = createToolCall("tc-mcp-dir-error", "ReadMcpResourceDir", {
-    server: "docs",
-    uri: "file://missing/",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      resources: [],
-      error: "directory not found",
-    },
-    base,
-  );
-
-  assert.equal(fields.status, "failed");
-  assert.equal(fields.raw_output, "Error: directory not found");
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: "Error: directory not found" },
-    },
-  ]);
-});
-
-test("buildToolResultFields parses ReadMcpResourceDir transcript JSON", () => {
-  const base = createToolCall("tc-mcp-dir-history", "ReadMcpResourceDir", {
-    server: "docs",
-    uri: "file://manuals/",
-  });
-  const transcriptJson = JSON.stringify({
-    resources: [
-      {
-        name: "api.json",
-        uri: "file://manuals/api.json",
-        mimeType: "application/json",
-      },
-    ],
-  });
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-mcp-dir-history",
-    content: transcriptJson,
-  });
-
-  assert.equal(
-    fields.raw_output,
-    "api.json - file://manuals/api.json (application/json)",
-  );
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: "api.json - file://manuals/api.json (application/json)",
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields skips invalid ReadMcpResourceDir entries", () => {
-  const base = createToolCall("tc-mcp-dir-invalid", "ReadMcpResourceDir", {
-    server: "docs",
-    uri: "file://manuals/",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      resources: [
-        { name: "missing-uri" },
-        { uri: "file://manuals/missing-name" },
-        null,
-        {
-          name: "valid.txt",
-          uri: "file://manuals/valid.txt",
-          mimeType: "text/plain",
-        },
-      ],
-    },
-    base,
-  );
-
-  assert.equal(fields.status, "completed");
-  assert.equal(
-    fields.raw_output,
-    "valid.txt - file://manuals/valid.txt (text/plain)",
-  );
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: "valid.txt - file://manuals/valid.txt (text/plain)",
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields preserves WebFetch artifactRead only as metadata", () => {
-  const base = createToolCall("tc-web-fetch-artifact", "WebFetch", {
-    url: "https://artifact.local/dashboard",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      bytes: 128,
-      code: 200,
-      codeText: "OK",
-      durationMs: 42,
-      result: "Artifact content summary",
-      url: "https://artifact.local/dashboard",
-      artifactRead: {
-        slug: "dashboard",
-        ver: "v3",
-        seeded: false,
-      },
-    },
-    base,
-  );
-
-  assert.equal(fields.raw_output, "Artifact content summary");
-  assert.equal(fields.raw_output?.includes("artifactRead"), false);
-  assert.deepEqual(fields.output_metadata, {
-    web_fetch: {
-      artifact_read: {
-        slug: "dashboard",
-        ver: "v3",
-        seeded: false,
-      },
-    },
-  });
-});
-
-test("buildToolResultFields preserves versionless WebFetch artifacts and rejects malformed metadata", () => {
-  const base = createToolCall("tc-web-fetch-versionless", "WebFetch", {
-    url: "https://artifact.local/dashboard",
-  });
-  assert.deepEqual(
+test("MCP directory listings associate each name with its own URI and file or directory meaning", () => {
+  const resources = [
+    { name: "guide.md", uri: "file://docs/guide.md", mimeType: "text/markdown" },
+    { name: "pictures", uri: "file://assets/pictures", mimeType: "inode/directory" },
+    { name: "readme", uri: "file://other/readme" },
+  ];
+  for (const result of [
+    { resources },
+    JSON.stringify({ resources }),
+    { resources: [null, { name: "INVALID" }, ...resources, { uri: "INVALID-NO-NAME" }] },
+  ]) {
+    const text = assertTextProjection(
+      buildToolResultFields(
+        false,
+        "MODEL-FALLBACK",
+        createToolCall("directory", "ReadMcpResourceDir", {}),
+        result,
+      ),
+    );
+    const lines = text.split("\n");
+    for (const [name, uri, kind] of [
+      ["guide.md", "file://docs/guide.md", "text/markdown"],
+      ["pictures", "file://assets/pictures", "directory"],
+      ["readme", "file://other/readme", ""],
+    ]) {
+      const own = lines.filter((line) => line.startsWith(name));
+      assert.equal(own.length, 1);
+      assert.ok(own[0]?.includes(uri));
+      if (kind) assert.ok(own[0]?.includes(kind));
+    }
+    assert.doesNotMatch(text, /INVALID|MODEL-FALLBACK/);
+  }
+  const empty = assertTextProjection(
     buildToolResultFields(
       false,
-      { result: "Seeded", artifactRead: { slug: "dashboard", seeded: false } },
-      base,
-    ).output_metadata,
-    { web_fetch: { artifact_read: { slug: "dashboard", seeded: false } } },
+      { resources: [] },
+      createToolCall("empty", "ReadMcpResourceDir", {}),
+    ),
   );
-  assert.deepEqual(
-    buildToolResultFields(
-      false,
-      {
-        result: "Unexpected seed value",
-        artifactRead: { slug: "dashboard", ver: "v4", seeded: true },
-      },
-      base,
-    ).output_metadata,
-    { web_fetch: { artifact_read: { slug: "dashboard", ver: "v4" } } },
-  );
-  assert.equal(
-    buildToolResultFields(
-      false,
-      { result: "Malformed", artifactRead: { slug: "", ver: "v4" } },
-      base,
-    ).output_metadata,
-    undefined,
-  );
+  assert.match(empty, /no resources|empty/i);
+  assert.doesNotMatch(empty, /file:\/\//);
 });
 
-test("buildToolResultFields marks only structured Skill background launches", () => {
-  const skill = createToolCall("tc-skill-background", "Skill", {
-    skill: "review",
-  });
-  assert.deepEqual(
-    buildToolResultFields(false, "launched", skill, { background: true })
-      .output_metadata,
+test("WebFetch retains readable results while projecting valid artifact observations separately", () => {
+  const rows = [
     {
-      skill: { background: true },
+      artifact: { slug: "dashboard", ver: "v3", seeded: false },
+      expected: { slug: "dashboard", ver: "v3", seeded: false },
     },
-  );
-  assert.equal(
-    buildToolResultFields(false, "complete", skill, { background: false })
-      .output_metadata,
-    undefined,
-  );
-  assert.equal(
-    buildToolResultFields(false, "complete", skill, { background: "true" })
-      .output_metadata,
-    undefined,
-  );
-
-  const bash = createToolCall("tc-bash-coincidental-background", "Bash", {
-    command: "echo ok",
-  });
-  assert.equal(
-    buildToolResultFields(false, "ok", bash, { background: true })
-      .output_metadata,
-    undefined,
-  );
-});
-
-test("buildToolResultFields suppresses successful inline Skill launch text", () => {
-  const skill = createToolCall("tc-skill-inline", "Skill", {
-    skill: "frontend-design:frontend-design",
-  });
-  const fields = buildToolResultFields(
-    false,
-    "Launching skill: frontend-design:frontend-design",
-    skill,
     {
-      success: true,
-      commandName: "frontend-design:frontend-design",
-      allowedTools: ["Read"],
+      artifact: { slug: "versionless", seeded: false },
+      expected: { slug: "versionless", seeded: false },
     },
+    {
+      artifact: { slug: "supported-slug", ver: "v4", seeded: true },
+      expected: { slug: "supported-slug", ver: "v4" },
+    },
+    { artifact: { slug: "", ver: "v5" }, expected: undefined },
+  ];
+  for (const [index, row] of rows.entries()) {
+    const body = `Readable artifact result ${index}`,
+      fields = buildToolResultFields(
+        false,
+        { result: body, artifactRead: row.artifact },
+        createToolCall(`artifact-${index}`, "WebFetch", { url: "https://artifact.local/target" }),
+      );
+    assertTextProjection(fields, body);
+    assert.deepEqual(fields.output_metadata?.web_fetch?.artifact_read, row.expected);
+  }
+  const other = buildToolResultFields(
+    false,
+    { result: "Other-tool-body", artifactRead: { slug: "dashboard", seeded: false } },
+    createToolCall("other", "Unrelated", {}),
   );
-
-  assert.equal(fields.status, "completed");
-  assert.equal(fields.title, "Skill: Frontend Design");
-  assert.equal(fields.raw_output, undefined);
-  assert.equal(fields.content, undefined);
+  assert.equal(other.output_metadata?.web_fetch, undefined);
 });
 
-test("buildToolResultFields preserves forked Skill results and background metadata", () => {
-  const skill = createToolCall("tc-skill-forked", "Skill", { skill: "review" });
-  const fields = buildToolResultFields(
-    false,
-    "model-facing launch text",
-    skill,
-    {
+test("Skill compacts only recognized inline success and preserves fork results and failure diagnostics", () => {
+  const skill = createToolCall("skill", "Skill", { skill: "review" });
+  const inline = { success: true, commandName: "code-review", allowedTools: ["Read"] };
+  const compact = buildToolResultFields(false, "Launching review", skill, inline);
+  assert.equal(compact.status, "completed");
+  assert.match(compact.title ?? "", /Code Review/);
+  assert.equal(compact.raw_output, undefined);
+  assert.equal(compact.content, undefined);
+  for (const background of [true, false]) {
+    const fork = buildToolResultFields(false, "MODEL-LAUNCH", skill, {
       success: true,
       commandName: "code-review",
       status: "forked",
-      agentId: "agent-1",
-      result: "Review worker launched",
-      background: true,
-    },
-  );
-
-  assert.equal(fields.title, "Skill: Code Review");
-  assert.equal(fields.raw_output, "Review worker launched");
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: "Review worker launched" },
-    },
-  ]);
-  assert.deepEqual(fields.output_metadata, { skill: { background: true } });
-});
-
-test("buildToolResultFields falls back losslessly for malformed Skill results", () => {
-  const skill = createToolCall("tc-skill-malformed", "Skill", {
-    skill: "review",
-  });
-  const fields = buildToolResultFields(
-    false,
-    "Launching skill: review",
-    skill,
-    {
+      agentId: "worker-7",
+      result: "ACTUAL-FORK-RESULT",
+      background,
+    });
+    assertTextProjection(fork, "ACTUAL-FORK-RESULT");
+    assert.match(fork.title ?? "", /Code Review/);
+    assert.deepEqual(
+      fork.output_metadata?.skill,
+      background === true ? { background: true } : undefined,
+    );
+  }
+  assertTextProjection(
+    buildToolResultFields(false, "MALFORMED-BACKGROUND-FALLBACK", skill, {
       success: true,
       commandName: "review",
       status: "forked",
-      result: "missing agent ID",
-    },
+      agentId: "worker",
+      result: "UNTRUSTED",
+      background: "true",
+    }),
+    "MALFORMED-BACKGROUND-FALLBACK",
   );
-
-  assert.equal(fields.title, undefined);
-  assert.equal(fields.raw_output, "Launching skill: review");
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: "Launching skill: review" },
-    },
-  ]);
+  const incomplete = buildToolResultFields(false, "USEFUL-FALLBACK", skill, {
+    success: true,
+    commandName: "untrusted-name",
+    status: "forked",
+    result: "missing worker",
+  });
+  assertTextProjection(incomplete, "USEFUL-FALLBACK");
+  assert.equal(incomplete.title, undefined);
+  assertTextProjection(
+    buildToolResultFields(true, "OUTER-DENIED", skill, inline),
+    "OUTER-DENIED",
+    "failed",
+  );
+  assertTextProjection(
+    buildToolResultFields(false, "NATIVE-FAILURE", skill, {
+      success: false,
+      commandName: "review",
+    }),
+    "NATIVE-FAILURE",
+    "failed",
+  );
+  const unrelated = buildToolResultFields(
+    false,
+    "OTHER-OUTPUT",
+    createToolCall("other-skill", "Bash", { command: "probe" }),
+    { background: true },
+  );
+  assertTextProjection(unrelated, "OTHER-OUTPUT");
+  assert.equal(unrelated.output_metadata?.skill, undefined);
 });
 
-test("buildToolResultFields preserves Agent resolvedModel metadata", () => {
-  const base = createToolCall("tc-agent-model", "Agent", {
-    description: "review changes",
-    prompt: "Review the branch",
-  });
-  const fields = buildToolResultFields(
-    false,
+test("Agent publishes observed model routes independently of the requested model and keeps readable results", () => {
+  const base = createToolCall("models", "Agent", { model: "requested-alias", prompt: "review" });
+  const rows = [
     {
-      agentId: "agent-1",
-      agentType: "reviewer",
-      resolvedModel: "claude-sonnet-4-7",
-      content: [{ type: "text", text: "Done" }],
-      totalToolUseCount: 1,
-      totalDurationMs: 100,
-      totalTokens: 25,
-      usage: {
-        input_tokens: 10,
-        output_tokens: 15,
-        cache_creation_input_tokens: null,
-        cache_read_input_tokens: null,
-        server_tool_use: null,
-        service_tier: null,
-        cache_creation: null,
+      observations: {
+        resolvedModel: " actual-final ",
+        modelsUsed: [" actual-first ", "", "actual-first", 42, "actual-final"],
       },
-      status: "completed",
-      prompt: "Review the branch",
+      expected: { resolved_model: "actual-final", models_used: ["actual-first", "actual-final"] },
     },
-    base,
-  );
-
-  assert.equal(fields.title, "Agent: reviewer");
-  assert.deepEqual(fields.output_metadata, {
-    agent: {
-      resolved_model: "claude-sonnet-4-7",
-    },
-  });
-});
-
-test("buildToolResultFields preserves ordered Agent modelsUsed metadata", () => {
-  const base = createToolCall("tc-agent-model-route", "Agent", {
-    description: "review changes",
-    prompt: "Review the branch",
-    model: "opus",
-  });
-  const fields = buildToolResultFields(
-    false,
     {
-      agentId: "agent-1",
-      resolvedModel: " claude-sonnet-4-7 ",
-      modelsUsed: [
-        " claude-opus-4-8 ",
-        "",
-        "claude-opus-4-8",
-        42,
-        "claude-sonnet-4-7",
-      ],
-      content: [{ type: "text", text: "Done" }],
-      status: "completed",
-      prompt: "Review the branch",
-      futureField: true,
+      observations: { resolvedModel: "resolved-only" },
+      expected: { resolved_model: "resolved-only" },
     },
-    base,
-  );
-
-  assert.deepEqual(fields.output_metadata, {
-    agent: {
-      resolved_model: "claude-sonnet-4-7",
-      models_used: ["claude-opus-4-8", "claude-sonnet-4-7"],
-    },
-  });
-});
-
-test("buildToolResultFields preserves Agent modelsUsed independently of resolvedModel", () => {
-  const base = createToolCall("tc-agent-background-route", "Agent", {
-    description: "review changes",
-    prompt: "Review the branch",
-  });
-  const fields = buildToolResultFields(
-    false,
     {
-      status: "async_launched",
-      agentId: "agent-1",
-      description: "Review changes",
-      modelsUsed: ["claude-opus-4-8", "claude-sonnet-4-7"],
-      prompt: "Review the branch",
-      outputFile: "C:/tmp/agent.output",
+      observations: { modelsUsed: ["route-only-first", "route-only-next"] },
+      expected: { models_used: ["route-only-first", "route-only-next"] },
     },
-    base,
-  );
-
-  assert.deepEqual(fields.output_metadata, {
-    agent: {
-      models_used: ["claude-opus-4-8", "claude-sonnet-4-7"],
-    },
-  });
-});
-
-test("buildToolResultFields keeps Agent input name while preserving resolvedModel metadata", () => {
-  const base = createToolCall("tc-agent-named-model", "Agent", {
-    description: "review changes",
-    prompt: "Review the branch",
-    name: "review-worker",
-    subagent_type: "general-purpose",
-    model: "opus",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      agentId: "agent-1",
-      agentType: "general-purpose",
-      resolvedModel: "claude-opus-4-8",
-      content: [{ type: "text", text: "Done" }],
+    { observations: { resolvedModel: " ", modelsUsed: [null, 42, ""] }, expected: undefined },
+  ];
+  for (const [index, row] of rows.entries()) {
+    const text = `Independent agent answer ${index}`;
+    const fields = buildToolResultFields(false, text, base, {
+      agentId: "worker",
       status: "completed",
-      prompt: "Review the branch",
-    },
-    base,
-  );
-
-  assert.equal(fields.title, undefined);
-  assert.deepEqual(fields.output_metadata, {
-    agent: {
-      resolved_model: "claude-opus-4-8",
-    },
+      ...row.observations,
+    });
+    assertTextProjection(fields, text);
+    assert.deepEqual(fields.output_metadata?.agent, row.expected);
+  }
+  const launch = buildToolResultFields(false, "Worker started", base, {
+    status: "async_launched",
+    agentId: "route-worker",
+    description: "Review changes",
+    modelsUsed: ["route-first", "route-last"],
+    prompt: "review",
+    outputFile: "C:/owned/worker.output",
   });
+  assert.equal(launch.status, "detached");
+  assertTextProjection(launch, "Review changes", "detached");
+  assert.deepEqual(launch.output_metadata?.agent, { models_used: ["route-first", "route-last"] });
 });
 
-test("unwrapToolUseResult extracts error/content payload", () => {
-  const parsed = unwrapToolUseResult({
-    is_error: true,
-    content: [{ text: "failure output" }],
-  });
-  assert.equal(parsed.isError, true);
-  assert.deepEqual(parsed.content, [{ text: "failure output" }]);
-});
-
-test("unwrapToolUseResult exposes MCP wrapper content without rendering opaque metadata", () => {
-  const parsed = unwrapToolUseResult({
-    content: [{ type: "text", text: "visible MCP output" }],
-    _meta: { privateTrace: "must-not-render" },
-  });
-  assert.equal(parsed.isError, false);
-  assert.deepEqual(parsed.content, [
-    { type: "text", text: "visible MCP output" },
-  ]);
-  assert.equal(JSON.stringify(parsed).includes("privateTrace"), false);
-});
-
-test("buildToolResultFields replaces a structured Read image result with its filename", () => {
-  const base = createToolCall("tc-image-read", "Read", {
-    file_path: "C:\\work\\captures\\screen.png",
-  });
-  const fields = buildToolResultFields(
-    false,
-    [
+test("Read image receipts use the requested filename and exclude both encoded payload sources", () => {
+  for (const file of ["C:\\captures\\windows-image.png", "/captures/unix-image.webp"]) {
+    const base = createToolCall("image", "Read", { file_path: file });
+    const block = [
       {
         type: "image",
-        source: {
-          type: "base64",
-          media_type: "image/png",
-          data: "raw-content-image-data",
-        },
+        source: { type: "base64", media_type: "image/webp", data: "RAW-BASE64-SENTINEL" },
       },
-    ],
-    base,
-    {
-      type: "image",
-      file: {
-        base64: "structured-image-data",
-        type: "image/png",
-      },
-    },
-  );
-
-  assert.equal(base.title, "Read C:\\work\\captures\\screen.png");
-  assert.deepEqual(fields, {
-    status: "completed",
-    raw_output: "Viewed Image screen.png",
-    content: [
-      {
-        type: "content",
-        content: { type: "text", text: "Viewed Image screen.png" },
-      },
-    ],
-  });
-  assert.equal(
-    JSON.stringify(fields).includes("raw-content-image-data"),
-    false,
-  );
-  assert.equal(JSON.stringify(fields).includes("structured-image-data"), false);
-});
-
-test("buildToolResultFields recognizes Read image content blocks without structured output", () => {
-  const base = createToolCall("tc-image-block-read", "Read", {
-    file_path: "assets/capture.unknown",
-  });
-  const fields = buildToolResultFields(
-    false,
-    [
-      {
-        type: "image",
-        source: {
-          type: "base64",
-          media_type: "image/webp",
-          data: "compatibility-image-data",
-        },
-      },
-    ],
-    base,
-  );
-
-  assert.equal(base.title, "Read assets/capture.unknown");
-  assert.equal(fields.raw_output, "Viewed Image capture.unknown");
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: "Viewed Image capture.unknown" },
-    },
-  ]);
-  assert.equal(
-    JSON.stringify(fields).includes("compatibility-image-data"),
-    false,
-  );
+    ];
+    for (const structured of [
+      undefined,
+      { type: "image", file: { base64: "STRUCTURED-BASE64-SENTINEL", type: "image/png" } },
+    ]) {
+      const fields = buildToolResultFields(false, block, base, structured),
+        text = assertTextProjection(fields);
+      assert.ok(text.includes(file.startsWith("C:") ? "windows-image.png" : "unix-image.webp"));
+      assert.match(text, /viewed image/i);
+      assert.doesNotMatch(JSON.stringify(fields), /RAW-BASE64-SENTINEL|STRUCTURED-BASE64-SENTINEL/);
+    }
+  }
 });
 
 test("buildToolResultFields preserves failed Read image output", () => {
@@ -1792,907 +1120,549 @@ test("buildToolResultFields preserves failed Read image output", () => {
   ]);
 });
 
-test("buildToolResultFields renders file_unchanged Read results compactly", () => {
-  const base = createToolCall("tc-read", "Read", { file_path: "src/main.rs" });
-  const fields = buildToolResultFields(
-    false,
+test("Read unchanged receipts identify the returned file and retain fallback for malformed records", () => {
+  const base = createToolCall("unchanged", "Read", { file_path: "requested/fallback.rs" });
+  for (const result of [
+    { type: "file_unchanged", file: { filePath: "actual/source.rs" } },
+    { result: [{ type: "file_unchanged", file: { filePath: "actual/source.rs" } }] },
+  ]) {
+    const text = assertTextProjection(buildToolResultFields(false, "MODEL-FALLBACK", base, result));
+    assert.ok(text.includes("actual/source.rs"));
+    assert.match(text, /unchanged/i);
+    assert.doesNotMatch(text, /requested\/fallback|MODEL-FALLBACK/);
+  }
+  assertTextProjection(
+    buildToolResultFields(false, "UNRECOGNIZED-READ", base, { type: "file_unchanged", file: {} }),
+    "UNRECOGNIZED-READ",
+  );
+});
+
+test("Worktree receipts preserve confirmed branch or path and leave failures readable", () => {
+  for (const row of [
     {
-      type: "file_unchanged",
-      file: { filePath: "src/main.rs" },
-    },
-    base,
-    {
+      name: "EnterWorktree",
+      input: { name: "requested-name" },
       result: {
-        type: "file_unchanged",
-        file: { filePath: "src/main.rs" },
+        message: "Entered actual worktree",
+        worktreeBranch: "actual-branch",
+        worktreePath: "C:/owned/actual-worktree",
+        originalCwd: "C:/owned/restored",
       },
+      identity: "actual-branch",
     },
-  );
-
-  assert.equal(fields.raw_output, "File unchanged: src/main.rs");
-  assert.deepEqual(fields.content, [
     {
-      type: "content",
-      content: { type: "text", text: "File unchanged: src/main.rs" },
+      name: "ExitWorktree",
+      input: { action: "keep" },
+      result: {
+        message: "Exited actual worktree",
+        worktreePath: "C:/owned/exited-worktree",
+        originalCwd: "C:/owned/restored",
+      },
+      identity: "C:/owned/exited-worktree",
     },
+  ]) {
+    const base = createToolCall(row.name, row.name, row.input);
+    const fields = buildToolResultFields(false, "MODEL-FALLBACK", base, row.result),
+      text = assertTextProjection(fields);
+    assert.ok(text.includes(row.identity));
+    assert.doesNotMatch(text, /MODEL-FALLBACK|requested-name/);
+    assert.equal(fields.title ?? base.title, base.title);
+    assertTextProjection(
+      buildToolResultFields(true, `${row.name}-FAILED`, base, row.result),
+      `${row.name}-FAILED`,
+      "failed",
+    );
+  }
+});
+
+test("Cron operation sections retain confirmed identities and the entire independently supplied prompt", () => {
+  const prompt = `Check {literal braces}\n${"long prompt ".repeat(80)}PROMPT-TAIL`;
+  const create = buildToolResultFields(
+    false,
+    { id: "confirmed-create", recurring: false, durable: true },
+    createToolCall("create", "CronCreate", { cron: "*/5 * * * *", prompt, recurring: true }),
+  );
+  const createText = assertTextProjection(create);
+  assert.deepEqual(sectionValues(create, "confirmed-create"), {
+    "Schedule ID": "confirmed-create",
+    Schedule: "Every 5 minutes",
+    Prompt: prompt,
+    Recurring: "no",
+    Durable: "yes",
+  });
+  assert.ok(createText.includes(prompt));
+  const deleted = buildToolResultFields(
+    false,
+    { id: "confirmed-delete" },
+    createToolCall("delete", "CronDelete", { id: "requested-delete" }),
+  );
+  assertTextProjection(deleted);
+  assert.deepEqual(sectionValues(deleted, "confirmed-delete"), {
+    "Schedule ID": "confirmed-delete",
+  });
+  assert.doesNotMatch(String(deleted.raw_output), /requested-delete/);
+  const jobs = [
+    { id: "job-long", cron: "*/5 * * * *", prompt, recurring: false, durable: true },
+    { id: "job-short", cron: "30 9 * * 1", prompt: "SHORT-INDEPENDENT", recurring: true },
+  ];
+  for (const result of [{ jobs }, JSON.stringify({ jobs })]) {
+    const fields = buildToolResultFields(false, result, createToolCall("list", "CronList", {})),
+      text = assertTextProjection(fields);
+    assert.equal(sectionValues(fields, "job-long").Prompt, prompt);
+    assert.equal(sectionValues(fields, "job-short").Prompt, "SHORT-INDEPENDENT");
+    assert.ok(text.includes(prompt));
+    assert.ok(text.includes("SHORT-INDEPENDENT"));
+  }
+  const single = buildToolResultFields(
+    false,
+    { jobs: [jobs[0]] },
+    createToolCall("single", "CronList", {}),
+  );
+  assertTextProjection(single);
+  assert.equal(sectionValues(single, "job-long").Recurring, "no");
+  assert.equal(sectionValues(single, "job-long").Durable, "yes");
+  const empty = buildToolResultFields(false, { jobs: [] }, createToolCall("empty", "CronList", {}));
+  assert.match(assertTextProjection(empty), /none|no jobs/i);
+  assert.deepEqual(empty.output_metadata?.presentation?.sections, [
+    { fields: [{ label: "Jobs", value: { type: "text", value: "none" } }] },
   ]);
 });
 
-test("buildToolResultFields renders array-wrapped file_unchanged Read results compactly", () => {
-  const base = createToolCall("tc-read", "Read", { file_path: "src/lib.rs" });
-  const fields = buildToolResultFields(false, [], base, {
-    result: [
-      {
-        type: "file_unchanged",
-        file: { filePath: "src/lib.rs" },
-      },
-    ],
-  });
-
-  assert.equal(fields.raw_output, "File unchanged: src/lib.rs");
+test("Cron schedules remain associated with their own job including literal unsupported expressions", () => {
+  const rows = [
+    { id: "minute", cron: "* * * * *", schedule: "Every minute" },
+    { id: "step", cron: "*/5 * * * *", schedule: "Every 5 minutes" },
+    {
+      id: "hour",
+      cron: "7 * * * *",
+      humanSchedule: "Every hour at :07",
+      schedule: "Every hour at minute 07",
+    },
+    { id: "hours", cron: "0 */2 * * *", schedule: "Every 2 hours on the hour" },
+    { id: "daily", cron: "30 9 * * *", schedule: "Every day at 09:30" },
+    { id: "weekly", cron: "30 9 * * 1", schedule: "Every Monday at 09:30" },
+    { id: "monthly", cron: "30 9 15 * *", schedule: "Every month on day 15 at 09:30" },
+    { id: "yearly", cron: "30 9 15 6 *", schedule: "Every June 15 at 09:30" },
+    { id: "literal", cron: "0 9 1 * 1", schedule: undefined },
+    {
+      id: "producer-label",
+      cron: "0 9 1 * 1",
+      humanSchedule: "On the producer's calendar",
+      schedule: "On the producer's calendar",
+    },
+  ];
+  const fields = buildToolResultFields(
+      false,
+      { jobs: rows.map((row) => ({ ...row, prompt: `PROMPT-${row.id}`, recurring: true })) },
+      createToolCall("schedules", "CronList", {}),
+    ),
+    text = assertTextProjection(fields);
+  for (const row of rows) {
+    const own = sectionValues(fields, row.id);
+    assert.equal(own.Prompt, `PROMPT-${row.id}`);
+    if (row.schedule) assert.equal(own.Schedule, row.schedule);
+    else {
+      assert.equal(own.Cron, row.cron);
+      assert.equal(own.Schedule, undefined);
+    }
+    assert.ok(text.includes(`PROMPT-${row.id}`));
+  }
 });
 
-test("buildToolResultFields carries Read file source and start line instead of numbered model text", () => {
-  const base = createToolCall("tc-read-source", "Read", {
-    file_path: "src/main.rs",
-    offset: 60,
-  });
-  const source = "fn main() {\n\tprintln!(\"hi\");\n}";
-  const fields = buildToolResultFields(
-    false,
+test("Wakeup receipts report the returned instant and actual clamped delay under an isolated timezone", () => {
+  for (const [result, delay, clamped] of [
     [
-      {
-        type: "text",
-        text: "60\tfn main() {\n61\t\tprintln!(\"hi\");\n62\t}\n\n<system-reminder>internal</system-reminder>",
-      },
+      { scheduledFor: 1_780_662_896_000, clampedDelaySeconds: 90, wasClamped: true },
+      "1m 30s",
+      "yes",
     ],
-    base,
-    {
-      type: "text",
-      file: {
-        filePath: "C:\\work\\src\\main.rs",
-        content: source,
-        numLines: 3,
-        startLine: 60,
-        totalLines: 62,
-      },
-    },
-  );
-
-  assert.deepEqual(fields, {
-    status: "completed",
-    output_metadata: {
-      read: { file_path: "C:\\work\\src\\main.rs", start_line: 60 },
-    },
-    raw_output: source,
-    content: [{ type: "content", content: { type: "text", text: source } }],
-  });
-});
-
-test("buildToolResultFields keeps the SDK explanation for empty Read results", () => {
-  const base = createToolCall("tc-read-empty", "Read", { file_path: "empty.txt" });
-  const notice = "Warning: the file exists but the contents are empty.";
-  const fields = buildToolResultFields(false, notice, base, {
-    type: "text",
-    file: { filePath: "empty.txt", content: "", numLines: 0, startLine: 1, totalLines: 0 },
-  });
-
-  assert.equal(fields.raw_output, notice);
-  assert.equal(fields.output_metadata, undefined);
-});
-
-test("buildToolResultFields uses Agent output agentType as task title", () => {
-  const base = createToolCall("tc-agent", "Agent", { prompt: "Review tests" });
-  const fields = buildToolResultFields(
-    false,
-    {
-      agentId: "agent-1",
-      agentType: "reviewer",
-      content: [{ type: "text", text: "Done" }],
-      totalToolUseCount: 0,
-      totalDurationMs: 10,
-      totalTokens: 20,
-      usage: {},
-      status: "completed",
-      prompt: "Review tests",
-    },
-    base,
-  );
-
-  assert.equal(fields.title, "Agent: reviewer");
-});
-
-test("buildToolResultFields reads array-wrapped Agent output agentType", () => {
-  const base = createToolCall("tc-agent", "Agent", { prompt: "Review tests" });
-  const fields = buildToolResultFields(false, [], base, {
-    result: [
-      {
-        agentId: "agent-1",
-        agentType: "planner",
-        content: [{ type: "text", text: "Done" }],
-        status: "completed",
-      },
+    [
+      JSON.stringify({
+        scheduledFor: 1_780_662_896_000,
+        clampedDelaySeconds: 3600,
+        wasClamped: false,
+      }),
+      "1h",
+      "no",
     ],
-  });
-
-  assert.equal(fields.title, "Agent: planner");
+  ] as const) {
+    const fields = projectInUtc(
+        "ScheduleWakeup",
+        { delaySeconds: 7, reason: "Requested delay differs", prompt: "continue" },
+        result,
+      ),
+      text = assertTextProjection(fields);
+    assert.ok(text.includes("Scheduled for: 2026-06-05 12:34:56 local"));
+    assert.ok(text.includes(`Actual delay: ${delay}`));
+    assert.ok(text.includes(`Clamped: ${clamped}`));
+    assert.doesNotMatch(text, /Actual delay: 7s/);
+  }
 });
 
-test("buildToolResultFields leaves worktree title unchanged on completed output", () => {
-  const enterBase = createToolCall("tc-enter", "EnterWorktree", {
-    name: "feature-auth",
-  });
-  const enterFields = buildToolResultFields(
-    false,
-    {
-      message: "Entered worktree feature-auth",
-      worktreeBranch: "feature-auth",
-      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
-    },
-    enterBase,
-  );
-  assert.equal(enterFields.title, undefined);
-
-  const exitBase = createToolCall("tc-exit", "ExitWorktree", {
-    action: "keep",
-  });
-  const exitFields = buildToolResultFields(
-    false,
-    {
-      message: "Exited worktree feature-auth",
-      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
-    },
-    exitBase,
-  );
-  assert.equal(exitFields.title, undefined);
-});
-
-test("buildToolResultFields renders worktree location without raw JSON", () => {
-  const enterBase = createToolCall("tc-enter", "EnterWorktree", {
-    name: "feature-auth",
-  });
-  const enterFields = buildToolResultFields(
-    false,
-    {
-      message: "Entered worktree feature-auth",
-      worktreeBranch: "feature-auth",
-      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
-    },
-    enterBase,
-  );
-  assert.equal(enterFields.raw_output, "Branch: feature-auth");
-  assert.deepEqual(enterFields.content, [
-    {
-      type: "content",
-      content: { type: "text", text: "Branch: feature-auth" },
-    },
-  ]);
-
-  const exitBase = createToolCall("tc-exit", "ExitWorktree", {
-    action: "keep",
-  });
-  const exitFields = buildToolResultFields(
-    false,
-    {
-      message: "Exited worktree feature-auth",
-      worktreePath: "C:\\repo\\.worktrees\\feature-auth",
-    },
-    exitBase,
-  );
-  assert.equal(
-    exitFields.raw_output,
-    "Path: C:\\repo\\.worktrees\\feature-auth",
-  );
-  assert.deepEqual(exitFields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: "Path: C:\\repo\\.worktrees\\feature-auth",
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields renders cron outputs as structured text without raw JSON", () => {
-  const createBase = createToolCall("tc-cron-create", "CronCreate", {
-    cron: "30 9 * * 1",
-    prompt: "Send weekly status",
-  });
-  const createFields = buildToolResultFields(
-    false,
-    {
-      id: "schedule-1",
-      humanSchedule: "every Monday at 09:30",
-      recurring: true,
-      durable: false,
-    },
-    createBase,
-  );
-  assert.equal(
-    createFields.raw_output,
-    "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nPrompt: Send weekly status\nRecurring: yes\nDurable: no",
-  );
-  assert.deepEqual(createFields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: "Schedule ID: schedule-1\nSchedule: Every Monday at 09:30\nPrompt: Send weekly status\nRecurring: yes\nDurable: no",
-      },
-    },
-  ]);
-  assert.equal(createFields.raw_output?.includes("{"), false);
-
-  const deleteBase = createToolCall("tc-cron-delete", "CronDelete", {
-    id: "schedule-1",
-  });
-  const deleteFields = buildToolResultFields(
-    false,
-    { id: "schedule-1" },
-    deleteBase,
-  );
-  assert.equal(deleteFields.raw_output, "Schedule ID: schedule-1");
-
-  const listBase = createToolCall("tc-cron-list", "CronList", {});
-  const listFields = buildToolResultFields(false, { jobs: [] }, listBase);
-  assert.equal(listFields.raw_output, "Jobs: none");
-
-  const singleListFields = buildToolResultFields(
-    false,
-    {
-      jobs: [
-        {
-          id: "schedule-2",
-          cron: "7 * * * *",
-          humanSchedule: "Every hour at :07",
-          prompt: "Send hourly tick",
-          recurring: true,
-          durable: false,
-        },
-      ],
-    },
-    listBase,
-  );
-  assert.equal(
-    singleListFields.raw_output,
-    "Schedule ID: schedule-2\nCron: 7 * * * *\nSchedule: Every hour at minute 07\nPrompt: Send hourly tick\nRecurring: yes\nDurable: no",
-  );
-});
-
-test("buildToolResultFields preserves full CronList prompt from transcript JSON", () => {
-  const base = createToolCall("tc-cron-list-history", "CronList", {});
-  const fullPrompt = `Review the branch and write a status update. ${"Keep every detail. ".repeat(80)}END`;
-  const transcriptJson = JSON.stringify({
-    jobs: [
-      {
-        id: "schedule-long",
-        cron: "*/5 * * * *",
-        humanSchedule: "every 5 minutes",
-        prompt: fullPrompt,
-        recurring: false,
-        durable: true,
-      },
-    ],
-  });
-
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-cron-list-history",
-    content: transcriptJson,
-  });
-
-  assert.equal(fields.raw_output?.includes(fullPrompt), true);
-  assert.equal(fields.raw_output?.includes("END"), true);
-  assert.equal(fields.raw_output?.includes('"jobs"'), false);
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: `Schedule ID: schedule-long\nCron: */5 * * * *\nSchedule: Every 5 minutes\nPrompt: ${fullPrompt}\nRecurring: no\nDurable: yes`,
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields renders readable cron schedule text from common cron expressions", () => {
-  const base = createToolCall("tc-cron-readable", "CronList", {});
-  const fields = buildToolResultFields(
-    false,
-    {
-      jobs: [
-        {
-          id: "every-minute",
-          cron: "* * * * *",
-          prompt: "minute",
-          recurring: true,
-        },
-        {
-          id: "every-five-minutes",
-          cron: "*/5 * * * *",
-          prompt: "minutes",
-          recurring: true,
-        },
-        {
-          id: "hourly-minute",
-          cron: "7 * * * *",
-          humanSchedule: "Every hour at :07",
-          prompt: "hourly",
-          recurring: true,
-        },
-        {
-          id: "every-two-hours",
-          cron: "0 */2 * * *",
-          prompt: "hours",
-          recurring: true,
-        },
-        { id: "daily", cron: "30 9 * * *", prompt: "daily", recurring: true },
-        { id: "weekly", cron: "30 9 * * 1", prompt: "weekly", recurring: true },
-        {
-          id: "monthly",
-          cron: "30 9 15 * *",
-          prompt: "monthly",
-          recurring: true,
-        },
-        {
-          id: "yearly",
-          cron: "30 9 15 6 *",
-          prompt: "yearly",
-          recurring: true,
-        },
-        {
-          id: "complex",
-          cron: "0 9 1 * 1",
-          prompt: "complex",
-          recurring: true,
-        },
-      ],
-    },
-    base,
-  );
-
-  assert.equal(fields.raw_output?.includes("Cron: 7 * * * *"), false);
-  assert.equal(fields.raw_output?.includes("Recurring:"), false);
-  assert.equal(fields.raw_output?.includes("Durable:"), false);
-  assert.equal(fields.raw_output?.includes("Schedule: Every minute"), true);
-  assert.equal(fields.raw_output?.includes("Schedule: Every 5 minutes"), true);
-  assert.equal(
-    fields.raw_output?.includes("Schedule: Every hour at minute 07"),
-    true,
-  );
-  assert.equal(
-    fields.raw_output?.includes("Schedule: Every 2 hours on the hour"),
-    true,
-  );
-  assert.equal(
-    fields.raw_output?.includes("Schedule: Every day at 09:30"),
-    true,
-  );
-  assert.equal(
-    fields.raw_output?.includes("Schedule: Every Monday at 09:30"),
-    true,
-  );
-  assert.equal(
-    fields.raw_output?.includes("Schedule: Every month on day 15 at 09:30"),
-    true,
-  );
-  assert.equal(
-    fields.raw_output?.includes("Schedule: Every June 15 at 09:30"),
-    true,
-  );
-  assert.equal(fields.raw_output?.includes("Cron: 0 9 1 * 1"), true);
-  assert.equal(fields.raw_output?.split("__cron_list_job_divider__").length, 9);
-});
-
-test("buildToolResultFields renders ScheduleWakeup output as structured text", () => {
-  const base = createToolCall("tc-wakeup", "ScheduleWakeup", {
-    delaySeconds: 30,
-    reason: "Retry after runtime clamp",
-    prompt: "/loop keep checking",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      scheduledFor: 1_779_990_000_000,
-      clampedDelaySeconds: 90,
-      wasClamped: true,
-    },
-    base,
-  );
-
-  assert.match(
-    fields.raw_output ?? "",
-    /^Scheduled for: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local\nActual delay: 1m 30s\nClamped: yes$/,
-  );
-  assert.equal(fields.raw_output?.includes("{"), false);
-  assert.equal(fields.raw_output?.includes("1779990000000"), false);
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: fields.raw_output,
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields parses ScheduleWakeup transcript JSON", () => {
-  const base = createToolCall("tc-wakeup-history", "ScheduleWakeup", {
-    delaySeconds: 3600,
-    reason: "Wake at the next loop interval",
-    prompt: "/loop continue",
-  });
-  const transcriptJson = JSON.stringify({
-    scheduledFor: 1_779_990_000_000,
-    clampedDelaySeconds: 3600,
-    wasClamped: false,
-  });
-
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-wakeup-history",
-    content: transcriptJson,
-  });
-
-  assert.match(fields.raw_output ?? "", /Actual delay: 1h\nClamped: no$/);
-  assert.equal(fields.raw_output?.includes('"scheduledFor"'), false);
-});
-
-test("buildToolResultFields renders PushNotification output as structured text", () => {
-  const base = createToolCall("tc-push-notification", "PushNotification", {
-    message: "Build finished",
-    status: "proactive",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      message: "Build finished",
+test("Push receipts retain distinct returned messages and delivery observations at the supplied instant", () => {
+  const input = { message: "REQUESTED-MESSAGE", status: "proactive" };
+  const fields = projectInUtc("PushNotification", input, {
+      message: "ACTUAL-RECEIPT",
       pushSent: false,
       localSent: true,
       disabledReason: "config_off",
-      idleSec: 90,
-      hasFocus: false,
       sentAt: "2026-06-05T12:34:56.000Z",
-    },
-    base,
-  );
-
-  assert.match(
-    fields.raw_output ?? "",
-    /^Push sent: no\nLocal sent: yes\nDisabled reason: notifications disabled\nIdle time: 1m 30s\nApp focused: no\nSent at: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} local$/,
-  );
-  assert.equal(fields.raw_output?.includes("Result:"), false);
-  assert.equal(fields.raw_output?.includes("{"), false);
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: fields.raw_output,
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields parses PushNotification transcript JSON", () => {
-  const base = createToolCall(
-    "tc-push-notification-history",
-    "PushNotification",
-    {
-      message: "Deploy completed",
-      status: "proactive",
-    },
-  );
-  const transcriptJson = JSON.stringify({
-    message: "Notification queued",
+    }),
+    text = assertTextProjection(fields);
+  for (const expected of [
+    "ACTUAL-RECEIPT",
+    "Push sent: no",
+    "Local sent: yes",
+    "notifications disabled",
+    "Sent at: 2026-06-05 12:34:56 local",
+  ])
+    assert.ok(text.includes(expected));
+  assert.doesNotMatch(text, /REQUESTED-MESSAGE/);
+  const unknown = projectInUtc(
+      "PushNotification",
+      input,
+      JSON.stringify({
+        message: "DIFFERENT-RECEIPT",
+        pushSent: true,
+        localSent: false,
+        disabledReason: "no_transport",
+        sentAt: "unknown-source-time",
+      }),
+    ),
+    unknownText = assertTextProjection(unknown);
+  for (const expected of [
+    "DIFFERENT-RECEIPT",
+    "Push sent: yes",
+    "Local sent: no",
+    "no notification transport",
+    "unknown-source-time",
+  ])
+    assert.ok(unknownText.includes(expected));
+  const echo = projectInUtc("PushNotification", input, {
+    message: "REQUESTED-MESSAGE",
     pushSent: true,
-    localSent: false,
-    disabledReason: "no_transport",
-    idleSec: 3600,
-    hasFocus: true,
-    sentAt: "not an iso timestamp",
   });
-
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-push-notification-history",
-    content: transcriptJson,
-  });
-
-  assert.equal(
-    fields.raw_output,
-    "Result: Notification queued\nPush sent: yes\nLocal sent: no\nDisabled reason: no notification transport\nIdle time: 1h\nApp focused: yes\nSent at: not an iso timestamp",
-  );
-  assert.equal(fields.raw_output?.includes('"pushSent"'), false);
+  const echoText = assertTextProjection(echo);
+  assert.doesNotMatch(echoText, /REQUESTED-MESSAGE|Local sent:/);
 });
 
-test("buildToolResultFields preserves RemoteTrigger response alongside its summary", () => {
-  const base = createToolCall("tc-remote-trigger", "RemoteTrigger", {
-    action: "run",
-    trigger_id: "deploy-prod",
-  });
-  const fields = buildToolResultFields(
-    false,
+test("RemoteTrigger preserves response meaning with or without summaries and honors both failure authorities", () => {
+  const base = createToolCall("remote", "RemoteTrigger", { action: "run", trigger_id: "target" });
+  for (const row of [
     {
       status: 200,
-      json: '{\n  "ok": true,\n  "run_id": "run-1"\n}',
-      summary: "Trigger completed",
+      summary: "ACTUAL-SUMMARY",
+      data: { ok: true, run_id: "actual-run" },
+      outer: false,
     },
-    base,
-  );
-
-  assert.equal(fields.status, "completed");
-  assert.equal(
-    fields.raw_output,
-    'Status: 200\nSummary: Trigger completed\nResponse: {"ok":true,"run_id":"run-1"}',
-  );
-  assert.equal(fields.raw_output?.includes("run_id"), true);
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: 'Status: 200\nSummary: Trigger completed\nResponse: {"ok":true,"run_id":"run-1"}',
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields renders RemoteTrigger response when summary is absent", () => {
-  const base = createToolCall("tc-remote-trigger-response", "RemoteTrigger", {
-    action: "get",
-    trigger_id: "deploy-prod",
-  });
-  const fields = buildToolResultFields(
-    false,
+    { status: 200, summary: undefined, data: { enabled: false, attempts: 0 }, outer: false },
+    { status: 404, summary: "MISSING-TRIGGER", data: { error: "not_found" }, outer: false },
+    { status: 503, summary: "SERVER-DIAGNOSTIC", data: { error: "unavailable" }, outer: false },
     {
       status: 200,
-      json: '{\n  "ok": true,\n  "trigger_id": "deploy-prod"\n}',
+      summary: "STALE-SUCCESS",
+      data: { detail: "outer failure diagnostic" },
+      outer: true,
     },
-    base,
-  );
-
-  assert.equal(fields.status, "completed");
-  assert.equal(
-    fields.raw_output,
-    'Status: 200\nResponse: {"ok":true,"trigger_id":"deploy-prod"}',
-  );
-  assert.equal(fields.raw_output?.includes('"json"'), false);
-});
-
-test("buildToolResultFields marks RemoteTrigger 4xx output failed", () => {
-  const base = createToolCall("tc-remote-trigger-error", "RemoteTrigger", {
-    action: "run",
-    trigger_id: "missing-trigger",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      status: 404,
-      json: '{"error":"not_found"}',
-      summary: "Trigger not found",
-    },
-    base,
-  );
-
-  assert.equal(fields.status, "failed");
-  assert.equal(
-    fields.raw_output,
-    'Status: 404\nSummary: Trigger not found\nResponse: {"error":"not_found"}',
+  ]) {
+    const result = {
+      status: row.status,
+      json: JSON.stringify(row.data, null, 2),
+      summary: row.summary,
+    };
+    for (const representation of [result, JSON.stringify(result)]) {
+      const text = assertTextProjection(
+        buildToolResultFields(row.outer, representation, base),
+        undefined,
+        row.outer || row.status >= 400 ? "failed" : "completed",
+      );
+      assert.ok(text.includes(`Status: ${row.status}`));
+      if (row.summary) assert.ok(text.includes(row.summary));
+      const response = text.split("\n").find((line) => line.startsWith("Response: "));
+      assert.ok(response);
+      assert.deepEqual(JSON.parse(response.slice("Response: ".length)), row.data);
+    }
+  }
+  assert.ok(
+    assertTextProjection(
+      buildToolResultFields(false, { status: 200, json: "NON-JSON-RESPONSE" }, base),
+    ).includes("NON-JSON-RESPONSE"),
   );
 });
 
-test("buildToolResultFields parses RemoteTrigger transcript JSON", () => {
-  const base = createToolCall("tc-remote-trigger-history", "RemoteTrigger", {
-    action: "get",
-    trigger_id: "deploy-prod",
-  });
-  const transcriptJson = JSON.stringify({
-    status: 200,
-    json: '{\n  "enabled": true,\n  "name": "Deploy prod"\n}',
-  });
-
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-remote-trigger-history",
-    content: transcriptJson,
-  });
-
-  assert.equal(
-    fields.raw_output,
-    'Status: 200\nResponse: {"enabled":true,"name":"Deploy prod"}',
-  );
-  assert.equal(fields.raw_output?.includes('"json"'), false);
+test("REPL preserves distinct output channels and media counts without publishing encoded payloads", () => {
+  const base = createToolCall("repl", "REPL", { code: "INPUT-CODE-PRIVATE" });
+  const result = {
+    code: "INPUT-CODE-PRIVATE",
+    stdout: "STDOUT-ANSWER",
+    stderr: "STDERR-WARNING",
+    result: { ok: false, count: 7 },
+    registeredTools: ["tool-alpha", "tool-beta"],
+    images: [{ base64: "IMAGE-SECRET-ONE" }, { base64: "IMAGE-SECRET-TWO" }],
+    documents: [{ base64: "DOCUMENT-SECRET" }],
+  };
+  for (const representation of [result, JSON.stringify(result)]) {
+    const fields = buildToolResultFields(false, representation, base),
+      text = assertTextProjection(fields);
+    for (const expected of [
+      "Stdout: STDOUT-ANSWER",
+      "Stderr: STDERR-WARNING",
+      "Registered tools: tool-alpha, tool-beta",
+      "Images: 2",
+      "Documents: 1",
+    ])
+      assert.ok(text.includes(expected));
+    const value = text.split("\n").find((line) => line.startsWith("Result: "));
+    assert.ok(value);
+    assert.deepEqual(JSON.parse(value.slice(8)), { ok: false, count: 7 });
+    assert.doesNotMatch(JSON.stringify(fields), /INPUT-CODE-PRIVATE|IMAGE-SECRET|DOCUMENT-SECRET/);
+  }
+  for (const outer of [false, true]) {
+    const text = assertTextProjection(
+      buildToolResultFields(outer, { error: "ACTUAL-REPL-ERROR", stderr: "ACTUAL-STACK" }, base),
+      undefined,
+      "failed",
+    );
+    assert.ok(text.includes("ACTUAL-REPL-ERROR"));
+    assert.ok(text.includes("ACTUAL-STACK"));
+  }
 });
 
-test("buildToolResultFields renders REPL output as structured text without raw JSON", () => {
-  const base = createToolCall("tc-repl", "REPL", {
-    code: "await main()",
-    description: "Run main function",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      code: "await main()",
-      stdout: "done",
-      stderr: "warning",
-      result: { ok: true },
-      registeredTools: ["fetchDocs", "parse"],
-      images: [
-        { base64: "image-one-base64", mediaType: "image/png" },
-        { base64: "image-two-base64", mediaType: "image/png" },
-      ],
-      documents: [{ base64: "document-base64" }],
-    },
-    base,
-  );
-
-  assert.equal(fields.status, "completed");
-  assert.equal(
-    fields.raw_output,
-    'Stdout: done\nStderr: warning\nResult: {"ok":true}\nRegistered tools: fetchDocs, parse\nImages: 2\nDocuments: 1',
-  );
-  assert.equal(fields.raw_output?.includes("await main()"), false);
-  assert.equal(fields.raw_output?.includes("image-one-base64"), false);
-  assert.equal(fields.raw_output?.includes("document-base64"), false);
-  assert.equal(fields.raw_output?.includes('{"code"'), false);
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: fields.raw_output,
-      },
-    },
-  ]);
+test("REPL page-failure previews preserve visible associations and account for local and upstream omissions", () => {
+  const base = createToolCall("pages", "REPL", { code: "readPages()" });
+  for (const count of [3, 137]) {
+    const pages = Array.from({ length: count }, (_, index) => ({
+      page: index + 1,
+      file: `file-${index + 1}.pdf`,
+      error: `cause-${index + 1}`,
+    }));
+    const fields = buildToolResultFields(
+        false,
+        {
+          imagePagesFailed: [null, { page: "invalid" }, ...pages],
+          imagePagesFailedOmitted: 7,
+          imagesOmitted: 11,
+          documentsOmitted: 13,
+        },
+        base,
+      ),
+      text = assertTextProjection(fields);
+    const lines = text.split("\n").filter((line) => line.startsWith("Failed image page: "));
+    assert.ok(lines.length > 0);
+    assert.ok(lines.length <= count);
+    if (count === 3) assert.equal(lines.length, 3);
+    else assert.ok(lines.length < count);
+    for (const [index, line] of lines.entries()) {
+      assert.ok(line.includes(`Failed image page: ${index + 1} (`));
+      assert.ok(line.includes(`file file-${index + 1}.pdf: cause-${index + 1}`));
+    }
+    assert.ok(text.includes(`Failed image pages omitted: ${7 + count - lines.length}`));
+    assert.match(text, /Images omitted: 11/);
+    assert.match(text, /Documents omitted: 13/);
+    assert.doesNotMatch(text, /invalid/);
+  }
 });
 
-test("buildToolResultFields marks REPL error output failed", () => {
-  const base = createToolCall("tc-repl-error", "REPL", {
-    code: "throw new Error('boom')",
+test("Monitor receipts use returned task and timeout observations including implicit persistence", () => {
+  const base = createToolCall("monitor", "Monitor", {
+    description: "watch logs",
+    timeout_ms: 9000,
+    command: "watch",
   });
-  const fields = buildToolResultFields(
-    false,
-    {
-      code: "throw new Error('boom')",
-      error: "boom",
-      stdout: "",
-      stderr: "stack trace",
-      result: {},
-    },
-    base,
-  );
-
-  assert.equal(fields.status, "failed");
-  assert.equal(fields.raw_output, "Error: boom\nStderr: stack trace");
+  for (const result of [
+    { taskId: "finite-monitor", timeoutMs: 30000 },
+    { taskId: "persistent-monitor", timeoutMs: 0 },
+  ]) {
+    for (const representation of [result, JSON.stringify(result)]) {
+      const text = assertTextProjection(
+        buildToolResultFields(false, representation, base),
+        undefined,
+        "detached",
+      );
+      assert.ok(text.includes(result.taskId));
+      assert.doesNotMatch(text, /Timeout: 9s/);
+      if (result.timeoutMs === 0) {
+        assert.match(text, /Persistent: yes/);
+        assert.doesNotMatch(text, /Timeout:/);
+      } else {
+        assert.match(text, /Timeout: 30s/);
+        assert.match(text, /Persistent: no/);
+      }
+    }
+  }
 });
 
-test("buildToolResultFields parses REPL transcript JSON", () => {
-  const base = createToolCall("tc-repl-history", "REPL", {
-    code: "await load()",
+test("Workflow receipts retain local or remote identity and fail truthfully despite launch-shaped errors", () => {
+  const base = createToolCall("workflow", "Workflow", {
+    name: "requested-name",
+    script: "PRIVATE-INPUT-SCRIPT",
   });
-  const transcriptJson = JSON.stringify({
-    code: "await load()",
-    stdout: "loaded",
-    stderr: "",
-    result: { count: 2 },
-    registeredTools: ["lookup"],
-    images: [{ base64: "hidden-image", mediaType: "image/png" }],
-    documents: [{ base64: "hidden-document" }, { base64: "hidden-document-2" }],
-  });
-
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-repl-history",
-    content: transcriptJson,
-  });
-
-  assert.equal(
-    fields.raw_output,
-    'Stdout: loaded\nResult: {"count":2}\nRegistered tools: lookup\nImages: 1\nDocuments: 2',
-  );
-  assert.equal(fields.raw_output?.includes('"code"'), false);
-  assert.equal(fields.raw_output?.includes("hidden-image"), false);
-  assert.equal(fields.raw_output?.includes("hidden-document"), false);
-});
-
-test("buildToolResultFields renders bounded REPL omission and page-failure details", () => {
-  const base = createToolCall("tc-repl-omissions", "REPL", {
-    code: "await readPages()",
-  });
-  const fields = buildToolResultFields(
-    false,
-    {
-      code: "await readPages()",
-      stdout: "",
-      stderr: "",
-      imagesOmitted: 3,
-      imagePagesFailed: Array.from({ length: 22 }, (_, index) => ({
-        page: index + 1,
-        file: "manual.pdf",
-        error: `render failed ${index + 1}`,
-      })),
-      imagePagesFailedOmitted: 2,
-      documentsOmitted: 1,
-    },
-    base,
-  );
-
-  assert.equal(fields.status, "completed");
-  assert.match(fields.raw_output ?? "", /^Images omitted: 3/m);
-  assert.match(
-    fields.raw_output ?? "",
-    /Failed image page: 1 \(file manual\.pdf: render failed 1\)/,
-  );
-  assert.equal(
-    fields.raw_output?.match(/^Failed image page:/gm)?.length,
-    20,
-  );
-  assert.match(fields.raw_output ?? "", /Failed image pages omitted: 4/);
-  assert.match(fields.raw_output ?? "", /Documents omitted: 1/);
-});
-
-test("buildToolResultFields renders Monitor launch output as structured text", () => {
-  const base = createToolCall("tc-monitor", "Monitor", {
-    description: "watch deploy logs",
-    timeout_ms: 30000,
-    persistent: false,
-    command: "tail -f deploy.log",
-  });
-  const fields = buildToolResultFields(
-    false,
-    { taskId: "monitor-1", timeoutMs: 30000, persistent: false },
-    base,
-  );
-
-  assert.equal(fields.status, "detached");
-  assert.equal(
-    fields.raw_output,
-    "Task ID: monitor-1\nPersistent: no\nTimeout: 30s",
-  );
-  assert.equal(fields.raw_output?.includes("{"), false);
-  assert.deepEqual(fields.content, [
-    {
-      type: "content",
-      content: {
-        type: "text",
-        text: fields.raw_output,
-      },
-    },
-  ]);
-});
-
-test("buildToolResultFields renders Workflow launch output as structured text", () => {
-  const base = createToolCall("tc-workflow", "Workflow", {
-    name: "spec",
-    args: { topic: "rendering" },
-  });
-  const fields = buildToolResultFields(
-    false,
+  const rows = [
     {
       status: "async_launched",
-      taskId: "workflow-1",
+      taskId: "actual-local-task",
       taskType: "local_workflow",
-      workflowName: "spec",
-      runId: "run-1",
-      summary: "Workflow started",
-      transcriptDir: "C:/tmp/transcripts",
-      scriptPath: "C:/tmp/workflow.js",
-      warning: "branch diverged",
+      workflowName: "actual-name",
+      runId: "actual-run",
+      summary: "ACTUAL-SUMMARY",
+      transcriptDir: "C:/owned/transcript",
+      scriptPath: "C:/owned/worker.js",
+      warning: "ACTUAL-WARNING",
     },
-    base,
-  );
-
-  assert.equal(fields.status, "detached");
-  assert.equal(
-    fields.raw_output,
-    "Status: async launched\nTask ID: workflow-1\nTask type: local_workflow\nWorkflow name: spec\nRun ID: run-1\nSummary: Workflow started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nWarning: branch diverged",
-  );
-  assert.equal(fields.raw_output?.includes("{"), false);
-  assert.equal(fields.raw_output?.includes('"status"'), false);
-});
-
-test("buildToolResultFields marks Workflow output with error as failed", () => {
-  const base = createToolCall("tc-workflow-error", "Workflow", {
-    script: "bad workflow script",
-  });
-  const fields = buildToolResultFields(
-    false,
     {
-      status: "async_launched",
-      taskId: "workflow-err",
-      error: "Syntax check failed",
+      status: "remote_launched",
+      taskId: "actual-remote-task",
+      sessionUrl: "https://claude.ai/session/actual",
     },
-    base,
+  ];
+  for (const row of rows) {
+    for (const representation of [row, JSON.stringify(row)]) {
+      const text = assertTextProjection(
+        buildToolResultFields(false, representation, base),
+        undefined,
+        "detached",
+      );
+      for (const [key, value] of Object.entries(row))
+        if (key !== "status") assert.ok(text.includes(value));
+      assert.doesNotMatch(text, /PRIVATE-INPUT-SCRIPT|requested-name/);
+    }
+  }
+  const failed = assertTextProjection(
+    buildToolResultFields(
+      false,
+      { status: "async_launched", taskId: "failed-task", error: "ACTUAL-CHECK-FAILURE" },
+      base,
+    ),
+    undefined,
+    "failed",
   );
-
-  assert.equal(fields.status, "failed");
-  assert.equal(
-    fields.raw_output,
-    "Status: async launched\nTask ID: workflow-err\nError: Syntax check failed",
-  );
-  assert.equal(fields.raw_output?.includes("bad workflow script"), false);
+  assert.ok(failed.includes("failed-task"));
+  assert.ok(failed.includes("ACTUAL-CHECK-FAILURE"));
+  assert.doesNotMatch(failed, /PRIVATE-INPUT-SCRIPT/);
 });
 
-test("buildToolResultFields parses Workflow transcript JSON", () => {
-  const base = createToolCall("tc-workflow-history", "Workflow", {
-    name: "remote-spec",
-  });
-  const transcriptJson = JSON.stringify({
-    status: "remote_launched",
-    taskId: "workflow-remote",
-    sessionUrl: "https://claude.ai/session/remote",
-  });
-
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-workflow-history",
-    content: transcriptJson,
-  });
-
-  assert.equal(
-    fields.raw_output,
-    "Status: remote launched\nTask ID: workflow-remote\nSession URL: https://claude.ai/session/remote",
-  );
-  assert.equal(fields.raw_output?.includes('"taskId"'), false);
-});
-
-test("buildToolResultFields suppresses EnterPlanMode structured output body", () => {
-  const base = createToolCall("tc-enter-plan-mode", "EnterPlanMode", {});
-  const fields = buildToolResultFields(
-    false,
+test("EnterPlanMode suppresses recognized success while retaining failures and unrecognized fallback", () => {
+  const base = createToolCall("plan", "EnterPlanMode", {});
+  for (const result of [
     { message: "Plan mode entered" },
-    base,
+    JSON.stringify({ message: "Entered plan mode" }),
+  ]) {
+    const fields = buildToolResultFields(false, result, base);
+    assert.equal(fields.status, "completed");
+    assert.equal(fields.raw_output, undefined);
+    assert.equal(fields.content, undefined);
+  }
+  assertTextProjection(
+    buildToolResultFields(true, "PLAN-MODE-DENIED", base, { message: "stale success" }),
+    "PLAN-MODE-DENIED",
+    "failed",
   );
-
-  assert.equal(fields.status, "completed");
-  assert.equal(fields.raw_output, undefined);
-  assert.equal(fields.content, undefined);
+  assertTextProjection(
+    buildToolResultFields(false, "UNRECOGNIZED-PLAN-RECEIPT", base, { future: true }),
+    "UNRECOGNIZED-PLAN-RECEIPT",
+  );
 });
 
-test("buildToolResultFields suppresses EnterPlanMode transcript JSON body", () => {
-  const base = createToolCall(
-    "tc-enter-plan-mode-history",
-    "EnterPlanMode",
-    {},
+test("bounded Grep and Glob previews account for locally omitted filenames separately from SDK totals", () => {
+  const files = Array.from(
+    { length: 137 },
+    (_, index) => `independent/file-${String(index).padStart(3, "0")}.rs`,
   );
-  const transcriptJson = JSON.stringify({ message: "Entered plan mode" });
-
-  const fields = buildToolResultFields(false, transcriptJson, base, {
-    type: "tool_result",
-    tool_use_id: "tc-enter-plan-mode-history",
-    content: transcriptJson,
-  });
-
-  assert.equal(fields.status, "completed");
-  assert.equal(fields.raw_output, undefined);
-  assert.equal(fields.content, undefined);
+  for (const name of ["Grep", "Glob"]) {
+    const result =
+      name === "Grep"
+        ? { mode: "files_with_matches", filenames: files, numFiles: 901 }
+        : { filenames: files, numFiles: 901, durationMs: 17, truncated: true };
+    const text = assertTextProjection(
+      buildToolResultFields(
+        false,
+        "unused fallback",
+        createToolCall(`bounded-${name}`, name, { pattern: "fixture" }),
+        result,
+      ),
+    );
+    const visible = files.filter((file) => text.split("\n").includes(file));
+    assert.ok(visible.length > 0 && visible.length < files.length);
+    assert.deepEqual(visible, files.slice(0, visible.length));
+    assert.equal(new Set(visible).size, visible.length);
+    assert.ok(text.includes(files[0]));
+    assert.ok(!text.includes(files.at(-1) ?? "missing"));
+    const omission = /(?:\.\.\.|\u2026)\s*(\d+)\s+more/i.exec(text);
+    assert.ok(omission, text);
+    assert.equal(Number(omission[1]), files.length - visible.length);
+    assert.match(text, /901 files/);
+  }
 });
 
-test("buildToolResultFields ignores removed TodoWrite verification metadata", () => {
-  const base = createToolCall("tc-todo", "TodoWrite", {
-    todos: [
-      {
-        content: "Verify changes",
-        status: "pending",
-        activeForm: "Verifying changes",
-      },
-    ],
-  });
-  const fields = buildToolResultFields(
-    false,
-    [{ text: "Todos have been modified successfully." }],
-    base,
-    {
-      data: {
-        oldTodos: [],
-        newTodos: [],
-        verificationNudgeNeeded: true,
-      },
-    },
-  );
-
-  assert.equal(fields.output_metadata, undefined);
+test("confirmed stop, worktree and literal REPL channels retain independent native receipts in direct and saved JSON representations", () => {
+	const rows = JSON.parse(
+		readFileSync(
+			new URL(
+				"../../../tests/fixtures/sdk-confirmed-tool-results.json",
+				import.meta.url,
+			),
+			"utf8",
+		),
+	) as Array<{
+		id: string;
+		tool: string;
+		input: Record<string, unknown>;
+		result: Record<string, unknown>;
+		fields: Array<[string, string]>;
+		text: string;
+	}>;
+	for (const row of rows)
+		for (const result of [row.result, JSON.stringify(row.result)]) {
+			const fields = buildToolResultFields(
+				false,
+				result,
+				createToolCall(row.id, row.tool, row.input),
+			);
+			assertTextProjection(fields, row.text);
+			assert.deepEqual(
+				fields.output_metadata?.presentation,
+				{
+					sections: [
+						{
+							fields: row.fields.map(([label, value]) => ({
+								label,
+								value: { type: "text", value },
+							})),
+						},
+					],
+				},
+				row.id,
+			);
+			assert.doesNotMatch(
+				JSON.stringify(fields),
+				/PRIVATE-IMAGE|PRIVATE-DOCUMENT|REQUESTED-CODE/,
+			);
+			if (row.tool === "ScheduleWakeup")
+				assert.doesNotMatch(
+					String(fields.raw_output),
+					/Scheduled for|Actual delay|requested future/,
+				);
+			const failed = buildToolResultFields(
+				true,
+				"INDEPENDENT-OPERATION-FAILURE",
+				createToolCall(row.id, row.tool, row.input),
+			);
+			assertTextProjection(failed, "INDEPENDENT-OPERATION-FAILURE", "failed");
+			assert.equal(failed.output_metadata?.presentation, undefined);
+		}
+	const scheduled = projectInUtc(
+		"ScheduleWakeup",
+		{ stop: true },
+		{
+			stopped: false,
+			scheduledFor: 1780662896000,
+			clampedDelaySeconds: 90,
+			wasClamped: true,
+		},
+	);
+	assertTextProjection(
+		scheduled,
+		"Scheduled for: 2026-06-05 12:34:56 local\nActual delay: 1m 30s\nClamped: yes",
+	);
+	assert.doesNotMatch(String(scheduled.raw_output), /Stopped|Cancelled/);
 });
