@@ -2762,28 +2762,40 @@ fn ctrl_backspace_and_delete_use_word_operations() {
 
 #[test]
 fn configured_undo_and_redo_restore_textarea_history() {
-    let mut app = make_test_app();
-    app.input.set_text("hello world");
-
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD));
-    assert_eq!(app.input.text(), "hello ");
-
     #[cfg(target_os = "macos")]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD));
+    let aliases = [
+        ('z', KeyModifiers::SUPER, 'z', KeyModifiers::SUPER | KeyModifiers::SHIFT),
+        ('z', KeyModifiers::SUPER, 'y', KeyModifiers::SUPER),
+    ];
     #[cfg(target_os = "windows")]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    let aliases = [('z', KeyModifiers::CONTROL, 'z', KeyModifiers::CONTROL | KeyModifiers::SHIFT)];
     #[cfg(all(unix, not(target_os = "macos")))]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('_'), KeyModifiers::CONTROL));
-    assert_eq!(app.input.text(), "hello world");
-
-    #[cfg(target_os = "macos")]
-    handle_normal_key(&mut app, KeyEvent::new(KeyCode::Char('z'), CMD_MOD | KeyModifiers::SHIFT));
-    #[cfg(not(target_os = "macos"))]
-    handle_normal_key(
-        &mut app,
-        KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-    );
-    assert_eq!(app.input.text(), "hello ");
+    let aliases = [
+        ('_', KeyModifiers::CONTROL, 'z', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+        ('/', KeyModifiers::CONTROL, 'z', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+    ];
+    for (undo, undo_modifiers, redo, redo_modifiers) in aliases {
+        let mut app = make_test_app();
+        app.status = AppStatus::Ready;
+        app.input.set_text("hello world");
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Backspace, WORD_NAV_MOD)),
+        );
+        assert_eq!(app.input.text(), "hello ");
+        let outcome = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char(undo), undo_modifiers)),
+        );
+        assert_eq!(app.input.text(), "hello world");
+        assert_eq!(outcome.runtime_command, None, "history keys must not suspend the process");
+        let outcome = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char(redo), redo_modifiers)),
+        );
+        assert_eq!(app.input.text(), "hello ");
+        assert_eq!(outcome.runtime_command, None);
+    }
 }
 
 #[test]
@@ -3557,6 +3569,23 @@ fn terminal_event_outcome_carries_runtime_command() {
 
     assert!(outcome.changed);
     assert_eq!(outcome.runtime_command, Some(crate::app::keys::RuntimeCommand::SuspendProcess));
+    #[cfg(unix)]
+    {
+        let mut app = make_test_app();
+        app.status = AppStatus::Ready;
+        app.input.set_text("edited draft");
+        handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        );
+        assert_eq!(app.input.text(), "edited draf");
+        let outcome = handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+        );
+        assert_eq!(outcome.runtime_command, Some(crate::app::keys::RuntimeCommand::SuspendProcess));
+        assert_eq!(app.input.text(), "edited draf");
+    }
 }
 
 #[test]

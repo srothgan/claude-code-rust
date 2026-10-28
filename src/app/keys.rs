@@ -1184,36 +1184,6 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_moves_to_line_start_then_previous_line_start() {
-        let mut app = App::test_default();
-        app.input.set_text("alpha\nbeta\ngamma");
-        let _ = app.input.set_cursor(1, 2);
-        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
-
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (1, 0));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (0, 0));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(false));
-        assert_eq!(app.input.cursor(), (0, 0));
-    }
-
-    #[test]
-    fn ctrl_e_moves_to_line_end_then_next_line_end() {
-        let mut app = App::test_default();
-        app.input.set_text("alpha\nbeta\ngamma");
-        let _ = app.input.set_cursor(1, 2);
-        let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
-
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (1, 4));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (2, 5));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(false));
-        assert_eq!(app.input.cursor(), (2, 5));
-    }
-
-    #[test]
     fn backspace_after_image_atom_removes_pending_image_and_renumbers_badges() {
         let mut app = App::test_default();
         app.input.set_text("[Image #1] text [Image #2]");
@@ -1442,5 +1412,61 @@ mod tests {
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
         );
         assert!(!blocked);
+    }
+    #[test]
+    fn physical_line_keys_preserve_logical_boundaries_and_the_next_edit_position() {
+        use crate::app::test_support::{app_with_connection, press};
+        for (code, modifiers, positions, edited) in [
+            (
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL,
+                [(1, 0), (0, 0), (0, 0)],
+                [
+                    "\u{3b1}\u{3b2}\n!caf\u{e9}\n\u{732b}\u{5c3e}",
+                    "!\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}",
+                    "!\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}",
+                ],
+            ),
+            (
+                KeyCode::Char('e'),
+                KeyModifiers::CONTROL,
+                [(1, 4), (2, 2), (2, 2)],
+                [
+                    "\u{3b1}\u{3b2}\ncaf\u{e9}!\n\u{732b}\u{5c3e}",
+                    "\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}!",
+                    "\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}!",
+                ],
+            ),
+            (
+                KeyCode::Home,
+                KeyModifiers::NONE,
+                [(1, 0); 3],
+                ["\u{3b1}\u{3b2}\n!caf\u{e9}\n\u{732b}\u{5c3e}"; 3],
+            ),
+            (
+                KeyCode::End,
+                KeyModifiers::NONE,
+                [(1, 4); 3],
+                ["\u{3b1}\u{3b2}\ncaf\u{e9}!\n\u{732b}\u{5c3e}"; 3],
+            ),
+        ] {
+            for (count, (position, expected_text)) in positions.into_iter().zip(edited).enumerate()
+            {
+                let (mut app, mut commands) = app_with_connection();
+                app.status = AppStatus::Ready;
+                app.input.set_text("\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}");
+                app.input.set_cursor(1, 2);
+                for _ in 0..=count {
+                    crate::app::handle_terminal_event(
+                        &mut app,
+                        crossterm::event::Event::Key(KeyEvent::new(code, modifiers)),
+                    );
+                }
+                assert_eq!(app.input.cursor(), position, "{code:?} press {}", count + 1);
+                press(&mut app, KeyCode::Char('!'));
+                assert_eq!(app.input.text(), expected_text);
+                assert!(commands.try_recv().is_err());
+            }
+        }
     }
 }

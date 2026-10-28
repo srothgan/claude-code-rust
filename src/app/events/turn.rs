@@ -410,7 +410,7 @@ pub(super) fn handle_question_request_event(
     if let Some(tc) = app.tool_call_at_mut(mi, bi) {
         tc.pending_question = Some(InlineQuestion {
             idle_timeout: request.idle_timeout_ms.map(std::time::Duration::from_millis),
-            last_activity: std::time::Instant::now(),
+            last_activity: crate::app::questions::activity_now(),
             prompt: request.prompt,
             response_tx,
             focused_option_index: 0,

@@ -107,7 +107,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
     if matches!(&event, Event::Key(key) if should_dispatch_key_event(app, *key))
         || matches!(&event, Event::Paste(_) | Event::Mouse(_))
     {
-        super::questions::record_activity(app, std::time::Instant::now());
+        super::questions::record_activity(app, super::questions::activity_now());
     }
     let outcome = match event {
         Event::Key(key) if should_dispatch_key_event(app, key) => dispatch_key_by_view(app, key),

@@ -69,7 +69,7 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
                 {
                     question.focused = focused;
                     if focused {
-                        question.last_activity = std::time::Instant::now();
+                        question.last_activity = super::questions::activity_now();
                     }
                     tc.invalidate_render_cache();
                     invalidated = true;
