@@ -2453,3 +2453,203 @@ async fn a_request_that_cannot_be_sent_fails_the_export_itself() {
         })
         .await;
 }
+
+#[test]
+fn invalid_login_submission_preserves_conversation_without_starting_authentication() {
+    use crate::app::input_submit::submit_input;
+    let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::User,
+        vec![MessageBlock::Text(crate::app::TextBlock::from_complete("earlier user message"))],
+        None,
+    ));
+    let previous_id = app.transcript.messages[0].id;
+    app.input.set_text("/login extra");
+    submit_input(&mut app);
+    assert!(app.input.is_empty());
+    assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+    assert!(matches!(app.status, AppStatus::Ready));
+    assert_eq!(app.session_runtime.session_id.as_ref().unwrap().to_string(), "session-1");
+    assert_eq!(app.transcript.messages[0].id, previous_id);
+    assert!(
+        matches!(&app.transcript.messages[0].blocks[..], [MessageBlock::Text(t)] if t.text == "earlier user message")
+    );
+    let last = app.transcript.messages.last().unwrap();
+    assert!(matches!(last.role, MessageRole::System(Some(crate::app::SystemSeverity::Error))));
+    assert!(matches!(&last.blocks[..], [MessageBlock::Text(t)] if t.text == "Usage: /login"));
+    assert!(
+        rx.try_recv().is_err(),
+        "invalid arguments must not send authentication or prompt commands"
+    );
+}
+
+#[test]
+fn advertised_command_and_alias_submit_exact_source_while_unknown_command_stays_local() {
+    use crate::agent::wire::BridgeCommand;
+    use crate::app::input_submit::submit_input;
+    for command in
+        ["/remote-command exact arguments", "/remote alias arguments", "/unknown-command"]
+    {
+        let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+        app.sdk_inventory.available_commands = vec![
+            model::AvailableCommand::new("/remote-command", "Remote command")
+                .aliases(vec!["/remote".into()]),
+        ];
+        app.session_runtime.prompt_suggestion = Some("previous suggestion".into());
+        app.input.set_text(command);
+        submit_input(&mut app);
+        assert!(app.input.is_empty());
+        if command == "/unknown-command" {
+            assert!(rx.try_recv().is_err());
+            assert!(matches!(app.status, AppStatus::Ready));
+            let last = app.transcript.messages.last().unwrap();
+            assert!(last.blocks.iter().any(
+                |b| matches!(b, MessageBlock::Text(t) if t.text.contains("/unknown-command") && t.text.contains("not yet supported"))
+            ));
+            assert_eq!(
+                app.session_runtime.prompt_suggestion.as_deref(),
+                Some("previous suggestion")
+            );
+            assert!(app.active_turn_assistant_idx().is_none());
+        } else {
+            let BridgeCommand::Prompt { session_id, message_uuid, chunks, inline_pastes } =
+                rx.try_recv().expect("advertised prompt").command
+            else {
+                panic!("prompt")
+            };
+            assert_eq!(session_id, "session-1");
+            assert!(inline_pastes.is_empty());
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].kind, "text");
+            assert_eq!(chunks[0].value, json!(command));
+            assert!(app.session_runtime.prompt_suggestion.is_none());
+            let user = app
+                .transcript
+                .messages
+                .iter()
+                .find(|m| matches!(m.role, MessageRole::User))
+                .unwrap();
+            assert!(
+                matches!(&user.blocks[..], [MessageBlock::Text(t)] if t.text == command && t.source_message_uuids == [message_uuid])
+            );
+            let owner = app.active_turn_assistant_idx().unwrap();
+            crate::app::test_support::deliver_update(
+                &mut app,
+                model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                    model::ContentBlock::Text(model::TextContent::new("Advertised command result")),
+                )),
+            );
+            assert!(
+                matches!(&app.transcript.messages[owner].blocks[..], [MessageBlock::Text(t)] if t.text == "Advertised command result")
+            );
+            while let Ok(envelope) = rx.try_recv() {
+                assert!(
+                    matches!(envelope.command, BridgeCommand::GetContextUsage { session_id } if session_id == "session-1")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn live_turn_view_submissions_open_the_requested_pane_and_preserve_response_ownership() {
+    use crate::agent::{events::ClientEvent, wire::BridgeCommand};
+    use crate::app::{ConfigTab, FullscreenView, SurfaceMode, input_submit::submit_input};
+    for (command, tab) in
+        [("/status", ConfigTab::Status), ("/mcp", ConfigTab::Mcp), ("/plugins", ConfigTab::Plugins)]
+    {
+        let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+        let dir = tempfile::tempdir().unwrap();
+        app.cwd_raw = dir.path().to_string_lossy().into_owned();
+        app.settings_home_override = Some(dir.path().to_path_buf());
+        app.input.set_text("main request");
+        submit_input(&mut app);
+        assert!(
+            matches!(rx.try_recv().unwrap().command, BridgeCommand::Prompt { session_id, .. } if session_id == "session-1")
+        );
+        while let Ok(envelope) = rx.try_recv() {
+            assert!(matches!(envelope.command, BridgeCommand::GetContextUsage { .. }));
+        }
+        crate::app::test_support::deliver_update(
+            &mut app,
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("Before opening view")),
+            )),
+        );
+        let owner = app.active_turn_assistant_idx().unwrap();
+        app.config.active_tab = ConfigTab::Settings;
+        // A fresh controlled inventory keeps this navigation test independent of host plugins.
+        let cwd_raw = app.cwd_raw.clone();
+        crate::app::events::handle_client_event(
+            &mut app,
+            ClientEvent::PluginsInventoryUpdated {
+                cwd_raw,
+                snapshot: crate::app::plugins::PluginsInventorySnapshot {
+                    installed: vec![crate::app::plugins::InstalledPluginEntry {
+                        id: "audit-fixture@local".into(),
+                        version: Some("1.0".into()),
+                        scope: "user".into(),
+                        enabled: true,
+                        installed_at: None,
+                        last_updated: None,
+                        project_path: None,
+                        mcp_server_names: vec![],
+                    }],
+                    marketplace: vec![],
+                    marketplaces: vec![],
+                },
+                claude_path: dir.path().join("controlled-cli"),
+            },
+        );
+        app.input.set_text(command);
+        submit_input(&mut app);
+        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
+        assert_eq!(app.config.active_tab, tab);
+        assert!(app.input.is_empty());
+        assert!(matches!(app.status, AppStatus::Running));
+        assert!(!app.turn.cancel_requested);
+        match tab {
+            ConfigTab::Status => assert!(
+                matches!(rx.try_recv().unwrap().command, BridgeCommand::GetStatusSnapshot {session_id} if session_id == "session-1")
+            ),
+            ConfigTab::Mcp => assert!(
+                matches!(rx.try_recv().unwrap().command, BridgeCommand::GetMcpSnapshot {session_id} if session_id == "session-1")
+            ),
+            _ => {}
+        }
+        assert!(rx.try_recv().is_err());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let body: Vec<String> =
+            (3..35).map(|y| (2..118).map(|x| buffer[(x, y)].symbol()).collect()).collect();
+        match tab {
+            ConfigTab::Status => {
+                assert!(body.iter().any(|r| r.contains("Session ID") && r.contains("session-1")));
+            }
+            ConfigTab::Mcp => assert!(body.iter().any(|r| r.contains("Loading MCP status"))),
+            ConfigTab::Plugins => assert!(body.iter().any(|r| r.contains("audit-fixture"))),
+            _ => unreachable!(),
+        }
+        crate::app::test_support::press(&mut app, crossterm::event::KeyCode::Esc);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        crate::app::test_support::deliver_update(
+            &mut app,
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new(" and after closing it")),
+            )),
+        );
+        assert_eq!(app.active_turn_assistant_idx(), Some(owner));
+        let response: String = app.transcript.messages[owner]
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(response, "Before opening view and after closing it");
+        assert!(rx.try_recv().is_err());
+    }
+}
