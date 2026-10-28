@@ -324,50 +324,79 @@ mod tests {
     }
 
     #[test]
-    fn loading_state_ignores_navigation_keys() {
+    fn startup_loading_blocks_actions_until_connection_and_list_are_ready() {
+        use crate::app::test_support::{drain_session_refreshes, session_connection};
+        for connected in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = picker_app();
+            app.startup = startup_choice();
+            let (connection, mut rx) = AgentConnection::test_channel();
+            let connection = Rc::new(connection);
+            app.session_runtime.conn = connected.then(|| connection.clone());
+            app.input.set_text("Unsent draft");
+            app.session_picker.query = "First".into();
+            let draft = app.input.snapshot();
+            for code in [
+                KeyCode::Down,
+                KeyCode::End,
+                KeyCode::Enter,
+                KeyCode::Right,
+                KeyCode::Esc,
+                KeyCode::Char('x'),
+            ] {
+                key(&mut app, code);
+            }
+            assert!(!super::paste_search(&mut app, "ignored paste"));
+            assert_eq!(app.session_picker.query, "First");
+            assert_eq!(app.input.snapshot(), draft);
+            assert!(app.session_picker.turn_session_id.is_none());
+            assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+            assert!(rx.try_recv().is_err());
+            app.session_runtime.conn = Some(connection);
+            crate::app::events::handle_client_event(
+                &mut app,
+                session_connection("session-1", dir.path()),
+            );
+            drain_session_refreshes(&mut rx, "session-1");
+            deliver_list(&mut app, &[("session-1", "First"), ("session-2", "Second")]);
+            key(&mut app, KeyCode::End);
+            let target = super::selected_session(&app).unwrap().session_id.clone();
+            assert_eq!(target, "session-2");
+            key(&mut app, KeyCode::Enter);
+            expect_resume(&mut rx, "session-2");
+        }
         let mut app = picker_app();
-        app.startup =
-            crate::app::state::StartupState::new(None, crate::StartupLaunch::SessionPicker);
-        app.startup.request_connection();
-        assert!(app.startup.mark_connection_started());
-        app.session_runtime.conn = None;
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-
-        assert_eq!(app.session_picker.selected, 0);
-        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
+        app.startup = startup_choice();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        assert!(app.shutdown_requested());
     }
 
     #[test]
-    fn up_and_down_move_selection() {
+    fn navigation_resumes_only_the_selected_session_on_confirmation() {
         let mut app = picker_app();
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.session_picker.selected, 1);
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.session_picker.selected, 0);
-    }
-
-    #[test]
-    fn enter_triggers_resume() {
-        let mut app = picker_app();
-        let (connection, mut rx) = AgentConnection::test_channel();
-        app.session_runtime.conn = Some(Rc::new(connection));
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
+        let mut rx = attach(&mut app);
+        let mut third = app.recent_sessions[0].clone();
+        third.session_id = "session-3".into();
+        third.custom_title = Some("Third".into());
+        app.recent_sessions.push(third);
+        for (code, id) in [
+            (KeyCode::Up, "session-1"),
+            (KeyCode::Down, "session-2"),
+            (KeyCode::End, "session-3"),
+            (KeyCode::Down, "session-3"),
+            (KeyCode::Home, "session-1"),
+            (KeyCode::Up, "session-1"),
+            (KeyCode::Down, "session-2"),
+        ] {
+            key(&mut app, code);
+            assert_eq!(super::selected_session(&app).unwrap().session_id, id);
+            assert!(rx.try_recv().is_err());
+        }
+        key(&mut app, KeyCode::Enter);
+        expect_resume(&mut rx, "session-2");
+        assert_eq!(app.pending_session_resume_id(), Some("session-2"));
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
         assert!(matches!(app.status, AppStatus::CommandPending));
-        assert_eq!(app.pending_session_resume_id(), Some("session-1"));
-        let envelope = rx.try_recv().expect("resume command");
-        assert!(matches!(
-            envelope.command,
-            BridgeCommand::ResumeSession {
-                session_id,
-                ..
-            } if session_id == "session-1"
-        ));
     }
 
     #[test]
@@ -387,30 +416,27 @@ mod tests {
     #[test]
     fn search_matches_visible_title_and_id_without_losing_the_selected_session() {
         let mut app = picker_app();
+        let mut rx = attach(&mut app);
         app.recent_sessions[0].custom_title = Some("Other".into());
-        app.recent_sessions[1].custom_title = Some("Überblick".into());
-        app.session_picker.selected = 1;
-
-        for ch in "ÜBER".chars() {
-            handle_key(&mut app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        app.recent_sessions[1].custom_title = Some("\u{dc}berblick".into());
+        key(&mut app, KeyCode::Down);
+        for ch in "\u{dc}BER".chars() {
+            key(&mut app, KeyCode::Char(ch));
+            assert_eq!(super::selected_session(&app).unwrap().session_id, "session-2");
         }
         assert_eq!(
-            super::picker_sessions(&app)
-                .map(|session| session.session_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["session-2"]
+            super::picker_sessions(&app).map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
+            ["session-2"]
         );
-        assert_eq!(app.session_picker.selected, 0);
-
         for _ in 0..4 {
-            handle_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+            key(&mut app, KeyCode::Backspace);
+            assert_eq!(super::selected_session(&app).unwrap().session_id, "session-2");
         }
-        assert_eq!(app.session_picker.selected, 1);
         assert!(super::paste_search(&mut app, "SESSION-2"));
-        assert_eq!(
-            super::selected_session(&app).map(|session| session.session_id.as_str()),
-            Some("session-2")
-        );
+        assert_eq!(super::selected_session(&app).unwrap().session_id, "session-2");
+        assert!(rx.try_recv().is_err());
+        key(&mut app, KeyCode::Enter);
+        expect_resume(&mut rx, "session-2");
     }
 
     #[test]
@@ -433,41 +459,63 @@ mod tests {
     }
 
     #[test]
-    fn filtered_message_navigation_uses_matching_session_and_restores_search() {
-        let mut app = picker_app();
-        let (connection, mut rx) = AgentConnection::test_channel();
-        app.session_runtime.conn = Some(Rc::new(connection));
-        assert!(super::paste_search(&mut app, "Second"));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(matches!(rx.try_recv().expect("history request").command,
-            BridgeCommand::GetRewindTargets { session_id } if session_id == "session-2"));
-        assert!(!super::paste_search(&mut app, "ignored"));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(app.session_picker.query, "Second");
-        assert_eq!(
-            super::selected_session(&app).map(|session| session.session_id.as_str()),
-            Some("session-2")
-        );
+    fn filtered_message_navigation_abandons_old_results_and_allows_reentry() {
+        for back in [KeyCode::Left, KeyCode::Esc] {
+            let mut app = picker_app();
+            let mut rx = attach(&mut app);
+            assert!(super::paste_search(&mut app, "Second"));
+            request_history(&mut app, &mut rx, "session-2");
+            assert!(!super::paste_search(&mut app, "ignored"));
+            key(&mut app, back);
+            deliver_targets(&mut app, "session-2", "STALE target");
+            assert!(app.session_picker.turn_session_id.is_none());
+            assert_eq!(app.session_picker.query, "Second");
+            assert_eq!(super::selected_session(&app).unwrap().session_id, "session-2");
+            assert!(!picker_rows(&mut app).iter().any(|r| r.contains("STALE")));
+            assert!(rx.try_recv().is_err());
+            request_history(&mut app, &mut rx, "session-2");
+            deliver_targets(&mut app, "session-2", "Fresh target");
+            assert!(picker_rows(&mut app).iter().any(|r| r.contains("Fresh target")));
+            key(&mut app, KeyCode::Right);
+            assert!(picker_rows(&mut app).iter().any(|r| r.contains("Fresh target")));
+            key(&mut app, back);
+            assert!(app.session_picker.turn_session_id.is_some());
+            key(&mut app, back);
+            assert_eq!(super::selected_session(&app).unwrap().session_id, "session-2");
+        }
     }
 
     #[test]
-    fn search_follows_the_same_title_fallbacks_as_the_display() {
-        for (custom, prompt, summary, query) in [
-            (Some("Named"), Some("Prompt"), "Summary", "named"),
-            (Some(" "), Some("Prompt"), "Summary", "prompt"),
-            (None, Some(" "), "Summary", "summary"),
-            (None, None, " ", "session-1"),
+    fn search_obeys_visible_title_precedence_and_independent_id_and_branch_matches() {
+        for (custom, prompt, summary, hit, hidden) in [
+            (Some("Named"), Some("Prompt"), "Summary", "named", Some("prompt")),
+            (Some(" "), Some("Prompt"), "Summary", "prompt", Some("summary")),
+            (None, Some(" "), "Summary", "summary", None),
+            (None, None, " ", "session-1", None),
         ] {
             let mut app = picker_app();
-            app.recent_sessions.truncate(1);
             app.recent_sessions[0].custom_title = custom.map(str::to_owned);
             app.recent_sessions[0].first_prompt = prompt.map(str::to_owned);
             app.recent_sessions[0].summary = summary.into();
-            assert!(super::paste_search(&mut app, query));
-            assert_eq!(
-                super::selected_session(&app).map(|session| session.session_id.as_str()),
-                Some("session-1")
-            );
+            app.recent_sessions[0].git_branch = Some("unique-branch".into());
+            for query in
+                [Some(hit), Some("SESSION-1"), Some("UNIQUE-BRANCH"), hidden, Some("no-match")]
+                    .into_iter()
+                    .flatten()
+            {
+                super::open(&mut app);
+                assert!(super::paste_search(&mut app, query));
+                let expected = if Some(query) == hidden || query == "no-match" {
+                    vec![]
+                } else {
+                    vec!["session-1"]
+                };
+                assert_eq!(
+                    super::picker_sessions(&app).map(|s| s.session_id.as_str()).collect::<Vec<_>>(),
+                    expected,
+                    "query={query}"
+                );
+            }
         }
     }
 
@@ -486,96 +534,288 @@ mod tests {
     }
 
     #[test]
-    fn right_opens_turn_picker_and_left_returns_to_sessions() {
-        let mut app = picker_app();
-        let (connection, _rx) = AgentConnection::test_channel();
-        app.session_runtime.conn = Some(Rc::new(connection));
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.session_picker.turn_session_id.as_deref(), Some("session-1"));
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert!(app.session_picker.turn_session_id.is_none());
-        assert!(!app.sdk_inventory.rewind_targets_in_flight);
-        assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::SessionPicker));
-    }
-
-    #[test]
-    fn enter_on_message_or_reader_forks_before_the_selected_message() {
-        for reading in [false, true] {
+    fn cancellation_releases_startup_choice_and_preserves_the_active_draft() {
+        for startup in [false, true] {
             let mut app = picker_app();
-            let (connection, mut rx) = AgentConnection::test_channel();
-            app.session_runtime.conn = Some(Rc::new(connection));
-            app.session_picker.turn_session_id = Some("session-1".to_owned());
-            app.sdk_inventory.rewind_targets = vec![crate::agent::model::RewindTarget {
-                uuid: "user-2".to_owned(),
-                first_text: "second prompt".to_owned(),
-                input_text: "second prompt".to_owned(),
-                index: 3,
-                previous_assistant_uuid: Some("assistant-1".to_owned()),
-                resume_anchor_uuid: Some("assistant-1".to_owned()),
-            }];
-
-            app.sdk_inventory.rewind_targets.insert(
-                0,
-                crate::agent::model::RewindTarget {
-                    uuid: "other-message".into(),
-                    first_text: "Other prompt".into(),
-                    input_text: "Other prompt".into(),
-                    index: 5,
-                    previous_assistant_uuid: None,
-                    resume_anchor_uuid: None,
-                },
-            );
-            handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-            app.session_picker.turn_reading = reading;
-            handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
+            let mut rx = attach(&mut app);
+            seed_chat(&mut app, &mut rx);
+            if startup {
+                app.startup = startup_choice();
+                app.startup.mark_recent_sessions_loaded();
+                assert!(!app.startup.launch_completed());
+                assert!(!app.startup.session_picker_resolved());
+            }
+            super::open(&mut app);
+            let draft = app.input.snapshot();
+            key(&mut app, KeyCode::Esc);
             assert_eq!(app.surface_mode, SurfaceMode::Chat);
-            assert_eq!(app.pending_session_resume_id(), Some("session-1"));
-            let operation_id =
-                app.pending_resume_at_operation_id().expect("pending resume-at operation");
-            let envelope = rx.try_recv().expect("resume-at command");
-            assert_eq!(envelope.request_id.as_deref(), Some(operation_id));
-            assert!(matches!(
-                envelope.command,
-                BridgeCommand::ResumeSessionAt {
-                    session_id,
-                    target_user_message_id,
-                    ..
-                } if session_id == "session-1" && target_user_message_id == "user-2"
-            ));
+            assert_eq!(app.session_runtime.session_id.as_ref().unwrap().as_str(), "session-1");
+            assert_eq!(app.input.snapshot(), draft);
+            assert!(app.startup.launch_completed());
+            assert!(app.startup.session_picker_resolved());
+            assert!(rx.try_recv().is_err());
         }
     }
 
     #[test]
-    fn esc_switches_back_to_chat() {
+    fn failed_resume_preserves_chat_and_allows_a_new_admission() {
         let mut app = picker_app();
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-        assert_eq!(app.surface_mode, SurfaceMode::Chat);
-        assert!(app.startup.session_picker_resolved());
-    }
-
-    #[test]
-    fn failed_resume_restores_ready_state_and_surfaces_error() {
-        let mut app = picker_app();
-        let (connection, rx) = AgentConnection::test_channel();
+        let mut rx = attach(&mut app);
+        seed_chat(&mut app, &mut rx);
+        let draft = app.input.snapshot();
         drop(rx);
-        app.session_runtime.conn = Some(Rc::new(connection));
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
+        super::open(&mut app);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        assert_admission_failure(&app, &draft, "resume");
+        let mut rx = attach(&mut app);
+        super::open(&mut app);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        expect_resume(&mut rx, "session-2");
+    }
+    fn key(app: &mut App, code: KeyCode) {
+        handle_key(app, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    fn attach(app: &mut App) -> crate::agent::client::CommandReceiver {
+        let (conn, rx) = AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(conn));
+        rx
+    }
+    fn expect_resume(rx: &mut crate::agent::client::CommandReceiver, id: &str) {
+        assert!(
+            matches!(rx.try_recv().expect("selected resume").command,BridgeCommand::ResumeSession {session_id,..} if session_id==id)
+        );
+        assert!(rx.try_recv().is_err());
+    }
+    fn startup_choice() -> crate::app::state::StartupState {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["claude-rs", "--resume", "--model", "fixture-model"])
+            .unwrap();
+        let mut state = crate::app::state::StartupState::from_cli(&cli);
+        state.request_connection();
+        assert!(state.mark_connection_started());
+        state
+    }
+    fn request_history(app: &mut App, rx: &mut crate::agent::client::CommandReceiver, id: &str) {
+        key(app, KeyCode::Right);
+        assert!(
+            matches!(rx.try_recv().expect("history request").command,BridgeCommand::GetRewindTargets {session_id} if session_id==id)
+        );
+        assert!(rx.try_recv().is_err());
+    }
+    fn deliver_targets(app: &mut App, id: &str, text: &str) {
+        crate::app::events::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::RewindTargetsReceived {
+                session_id: id.into(),
+                targets: vec![crate::agent::model::RewindTarget {
+                    uuid: "chosen-user".into(),
+                    first_text: text.into(),
+                    input_text: text.into(),
+                    index: 4,
+                    previous_assistant_uuid: Some("different-assistant".into()),
+                    resume_anchor_uuid: Some("different-anchor".into()),
+                }],
+                error: None,
+            },
+        );
+    }
+    fn deliver_list(app: &mut App, entries: &[(&str, &str)]) {
+        crate::app::events::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::SessionsListed {
+                sessions: entries
+                    .iter()
+                    .map(|(id, title)| crate::agent::types::SessionListEntry {
+                        session_id: (*id).into(),
+                        summary: (*title).into(),
+                        last_modified_ms: 1,
+                        file_size_bytes: 1,
+                        cwd: None,
+                        git_branch: None,
+                        custom_title: Some((*title).into()),
+                        first_prompt: None,
+                    })
+                    .collect(),
+            },
+        );
+    }
+    fn picker_rows(app: &mut App) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 25)).unwrap();
+        terminal.draw(|f| crate::ui::render_fullscreen_surface(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(100)
+            .map(|r| r.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+    fn seed_chat(app: &mut App, rx: &mut crate::agent::client::CommandReceiver) {
+        use crate::app::test_support::{deliver_update, drain_session_refreshes, source_chunk};
+        app.session_runtime.session_id = Some("session-1".into());
+        deliver_update(app, source_chunk("Saved source", "saved-user", true));
+        deliver_update(app, source_chunk("Saved answer", "saved-assistant", false));
+        crate::app::events::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::TurnComplete {
+                session_id: "session-1".into(),
+                queued_turn_count: None,
+                terminal_reason: None,
+            },
+        );
+        drain_session_refreshes(rx, "session-1");
+        app.input.set_text("Unsent source |tail");
+        app.input.set_cursor(0, 7);
+    }
+    fn assert_admission_failure(
+        app: &App,
+        draft: &crate::app::input::InputSnapshot,
+        operation: &str,
+    ) {
         assert_eq!(app.surface_mode, SurfaceMode::Chat);
-        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.status, AppStatus::Ready);
+        assert_eq!(app.session_runtime.session_id.as_ref().unwrap().as_str(), "session-1");
+        assert_eq!(&app.input.snapshot(), draft);
         assert!(app.pending_session_resume.is_none());
         assert!(app.turn.pending_command_label.is_none());
-        let last = app.transcript.messages.last().expect("error message");
-        let text = match last.blocks.first().expect("text block") {
-            crate::app::MessageBlock::Text(block) => block.text.as_str(),
-            _ => panic!("expected text block"),
-        };
-        assert!(text.contains("Failed to resume session:"));
+        assert!(app.transcript.messages.iter().any(|m| {
+            m.blocks
+                .iter()
+                .any(|b| matches!(b,crate::app::MessageBlock::Text(t) if t.text=="Saved answer"))
+        }));
+        assert_error(app, operation);
+    }
+    fn assert_error(app: &App, operation: &str) {
+        let last = app.transcript.messages.last().unwrap();
+        assert!(matches!(
+            last.role,
+            crate::app::MessageRole::System(Some(crate::app::SystemSeverity::Error))
+        ));
+        let text = last
+            .blocks
+            .iter()
+            .filter_map(|b| {
+                if let crate::app::MessageBlock::Text(t) = b { Some(t.text.as_str()) } else { None }
+            })
+            .collect::<String>();
+        assert!(text.to_lowercase().contains(operation) && text.contains("closed"), "{text}");
+    }
+    fn expect_fork(app: &App, rx: &mut crate::agent::client::CommandReceiver, session: &str) {
+        let e = rx.try_recv().expect("new fork command");
+        assert!(
+            matches!(e.command,BridgeCommand::ResumeSessionAt {session_id,target_user_message_id,..} if session_id==session && target_user_message_id=="chosen-user")
+        );
+        assert_eq!(e.request_id.as_deref(), app.pending_resume_at_operation_id());
+        assert!(e.request_id.is_some());
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn history_admission_failure_retains_search_and_retries_without_stale_ownership() {
+        let mut app = picker_app();
+        let rx = attach(&mut app);
+        drop(rx);
+        super::paste_search(&mut app, "Second");
+        key(&mut app, KeyCode::Right);
+        assert_eq!(super::selected_session(&app).unwrap().session_id, "session-2");
+        assert_eq!(app.session_picker.query, "Second");
+        assert!(app.session_picker.turn_session_id.is_none());
+        assert!(!app.sdk_inventory.rewind_targets_in_flight);
+        assert!(app.sdk_inventory.rewind_targets_request_session_id.is_none());
+        assert_error(&app, "load");
+        let mut rx = attach(&mut app);
+        request_history(&mut app, &mut rx, "session-2");
+        deliver_targets(&mut app, "session-2", "Recovered target");
+        key(&mut app, KeyCode::Enter);
+        expect_fork(&app, &mut rx, "session-2");
+    }
+    #[test]
+    fn fork_admission_failure_preserves_chat_and_retries_from_list_and_reader() {
+        for reader in [false, true] {
+            let mut app = picker_app();
+            let mut rx = attach(&mut app);
+            seed_chat(&mut app, &mut rx);
+            super::open(&mut app);
+            key(&mut app, KeyCode::Down);
+            request_history(&mut app, &mut rx, "session-2");
+            deliver_targets(&mut app, "session-2", "Chosen source");
+            if reader {
+                key(&mut app, KeyCode::Right);
+            }
+            let draft = app.input.snapshot();
+            drop(rx);
+            key(&mut app, KeyCode::Enter);
+            assert_admission_failure(&app, &draft, "fork");
+            let mut rx = attach(&mut app);
+            super::open(&mut app);
+            key(&mut app, KeyCode::Down);
+            request_history(&mut app, &mut rx, "session-2");
+            deliver_targets(&mut app, "session-2", "Chosen source");
+            if reader {
+                key(&mut app, KeyCode::Right);
+            }
+            key(&mut app, KeyCode::Enter);
+            expect_fork(&app, &mut rx, "session-2");
+        }
+    }
+    #[test]
+    fn removing_the_inspected_session_invalidates_reader_and_late_results() {
+        for reading in [false, true] {
+            let mut app = picker_app();
+            let mut rx = attach(&mut app);
+            seed_chat(&mut app, &mut rx);
+            deliver_list(
+                &mut app,
+                &[("session-1", "Active"), ("session-2", "Inspect"), ("session-3", "Remaining")],
+            );
+            super::open(&mut app);
+            super::paste_search(&mut app, "Inspect");
+            let draft = app.input.snapshot();
+            request_history(&mut app, &mut rx, "session-2");
+            if reading {
+                deliver_targets(&mut app, "session-2", "Inspected body");
+                key(&mut app, KeyCode::Right);
+                assert!(picker_rows(&mut app).iter().any(|r| r.contains("Inspected body")));
+            }
+            deliver_list(&mut app, &[("session-2", "Inspect"), ("session-3", "Remaining")]);
+            assert_eq!(app.session_picker.turn_session_id.as_deref(), Some("session-2"));
+            if reading {
+                assert!(picker_rows(&mut app).iter().any(|r| r.contains("Inspected body")));
+            }
+            deliver_list(&mut app, &[("session-3", "Remaining")]);
+            assert!(app.session_picker.turn_session_id.is_none());
+            assert_eq!(app.session_picker.query, "Inspect");
+            assert_eq!(app.input.snapshot(), draft);
+            assert!(super::selected_session(&app).is_none());
+            deliver_targets(&mut app, "session-2", "STALE body");
+            crate::app::events::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::RewindTargetsReceived {
+                    session_id: "session-2".into(),
+                    targets: vec![],
+                    error: Some("STALE failure".into()),
+                },
+            );
+            assert!(
+                !picker_rows(&mut app)
+                    .iter()
+                    .any(|r| r.contains("Inspected body") || r.contains("STALE"))
+            );
+            assert!(!(0..app.transcript.messages.len()).any(|i| {
+                crate::app::test_support::transcript_region(&mut app, i).contains("STALE")
+            }));
+            key(&mut app, KeyCode::Enter);
+            assert!(rx.try_recv().is_err());
+            for _ in "Inspect".chars() {
+                key(&mut app, KeyCode::Backspace);
+            }
+            assert_eq!(super::selected_session(&app).unwrap().session_id, "session-3");
+            request_history(&mut app, &mut rx, "session-3");
+            deliver_targets(&mut app, "session-3", "Surviving target");
+            key(&mut app, KeyCode::Enter);
+            expect_fork(&app, &mut rx, "session-3");
+        }
     }
 }

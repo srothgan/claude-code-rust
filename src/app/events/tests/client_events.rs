@@ -2427,3 +2427,64 @@ fn replacement_releases_old_rewind_requests_for_new_session_slash_completion() {
         assert!(rx.try_recv().is_err());
     }
 }
+
+#[test]
+fn picker_list_and_reader_activation_carry_the_selected_user_and_launch_options() {
+    use crate::app::test_support::*;
+    use clap::Parser;
+    for reading in [false, true] {
+        let (mut app, mut rx) = app_with_connection();
+        let cli = crate::Cli::try_parse_from([
+            "claude-rs",
+            "--resume",
+            "--model",
+            "haiku",
+            "--name",
+            "Chosen fork",
+        ])
+        .unwrap();
+        app.startup = crate::app::state::StartupState::from_cli(&cli);
+        app.startup.request_connection();
+        assert!(app.startup.mark_connection_started());
+        app.startup.mark_recent_sessions_loaded();
+        request_picker_targets(&mut app, &mut rx, "listed-source");
+        let mut chosen = handoff_target("chosen-user", "Chosen message source");
+        chosen.previous_assistant_uuid = Some("previous-assistant".into());
+        chosen.resume_anchor_uuid = Some("different-anchor".into());
+        handle_client_event(
+            &mut app,
+            ClientEvent::RewindTargetsReceived {
+                session_id: "listed-source".into(),
+                targets: vec![handoff_target("other-user", "Other source"), chosen],
+                error: None,
+            },
+        );
+        press(&mut app, KeyCode::Down);
+        if reading {
+            press(&mut app, KeyCode::Right);
+        }
+        let shown = picker_rows(&mut app);
+        let heading = shown.iter().position(|r| r.contains("> Message 1")).unwrap();
+        assert!(shown[heading + 1].contains("Chosen message source"));
+        assert!(rx.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        let envelope = rx.try_recv().expect("confirmed fork");
+        let crate::agent::wire::BridgeCommand::ResumeSessionAt {
+            session_id,
+            target_user_message_id,
+            launch_settings,
+        } = envelope.command
+        else {
+            panic!("ResumeSessionAt");
+        };
+        assert_eq!(session_id, "listed-source");
+        assert_eq!(target_user_message_id, "chosen-user");
+        assert_eq!(launch_settings.model.as_deref(), Some("haiku"));
+        assert_eq!(launch_settings.name.as_deref(), Some("Chosen fork"));
+        assert!(envelope.request_id.as_ref().is_some_and(|id| !id.is_empty()));
+        assert_eq!(envelope.request_id.as_deref(), app.pending_resume_at_operation_id());
+        assert_eq!(app.pending_session_resume_id(), Some("listed-source"));
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+    }
+}
