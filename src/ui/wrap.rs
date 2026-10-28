@@ -90,6 +90,8 @@ pub(super) struct WrappedLineLayout {
 
 impl WrappedLineLayout {
     pub(super) fn new(line: Line<'static>, width: u16) -> Self {
+        #[cfg(test)]
+        test_work::record_layout();
         let paragraph = Paragraph::new(Text::from(line)).wrap(Wrap { trim: false });
         let height = u16::try_from(paragraph.line_count(width).max(1)).unwrap_or(u16::MAX);
         Self { paragraph, width, height }
@@ -117,6 +119,8 @@ impl WrappedLineLayout {
         let offset = u16::try_from(start).unwrap_or(self.height);
         let area = Rect::new(0, 0, self.width, height);
         let mut buffer = Buffer::empty(area);
+        #[cfg(test)]
+        test_work::record_cells(buffer.content.len());
         self.paragraph.scroll((offset, 0)).render(area, &mut buffer);
         let mut rendered = Vec::with_capacity(usize::from(height));
         for row in 0..height {
@@ -126,6 +130,47 @@ impl WrappedLineLayout {
             rendered.push(buffer_row_to_line(&buffer, area, row));
         }
         rendered
+    }
+}
+
+/// Per-thread observations of actual layout and rasterization work, independent
+/// of cancellation polling. Snapshot differences also allow nested measurements.
+#[cfg(test)]
+pub(super) mod test_work {
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct Work {
+        pub layouts: usize,
+        pub cells: usize,
+    }
+
+    thread_local! {
+        static WORK: Cell<Work> = const { Cell::new(Work { layouts: 0, cells: 0 }) };
+    }
+
+    pub(super) fn record_layout() {
+        WORK.with(|counter| {
+            let work = counter.get();
+            counter.set(Work { layouts: work.layouts + 1, ..work });
+        });
+    }
+
+    pub(super) fn record_cells(cells: usize) {
+        WORK.with(|counter| {
+            let work = counter.get();
+            counter.set(Work { cells: work.cells + cells, ..work });
+        });
+    }
+
+    pub(crate) fn measure<T>(run: impl FnOnce() -> T) -> (T, Work) {
+        let before = WORK.with(Cell::get);
+        let result = run();
+        let after = WORK.with(Cell::get);
+        (
+            result,
+            Work { layouts: after.layouts - before.layouts, cells: after.cells - before.cells },
+        )
     }
 }
 

@@ -994,83 +994,128 @@ fn line_plain_text(line: &Line<'static>) -> String {
 mod replay_tests {
     use super::*;
 
+    fn numbered_rows(prefix: char, range: std::ops::Range<usize>) -> Vec<String> {
+        range.map(|index| format!("{prefix}{index:019}")).collect()
+    }
+
+    fn row_text(rows: &[Line<'_>]) -> Vec<String> {
+        rows.iter().map(|row| row.to_string().trim_end().to_owned()).collect()
+    }
+
+    fn assert_omission(row: &str, count: usize, unit: &str) {
+        let words: Vec<_> =
+            row.split(|c: char| !c.is_alphanumeric()).filter(|s| !s.is_empty()).collect();
+        let expected = format!("{count} {unit}");
+        assert_eq!(words, expected.split_whitespace().collect::<Vec<_>>());
+    }
+
     #[test]
-    fn capped_long_line_materializes_only_the_visible_tail() {
-        let source = format!("{}TAIL", "x".repeat(29_996));
-        let checks = std::cell::Cell::new(0);
-        let cancel_unbounded_materialization = || {
-            checks.set(checks.get() + 1);
-            checks.get() > 40
-        };
-        let control = LayoutControl::new(&cancel_unbounded_materialization);
-        let rows = cap_tool_content_lines(
-            vec![Line::from(Span::styled(source, Style::default().fg(theme::RUST_ORANGE)))],
-            20,
-            "source lines hidden",
-            0,
-            &control,
+    fn capped_preview_bounds_materialization_for_long_and_many_source_lines() {
+        const WIDTH: u16 = 20;
+        let control = LayoutControl::uninterrupted();
+        // Fixed-width, distinct chunks make the expected tail independent of the wrapper.
+        let long_line = numbered_rows('L', 0..1500).concat();
+        let (rows, work) = crate::ui::wrap::test_work::measure(|| {
+            cap_tool_content_lines(
+                vec![Line::from(long_line)],
+                WIDTH,
+                "source lines hidden",
+                0,
+                &control,
+            )
+        });
+        let tail_rows = TOOL_BODY_MAX_LINES - 1;
+        let text = row_text(&rows);
+        assert_eq!(text.len(), TOOL_BODY_MAX_LINES);
+        assert_omission(&text[0], 1500 - tail_rows, "wrapped rows hidden");
+        assert_eq!(text[1..], numbered_rows('L', 1500 - tail_rows..1500));
+        assert!(work.cells > 0, "measurement must observe actual buffer allocation");
+        assert!(
+            work.cells <= 2 * TOOL_BODY_MAX_LINES * usize::from(WIDTH),
+            "hidden rows were rasterized: {work:?}"
         );
-        assert!(!control.cancelled(), "hidden physical rows must not be materialized");
-        assert_eq!(rows[0].to_string(), "... 1492 wrapped rows hidden ...");
-        assert_eq!(rows.last().unwrap().to_string(), format!("{}TAIL", "x".repeat(16)));
-        assert_eq!(rows.len(), TOOL_BODY_MAX_LINES);
-        assert!(rows[1..].iter().all(|row| {
-            row.width() == 20
-                && row.spans.iter().all(|span| span.style.fg == Some(theme::RUST_ORANGE))
-        }));
+
+        let mut lines = vec![Line::from("HEADER")];
+        lines.extend(numbered_rows('S', 0..1000).into_iter().map(Line::from));
+        let (rows, work) = crate::ui::wrap::test_work::measure(|| {
+            cap_tool_content_lines(lines, WIDTH, "source lines hidden", 1, &control)
+        });
+        let tail_rows = TOOL_BODY_MAX_LINES - 2;
+        let text = row_text(&rows);
+        assert_eq!(text.len(), TOOL_BODY_MAX_LINES);
+        assert_eq!(text[0], "HEADER");
+        assert_omission(&text[1], 1000 - tail_rows, "source lines hidden");
+        assert_eq!(text[2..], numbered_rows('S', 1000 - tail_rows..1000));
+        assert!(
+            work.layouts > 0 && work.cells > 0,
+            "measurement must observe layout and rasterization"
+        );
+        assert!(
+            work.layouts <= 2 * TOOL_BODY_MAX_LINES,
+            "hidden source lines were laid out: {work:?}"
+        );
+        assert!(
+            work.cells <= 2 * TOOL_BODY_MAX_LINES * usize::from(WIDTH),
+            "hidden rows were rasterized: {work:?}"
+        );
     }
 
     #[test]
     fn capped_content_preserves_protected_rows_and_source_omission_counts() {
         let control = LayoutControl::uninterrupted();
-        let rows = cap_tool_content_lines(
-            vec![Line::from("HEADER"), Line::from("hidden"), Line::from("tail".repeat(40))],
+        let tail_rows = TOOL_BODY_MAX_LINES - 2;
+        let body_chunks = TOOL_BODY_MAX_LINES + 1;
+        // A whole hidden source line and a partially hidden source have different units.
+        for hidden_source in [false, true] {
+            let mut input = vec![Line::from("HEADER")];
+            if hidden_source {
+                input.push(Line::from("HIDDEN SOURCE"));
+            }
+            input.push(Line::from(numbered_rows('T', 0..body_chunks).concat()));
+            let rows =
+                row_text(&cap_tool_content_lines(input, 20, "source lines hidden", 1, &control));
+            assert_eq!(rows.len(), TOOL_BODY_MAX_LINES);
+            assert_eq!(rows[0], "HEADER");
+            if hidden_source {
+                assert_omission(&rows[1], 1, "source lines hidden");
+            } else {
+                assert_omission(&rows[1], body_chunks - tail_rows, "wrapped rows hidden");
+            }
+            assert_eq!(rows[2..], numbered_rows('T', body_chunks - tail_rows..body_chunks));
+        }
+
+        // Prefixes at and above the cap keep their beginning, never their tail.
+        let visible = TOOL_BODY_MAX_LINES - 1;
+        for protected_rows in [TOOL_BODY_MAX_LINES, TOOL_BODY_MAX_LINES + 3] {
+            let rows = row_text(&cap_tool_content_lines(
+                vec![
+                    Line::from(numbered_rows('H', 0..protected_rows).concat()),
+                    Line::from(numbered_rows('B', 0..2).concat()),
+                ],
+                20,
+                "source lines hidden",
+                1,
+                &control,
+            ));
+            assert_eq!(rows.len(), TOOL_BODY_MAX_LINES);
+            assert_eq!(rows[..visible], numbered_rows('H', 0..visible));
+            assert_omission(&rows[visible], protected_rows + 2 - visible, "wrapped rows hidden");
+        }
+
+        // Exactly fitting content needs no omission row and loses neither endpoint.
+        let rows = row_text(&cap_tool_content_lines(
+            vec![
+                Line::from("HEADER"),
+                Line::from(numbered_rows('E', 0..TOOL_BODY_MAX_LINES - 1).concat()),
+            ],
             20,
             "source lines hidden",
             1,
             &control,
-        );
-        assert_eq!(rows[0].to_string().trim_end(), "HEADER");
-        assert_eq!(rows[1].to_string(), "... 1 source lines hidden ...");
-        assert_eq!(
-            rows[2..].iter().map(Line::to_string).collect::<Vec<_>>(),
-            vec!["tail".repeat(5); 7]
-        );
-
-        // A protected prefix that fills the preview keeps its beginning, not its tail.
-        let rows = cap_tool_content_lines(
-            vec![Line::from("HEAD".repeat(50)), Line::from("body".repeat(10))],
-            20,
-            "source lines hidden",
-            1,
-            &control,
-        );
-        assert_eq!(
-            rows[..8].iter().map(Line::to_string).collect::<Vec<_>>(),
-            vec!["HEAD".repeat(5); 8]
-        );
-        assert_eq!(rows[8].to_string(), "... 4 wrapped rows hidden ...");
-    }
-
-    #[test]
-    fn capped_output_does_not_lay_out_the_hidden_middle() {
-        let mut lines = vec![Line::from("HEADER")];
-        lines.extend((0..1000).map(|index| Line::from(format!("source {index}"))));
-        let checks = std::cell::Cell::new(0);
-        let cancel_after_bounded_work = || {
-            checks.set(checks.get() + 1);
-            checks.get() > 100
-        };
-        let control = LayoutControl::new(&cancel_after_bounded_work);
-        let rows = cap_tool_content_lines(lines, 40, "source lines hidden", 1, &control);
-        assert!(!control.cancelled(), "hidden middle lines must not consume layout work");
-        let text =
-            rows.iter().map(|line| line.to_string().trim_end().to_owned()).collect::<Vec<_>>();
-        assert_eq!(text[0], "HEADER");
-        assert_eq!(text[1], "... 993 source lines hidden ...");
-        assert_eq!(
-            &text[2..],
-            &(993..1000).map(|index| format!("source {index}")).collect::<Vec<_>>()
-        );
+        ));
+        let expected: Vec<_> = std::iter::once("HEADER".to_owned())
+            .chain(numbered_rows('E', 0..TOOL_BODY_MAX_LINES - 1))
+            .collect();
+        assert_eq!(rows, expected);
     }
 }
