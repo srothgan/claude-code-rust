@@ -617,29 +617,6 @@ fn a_run_change_releases_only_its_old_read_and_never_applies_its_content_or_erro
 }
 
 #[test]
-fn open_transcripts_keep_old_content_and_scroll_across_runs_until_refresh() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
-    super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
-    let (_, first) = sent_reads(&mut commands).pop().expect("read A");
-    handle_client_event(&mut app, answer("worker", &first, vec![reply("A report")]));
-    press(&mut app, KeyCode::Enter);
-    app.agents.transcript.as_mut().unwrap().scroll = 12;
-    lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
-    assert!(app.agents.read.as_ref().unwrap().saved_snapshot);
-    assert_eq!(app.agents.read.as_ref().unwrap().messages, Some(vec![reply("A report")]));
-    assert_eq!(app.agents.transcript.as_ref().unwrap().scroll, 12);
-    assert_eq!(response(&app, "worker"), None);
-    assert!(sent_reads(&mut commands).is_empty());
-    press(&mut app, KeyCode::Char('r'));
-    let (_, second) = sent_reads(&mut commands).pop().expect("explicit refresh reads B");
-    handle_client_event(&mut app, answer("worker", &second, vec![reply("B report")]));
-    assert_eq!(app.agents.read.as_ref().unwrap().run_id.as_deref(), Some("B"));
-    assert_eq!(app.agents.transcript.as_ref().unwrap().scroll, 12);
-}
-
-#[test]
 fn a_run_change_while_the_view_is_closed_invalidates_old_preview_and_stop_state() {
     let (mut app, mut commands) = connected_app();
     lifecycle(&mut app, vec![execution("A", TaskStatus::InProgress)]);

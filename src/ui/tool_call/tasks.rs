@@ -304,223 +304,249 @@ mod tests {
         )
     }
 
-    fn task_title_marker_span<'a>(line: &'a Line<'static>) -> &'a Span<'static> {
-        line.spans.get(1).expect("task title marker span")
-    }
-
     #[test]
-    fn create_title_uses_pending_task_marker() {
-        let mut tc = task_tool_call(
-            "TaskCreate",
-            json!({ "subject": "Run checks", "description": "Validate the branch" }),
+    fn task_state_indicators_remain_distinct_from_the_invocations_outcome() {
+        let mut indicators = Vec::new();
+        for (name, input, title) in [
+            ("TaskCreate", json!({"subject":"Alpha"}), "Task alpha"),
+            ("TaskUpdate", json!({"taskId":"beta","status":"in_progress"}), "Task beta"),
+            ("TaskUpdate", json!({"taskId":"gamma","status":"completed"}), "Task gamma"),
+            ("TaskUpdate", json!({"taskId":"delta","status":"running"}), "Task delta"),
+        ] {
+            let mut tc = task_tool_call(name, input, None);
+            tc.title = title.into();
+            let line = task_tool_call_title(&tc);
+            let text = rendered_line_texts(&[line])[0].clone();
+            assert!(text.contains(title));
+            let before_title = text.split_once(title).expect("associated title").0;
+            let indicator =
+                before_title.split_whitespace().last().expect("visible task state").to_owned();
+            indicators.push(indicator.clone());
+            tc.status = model::ToolCallStatus::Pending;
+            let pending = rendered_line_texts(&[task_tool_call_title(&tc)])[0].clone();
+            assert!(
+                pending.split_once(title).unwrap().0.contains(&indicator),
+                "requested task state survives a different invocation state"
+            );
+            assert_ne!(pending, text, "pending and completed invocations remain distinguishable");
+        }
+        assert_ne!(indicators[0], indicators[1]);
+        assert_ne!(indicators[1], indicators[2]);
+        assert_ne!(indicators[0], indicators[2]);
+        assert_eq!(indicators[1], indicators[3]);
+        let mut deletion = task_tool_call(
+            "TaskUpdate",
+            json!({"taskId":"delete-target","status":"deleted"}),
             None,
         );
-        tc.title = "Create task #1: Run checks".to_owned();
-
-        let title = task_tool_call_title(&tc);
-        let marker = task_title_marker_span(&title);
-        let text: String = title.spans.iter().map(|span| span.content.as_ref()).collect();
-
-        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
-        assert_eq!(marker.style.fg, Some(theme::DIM));
-        assert!(!text.contains('\u{25cc}'));
-    }
-
-    #[test]
-    fn in_progress_update_title_uses_active_task_marker() {
-        let mut tc = task_tool_call(
-            "TaskUpdate",
-            json!({ "taskId": "task-1", "status": "in_progress" }),
-            None,
-        );
-        tc.title = "Start task #1: Run checks".to_owned();
-
-        let title = task_tool_call_title(&tc);
-        let marker = task_title_marker_span(&title);
-
-        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_IN_PROGRESS} "));
-        assert_eq!(marker.style.fg, Some(theme::RUST_ORANGE));
-        assert_eq!(marker.style.add_modifier, Modifier::BOLD);
-    }
-
-    #[test]
-    fn completed_update_title_uses_completed_task_marker() {
-        let mut tc = task_tool_call(
-            "TaskUpdate",
-            json!({ "taskId": "task-1", "status": "completed" }),
-            None,
-        );
-        tc.title = "Complete task #1: Run checks".to_owned();
-
-        let title = task_tool_call_title(&tc);
-        let marker = task_title_marker_span(&title);
-
-        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_COMPLETED} "));
-        assert_eq!(marker.style.fg, Some(theme::DIM));
-    }
-
-    #[test]
-    fn create_body_renders_structured_fields() {
-        let tc = task_tool_call(
-            "TaskCreate",
-            json!({
-                "subject": "Run checks",
-                "description": "Validate the branch",
-                "activeForm": "Running checks",
-                "metadata": { "phase": "6A" }
-            }),
-            None,
-        );
-
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
-
-        assert!(!rendered.iter().any(|line| line.contains("Subject:")));
-        assert!(rendered.iter().any(|line| line.contains("Description: Validate the branch")));
-        assert!(!rendered.iter().any(|line| line.contains("Active:")));
-        assert!(rendered.iter().any(|line| line.contains(r#"Metadata: {"phase":"6A"}"#)));
-    }
-
-    #[test]
-    fn update_body_renders_activity_without_redundant_status() {
-        let tc = task_tool_call(
-            "TaskUpdate",
-            json!({ "taskId": "task-1", "status": "in_progress" }),
-            Some("Activity: Scaffolding Next.js app"),
-        );
-
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
-
-        assert!(!rendered.iter().any(|line| line.contains("Status:")));
-        assert!(rendered.iter().any(|line| line.contains("Activity: Scaffolding Next.js app")));
-        assert!(!rendered.iter().any(|line| line.contains("Task ID: task-1")));
-    }
-
-    #[test]
-    fn output_body_renders_input_fields_and_output_text() {
-        let tc = task_tool_call(
-            "TaskOutput",
-            json!({ "task_id": "task-1", "block": true, "timeout": 1000 }),
-            Some("Retrieval status: not ready\nTask type: local bash\nStatus: running"),
-        );
-
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
-
-        assert!(rendered.iter().any(|line| line.contains("Task ID: task-1")));
-        assert!(rendered.iter().any(|line| line.contains("Block: yes")));
-        assert!(rendered.iter().any(|line| line.contains("Timeout: 1000ms")));
-        assert!(rendered.iter().any(|line| line.contains("Retrieval status: not ready")));
-        assert!(rendered.iter().any(|line| line.contains("Task type: local bash")));
-        assert!(rendered.iter().any(|line| line.contains("Status: In Progress")));
-    }
-
-    #[test]
-    fn stop_body_renders_input_and_structured_output_fields() {
-        let tc = task_tool_call(
-            "TaskStop",
-            json!({ "task_id": "task-1" }),
-            Some("Message: Stopped task\nTask ID: task-1\nTask type: bash\nCommand: npm run watch"),
-        );
-
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
-
-        assert!(rendered.iter().any(|line| line.contains("Task ID: task-1")));
-        assert!(rendered.iter().any(|line| line.contains("Message: Stopped task")));
-        assert!(rendered.iter().any(|line| line.contains("Task type: bash")));
-        assert!(rendered.iter().any(|line| line.contains("Command: npm run watch")));
-    }
-
-    #[test]
-    fn deleted_update_uses_completed_status_icon() {
-        let tc = task_tool_call(
-            "TaskUpdate",
-            json!({ "taskId": "task-1", "status": "deleted" }),
-            Some("Deleted task: task-1"),
-        );
-
-        assert_eq!(tc.status, model::ToolCallStatus::Completed);
-        let title = super::super::standard::render_tool_call_title(
-            &tc,
-            super::super::ToolCallRenderContext::default(),
-            80,
-            crate::ui::SpinnerState::Animated(0),
-        );
+        deletion.title = "Delete target record".into();
+        let success = task_card(&mut deletion, 80);
+        assert!(rendered_line_texts(&success)[0].contains("Delete target record"));
         assert!(
-            title.spans.first().is_some_and(|span| span.content.contains(theme::ICON_COMPLETED))
+            rendered_line_texts(&success)[1..].iter().any(|row| row.contains("Deleted task")),
+            "successful empty result has a meaningful fallback"
         );
-        let marker = task_title_marker_span(&title);
-        assert_eq!(marker.content.as_ref(), format!("{TASK_MARKER_PENDING} "));
-        assert_eq!(marker.style.fg, Some(theme::DIM));
+        for status in [model::ToolCallStatus::Failed, model::ToolCallStatus::Killed] {
+            let mut failed = task_tool_call(
+                "TaskUpdate",
+                json!({"taskId":"delete-target","status":"deleted"}),
+                None,
+            );
+            failed.title = "Delete target record".into();
+            failed.status = status;
+            let failure = task_card(&mut failed, 80);
+            assert_ne!(failure[0], success[0], "invocation failure is visible");
+            assert!(
+                !rendered_line_texts(&failure)[1..].iter().any(|row| row.contains("Deleted task"))
+            );
+        }
+    }
 
-        let body = super::super::standard::ToolBodyCursor::default().render(
-            &tc,
-            80,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+    fn task_card(tc: &mut ToolCallInfo, width: u16) -> Vec<Line<'static>> {
+        let mut lines = vec![];
+        super::super::render_tool_call_cached(
+            tc,
+            super::super::ToolCallRenderContext::default(),
+            width,
+            crate::ui::SpinnerState::Static,
+            &mut lines,
         );
-        assert!(rendered_line_texts(&body).iter().any(|line| line.contains("Deleted task")));
-        let deleted = body
-            .iter()
-            .find(|line| line.spans.iter().any(|span| span.content.contains("Deleted task")));
-        assert_eq!(
-            deleted.and_then(|line| line.spans.first()).and_then(|span| span.style.fg),
-            Some(theme::DIM)
-        );
+        lines
     }
 
     #[test]
-    fn get_null_renders_not_found() {
-        let tc =
-            task_tool_call("TaskGet", json!({ "taskId": "task-missing" }), Some("Task not found"));
+    fn task_cards_keep_structured_input_and_normalized_output_in_their_own_rows() {
+        let cases = [
+            (
+                "TaskCreate",
+                json!({"subject":"Alpha","description":"Independent create description","metadata":{"phase":"phase-sentinel"}}),
+                None,
+                vec![
+                    ("Description", "Independent create description"),
+                    ("Metadata", "phase-sentinel"),
+                ],
+            ),
+            (
+                "TaskOutput",
+                json!({"task_id":"output-target","block":true,"timeout":1700}),
+                Some("Retrieval status: not ready\nTask type: local bash\nStatus: running"),
+                vec![
+                    ("Task ID", "output-target"),
+                    ("Block", "yes"),
+                    ("Timeout", "1700ms"),
+                    ("Retrieval status", "not ready"),
+                    ("Task type", "local bash"),
+                    ("Status", "In Progress"),
+                ],
+            ),
+            (
+                "TaskOutput",
+                json!({"task_id":"instant-target","block":false,"timeout":0}),
+                Some("Status: completed"),
+                vec![
+                    ("Task ID", "instant-target"),
+                    ("Block", "no"),
+                    ("Timeout", "0ms"),
+                    ("Status", "Completed"),
+                ],
+            ),
+            (
+                "TaskStop",
+                json!({"task_id":"stop-target","shell_id":"ignored-shell"}),
+                Some(
+                    "Message: Process stopped\nTask ID: stop-target\nTask type: bash\nCommand: echo 'exact command'",
+                ),
+                vec![
+                    ("Task ID", "stop-target"),
+                    ("Message", "Process stopped"),
+                    ("Task type", "bash"),
+                    ("Command", "echo 'exact command'"),
+                ],
+            ),
+            (
+                "TaskStop",
+                json!({"shell_id":"shell-target"}),
+                Some("Message: Shell stopped"),
+                vec![("Shell ID", "shell-target"), ("Message", "Shell stopped")],
+            ),
+            (
+                "TaskGet",
+                json!({"taskId":"missing-target"}),
+                Some("Task not found"),
+                vec![("Task ID", "missing-target")],
+            ),
+        ];
+        for (name, input, output, expected) in cases {
+            assert_task_fields(name, input, output, &expected);
+        }
+    }
 
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
-
-        assert!(rendered.iter().any(|line| line.contains("Task not found")));
+    fn assert_task_fields(
+        name: &str,
+        input: serde_json::Value,
+        output: Option<&str>,
+        expected: &[(&str, &str)],
+    ) {
+        let mut tc = task_tool_call(name, input, output);
+        tc.title = format!("{name} selected invocation");
+        let rows = rendered_line_texts(&task_card(&mut tc, 100));
+        assert!(rows[0].contains(&format!("{name} selected invocation")));
+        let body = &rows[1..];
+        for &(label, value) in expected {
+            assert!(
+                body.iter().any(|row| row.contains(&format!("{label}:")) && row.contains(value)),
+                "{name} {label}: {body:?}"
+            );
+        }
+        if name == "TaskStop" && output.is_some_and(|text| text.contains("Task ID")) {
+            let ids: Vec<_> = body
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.contains("Task ID:") && row.contains("stop-target"))
+                .map(|(i, _)| i)
+                .collect();
+            let message = body.iter().position(|row| row.contains("Message:")).unwrap();
+            assert!(
+                ids.iter().any(|i| *i < message) && ids.iter().any(|i| *i > message),
+                "input and result each retain their target"
+            );
+            assert!(!body.iter().any(|row| row.contains("ignored-shell")));
+        }
+        if name == "TaskGet" {
+            assert!(
+                body.iter().any(|row| row.contains("Task not found")),
+                "normalized not-found outcome"
+            );
+        }
+        if name == "TaskCreate" {
+            assert!(
+                !body.iter().any(|row| row.contains("Task not found") || row.contains("Message:"))
+            );
+            let metadata = body
+                .iter()
+                .find_map(|row| row.split_once("Metadata:").map(|(_, json)| json.trim()))
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(metadata).unwrap(),
+                json!({"phase":"phase-sentinel"})
+            );
+        }
     }
 
     #[test]
-    fn long_list_is_windowed() {
-        let tc = task_tool_call(
+    fn normalized_task_lists_preserve_state_omissions_and_clipped_source_tail() {
+        let mut tc = task_tool_call(
             "TaskList",
             json!({}),
-            Some(
-                "...\n\u{25a0} Task 4\n\u{25a0} Task 5\n\u{25a3} Task 6\n\u{25a0} Task 7\n\u{25a0} Task 8\n\u{25a0} Task 9\n\u{25a0} Task 10\n...",
-            ),
+            Some("...\n\u{25a1} Pending alpha\n\u{25a3} Active beta\n\u{25a0} Finished gamma\n..."),
         );
-
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
-
-        assert_eq!(rendered.len(), super::super::TOOL_BODY_MAX_LINES);
-        assert!(rendered.iter().any(|line| line.contains("Task 6")));
-        assert!(rendered.first().is_some_and(|line| line.contains("...")));
-        assert!(rendered.last().is_some_and(|line| line.contains("...")));
+        let wide = task_card(&mut tc, 90);
+        let rows = rendered_line_texts(&wide);
+        let pending = rows.iter().position(|row| row.contains("Pending alpha")).unwrap();
+        let active = rows.iter().position(|row| row.contains("Active beta")).unwrap();
+        let complete = rows.iter().position(|row| row.contains("Finished gamma")).unwrap();
+        assert!(pending < active && active < complete);
+        assert!(
+            rows[pending].contains('\u{25a1}')
+                && rows[active].contains('\u{25a3}')
+                && rows[complete].contains('\u{25a0}')
+        );
+        assert!(rows[1..pending].iter().any(|row| row.contains("...")));
+        assert!(rows[complete + 1..].iter().any(|row| row.contains("...")));
+        let long = format!(
+            "...\n\u{25a1} {}\n\u{25a3} {}\n\u{25a0} FINAL result\n...",
+            "wide \u{754c} entry ".repeat(12),
+            "other \u{754c} entry ".repeat(12)
+        );
+        let mut tc = task_tool_call("TaskList", json!({}), Some(&long));
+        let narrow = task_card(&mut tc, 24);
+        assert!(
+            narrow.iter().all(|line| line.width() <= 24),
+            "physical columns stay within the card"
+        );
+        let rows = rendered_line_texts(&narrow);
+        assert!(
+            rows.iter().any(|row| row.contains("source lines")),
+            "additional physical clipping is disclosed: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("FINAL result")),
+            "source tail remains accessible: {rows:?}"
+        );
+        assert!(rows.last().unwrap().contains("..."));
+        assert!(
+            rows.iter().any(|row| row.contains('\u{754c}')),
+            "wide glyphs are actually visible in the clipped card"
+        );
+        let mut buffer = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 30, 12));
+        for y in 0..12 {
+            buffer[(25, y)].set_symbol("|");
+        }
+        ratatui::widgets::Widget::render(
+            ratatui::widgets::Paragraph::new(narrow),
+            ratatui::layout::Rect::new(0, 0, 24, 11),
+            &mut buffer,
+        );
+        assert!((0..12).all(|y| buffer[(25, y)].symbol() == "|"), "neighbor columns are untouched");
     }
 }
