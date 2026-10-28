@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use tui_textarea::{AtomicDeleteDirection, AtomicRange};
+use tui_textarea::AtomicRange;
 
 const IMAGE_PREFIX: &str = "[Image #";
 const PASTE_PREFIX: &str = "[Pasted Text ";
@@ -58,25 +58,6 @@ pub fn resolve_line_atoms(row: usize, line: &str) -> Vec<InputAtom> {
         }
     }
     atoms
-}
-
-#[must_use]
-pub fn atom_at_cursor(
-    lines: &[String],
-    cursor_row: usize,
-    cursor_col: usize,
-    direction: AtomicDeleteDirection,
-) -> Option<InputAtom> {
-    lines.get(cursor_row).into_iter().flat_map(|line| resolve_line_atoms(cursor_row, line)).find(
-        |atom| match direction {
-            AtomicDeleteDirection::Backward => {
-                atom.start_col < cursor_col && cursor_col <= atom.end_col
-            }
-            AtomicDeleteDirection::Forward => {
-                atom.start_col <= cursor_col && cursor_col < atom.end_col
-            }
-        },
-    )
 }
 
 #[must_use]
@@ -201,50 +182,6 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn detects_image_badges() {
-        let atoms = resolve_line_atoms(0, "hello [Image #1] world [Image #23]");
-        assert_eq!(
-            atoms.iter().map(|atom| atom.kind).collect::<Vec<_>>(),
-            vec![
-                InputAtomKind::ImageBadge { one_based_index: 1 },
-                InputAtomKind::ImageBadge { one_based_index: 23 },
-            ]
-        );
-    }
-
-    #[test]
-    fn rejects_malformed_image_badges() {
-        let atoms =
-            resolve_line_atoms(0, "[Image #0] [Image #] [Image #abc] [Image #1x] [Image #2]");
-        assert_eq!(atoms.len(), 1);
-        assert_eq!(atoms[0].kind, InputAtomKind::ImageBadge { one_based_index: 2 });
-    }
-
-    #[test]
-    fn detects_paste_placeholders() {
-        let atoms = resolve_line_atoms(1, "[Pasted Text 1 - 42 chars] x [Pasted Text 3 - 5 chars]");
-        assert_eq!(
-            atoms.iter().map(|atom| atom.kind).collect::<Vec<_>>(),
-            vec![
-                InputAtomKind::PasteBlock { index: 0, char_count: 42 },
-                InputAtomKind::PasteBlock { index: 2, char_count: 5 },
-            ]
-        );
-        assert!(atoms.iter().all(|atom| atom.row == 1));
-    }
-
-    #[test]
-    fn rejects_malformed_paste_placeholders() {
-        let atoms = resolve_line_atoms(
-            0,
-            "[Pasted Text 0 - 1 chars] [Pasted Text 1] [Pasted Text 1 - 0 chars] \
-             [Pasted Text 2 - 3 words] [Pasted Text 4 - 9 chars]",
-        );
-        assert_eq!(atoms.len(), 1);
-        assert_eq!(atoms[0].kind, InputAtomKind::PasteBlock { index: 3, char_count: 9 });
-    }
-
-    #[test]
     fn returns_byte_and_char_ranges_after_unicode() {
         let line = "é [Image #7]";
         let atoms = resolve_line_atoms(2, line);
@@ -256,39 +193,164 @@ mod tests {
     }
 
     #[test]
-    fn detects_mixed_atoms_in_order() {
-        let atoms = resolve_input_atoms(&[
-            "x [Pasted Text 2 - 3 chars]".to_owned(),
-            "[Image #1]".to_owned(),
-        ]);
+    fn image_tokens_preserve_identity_bounds_and_recover_after_malformed_input() {
+        for (line, expected) in [
+            ("[Image #1]", vec![(1, 0, 10, 0, 10)]),
+            ("\u{e9} [Image #23]\u{732b}", vec![(23, 3, 14, 2, 13)]),
+            ("[Image #2][Image #7]", vec![(2, 0, 10, 0, 10), (7, 10, 20, 10, 20)]),
+        ] {
+            let atoms = resolve_line_atoms(3, line);
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(index, start_byte, end_byte, start_col, end_col)| InputAtom {
+                    kind: InputAtomKind::ImageBadge { one_based_index: index },
+                    row: 3,
+                    start_byte,
+                    end_byte,
+                    start_col,
+                    end_col,
+                })
+                .collect();
+            assert_eq!(atoms, expected, "{line}");
+        }
+        for bad in [
+            "[Image #0]",
+            "[Image #]",
+            "[Image #abc]",
+            "[Image #1x]",
+            "[Image #2",
+            "[Image #9999999999999999999999999999999999999999]",
+        ] {
+            assert!(resolve_line_atoms(0, bad).is_empty(), "{bad}");
+            let line = format!("{bad} | [Image #8]");
+            let start = bad.len() + 3; // Literal ASCII fixture prefix, independent of the parser.
+            assert_eq!(
+                resolve_line_atoms(0, &line),
+                vec![InputAtom {
+                    kind: InputAtomKind::ImageBadge { one_based_index: 8 },
+                    row: 0,
+                    start_byte: start,
+                    end_byte: start + 10,
+                    start_col: start,
+                    end_col: start + 10,
+                }],
+                "recovery after {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn paste_tokens_preserve_storage_identity_counts_and_recover_after_malformed_input() {
+        for (line, index, count, start_byte, end_byte, start_col, end_col) in [
+            ("[Pasted Text 1 - 42 chars]", 0, 42, 0, 26, 0, 26),
+            ("\u{e9} [Pasted Text 3 - 5 chars]\u{732b}", 2, 5, 3, 28, 2, 27),
+        ] {
+            assert_eq!(
+                resolve_line_atoms(2, line),
+                vec![InputAtom {
+                    kind: InputAtomKind::PasteBlock { index, char_count: count },
+                    row: 2,
+                    start_byte,
+                    end_byte,
+                    start_col,
+                    end_col,
+                }]
+            );
+        }
+        for bad in [
+            "[Pasted Text 0 - 1 chars]",
+            "[Pasted Text 1]",
+            "[Pasted Text 1 - 0 chars]",
+            "[Pasted Text 2 - 3 words]",
+            "[Pasted Text 2 - 3 chars",
+            "[Pasted Text 9999999999999999999999999999999999999999 - 3 chars]",
+            "[Pasted Text 2 - 9999999999999999999999999999999999999999 chars]",
+        ] {
+            assert!(resolve_line_atoms(0, bad).is_empty(), "{bad}");
+            let line = format!("{bad} | [Pasted Text 4 - 9 chars]");
+            let start = bad.len() + 3;
+            assert_eq!(
+                resolve_line_atoms(0, &line),
+                vec![InputAtom {
+                    kind: InputAtomKind::PasteBlock { index: 3, char_count: 9 },
+                    row: 0,
+                    start_byte: start,
+                    end_byte: start + 25,
+                    start_col: start,
+                    end_col: start + 25,
+                }],
+                "recovery after {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_atoms_follow_source_order_with_independent_rows_and_spans() {
+        let lines = vec![
+            "\u{e9}[Pasted Text 2 - 3 chars][Image #7] [Pasted Text 4 - 9 chars]".to_owned(),
+            "\u{732b} [Image #3]".to_owned(),
+        ];
         assert_eq!(
-            atoms.iter().map(|atom| atom.kind).collect::<Vec<_>>(),
+            resolve_input_atoms(&lines),
             vec![
-                InputAtomKind::PasteBlock { index: 1, char_count: 3 },
-                InputAtomKind::ImageBadge { one_based_index: 1 },
+                InputAtom {
+                    kind: InputAtomKind::PasteBlock { index: 1, char_count: 3 },
+                    row: 0,
+                    start_byte: 2,
+                    end_byte: 27,
+                    start_col: 1,
+                    end_col: 26
+                },
+                InputAtom {
+                    kind: InputAtomKind::ImageBadge { one_based_index: 7 },
+                    row: 0,
+                    start_byte: 27,
+                    end_byte: 37,
+                    start_col: 26,
+                    end_col: 36
+                },
+                InputAtom {
+                    kind: InputAtomKind::PasteBlock { index: 3, char_count: 9 },
+                    row: 0,
+                    start_byte: 38,
+                    end_byte: 63,
+                    start_col: 37,
+                    end_col: 62
+                },
+                InputAtom {
+                    kind: InputAtomKind::ImageBadge { one_based_index: 3 },
+                    row: 1,
+                    start_byte: 4,
+                    end_byte: 14,
+                    start_col: 2,
+                    end_col: 12
+                },
             ]
         );
     }
 
     #[test]
-    fn atom_at_cursor_uses_directional_boundaries() {
-        let lines = vec!["ab[Image #1]cd".to_owned()];
-        let start = "ab".chars().count();
-        let end = "ab[Image #1]".chars().count();
-
-        assert!(atom_at_cursor(&lines, 0, start, AtomicDeleteDirection::Backward).is_none());
-        assert!(atom_at_cursor(&lines, 0, end, AtomicDeleteDirection::Forward).is_none());
-        assert!(atom_at_cursor(&lines, 0, end, AtomicDeleteDirection::Backward).is_some());
-        assert!(atom_at_cursor(&lines, 0, start, AtomicDeleteDirection::Forward).is_some());
-        assert!(atom_at_cursor(&lines, 0, start + 1, AtomicDeleteDirection::Backward).is_some());
-    }
-
-    #[test]
-    fn converts_atoms_to_textarea_ranges() {
-        let ranges = atomic_ranges_for_textarea(&["x[Image #1]".to_owned()]);
-        assert_eq!(
-            ranges,
-            vec![AtomicRange { row: 0, start_col: 1, end_col: "x[Image #1]".chars().count() }]
-        );
+    fn adjacent_atoms_delete_the_correct_directional_target_in_character_coordinates() {
+        use crate::app::InputState;
+        for (row, col, backward, expected) in [
+            (0, 11, true, "\u{e9}[Pasted Text 2 - 3 chars] z\nq[Image #3]"),
+            (0, 11, false, "\u{e9}[Image #7] z\nq[Image #3]"),
+            (0, 1, false, "\u{e9}[Pasted Text 2 - 3 chars] z\nq[Image #3]"),
+            (0, 1, true, "[Image #7][Pasted Text 2 - 3 chars] z\nq[Image #3]"),
+            (0, 36, true, "\u{e9}[Image #7] z\nq[Image #3]"),
+            (0, 36, false, "\u{e9}[Image #7][Pasted Text 2 - 3 chars]z\nq[Image #3]"),
+            (0, 37, true, "\u{e9}[Image #7][Pasted Text 2 - 3 chars]z\nq[Image #3]"),
+            (1, 11, true, "\u{e9}[Image #7][Pasted Text 2 - 3 chars] z\nq"),
+        ] {
+            let mut input = InputState::new();
+            input.set_text("\u{e9}[Image #7][Pasted Text 2 - 3 chars] z\nq[Image #3]");
+            input.set_cursor(row, col);
+            if backward {
+                input.textarea_delete_char_before();
+            } else {
+                input.textarea_delete_char_after();
+            }
+            assert_eq!(input.text(), expected, "row {row}, col {col}, backward {backward}");
+        }
     }
 }

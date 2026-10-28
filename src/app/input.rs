@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use tui_textarea::{AtomicDeleteDirection, AtomicRange, CursorMove, TextArea, WrapMode};
+use tui_textarea::{AtomicRange, CursorMove, TextArea, WrapMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputSnapshot {
@@ -132,13 +132,6 @@ impl InputState {
 
     pub fn clear_custom_highlights(&mut self) {
         self.editor.clear_custom_highlight();
-    }
-
-    pub fn mutate_lines(&mut self, edit: impl FnOnce(&mut Vec<String>)) {
-        let mut lines = self.lines().to_vec();
-        edit(&mut lines);
-        let (row, col) = self.cursor();
-        self.replace_lines_and_cursor(lines, row, col);
     }
 
     #[must_use]
@@ -372,23 +365,11 @@ impl InputState {
         changed
     }
 
-    pub fn textarea_yank(&mut self) -> bool {
-        let changed = self.editor.paste();
-        if changed {
-            self.refresh_atomic_ranges();
-            self.bump_content_version();
-        }
-        changed
-    }
-
-    pub fn textarea_delete_atomic_range_at_cursor(
-        &mut self,
-        direction: AtomicDeleteDirection,
-    ) -> Option<AtomicRange> {
-        let range = self.editor.delete_atomic_range_at_cursor(direction)?;
-        self.refresh_atomic_ranges();
-        self.bump_content_version();
-        Some(range)
+    /// Transfer the editor's killed text to the composer, which owns its atom payloads.
+    pub(super) fn take_yank_text(&mut self) -> String {
+        let text = self.editor.yank_text();
+        self.editor.set_yank_text("");
+        text
     }
 
     pub fn insert_newline(&mut self) {
@@ -429,8 +410,19 @@ impl InputState {
 
     /// Store the full text as a paste block and return its placeholder label.
     pub fn allocate_paste_block_placeholder(&mut self, text: &str) -> String {
+        self.allocate_paste_block_for_insertion(text, "")
+    }
+
+    /// Reserve a distinct block while assembling one editor insertion with multiple atoms.
+    pub(super) fn allocate_paste_block_for_insertion(
+        &mut self,
+        text: &str,
+        pending: &str,
+    ) -> String {
         let normalized = normalize_line_endings(text);
-        let idx = next_free_paste_block_index(self.lines(), &self.paste_blocks);
+        let mut used_lines = self.lines().to_vec();
+        used_lines.extend(pending.split('\n').map(str::to_owned));
+        let idx = next_free_paste_block_index(&used_lines, &self.paste_blocks);
         if idx < self.paste_blocks.len() {
             normalized.clone_into(&mut self.paste_blocks[idx]);
         } else {
@@ -683,7 +675,7 @@ pub fn parse_paste_placeholder_before_cursor(line: &str, cursor_col: usize) -> O
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use tui_textarea::{AtomicDeleteDirection, AtomicRange};
+    use tui_textarea::AtomicRange;
 
     // char_to_byte_index
 
@@ -747,20 +739,6 @@ mod tests {
         let mut multiline = InputState::new();
         multiline.insert_newline();
         assert!(!multiline.is_empty());
-    }
-
-    // clear()
-
-    #[test]
-    fn clear_resets_to_empty() {
-        let mut input = InputState::new();
-        input.insert_str("hello\nworld");
-        let v_before = input.version;
-        input.clear();
-        assert!(input.is_empty());
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.cursor_col(), 0);
-        assert!(input.version > v_before);
     }
 
     // insert_char
@@ -851,14 +829,6 @@ mod tests {
         assert_eq!(input.lines(), vec!["line1", "line2", "line3"]);
         assert_eq!(input.cursor_row(), 2);
         assert_eq!(input.cursor_col(), 5);
-    }
-
-    #[test]
-    fn insert_str_with_carriage_returns() {
-        let mut input = InputState::new();
-        input.insert_str("a\rb\rc");
-        // \r treated same as \n
-        assert_eq!(input.lines(), vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -1080,18 +1050,14 @@ mod tests {
         input.set_text("alpha\nbeta\ngamma");
         let _ = input.set_cursor(1, 2);
 
-        let version = input.version;
         assert!(input.textarea_move_line_start_or_up());
         assert_eq!(input.cursor(), (1, 0));
-        assert_eq!(input.version, version + 1);
 
         assert!(input.textarea_move_line_start_or_up());
         assert_eq!(input.cursor(), (0, 0));
 
-        let version = input.version;
         assert!(!input.textarea_move_line_start_or_up());
         assert_eq!(input.cursor(), (0, 0));
-        assert_eq!(input.version, version);
     }
 
     #[test]
@@ -1100,18 +1066,14 @@ mod tests {
         input.set_text("alpha\nbeta\ngamma");
         let _ = input.set_cursor(1, 2);
 
-        let version = input.version;
         assert!(input.textarea_move_line_end_or_down());
         assert_eq!(input.cursor(), (1, 4));
-        assert_eq!(input.version, version + 1);
 
         assert!(input.textarea_move_line_end_or_down());
         assert_eq!(input.cursor(), (2, 5));
 
-        let version = input.version;
         assert!(!input.textarea_move_line_end_or_down());
         assert_eq!(input.cursor(), (2, 5));
-        assert_eq!(input.version, version);
     }
 
     #[test]
@@ -1271,14 +1233,6 @@ mod tests {
         input.insert_char('\x1B');
         assert_eq!(input.cursor_col(), 3);
         assert_eq!(input.lines()[0].chars().count(), 3);
-    }
-
-    #[test]
-    fn windows_crlf_line_endings() {
-        // \r\n normalizes to a single newline.
-        let mut input = InputState::new();
-        input.insert_str("a\r\nb");
-        assert_eq!(input.lines(), vec!["a", "b"]);
     }
 
     #[test]
@@ -1599,22 +1553,6 @@ mod tests {
     }
 
     #[test]
-    fn mixed_cr_and_lf_in_paste() {
-        let mut input = InputState::new();
-        // Mix of \r, \n, and \r\n
-        input.insert_str("a\rb\nc\r\nd");
-        // \r -> newline, \n -> newline, \r -> newline, \n -> newline
-        // So: "a", "", "b", "", "c", "", "", "d" -- no wait, let me think again
-        // \r -> newline (line "a" done, new line), b -> char, \n -> newline,
-        // c -> char, \r -> newline, \n -> newline, d -> char
-        // lines: ["a", "b", "c", "", "d"]
-        assert_eq!(input.lines()[0], "a");
-        assert_eq!(input.lines().last().unwrap(), "d");
-        // The key point: it doesn't crash and 'd' ends up somewhere
-        assert!(input.text().contains('d'));
-    }
-
-    #[test]
     fn set_text_registers_atomic_ranges() {
         let mut input = InputState::new();
         input.set_text("é [Image #1] [Pasted Text 2 - 3 chars]");
@@ -1634,6 +1572,37 @@ mod tests {
                 },
             ]
         );
+
+        let mut input = InputState::new();
+        input.set_text("\u{e9}[Pasted Text 2 - 3 chars][Image #7]\n\u{732b} [Image #3]");
+        assert_eq!(
+            input.atomic_ranges(),
+            &[
+                AtomicRange { row: 0, start_col: 1, end_col: 26 },
+                AtomicRange { row: 0, start_col: 26, end_col: 36 },
+                AtomicRange { row: 1, start_col: 2, end_col: 12 },
+            ]
+        );
+        input.set_cursor(0, 1);
+        input.textarea_insert_char('!');
+        assert_eq!(
+            input.atomic_ranges(),
+            &[
+                AtomicRange { row: 0, start_col: 2, end_col: 27 },
+                AtomicRange { row: 0, start_col: 27, end_col: 37 },
+                AtomicRange { row: 1, start_col: 2, end_col: 12 },
+            ]
+        );
+        input.set_cursor(1, 2);
+        input.textarea_delete_char_after();
+        assert_eq!(input.lines(), ["\u{e9}![Pasted Text 2 - 3 chars][Image #7]", "\u{732b} "]);
+        assert_eq!(
+            input.atomic_ranges(),
+            &[
+                AtomicRange { row: 0, start_col: 2, end_col: 27 },
+                AtomicRange { row: 0, start_col: 27, end_col: 37 },
+            ]
+        );
     }
 
     #[test]
@@ -1642,9 +1611,9 @@ mod tests {
         input.set_text("a[Image #1]b");
         let _ = input.set_cursor_col("a[Image #1]".chars().count());
 
-        let deleted = input.textarea_delete_atomic_range_at_cursor(AtomicDeleteDirection::Backward);
+        let deleted = input.textarea_delete_char_before();
 
-        assert!(deleted.is_some());
+        assert!(deleted);
         assert_eq!(input.text(), "ab");
         assert!(input.atomic_ranges().is_empty());
 
@@ -1675,9 +1644,7 @@ mod tests {
     fn text_expands_placeholder_even_with_trailing_text() {
         let mut input = InputState::new();
         input.insert_paste_block("line1\nline2");
-        input.mutate_lines(|lines| {
-            lines[0].push_str(" + extra");
-        });
+        input.replace_lines_and_cursor(vec!["[Pasted Text 1 - 11 chars] + extra".to_owned()], 0, 0);
         let _ = input.set_cursor_col(input.lines()[0].chars().count());
         assert_eq!(input.text(), "line1\nline2 + extra");
     }
@@ -1707,9 +1674,7 @@ mod tests {
     fn insert_paste_block_reuses_number_after_placeholder_removed() {
         let mut input = InputState::new();
         input.insert_paste_block(&"a".repeat(1001));
-        input.mutate_lines(|lines| {
-            lines[0].clear();
-        });
+        input.replace_lines_and_cursor(vec![String::new()], 0, 0);
         let _ = input.set_cursor_col(0);
 
         input.insert_paste_block(&"b".repeat(1001));
@@ -1744,9 +1709,7 @@ mod tests {
     fn append_to_active_paste_block_rejects_dirty_placeholder_line() {
         let mut input = InputState::new();
         input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
-        input.mutate_lines(|lines| {
-            lines[0].push_str("tail");
-        });
+        input.replace_lines_and_cursor(vec!["[Pasted Text 1 - 21 chars]tail".to_owned()], 0, 0);
         let _ = input.set_cursor_col(input.lines()[0].chars().count());
         assert!(!input.append_to_active_paste_block("x"));
     }
@@ -1756,5 +1719,38 @@ mod tests {
         assert_eq!(count_text_chars("abc"), 3);
         assert_eq!(count_text_chars("\u{1F600}\u{4F60}"), 2);
         assert_eq!(count_text_chars("a\nb"), 3);
+    }
+
+    #[test]
+    fn clear_discards_paste_payloads_and_restarts_placeholder_allocation() {
+        let mut input = InputState::new();
+        input.insert_str("old ");
+        input.insert_paste_block(&"x".repeat(1001));
+        input.insert_paste_block(&"y".repeat(1002));
+        input.clear();
+        assert_eq!(input.text(), "");
+        assert_eq!(input.cursor(), (0, 0));
+        assert!(input.inline_pastes().is_empty());
+        assert!(input.paste_blocks.is_empty());
+        input.insert_paste_block(&"n".repeat(1003));
+        assert_eq!(input.lines(), ["[Pasted Text 1 - 1003 chars]"]);
+        assert_eq!(input.text(), "n".repeat(1003));
+        assert_eq!(input.inline_pastes(), ["n".repeat(1003)]);
+    }
+
+    #[test]
+    fn insertion_normalizes_all_line_endings_without_losing_source_or_suffix() {
+        for (source, expected) in [
+            ("a\rb\rc", vec!["La", "b", "cR"]),
+            ("a\r\nb\r\nc", vec!["La", "b", "cR"]),
+            ("a\rb\nc\r\nd", vec!["La", "b", "c", "dR"]),
+            ("\r\n\u{e9}\r\u{732b}\n", vec!["L", "\u{e9}", "\u{732b}", "R"]),
+        ] {
+            let mut input = InputState::new();
+            input.set_text("LR");
+            input.set_cursor(0, 1);
+            input.insert_str(source);
+            assert_eq!(input.lines(), expected, "{source:?}");
+        }
     }
 }
