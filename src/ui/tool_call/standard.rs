@@ -139,7 +139,12 @@ pub(super) fn render_result_presentation(
     width: u16,
     control: &LayoutControl<'_>,
 ) -> Vec<Line<'static>> {
-    let content = super::result_presentation::render(result, clock);
+    let mut content = if super::schedule_wakeup::is_schedule_wakeup_tool(tc) {
+        super::schedule_wakeup::render_input_content(tc, false)
+    } else {
+        Vec::new()
+    };
+    content.extend(super::result_presentation::render(result, clock));
     let mut lines = Vec::new();
     finish_standard_body(tc, width, content, &mut lines, control);
     lines
@@ -542,9 +547,12 @@ fn is_read_tool(tc: &ToolCallInfo) -> bool {
 }
 
 fn protected_content_source_lines(tc: &ToolCallInfo, lines: &[Line<'static>]) -> usize {
-    if tc.output_metadata.as_ref().is_some_and(|metadata| metadata.presentation.is_some()) {
+    if !super::repl::is_repl_tool(tc)
+        && tc.output_metadata.as_ref().is_some_and(|metadata| metadata.presentation.is_some())
+    {
         // Structured records begin with identity and timestamps. Keep that prefix
         // within the existing preview budget rather than showing an unlabelled tail.
+        // REPL channels are output payloads, so retain their useful tail instead.
         return lines.len().min(TOOL_BODY_MAX_LINES.saturating_sub(1));
     }
     let mut count =

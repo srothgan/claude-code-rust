@@ -25,7 +25,10 @@ pub(super) fn render_tool_content(tc: &ToolCallInfo) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_input_content(tc: &ToolCallInfo, include_requested_delay: bool) -> Vec<Line<'static>> {
+pub(super) fn render_input_content(
+    tc: &ToolCallInfo,
+    include_requested_delay: bool,
+) -> Vec<Line<'static>> {
     let input = typed::input_object(tc);
     let mut wakeup_fields = Vec::new();
 
@@ -112,7 +115,6 @@ fn field_value(label: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme;
     use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
@@ -133,73 +135,58 @@ mod tests {
     }
 
     #[test]
-    fn input_body_renders_requested_delay_reason_and_prompt() {
-        let tc = schedule_wakeup_tool_call(
-            json!({
-                "delaySeconds": 90,
-                "reason": "Poll again after the remote job warms up",
-                "prompt": "/loop watch deployment"
-            }),
-            None,
-            model::ToolCallStatus::InProgress,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Requested delay: 1m 30s",
-                "Reason: Poll again after the remote job warms up",
-                "Prompt: /loop watch deployment",
-            ]
-        );
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
-    }
-
-    #[test]
-    fn completed_body_renders_input_context_and_output_fields() {
-        let tc = schedule_wakeup_tool_call(
-            json!({
-                "delaySeconds": 30,
-                "reason": "Retry after runtime clamp",
-                "prompt": "/loop keep checking"
-            }),
-            Some("Scheduled for: 2026-06-05 14:00:00 local\nActual delay: 1m\nClamped: yes"),
-            model::ToolCallStatus::Completed,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Reason: Retry after runtime clamp",
-                "Prompt: /loop keep checking",
-                "Scheduled for: 2026-06-05 14:00:00 local",
+    fn scheduling_cards_distinguish_requested_accepted_failed_and_unknown_results() {
+        use crate::ui::tool_call::test_support::card_body;
+        for (status, delay, output, expected_delay) in [
+            (model::ToolCallStatus::InProgress, 90, None, "Requested delay: 1m 30s"),
+            (
+                model::ToolCallStatus::Completed,
+                30,
+                Some("Scheduled for: 2026-06-05 14:00:00 local\nActual delay: 1m\nClamped: yes"),
                 "Actual delay: 1m",
-                "Clamped: yes",
-            ]
-        );
-        assert!(!rendered_line_texts(&lines).iter().any(|line| line.contains("Requested delay")));
-    }
-
-    #[test]
-    fn failed_body_keeps_requested_delay_before_error_text() {
-        let tc = schedule_wakeup_tool_call(
-            json!({
-                "delaySeconds": 3600,
-                "reason": "Wake up later",
-                "prompt": "/loop continue"
-            }),
-            Some("Could not schedule wakeup"),
-            model::ToolCallStatus::Failed,
-        );
-
-        let rendered = rendered_line_texts(&render_tool_content(&tc));
-
-        assert!(rendered.iter().any(|line| line.contains("Requested delay: 1h")));
-        assert!(rendered.iter().any(|line| line.contains("Could not schedule wakeup")));
+            ),
+            (model::ToolCallStatus::Failed, 3600, Some("WAKEUP-REFUSED-41"), "Requested delay: 1h"),
+            (
+                model::ToolCallStatus::Completed,
+                90,
+                Some("Unrecognized scheduler receipt"),
+                "Requested delay: 1m 30s",
+            ),
+        ] {
+            let mut tc = schedule_wakeup_tool_call(
+                json!({
+                    "delaySeconds":delay,"reason":"Deployment 41 status","prompt":"/loop poll deployment-41"
+                }),
+                output,
+                status,
+            );
+            if delay == 30 {
+                crate::ui::tool_call::test_support::set_result_fields(
+                    &mut tc,
+                    &[
+                        ("Scheduled for", "2026-06-05 14:00:00 local"),
+                        ("Actual delay", "1m"),
+                        ("Clamped", "yes"),
+                    ],
+                );
+            }
+            let rows = card_body(&mut tc, 120);
+            assert!(rows.contains(&expected_delay.to_owned()), "{status:?}: {rows:?}");
+            assert!(rows.contains(&"Reason: Deployment 41 status".to_owned()));
+            assert!(rows.contains(&"Prompt: /loop poll deployment-41".to_owned()));
+            if delay == 30 {
+                assert!(rows.contains(&"Scheduled for: 2026-06-05 14:00:00 local".to_owned()));
+                assert!(rows.contains(&"Clamped: yes".to_owned()));
+                assert!(!rows.iter().any(|row| row.contains("Requested delay")));
+            } else {
+                assert!(!rows.iter().any(
+                    |row| row.starts_with("Scheduled for:") || row.starts_with("Actual delay:")
+                ));
+                if let Some(output) = output {
+                    assert!(rows.contains(&output.to_owned()));
+                }
+            }
+        }
     }
 
     #[test]
@@ -233,5 +220,41 @@ mod tests {
             model::ToolCallStatus::InProgress,
         );
         assert_eq!(rendered_line_texts(&render_tool_content(&stopped)), vec!["Stop: yes"]);
+    }
+
+    #[test]
+    fn confirmed_wakeup_stops_display_actual_counts_without_claiming_a_new_schedule() {
+        use crate::ui::tool_call::test_support::{card_body, confirmed_receipt};
+        for (id, count) in [
+            ("wakeup-stop-empty", Some("0")),
+            ("wakeup-stop-many", Some("3")),
+            ("wakeup-stop-unknown-count", None),
+        ] {
+            let mut tc = confirmed_receipt(id);
+            let rows = card_body(&mut tc, 100);
+            assert!(rows.contains(&"Stopped: yes".to_owned()), "{id}: {rows:?}");
+            let counts: Vec<_> =
+                rows.iter().filter(|row| row.starts_with("Cancelled wakeups:")).collect();
+            assert_eq!(
+                counts,
+                count.map(|count| format!("Cancelled wakeups: {count}")).iter().collect::<Vec<_>>()
+            );
+            assert!(!rows.iter().any(|row| row.contains("Scheduled for")
+                || row.contains("Actual delay")
+                || row.contains("Cron")));
+        }
+        let mut failed = schedule_wakeup_tool_call(
+            json!({"stop":true}),
+            Some("STOP-REFUSED-9"),
+            model::ToolCallStatus::Failed,
+        );
+        let rows = card_body(&mut failed, 100);
+        assert!(rows.contains(&"Stop: yes".to_owned()));
+        assert!(rows.contains(&"STOP-REFUSED-9".to_owned()));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.starts_with("Stopped:") || row.starts_with("Cancelled wakeups:"))
+        );
     }
 }

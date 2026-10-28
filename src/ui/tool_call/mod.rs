@@ -443,6 +443,64 @@ pub(super) mod test_support {
             .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
             .collect()
     }
+
+    pub(super) fn card_body(tc: &mut ToolCallInfo, width: u16) -> Vec<String> {
+        let mut lines = Vec::new();
+        super::render_tool_call_cached(
+            tc,
+            super::ToolCallRenderContext::default(),
+            width,
+            crate::ui::SpinnerState::Static,
+            &mut lines,
+        );
+        lines
+            .into_iter()
+            .skip(1)
+            .map(|line| {
+                let text: String =
+                    line.spans.iter().skip(1).map(|span| span.content.as_ref()).collect();
+                text.trim_end().to_owned()
+            })
+            .collect()
+    }
+
+    pub(super) fn set_result_fields(tc: &mut ToolCallInfo, fields: &[(&str, &str)]) {
+        let fields: Vec<_> = fields.iter().map(|(label,value)| {
+            serde_json::json!({"label":label,"value":{"type":"text","value":value}})
+        }).collect();
+        tc.output_metadata = Some(
+            serde_json::from_value(serde_json::json!({
+                "presentation":{"sections":[{"fields":fields}]}
+            }))
+            .expect("existing wire presentation contract"),
+        );
+    }
+
+    pub(super) fn confirmed_receipt(id: &str) -> ToolCallInfo {
+        let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/sdk-confirmed-tool-results.json"
+        ))
+        .expect("independent SDK receipt fixtures");
+        let row = fixtures.iter().find(|row| row["id"] == id).expect("named receipt");
+        let mut tc = tool_call(
+            id,
+            id,
+            row["tool"].as_str().expect("tool name"),
+            row["input"].clone(),
+            row["text"].as_str(),
+            model::ToolCallStatus::Completed,
+        );
+        let fields: Vec<_> = row["fields"]
+            .as_array()
+            .expect("receipt fields")
+            .iter()
+            .map(|field| {
+                (field[0].as_str().expect("field label"), field[1].as_str().expect("literal value"))
+            })
+            .collect();
+        set_result_fields(&mut tc, &fields);
+        tc
+    }
 }
 
 #[cfg(test)]
