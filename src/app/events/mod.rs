@@ -465,6 +465,9 @@ fn handle_session_update(
             let next_display_long = update.current_model.display_name_long.clone();
             let pending_ack_before = format!("{:?}", app.turn.pending_command_ack);
             app.session_runtime.current_model = Some(update.current_model);
+            if app.slash.is_visible() {
+                super::slash::sync_with_cursor(app);
+            }
             let clearing_pending =
                 matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel));
             if matches!(app.turn.pending_command_ack, Some(PendingCommandAck::CurrentModel)) {

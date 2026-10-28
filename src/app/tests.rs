@@ -114,288 +114,135 @@ fn timer_flushed_typing_repaints_and_submits_the_complete_draft() {
 }
 
 #[test]
-fn plain_enter_preserves_single_line_draft_before_submit() {
-    let (mut app, mut rx) = app_with_connection();
-    app.input.set_text("hello world");
-    let _ = app.input.set_cursor(0, "hello".chars().count());
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "hello world");
-    assert_eq!(app.input.cursor(), (0, "hello".chars().count()));
-    assert!(app.pending_submit.is_some());
-
-    finalize_deferred_submit(&mut app);
-
-    assert!(app.pending_submit.is_none());
-    assert!(app.input.text().is_empty());
-    assert_eq!(app.transcript.messages.len(), 2);
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::User));
-    assert!(matches!(
-        app.transcript.messages[0].blocks.as_slice(),
-        [MessageBlock::Text(block)] if block.text == "hello world"
-    ));
-    let envelope = rx.try_recv().expect("prompt command should be sent");
-    assert!(matches!(
-        envelope.command,
-        BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
-    ));
+fn enter_preserves_the_draft_until_one_exact_correlated_submission() {
+    use self::route_submit_key as press;
+    for (source, cursor) in [("hello world", (0, 5)), ("alpha beta\ngamma", (0, 5)), ("?", (0, 1))]
+    {
+        let (mut app, mut rx) = app_with_connection();
+        if source == "?" {
+            press(&mut app, KeyCode::Char('?'));
+        } else {
+            app.input.set_text(source);
+            app.input.set_cursor(cursor.0, cursor.1);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input.text(), source);
+        assert_eq!(app.input.cursor(), cursor);
+        assert!(rx.try_recv().is_err());
+        finalize_deferred_submit(&mut app);
+        assert!(app.input.is_empty());
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        let message_uuid = assert_complete_prompt(&mut rx, source);
+        assert!(app.transcript.messages.iter().any(|m| m.role == MessageRole::User
+            && matches!(m.blocks.as_slice(), [MessageBlock::Text(t)] if t.text == source && t.source_message_uuids == [message_uuid.clone()])));
+        finalize_deferred_submit(&mut app);
+        assert!(rx.try_recv().is_err());
+    }
 }
 
 #[test]
 fn compaction_allows_drafting_but_blocks_submit() {
+    use self::route_submit_key as press;
     let (mut app, mut rx) = app_with_connection();
-    app.turn.compaction.begin();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::User,
+        vec![MessageBlock::Text(TextBlock::from_complete("prior question"))],
+        None,
+    ));
+    let update = |update| crate::agent::events::ClientEvent::SessionUpdate {
+        session_id: "session-1".into(),
+        update,
+    };
+    handle_client_event(
+        &mut app,
+        update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Started)),
+    );
     app.input.set_text("draft");
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "draft!");
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-    assert!(app.pending_submit.is_some());
-
+    press(&mut app, KeyCode::Char('!'));
+    events::handle_terminal_event(&mut app, Event::Paste(" pasted\u{754c}".into()));
+    finalize_pending_paste_event(&mut app);
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Char('?'));
+    press(&mut app, KeyCode::Enter);
     finalize_deferred_submit(&mut app);
-
-    assert!(app.pending_submit.is_none());
-    assert_eq!(app.input.text(), "draft!");
-    let [message] = app.transcript.messages.as_slice() else {
-        panic!("expected one active-turn submission notice");
-    };
-    assert!(matches!(message.role, MessageRole::System(Some(SystemSeverity::Info))));
-    let [MessageBlock::Notice(notice)] = message.blocks.as_slice() else {
-        panic!("expected informational notice block");
-    };
-    assert!(notice.text.text.contains("between agent turns"));
+    assert_eq!(app.input.text(), "draft! pasted?\u{754c}");
     assert!(rx.try_recv().is_err());
-}
-
-#[test]
-fn compaction_allows_paste_drafting() {
-    let (mut app, _rx) = app_with_connection();
-    app.turn.compaction.begin();
-
-    events::handle_terminal_event(&mut app, Event::Paste(" pasted".into()));
-
-    assert_eq!(app.paste.pending_text, " pasted");
-}
-
-#[test]
-fn plain_enter_preserves_multiline_draft_with_mid_buffer_cursor() {
-    let (mut app, mut rx) = app_with_connection();
-    app.input.set_text("alpha beta\ngamma");
-    let _ = app.input.set_cursor(0, "alpha".chars().count());
-
-    events::handle_terminal_event(
+    assert!(app.transcript.messages.iter().any(|m| m.blocks.iter().any(
+        |b| matches!(b, MessageBlock::Notice(n) if n.text.text.contains("between agent turns"))
+    )));
+    handle_client_event(
         &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        update(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Finished {
+            result: model::CompactionResult::Success,
+            error_code: None,
+            error: None,
+        })),
     );
-
-    assert_eq!(app.input.text(), "alpha beta\ngamma");
-    assert_eq!(app.input.cursor(), (0, "alpha".chars().count()));
-    assert!(app.pending_submit.is_some());
-
+    while let Ok(envelope) = rx.try_recv() {
+        assert!(
+            matches!(envelope.command, BridgeCommand::GetContextUsage { session_id } if session_id == "session-1"),
+            "completion cannot submit without explicit Enter"
+        );
+    }
+    press(&mut app, KeyCode::Enter);
     finalize_deferred_submit(&mut app);
-
-    assert!(app.pending_submit.is_none());
-    assert!(matches!(
-        app.transcript.messages[0].blocks.as_slice(),
-        [MessageBlock::Text(block)] if block.text == "alpha beta\ngamma"
-    ));
-    let envelope = rx.try_recv().expect("prompt command should be sent");
-    assert!(matches!(
-        envelope.command,
-        BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
-    ));
-}
-
-#[test]
-fn sending_lone_question_mark_submits_as_prompt() {
-    let (mut app, mut rx) = app_with_connection();
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "?");
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-    assert!(app.pending_submit.is_some());
-
-    finalize_deferred_submit(&mut app);
-
-    assert!(app.pending_submit.is_none());
-    assert!(app.input.text().is_empty());
-    assert!(matches!(
-        app.transcript.messages[0].blocks.as_slice(),
-        [MessageBlock::Text(block)] if block.text == "?"
-    ));
-    let envelope = rx.try_recv().expect("prompt command should be sent");
-    assert!(matches!(
-        envelope.command,
-        BridgeCommand::Prompt { session_id, .. } if session_id == "session-1"
-    ));
-}
-
-#[test]
-fn docs_topic_selection_submits_on_the_first_enter() {
-    let mut app = App::test_default();
-    app.input.set_text("/docs co");
-    let _ = app.input.set_cursor(0, "/docs co".chars().count());
-    crate::app::slash::sync_with_cursor(&mut app);
-
-    assert!(app.slash.is_visible(), "topic autocomplete should be active before selection");
-    assert_eq!(app.focus_owner(), FocusOwner::Mention);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "/docs commands ");
-    assert!(app.slash.visible().is_none(), "topic selection should leave slash mode");
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    assert!(app.pending_submit.is_some(), "first Enter should arm submit");
-
-    finalize_deferred_submit(&mut app);
-
-    assert!(app.pending_submit.is_none());
-    let last = app.transcript.messages.last().expect("expected docs system message");
-    assert!(matches!(last.role, MessageRole::System(_)));
-    assert!(matches!(
-        last.blocks.as_slice(),
-        [MessageBlock::Text(block)] if block.text.contains("| Command | Description |")
+    assert_complete_prompt(&mut rx, "draft! pasted?\u{754c}");
+    assert!(app.transcript.messages.iter().any(
+        |m| matches!(m.blocks.as_slice(), [MessageBlock::Text(t)] if t.text == "prior question")
     ));
 }
 
 #[test]
 fn docs_name_waits_for_a_topic_then_topic_enter_submits() {
-    let mut app = App::test_default();
-    app.input.set_text("/do");
-    let _ = app.input.set_cursor(0, "/do".chars().count());
-    crate::app::slash::sync_with_cursor(&mut app);
-
-    assert!(app.slash.is_visible(), "command autocomplete should be active before selection");
-    assert_eq!(app.focus_owner(), FocusOwner::Mention);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert!(app.pending_submit.is_none(), "command name still needs a topic");
-    assert_eq!(app.input.text(), "/docs ");
-    let slash = app.slash.visible().expect("topic autocomplete should activate");
-    assert!(matches!(slash.context, crate::app::slash::SlashContext::Argument { .. }));
-    assert_eq!(app.focus_owner(), FocusOwner::Mention);
-
-    for _ in 0..3 {
-        events::handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
-        );
+    use self::route_submit_key as press;
+    for initial in ["/do", "/docs co"] {
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text(initial);
+        app.input.set_cursor(0, 0);
+        press(&mut app, KeyCode::End);
+        if initial == "/do" {
+            press(&mut app, KeyCode::Enter);
+            finalize_deferred_submit(&mut app);
+            assert_eq!(app.input.text(), "/docs ");
+            assert!(app.transcript.messages.is_empty());
+            assert!(rx.try_recv().is_err());
+        }
+        let limit = app.slash.visible().expect("topics").candidates.len();
+        for _ in 0..limit {
+            let menu = app.slash.visible().expect("topics");
+            if menu.candidates[menu.dialog.selected].insert_value == "commands" {
+                break;
+            }
+            press(&mut app, KeyCode::Down);
+        }
+        let menu = app.slash.visible().expect("topics");
+        assert_eq!(menu.candidates[menu.dialog.selected].insert_value, "commands");
+        press(&mut app, KeyCode::Enter);
+        finalize_deferred_submit(&mut app);
+        assert!(rx.try_recv().is_err());
+        assert!(app.transcript.messages.iter().any(|m| matches!(m.blocks.as_slice(), [MessageBlock::Text(t)] if t.text.contains("/model") && t.text.contains("/new-session") && t.text.contains("/docs"))));
+        assert!(app.input.is_empty());
     }
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "/docs commands ");
-    assert!(app.slash.visible().is_none(), "topic selection should leave slash mode");
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    assert!(app.pending_submit.is_some(), "submit should arm after topic selection");
-
-    finalize_deferred_submit(&mut app);
-
-    let last = app.transcript.messages.last().expect("expected docs system message");
-    assert!(matches!(
-        last.blocks.as_slice(),
-        [MessageBlock::Text(block)] if block.text.contains("| Command | Description |")
-    ));
-}
-
-#[test]
-fn mode_selection_arms_submit_on_the_first_enter() {
-    let mut app = App::test_default();
-    app.session_runtime.mode = Some(ModeState {
-        current_mode_id: "code".to_owned(),
-        current_mode_name: "Code".to_owned(),
-        available_modes: vec![
-            ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-            ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
-        ],
-    });
-    app.input.set_text("/mode pl");
-    let _ = app.input.set_cursor(0, "/mode pl".chars().count());
-    crate::app::slash::sync_with_cursor(&mut app);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "/mode plan ");
-    assert!(app.slash.visible().is_none());
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    assert!(app.pending_submit.is_some());
-}
-
-#[test]
-fn model_selection_arms_submit_on_the_first_enter() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_models = vec![
-        model::AvailableModel::new("sonnet", "Claude Sonnet"),
-        model::AvailableModel::new("haiku", "Claude Haiku"),
-    ];
-    app.input.set_text("/model so");
-    let _ = app.input.set_cursor(0, "/model so".chars().count());
-    crate::app::slash::sync_with_cursor(&mut app);
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "/model sonnet ");
-    assert!(app.slash.visible().is_none());
-    assert_eq!(app.focus_owner(), FocusOwner::Input);
-
-    assert!(app.pending_submit.is_some());
 }
 
 #[test]
 fn paste_event_cancels_deferred_submit_snapshot() {
-    let mut app = App::test_default();
-    app.input.set_text("draft");
-
-    events::handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-    );
+    use self::route_submit_key as press;
+    let (mut app, mut rx) = app_with_connection();
+    app.input.set_text("draft|tail");
+    app.input.set_cursor(0, 5);
+    press(&mut app, KeyCode::Enter);
     assert!(app.pending_submit.is_some());
-
-    events::handle_terminal_event(&mut app, Event::Paste("pasted".into()));
-
-    assert!(app.pending_submit.is_none());
-    assert_eq!(app.paste.pending_text, "pasted");
-    assert_eq!(app.input.text(), "draft");
+    events::handle_terminal_event(&mut app, Event::Paste("pasted\u{754c}".into()));
+    finalize_pending_paste_event(&mut app);
+    finalize_deferred_submit(&mut app);
+    assert!(rx.try_recv().is_err());
+    assert!(app.transcript.messages.is_empty());
+    assert_eq!(app.input.text(), "draftpasted\u{754c}|tail");
+    assert_eq!(app.input.cursor(), (0, 12));
+    press(&mut app, KeyCode::Enter);
+    finalize_deferred_submit(&mut app);
+    assert_complete_prompt(&mut rx, "draftpasted\u{754c}|tail");
 }
 
 #[test]
@@ -886,4 +733,64 @@ fn clearing_a_completed_burst_allows_immediate_submission_without_old_enter_supp
     while let Ok(envelope) = commands.try_recv() {
         assert!(!matches!(envelope.command, BridgeCommand::Prompt { .. }));
     }
+}
+
+fn assert_complete_prompt(
+    rx: &mut crate::agent::client::CommandReceiver,
+    expected: &str,
+) -> String {
+    let BridgeCommand::Prompt { session_id, message_uuid, chunks, .. } =
+        rx.try_recv().expect("Prompt").command
+    else {
+        panic!("expected Prompt")
+    };
+    assert_eq!(session_id, "session-1");
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].kind, "text");
+    assert_eq!(chunks[0].value, serde_json::json!(expected));
+    while let Ok(envelope) = rx.try_recv() {
+        assert!(matches!(envelope.command, BridgeCommand::GetContextUsage { .. }));
+    }
+    message_uuid
+}
+
+#[test]
+fn bracketed_paste_delivers_held_source_before_its_payload_and_original_suffix_once() {
+    use super::test_support::{EventClock, press};
+    for (typed, expected) in
+        [("a\u{e9}", "start a\u{e9}PASTE|tail"), ("a\u{e9}b", "start a\u{e9}bPASTE|tail")]
+    {
+        let clock = EventClock::new();
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("start |tail");
+        app.input.set_cursor(0, 6);
+        for ch in typed.chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        assert!(app.paste.burst.has_held_input());
+        events::handle_terminal_event(&mut app, Event::Paste("PASTE".into()));
+        finalize_pending_paste_event(&mut app);
+        finalize_deferred_submit(&mut app);
+        assert_eq!(app.input.text(), expected);
+        assert!(rx.try_recv().is_err());
+        if let Some(action) = app.paste.burst.tick(clock.at(1)) {
+            apply_paste_burst_flush(&mut app, action);
+        }
+        finalize_pending_paste_event(&mut app);
+        assert_eq!(app.input.text(), expected);
+        press(&mut app, KeyCode::Enter);
+        finalize_deferred_submit(&mut app);
+        assert_complete_prompt(&mut rx, expected);
+        if let Some(action) = app.paste.burst.tick(clock.at(2)) {
+            apply_paste_burst_flush(&mut app, action);
+        }
+        finalize_pending_paste_event(&mut app);
+        finalize_deferred_submit(&mut app);
+        assert!(app.input.is_empty());
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+fn route_submit_key(app: &mut App, code: KeyCode) {
+    events::handle_terminal_event(app, Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
