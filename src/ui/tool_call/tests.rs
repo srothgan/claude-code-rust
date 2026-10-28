@@ -2274,108 +2274,94 @@ fn render_execute_content_keeps_tail_output() {
 }
 
 #[test]
-fn render_execute_content_extracts_tool_use_error() {
-    let mut tc = test_tool_call("tc-xml", "Bash", model::ToolCallStatus::Failed);
-    tc.terminal_id = Some("term-xml".into());
-    tc.terminal_command = Some("cd path with spaces".into());
-    tc.terminal_output = Some(
-            "<tool_use_error>Cancelled: parallel tool call Bash(cd path) errored</tool_use_error>\nraw fallback"
-                .into(),
-        );
-
-    let lines = execute::render_execute_content(
-        &tc,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> =
-        lines.iter().map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
-
-    assert!(!rendered.iter().any(|line| line.contains("$ cd path with spaces")));
-    assert!(
-        rendered.iter().any(|line| line == "Cancelled: parallel tool call Bash(cd path) errored")
-    );
-    assert!(!rendered.iter().any(|line| line.contains("<tool_use_error>")));
-    assert!(!rendered.iter().any(|line| line.contains("</tool_use_error>")));
-    assert!(!rendered.iter().any(|line| line.contains("raw fallback")));
-}
-
-#[test]
-fn render_execute_content_extracts_xml_message_error() {
-    let mut tc = test_tool_call("tc-xml-message", "Bash", model::ToolCallStatus::Failed);
-    tc.terminal_id = Some("term-xml".into());
-    tc.terminal_output = Some("<error><message>Adapter process crashed</message></error>".into());
-
-    let lines = execute::render_execute_content(
-        &tc,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> =
-        lines.iter().map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
-
-    assert!(rendered.iter().any(|line| line == "Adapter process crashed"));
-    assert!(!rendered.iter().any(|line| line.contains("<message>")));
-    assert!(!rendered.iter().any(|line| line.contains("<error>")));
-}
-
-#[test]
-fn failed_text_tool_body_extracts_xml_error_message() {
-    let mut tc = test_tool_call("tc-read-error", "Read", model::ToolCallStatus::Failed);
-    tc.content = vec![model::ToolCallContent::from(
-        "<error><message>Read failed</message></error>".to_owned(),
-    )];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(rendered.iter().any(|line| line.contains("Read failed")));
-    assert!(!rendered.iter().any(|line| line.contains("<message>")));
-    assert!(!rendered.iter().any(|line| line.contains("<error>")));
-}
-
-#[test]
-fn successful_text_tool_body_preserves_xml_like_output() {
-    let mut tc = test_tool_call("tc-read-xml", "Read", model::ToolCallStatus::Completed);
-    tc.content = vec![model::ToolCallContent::from("<message>not an error</message>".to_owned())];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(rendered.iter().any(|line| line.contains("<message>not an error</message>")));
-}
-
-#[test]
-fn diff_tool_body_preserves_xml_like_source() {
-    let mut tc = test_tool_call("tc-diff-xml", "Write", model::ToolCallStatus::Failed);
-    tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
-        "src/main.xml",
-        "<message>source text</message>".to_owned(),
-    ))];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(rendered.iter().any(|line| line.contains("<message>source text</message>")));
+fn failed_tool_errors_are_extracted_without_reinterpreting_literal_text_or_diff_source() {
+    for (tool, status, payload, expected, extracted) in [
+        (
+            "Bash",
+            model::ToolCallStatus::Failed,
+            "<tool_use_error>Cancelled: parallel Bash call errored</tool_use_error>\nRAW_FALLBACK",
+            "Cancelled: parallel Bash call errored",
+            true,
+        ),
+        (
+            "Bash",
+            model::ToolCallStatus::Failed,
+            "<error><message>Adapter process crashed</message></error>",
+            "Adapter process crashed",
+            true,
+        ),
+        (
+            "Read",
+            model::ToolCallStatus::Failed,
+            "<error><message>Read failed</message></error>",
+            "Read failed",
+            true,
+        ),
+        (
+            "Read",
+            model::ToolCallStatus::Completed,
+            "<message>not an error</message>",
+            "<message>not an error</message>",
+            false,
+        ),
+        (
+            "Write",
+            model::ToolCallStatus::Failed,
+            "<message>source text</message>",
+            "<message>source text</message>",
+            false,
+        ),
+        (
+            "RemoteTrigger",
+            model::ToolCallStatus::Failed,
+            "<tool_use_error>Remote trigger unavailable</tool_use_error>",
+            "Remote trigger unavailable",
+            true,
+        ),
+        (
+            "RemoteTrigger",
+            model::ToolCallStatus::Completed,
+            "<tool_use_error>Remote trigger unavailable</tool_use_error>",
+            "<tool_use_error>Remote trigger unavailable</tool_use_error>",
+            false,
+        ),
+    ] {
+        let mut tc = test_tool_call("target-error-card", tool, status);
+        match tool {
+            "Bash" => {
+                tc.terminal_id = Some("terminal-target".into());
+                tc.terminal_command = Some("cd path with spaces".into());
+                tc.terminal_output = Some(payload.into());
+            }
+            "Write" => {
+                tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
+                    "src/source.xml",
+                    payload.to_owned(),
+                ))];
+            }
+            _ => tc.content = vec![model::ToolCallContent::from(payload.to_owned())],
+        }
+        if tool == "RemoteTrigger" {
+            tc.raw_input = Some(serde_json::json!({"action":"run","trigger_id":"deploy-target"}));
+        }
+        let rows = test_support::card_body(&mut tc, 120);
+        assert!(rows.iter().any(|row| row.contains(expected)), "{tool} {status:?}: {rows:?}");
+        if extracted {
+            assert!(
+                !rows.iter().any(|row| row.contains("<tool_use_error>")
+                    || row.contains("</tool_use_error>")
+                    || row.contains("<message>")
+                    || row.contains("<error>")
+                    || row.contains("RAW_FALLBACK")
+                    || row.contains("$ cd path with spaces")),
+                "{rows:?}"
+            );
+        }
+        if tool == "RemoteTrigger" {
+            assert!(rows.iter().any(|row| row == "Action: run"), "{rows:?}");
+            assert!(rows.iter().any(|row| row == "Trigger ID: deploy-target"));
+        }
+    }
 }
 
 #[test]

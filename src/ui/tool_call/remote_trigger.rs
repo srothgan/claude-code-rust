@@ -75,8 +75,7 @@ fn field_label(label: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::ui::theme;
-    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
+    use crate::ui::tool_call::test_support::{card_body, rendered_line_texts, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -90,27 +89,20 @@ mod tests {
 
     #[test]
     fn input_body_renders_action_trigger_id_and_body() {
-        let tc = remote_trigger_tool_call(
-            json!({
-                "action": "run",
-                "trigger_id": "deploy-prod",
-                "body": { "branch": "main", "retry": false }
-            }),
+        let mut tc = remote_trigger_tool_call(
+            json!({"action":"run","trigger_id":"deploy-prod","body":{"branch":"release-42","retry":false,"attempt":3}}),
             None,
             model::ToolCallStatus::InProgress,
         );
-
-        let lines = render_tool_content(&tc);
-
+        let rows = card_body(&mut tc, 120);
+        assert!(rows.iter().any(|row| row == "Action: run"));
+        assert!(rows.iter().any(|row| row == "Trigger ID: deploy-prod"));
+        let body = rows.iter().find_map(|row| row.strip_prefix("Body: ")).expect("request body");
         assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Action: run",
-                "Trigger ID: deploy-prod",
-                "Body: {\"branch\":\"main\",\"retry\":false}",
-            ]
+            serde_json::from_str::<serde_json::Value>(body).unwrap(),
+            json!({"retry":false,"attempt":3,"branch":"release-42"})
         );
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        assert!(!rows.iter().any(|row| row.starts_with("Session ID:")));
     }
 
     #[test]
@@ -134,29 +126,38 @@ mod tests {
     }
 
     #[test]
-    fn completed_output_renders_status_and_summary() {
-        let tc = remote_trigger_tool_call(
-            json!({}),
-            Some("Status: 200\nSummary: Trigger completed"),
-            model::ToolCallStatus::Completed,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(rendered_line_texts(&lines), vec!["Status: 200", "Summary: Trigger completed"]);
-    }
-
-    #[test]
-    fn fallback_output_renders_response() {
-        let tc = remote_trigger_tool_call(
-            json!({}),
-            Some("Response: {\"ok\":true}"),
-            model::ToolCallStatus::Completed,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(rendered_line_texts(&lines), vec!["Response: {\"ok\":true}"]);
+    fn completed_receipts_preserve_response_with_or_without_summary() {
+        for (receipt, expected, summary) in [
+            (
+                r#"Status: 200
+Summary: Trigger completed
+Response: {"run":"run-alpha","queued":false}"#,
+                json!({"queued":false,"run":"run-alpha"}),
+                Some("Trigger completed"),
+            ),
+            (
+                r#"Status: 202
+Response: {"run":"run-beta","queued":true}"#,
+                json!({"queued":true,"run":"run-beta"}),
+                None,
+            ),
+        ] {
+            let mut tc = remote_trigger_tool_call(
+                json!({"action":"run","trigger_id":"target-73"}),
+                Some(receipt),
+                model::ToolCallStatus::Completed,
+            );
+            let rows = card_body(&mut tc, 120);
+            assert!(rows.iter().any(|row| row == "Action: run"));
+            assert!(rows.iter().any(|row| row == "Trigger ID: target-73"));
+            assert!(rows.iter().any(|row| row == if summary.is_some() {"Status: 200"} else {"Status: 202"}));
+            let response = rows
+                .iter()
+                .find_map(|row| row.strip_prefix("Response: "))
+                .expect("response remains visible even with summary");
+            assert_eq!(serde_json::from_str::<serde_json::Value>(response).unwrap(), expected);
+            assert_eq!(rows.iter().find_map(|row| row.strip_prefix("Summary: ")), summary);
+        }
     }
 
     #[test]
@@ -173,20 +174,5 @@ mod tests {
             rendered_line_texts(&lines),
             vec!["Status: 500", "Response: {\"error\":\"boom\"}"]
         );
-    }
-
-    #[test]
-    fn failed_error_payload_uses_failed_text_fallback() {
-        let tc = remote_trigger_tool_call(
-            json!({ "action": "run" }),
-            Some("<tool_use_error>Remote trigger unavailable</tool_use_error>"),
-            model::ToolCallStatus::Failed,
-        );
-
-        let lines = render_tool_content(&tc);
-        let rendered = rendered_line_texts(&lines);
-
-        assert_eq!(rendered, vec!["Action: run", "Remote trigger unavailable"]);
-        assert_eq!(lines[1].spans[0].style.fg, Some(theme::STATUS_ERROR));
     }
 }

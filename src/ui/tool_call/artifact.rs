@@ -460,25 +460,11 @@ fn render_watch_status_output(object: &Map<String, Value>) -> Vec<Line<'static>>
             let detail = typed::json_string(arm, "detail")
                 .map(|value| format!("; detail {value}"))
                 .unwrap_or_default();
-            let additional = additional_json(
-                arm,
-                &[
-                    "url",
-                    "state",
-                    "server_message",
-                    "detail",
-                    "rail",
-                    "reconnect",
-                    "failures",
-                    "max_failures",
-                    "next_in_s",
-                    "last_failure",
-                    "reason",
-                    "at",
-                ],
-            )
-            .map(|value| format!("; additional {value}"))
-            .unwrap_or_default();
+            // Only exclude fields rendered above; diagnostics and future values
+            // must remain attached to this arm in the fallback projection.
+            let additional = additional_json(arm, &["url", "state", "server_message", "detail"])
+                .map(|value| format!("; additional {value}"))
+                .unwrap_or_default();
             lines.push(fields::render_dynamic_field(
                 format!("Watch arm {}", index + 1),
                 format!("{url} — {state}{server_message}{detail}{additional}"),
@@ -733,7 +719,7 @@ fn additional_json(object: &Map<String, Value>, handled: &[&str]) -> Option<Stri
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
+    use crate::ui::tool_call::test_support::{card_body, rendered_line_texts, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -749,138 +735,139 @@ mod tests {
     }
 
     #[test]
-    fn renders_input_and_output_fields() {
-        let tc = artifact_tool_call(
-            json!({
-                "file_path": "C:/work/dashboard.html",
-                "label": "dashboard",
-                "description": "Interactive dashboard",
-                "url": "https://artifact.local/old"
-            }),
+    fn publish_results_preserve_identity_capabilities_and_unknown_value_ownership() {
+        let mut compact = artifact_tool_call(
+            json!({"file_path":"C:/work/request.html","label":"requested-label","description":"Requested description","url":"https://artifact.local/old"}),
             Some(
-                r#"{"url":"https://artifact.local/new","path":"C:/work/dashboard.html","title":"Dashboard","version":"v2"}"#,
+                r#"{"title":"Returned dashboard","url":"https://artifact.local/new","path":"C:/work/stored.html","version":"v2"}"#,
             ),
         );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Label: dashboard",
-                "Description: Interactive dashboard",
-                "File path: C:/work/dashboard.html",
-                "URL: https://artifact.local/old",
-                "Title: Dashboard",
-                "URL: https://artifact.local/new",
-                "Path: C:/work/dashboard.html",
-                "Version: v2",
-            ]
+        let rows = card_body(&mut compact, 120);
+        assert_fields(
+            &rows,
+            &[
+                ("File path", "C:/work/request.html"),
+                ("Label", "requested-label"),
+                ("Description", "Requested description"),
+                ("URL", "https://artifact.local/old"),
+                ("Title", "Returned dashboard"),
+                ("URL", "https://artifact.local/new"),
+                ("Path", "C:/work/stored.html"),
+                ("Version", "v2"),
+            ],
         );
+
+        let rich = artifact_tool_call(
+            json!({"action":"publish","file_path":"C:/work/page.html","title":"Requested title","favicon":"chart","icon":"map","pin":true,"force":true,"futureInput":{"enabled":false}}),
+            Some(
+                r#"{"url":"https://artifact.local/published","path":"C:/work/page.html","title":"Published title","version":"v3","artifact_id":"artifact-42","pinned":false,"pins_enabled":true,"capabilities":{"storage":false},"stored":{"contract":"artifact-v1","preferredContract":"artifact-v2","capabilities":{"persist":true},"carried":false,"read":"v3","futureStored":{"revision":4}},"warnings":["legacy contract"],"contract":"artifact-v2","updated":false,"audience":"workspace","liveSubscription":"subscription-42","publishesRemaining":0,"publishesResetAt":1234,"seq":7,"unchanged":true,"futureOutput":{"revision":8}}"#,
+            ),
+        );
+        let rows = rendered_line_texts(&render_tool_content(&rich));
+        assert_fields(
+            &rows,
+            &[
+                ("Title", "Requested title"),
+                ("Title", "Published title"),
+                ("Favicon", "chart"),
+                ("Icon", "map"),
+                ("Artifact ID", "artifact-42"),
+                ("Version", "v3"),
+                ("Pinned", "no"),
+                ("Pinning enabled", "yes"),
+                ("Stored contract", "artifact-v1"),
+                ("Preferred contract", "artifact-v2"),
+                ("Stored state carried", "no"),
+                ("Stored read state", "v3"),
+                ("Warnings", "legacy contract"),
+                ("Contract", "artifact-v2"),
+                ("Updated", "no"),
+                ("Audience", "workspace"),
+                ("Live subscription", "subscription-42"),
+                ("Publishes remaining", "0"),
+                ("Publish limit resets at", "1234"),
+                ("Publish sequence", "7"),
+                ("Unchanged", "yes"),
+            ],
+        );
+        assert_json_field(&rows, "Capabilities", &json!({"storage":false}));
+        assert_json_field(&rows, "Stored capabilities", &json!({"persist":true}));
+        assert_json_field(&rows, "Additional input", &json!({"futureInput":{"enabled":false}}));
+        assert_json_field(
+            &rows,
+            "Additional stored output",
+            &json!({"futureStored":{"revision":4}}),
+        );
+        assert_json_field(&rows, "Additional output", &json!({"futureOutput":{"revision":8}}));
+        let carried = artifact_tool_call(
+            json!({"action":"publish","file_path":"C:/work/page.html"}),
+            Some(
+                r#"{"url":"https://artifact.local/carried","path":"page.html","stored":{"contract":"artifact-v1","carried":true}}"#,
+            ),
+        );
+        assert_fields(
+            &rendered_line_texts(&render_tool_content(&carried)),
+            &[("Stored state carried", "yes")],
+        );
+
+        for flag in [None, Some(false), Some(true)] {
+            let mut input = json!({"action":"publish","file_path":"C:/work/page.html","capabilities":{"storage":true},"contract":"latest"});
+            if let Some(flag) = flag {
+                input["pin"] = json!(flag);
+                input["force"] = json!(flag);
+            }
+            let mut tc = artifact_tool_call(
+                input,
+                Some(r#"{"url":"https://artifact.local/published","path":"C:/work/page.html"}"#),
+            );
+            let rows = card_body(&mut tc, 120);
+            for label in ["Pin after publish", "Overwrite conflicts"] {
+                let value = rows.iter().find_map(|row| row.strip_prefix(&format!("{label}: ")));
+                assert_eq!(value, flag.map(|flag| if flag { "yes" } else { "no" }));
+            }
+            assert_fields(&rows, &[("URL", "https://artifact.local/published")]);
+            assert_json_field(&rows, "Capabilities", &json!({"storage":true}));
+            assert_fields(&rows, &[("Contract", "latest")]);
+            assert!(
+                !rows.iter().any(|row| row.starts_with("Pinned:") || row.starts_with("Unchanged:"))
+            );
+        }
     }
 
     #[test]
-    fn renders_publish_contract_without_dropping_unknown_fields() {
-        let tc = artifact_tool_call(
-            json!({
-                "action": "publish",
-                "title": "Dashboard page",
-                "favicon": "chart",
-                "pin": true,
-                "force": true,
-                "futureInput": {"enabled": true}
-            }),
+    fn artifact_list_keeps_each_items_identity_and_metadata_together() {
+        let mut tc = artifact_tool_call(
+            json!({"action":"list","scope":"all","limit":10}),
             Some(
-                r#"{"title":"Dashboard","url":"https://artifact.local/dashboard","pinned":false,"pins_enabled":true,"path":"C:/work/dashboard.html","version":"v3","artifact_id":"artifact-42","capabilities":{"storage":true},"stored":{"contract":"artifact-v1","preferredContract":"artifact-v2","capabilities":{"persist":true},"carried":true,"read":"v3","futureStored":4},"warnings":["legacy contract"],"contract":"artifact-v2","updated":true,"audience":"workspace","liveSubscription":"subscription-42","futureOutput":{"revision":4}}"#,
+                r#"{"scope":"all","truncated":false,"artifacts":[{"rel":"mine","title":"Dashboard","url":"https://artifact.local/dashboard","favicon":"chart","updatedAt":"2026-07-18T10:00:00Z","pinned":true,"futureItem":{"revision":4}},{"rel":"shared","title":"Roadmap","url":"https://artifact.local/roadmap","favicon":"map","updatedAt":"2026-07-19T11:00:00Z","pinned":false,"futureItem":{"revision":9}}]}"#,
             ),
         );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Action: publish",
-                "Title: Dashboard page",
-                "Favicon: chart",
-                "Pin after publish: yes",
-                "Additional input: {\"futureInput\":{\"enabled\":true}}",
-                "Overwrite conflicts: yes",
-                "Title: Dashboard",
-                "URL: https://artifact.local/dashboard",
-                "Pinned: no",
-                "Pinning enabled: yes",
-                "Path: C:/work/dashboard.html",
-                "Version: v3",
-                "Artifact ID: artifact-42",
-                "Capabilities: {\"storage\":true}",
-                "Stored contract: artifact-v1",
-                "Stored capabilities: {\"persist\":true}",
-                "Preferred contract: artifact-v2",
-                "Stored state carried: yes",
-                "Stored read state: v3",
-                "Additional stored output: {\"futureStored\":4}",
-                "Warnings: legacy contract",
-                "Contract: artifact-v2",
-                "Updated: yes",
-                "Audience: workspace",
-                "Live subscription: subscription-42",
-                "Additional output: {\"futureOutput\":{\"revision\":4}}",
-            ]
+        let rows = card_body(&mut tc, 240);
+        assert_fields(
+            &rows,
+            &[("Scope", "all"), ("Limit", "10"), ("Truncated", "no"), ("Artifacts", "2")],
         );
-    }
-
-    #[test]
-    fn renders_latest_publish_and_asset_ownership_fields() {
-        let publish = artifact_tool_call(
-            json!({"action": "publish", "icon": "chart"}),
-            Some(
-                r#"{"url":"https://artifact.local/a","path":"a.html","publishesRemaining":3,"publishesResetAt":1234,"seq":7,"unchanged":true}"#,
+        for (url, own, peer, future) in [
+            (
+                "https://artifact.local/dashboard",
+                vec!["Dashboard", "mine", "chart", "2026-07-18T10:00:00Z", "pinned yes"],
+                "Roadmap",
+                json!({"futureItem":{"revision":4}}),
             ),
-        );
-        let publish_lines = rendered_line_texts(&render_tool_content(&publish));
-        assert!(publish_lines.contains(&"Icon: chart".to_owned()));
-        assert!(publish_lines.contains(&"Publishes remaining: 3".to_owned()));
-        assert!(publish_lines.contains(&"Publish limit resets at: 1234".to_owned()));
-        assert!(publish_lines.contains(&"Publish sequence: 7".to_owned()));
-        assert!(publish_lines.contains(&"Unchanged: yes".to_owned()));
-
-        let asset = artifact_tool_call(
-            json!({"action": "read_asset", "url": "https://artifact.local/a", "asset_id": "asset-1"}),
-            Some(
-                r#"{"written":{"url":"https://artifact.local/a"},"asset_read":{"id":"asset-1","path":"asset.png","size_bytes":4,"content_type":"image/png","sha256":"abc","cowritten":true,"foreign":true}}"#,
+            (
+                "https://artifact.local/roadmap",
+                vec!["Roadmap", "shared", "map", "2026-07-19T11:00:00Z", "pinned no"],
+                "Dashboard",
+                json!({"futureItem":{"revision":9}}),
             ),
-        );
-        let asset_lines = rendered_line_texts(&render_tool_content(&asset));
-        assert!(asset_lines.contains(&"Written artifact: https://artifact.local/a".to_owned()));
-        assert!(asset_lines.contains(&"Co-written: yes".to_owned()));
-        assert!(asset_lines.contains(&"Foreign shared asset: yes".to_owned()));
-    }
-
-    #[test]
-    fn renders_list_scope_and_each_artifact() {
-        let tc = artifact_tool_call(
-            json!({"action": "list", "scope": "all", "limit": 10}),
-            Some(
-                r#"{"scope":"all","truncated":false,"artifacts":[{"rel":"mine","title":"Dashboard","url":"https://artifact.local/dashboard","favicon":"📊","updatedAt":"2026-07-18T10:00:00Z","pinned":true,"futureItem":true},{"rel":"shared","title":"Roadmap","url":"https://artifact.local/roadmap"}]}"#,
-            ),
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Action: list",
-                "Scope: all",
-                "Limit: 10",
-                "Scope: all",
-                "Truncated: no",
-                "Artifacts: 2",
-                "Artifact 1: (mine) Dashboard — https://artifact.local/dashboard — icon 📊 — updated 2026-07-18T10:00:00Z — pinned yes — additional {\"futureItem\":true}",
-                "Artifact 2: (shared) Roadmap — https://artifact.local/roadmap",
-            ]
-        );
+        ] {
+            let row = rows.iter().find(|row| row.contains(url)).expect("visible artifact item");
+            for value in own {
+                assert!(row.contains(value), "{row}");
+            }
+            assert!(!row.contains(peer), "{row}");
+            assert_eq!(json_suffix(row), future);
+        }
     }
 
     #[test]
@@ -906,179 +893,389 @@ mod tests {
     }
 
     #[test]
-    fn renders_read_input_and_multiline_output_with_artifact_metadata() {
+    fn read_result_keeps_literal_content_and_nested_metadata_with_its_source() {
         let tc = artifact_tool_call(
-            json!({
-                "action": "read",
-                "url": "https://artifact.local/dashboard",
-                "prompt": "Summarize the metrics",
-                "out_dir": "C:/work/assets",
-                "asset_id": "0123456789abcdef0123456789abcdef",
-                "after": "page-2",
-                "capabilities": {"storage": true},
-                "contract": "latest"
-            }),
+            json!({"action":"read","url":"https://artifact.local/requested","prompt":"Summarize metrics","futureInput":{"owner":"request"}}),
             Some(
-                r#"{"read":{"url":"https://artifact.local/dashboard","title":"Stored dashboard","bytes":128,"code":200,"codeText":"OK","result":"First line\nSecond line","durationMs":42,"futureRead":true},"artifactRead":{"slug":"dashboard","ver":"v3","seeded":false,"futureMeta":"kept"},"futureOutput":{"revision":4}}"#,
+                r#"{"read":{"url":"https://artifact.local/returned","title":"Stored dashboard","bytes":128,"code":200,"codeText":"OK","result":"First literal line\n\n  Second literal line","durationMs":42,"futureRead":{"owner":"read"}},"artifactRead":{"slug":"dashboard","ver":"v3","seeded":false,"futureMeta":{"owner":"metadata"}},"futureOutput":{"owner":"root"}}"#,
             ),
         );
-
-        assert_eq!(
-            rendered_line_texts(&render_tool_content(&tc)),
-            vec![
-                "Action: read",
-                "URL: https://artifact.local/dashboard",
-                "Prompt: Summarize the metrics",
-                "Output directory: C:/work/assets",
-                "Asset ID: 0123456789abcdef0123456789abcdef",
-                "After: page-2",
-                "Capabilities: {\"storage\":true}",
-                "Contract: latest",
-                "Additional output: {\"futureOutput\":{\"revision\":4}}",
-                "Read URL: https://artifact.local/dashboard",
-                "Stored title: Stored dashboard",
-                "Bytes: 128",
-                "Status: 200 OK",
-                "Duration: 42 ms",
-                "Artifact slug: dashboard",
-                "Artifact version: v3",
-                "Seeded: no",
-                "Additional artifact metadata: {\"futureMeta\":\"kept\"}",
-                "Result: First line",
-                "        Second line",
-                "Additional read output: {\"futureRead\":true}",
-            ]
+        let lines = render_tool_content(&tc);
+        let rows = rendered_line_texts(&lines);
+        assert_fields(
+            &rows,
+            &[
+                ("URL", "https://artifact.local/requested"),
+                ("Prompt", "Summarize metrics"),
+                ("Read URL", "https://artifact.local/returned"),
+                ("Stored title", "Stored dashboard"),
+                ("Bytes", "128"),
+                ("Status", "200 OK"),
+                ("Duration", "42 ms"),
+                ("Artifact slug", "dashboard"),
+                ("Artifact version", "v3"),
+                ("Seeded", "no"),
+            ],
         );
+        for (label, expected) in [
+            ("Additional input", json!({"futureInput":{"owner":"request"}})),
+            ("Additional read output", json!({"futureRead":{"owner":"read"}})),
+            ("Additional artifact metadata", json!({"futureMeta":{"owner":"metadata"}})),
+            ("Additional output", json!({"futureOutput":{"owner":"root"}})),
+        ] {
+            assert_json_field(&rows, label, &expected);
+        }
+        let start = rows.iter().position(|row| row.starts_with("Result: ")).unwrap();
+        let values: Vec<String> = lines[start..start + 3]
+            .iter()
+            .map(|line| line.spans.iter().skip(1).map(|span| span.content.as_ref()).collect())
+            .collect();
+        assert_eq!(values, vec!["First literal line", "", "  Second literal line"]);
+
+        let mut compact = artifact_tool_call(
+            json!({"action":"read","url":"https://artifact.local/visible"}),
+            Some(
+                r#"{"read":{"url":"https://artifact.local/visible","bytes":19,"code":200,"codeText":"OK","result":"literal A\nliteral B","durationMs":7}}"#,
+            ),
+        );
+        let body = card_body(&mut compact, 120);
+        assert_fields(
+            &body,
+            &[
+                ("Read URL", "https://artifact.local/visible"),
+                ("Status", "200 OK"),
+                ("Result", "literal A"),
+            ],
+        );
+        assert!(body.iter().any(|row| row.trim_start() == "literal B"), "{body:?}");
     }
 
     #[test]
-    fn renders_uploaded_asset_details() {
+    fn paginated_assets_keep_item_metadata_cursor_and_usage_values_distinct() {
         let tc = artifact_tool_call(
-            json!({"action": "upload_asset", "url": "https://artifact.local/dashboard", "file_path": "C:/work/chart.png"}),
+            json!({"action":"list_assets","url":"https://artifact.local/dashboard","after":"opaque-before"}),
             Some(
-                r#"{"asset_upload":{"id":"asset-1","url":"https://artifact.local/assets/1","size_bytes":2048,"content_type":"image/png","sha256":"abc123","file_name":"chart.png","future":true}}"#,
+                r#"{"asset_list":{"url":"https://artifact.local/dashboard","assets":[{"id":"11111111111111111111111111111111","url":"https://artifact.local/assets/one","content_type":"image/png","size_bytes":2048,"sha256":"abc123","created_at":"2026-08-22T08:00:00Z","future":{"owner":"first"}},{"id":"22222222222222222222222222222222","url":"https://artifact.local/assets/two","content_type":"application/pdf","size_bytes":4096,"sha256":"def456","created_at":"2026-08-23T09:00:00Z","future":{"owner":"second"}}],"usage":{"files":2,"bytes":6144,"max_files":17,"max_bytes":8192,"futureUsage":{"quota":"workspace"}},"next":"opaque-after","cowritten":false,"futureList":{"generation":5}}}"#,
             ),
         );
-
-        assert_eq!(
-            rendered_line_texts(&render_tool_content(&tc)),
-            vec![
-                "Action: upload_asset",
-                "File path: C:/work/chart.png",
-                "URL: https://artifact.local/dashboard",
-                "Uploaded asset: asset-1",
-                "Asset URL: https://artifact.local/assets/1",
-                "File name: chart.png",
-                "Content type: image/png",
-                "Size: 2048 bytes",
-                "SHA-256: abc123",
-                "Additional asset output: {\"future\":true}",
-            ]
+        let rows = rendered_line_texts(&render_tool_content(&tc));
+        assert_fields(
+            &rows,
+            &[
+                ("After", "opaque-before"),
+                ("Next", "opaque-after"),
+                ("Artifact URL", "https://artifact.local/dashboard"),
+                ("Assets", "2"),
+                ("Co-written artifact", "no"),
+            ],
         );
+        for (url, expected, peer, future) in [
+            (
+                "https://artifact.local/assets/one",
+                vec![
+                    "11111111111111111111111111111111",
+                    "image/png",
+                    "2048 bytes",
+                    "abc123",
+                    "2026-08-22T08:00:00Z",
+                ],
+                "def456",
+                json!({"future":{"owner":"first"}}),
+            ),
+            (
+                "https://artifact.local/assets/two",
+                vec![
+                    "22222222222222222222222222222222",
+                    "application/pdf",
+                    "4096 bytes",
+                    "def456",
+                    "2026-08-23T09:00:00Z",
+                ],
+                "abc123",
+                json!({"future":{"owner":"second"}}),
+            ),
+        ] {
+            let row = rows.iter().find(|row| row.contains(url)).unwrap();
+            for value in expected {
+                assert!(row.contains(value), "{row}");
+            }
+            assert!(!row.contains(peer));
+            assert_eq!(json_suffix(row), future);
+        }
+        let usage = rows.iter().find(|row| row.starts_with("Asset usage:")).unwrap();
+        assert_usage(usage, ["2", "17", "files"], ["6144", "8192", "bytes"]);
+        assert_json_field(
+            &rows,
+            "Additional asset usage",
+            &json!({"futureUsage":{"quota":"workspace"}}),
+        );
+        assert_json_field(
+            &rows,
+            "Additional asset-list output",
+            &json!({"futureList":{"generation":5}}),
+        );
+        let mut empty = artifact_tool_call(
+            json!({"action":"list_assets","url":"https://artifact.local/empty"}),
+            Some(
+                r#"{"asset_list":{"url":"https://artifact.local/empty","assets":[],"usage":{"files":0,"bytes":0,"max_files":17,"max_bytes":8192}}}"#,
+            ),
+        );
+        let body = card_body(&mut empty, 120);
+        assert_fields(&body, &[("Assets", "0")]);
+        let usage = body.iter().find(|row| row.starts_with("Asset usage:")).unwrap();
+        assert_usage(usage, ["0", "17", "files"], ["0", "8192", "bytes"]);
+        assert!(!body.iter().any(|row| row.starts_with("Next:") || row.contains("assets/one")));
     }
 
     #[test]
-    fn renders_paginated_asset_list_and_usage() {
-        let tc = artifact_tool_call(
-            json!({"action": "list_assets", "url": "https://artifact.local/dashboard", "after": "page-1"}),
-            Some(
-                r#"{"asset_list":{"url":"https://artifact.local/dashboard","assets":[{"id":"asset-1","url":"https://artifact.local/assets/1","content_type":"image/png","size_bytes":2048,"sha256":"abc123","created_at":"2026-08-22T08:00:00Z","future":true}],"usage":{"files":1,"bytes":2048,"max_files":1000,"max_bytes":1048576,"futureUsage":true},"next":"page-2","futureList":true}}"#,
+    fn asset_operations_preserve_ids_locations_payload_metadata_and_ownership() {
+        for (input, receipt, fields) in [
+            (
+                json!({"action":"upload_asset","url":"https://artifact.local/upload-target","file_path":"C:/work/chart.png"}),
+                json!({"asset_upload":{"id":"11111111111111111111111111111111","url":"https://artifact.local/assets/one","file_name":"chart.png","content_type":"image/png","size_bytes":2048,"sha256":"abc123","future":{"operation":"upload"}}}),
+                vec![
+                    ("Uploaded asset", "11111111111111111111111111111111"),
+                    ("Asset URL", "https://artifact.local/assets/one"),
+                    ("File name", "chart.png"),
+                    ("Content type", "image/png"),
+                    ("Size", "2048 bytes"),
+                    ("SHA-256", "abc123"),
+                    ("File path", "C:/work/chart.png"),
+                ],
             ),
-        );
-
-        assert_eq!(
-            rendered_line_texts(&render_tool_content(&tc)),
-            vec![
-                "Action: list_assets",
-                "URL: https://artifact.local/dashboard",
-                "After: page-1",
-                "Artifact URL: https://artifact.local/dashboard",
-                "Assets: 1",
-                "Next: page-2",
-                "Asset 1: asset-1 — https://artifact.local/assets/1 — image/png, 2048 bytes; created 2026-08-22T08:00:00Z; SHA-256 abc123; additional {\"future\":true}",
-                "Asset usage: 1 / 1000 files; 2048 / 1048576 bytes",
-                "Additional asset usage: {\"futureUsage\":true}",
-                "Additional asset-list output: {\"futureList\":true}",
-            ]
-        );
+            (
+                json!({"action":"read_asset","url":"https://artifact.local/read-target","asset_id":"22222222222222222222222222222222","out_dir":"C:/work/downloads"}),
+                json!({"written":{"url":"https://artifact.local/read-target"},"asset_read":{"id":"22222222222222222222222222222222","path":"C:/work/downloads/second.pdf","content_type":"application/pdf","size_bytes":4096,"sha256":"def456","cowritten":true,"foreign":true,"future":{"operation":"read"}}}),
+                vec![
+                    ("Read asset", "22222222222222222222222222222222"),
+                    ("Written artifact", "https://artifact.local/read-target"),
+                    ("Saved path", "C:/work/downloads/second.pdf"),
+                    ("Output directory", "C:/work/downloads"),
+                    ("Content type", "application/pdf"),
+                    ("Size", "4096 bytes"),
+                    ("SHA-256", "def456"),
+                    ("Co-written", "yes"),
+                    ("Foreign shared asset", "yes"),
+                ],
+            ),
+        ] {
+            let tc = artifact_tool_call(input, Some(&receipt.to_string()));
+            let rows = rendered_line_texts(&render_tool_content(&tc));
+            assert_fields(&rows, &fields);
+            let operation = if receipt.get("asset_upload").is_some() { "upload" } else { "read" };
+            assert_json_field(
+                &rows,
+                "Additional asset output",
+                &json!({"future":{"operation":operation}}),
+            );
+        }
+        for (action, result, identity, location) in [
+            (
+                "upload_asset",
+                json!({"asset_upload":{"id":"11111111111111111111111111111111","url":"https://artifact.local/assets/one","size_bytes":2048,"content_type":"image/png"}}),
+                ("Uploaded asset", "11111111111111111111111111111111"),
+                ("Asset URL", "https://artifact.local/assets/one"),
+            ),
+            (
+                "read_asset",
+                json!({"asset_read":{"id":"22222222222222222222222222222222","path":"C:/downloads/second.pdf","size_bytes":4096,"content_type":"application/pdf","cowritten":false,"foreign":false}}),
+                ("Read asset", "22222222222222222222222222222222"),
+                ("Saved path", "C:/downloads/second.pdf"),
+            ),
+        ] {
+            let mut input = json!({"action":action,"url":"https://artifact.local/target"});
+            if action == "upload_asset" {
+                input["file_path"] = json!("C:/work/chart.png");
+            } else {
+                input["asset_id"] = json!("22222222222222222222222222222222");
+            }
+            let mut tc = artifact_tool_call(input, Some(&result.to_string()));
+            let body = card_body(&mut tc, 160);
+            assert_fields(&body, &[identity, location]);
+            if action == "read_asset" {
+                assert_fields(&body, &[("Co-written", "no"), ("Foreign shared asset", "no")]);
+            }
+        }
+        for deleted in [true, false] {
+            let result =
+                json!({"asset_delete":{"id":"33333333333333333333333333333333","deleted":deleted}});
+            let mut tc = artifact_tool_call(
+                json!({"action":"delete_asset","url":"https://artifact.local/delete-target","asset_id":"33333333333333333333333333333333"}),
+                Some(&result.to_string()),
+            );
+            let body = card_body(&mut tc, 160);
+            assert_fields(
+                &body,
+                &[
+                    ("URL", "https://artifact.local/delete-target"),
+                    ("Deleted asset", "33333333333333333333333333333333"),
+                    ("Deleted", if deleted { "yes" } else { "no" }),
+                ],
+            );
+            assert!(
+                !body.iter().any(|row| row == if deleted { "Deleted: no" } else { "Deleted: yes" })
+            );
+        }
     }
 
     #[test]
-    fn renders_read_and_deleted_asset_results() {
-        let read = artifact_tool_call(
-            json!({"action": "read_asset", "url": "https://artifact.local/dashboard", "asset_id": "asset-1", "out_dir": "C:/work/downloads"}),
+    fn watch_status_keeps_targets_states_and_unknown_values_associated() {
+        let tc = artifact_tool_call(
+            json!({"action":"status","url":"https://artifact.local/a"}),
             Some(
-                r#"{"asset_read":{"id":"asset-1","path":"C:/work/downloads/asset-1.png","size_bytes":2048,"content_type":"image/png","sha256":"abc123"}}"#,
+                r#"{"filter_url":"https://artifact.local/a","watches":[{"url":"https://artifact.local/a","rail":"durable_wake","trigger_id":"trigger-a","since":"2026-09-02","events":["published"],"futureWatcher":{"owner":"alpha"}},{"url":"https://artifact.local/b","rail":"durable_wake","trigger_id":"trigger-b","since":"2026-09-03","events":["updated"],"futureWatcher":{"owner":"beta"}}],"arms":[{"url":"https://artifact.local/a","state":"retrying","server_message":"try later","detail":"connection reset","futureArm":{"owner":"alpha"}},{"url":"https://artifact.local/b","state":"stopped","server_message":"stop accepted","detail":"closed by user","futureArm":{"owner":"beta"}}]}"#,
             ),
         );
-        assert_eq!(
-            rendered_line_texts(&render_tool_content(&read)),
-            vec![
-                "Action: read_asset",
-                "URL: https://artifact.local/dashboard",
-                "Output directory: C:/work/downloads",
-                "Asset ID: asset-1",
-                "Read asset: asset-1",
-                "Saved path: C:/work/downloads/asset-1.png",
-                "Content type: image/png",
-                "Size: 2048 bytes",
-                "SHA-256: abc123",
-            ]
+        let rows = rendered_line_texts(&render_tool_content(&tc));
+        assert_fields(&rows, &[("Watch filter", "https://artifact.local/a")]);
+        let watchers: Vec<Value> = rows
+            .iter()
+            .filter(|row| row.starts_with("Watcher "))
+            .map(|row| serde_json::from_str(row.split_once(": ").unwrap().1).unwrap())
+            .collect();
+        for expected in [
+            json!({"url":"https://artifact.local/a","rail":"durable_wake","trigger_id":"trigger-a","since":"2026-09-02","events":["published"],"futureWatcher":{"owner":"alpha"}}),
+            json!({"url":"https://artifact.local/b","rail":"durable_wake","trigger_id":"trigger-b","since":"2026-09-03","events":["updated"],"futureWatcher":{"owner":"beta"}}),
+        ] {
+            let actual = watchers
+                .iter()
+                .find(|watcher| watcher["url"] == expected["url"])
+                .expect("watcher target");
+            assert_eq!(actual, &expected);
+        }
+        for (url, expected, peer, extra) in [
+            (
+                "https://artifact.local/a",
+                vec!["retrying", "try later", "connection reset"],
+                "stop accepted",
+                json!({"futureArm":{"owner":"alpha"}}),
+            ),
+            (
+                "https://artifact.local/b",
+                vec!["stopped", "stop accepted", "closed by user"],
+                "try later",
+                json!({"futureArm":{"owner":"beta"}}),
+            ),
+        ] {
+            let row =
+                rows.iter().find(|row| row.starts_with("Watch arm ") && row.contains(url)).unwrap();
+            for value in expected {
+                assert!(row.contains(value), "{row}");
+            }
+            assert!(!row.contains(peer));
+            assert_eq!(json_suffix(row), extra);
+        }
+        let mut unsupported = artifact_tool_call(
+            json!({"action":"watch","url":"https://artifact.local/unsupported"}),
+            Some(
+                r#"{"watch":{"url":"https://artifact.local/unsupported","watching":false,"outcome":"unsupported_here","detail":"runtime unavailable","futureWatch":{"retryable":false}}}"#,
+            ),
         );
-
-        let delete = artifact_tool_call(
-            json!({"action": "delete_asset", "url": "https://artifact.local/dashboard", "asset_id": "asset-1"}),
-            Some(r#"{"asset_delete":{"id":"asset-1","deleted":true}}"#),
+        let body = card_body(&mut unsupported, 160);
+        assert_fields(
+            &body,
+            &[
+                ("Watch URL", "https://artifact.local/unsupported"),
+                ("Watching", "no"),
+                ("Watch outcome", "unsupported_here"),
+                ("Watch detail", "runtime unavailable"),
+            ],
         );
-        assert_eq!(
-            rendered_line_texts(&render_tool_content(&delete)),
-            vec![
-                "Action: delete_asset",
-                "URL: https://artifact.local/dashboard",
-                "Asset ID: asset-1",
-                "Deleted asset: asset-1",
-                "Deleted: yes",
-            ]
+        assert_json_field(
+            &body,
+            "Additional watch output",
+            &json!({"futureWatch":{"retryable":false}}),
         );
+        assert!(!body.iter().any(|row| row == "Watching: yes"));
     }
 
     #[test]
-    fn keeps_watch_status_on_forward_compatible_fallback() {
-        let tc = artifact_tool_call(
-            json!({"action": "watch", "url": "https://artifact.local/dashboard"}),
-            Some(
-                r#"{"watch":{"url":"https://artifact.local/dashboard","watching":false,"outcome":"unsupported_here","detail":"runtime unavailable","futureWatch":true}}"#,
+    fn watch_arm_failure_and_retry_diagnostics_survive_in_the_correct_card_region() {
+        for (arms, expected) in [
+            (
+                json!([
+                    {"url":"https://artifact.local/failed","state":"failed","reason":"token expired","last_failure":"HTTP 401"},
+                    {"url":"https://artifact.local/retry","state":"retrying","failures":2,"max_failures":7,"next_in_s":15,"last_failure":"connection reset"}
+                ]),
+                vec![
+                    (
+                        "https://artifact.local/failed",
+                        "failed",
+                        json!({"reason":"token expired","last_failure":"HTTP 401"}),
+                    ),
+                    (
+                        "https://artifact.local/retry",
+                        "retrying",
+                        json!({"failures":2,"max_failures":7,"next_in_s":15,"last_failure":"connection reset"}),
+                    ),
+                ],
             ),
-        );
-
-        assert_eq!(
-            rendered_line_texts(&render_tool_content(&tc)),
-            vec![
-                "Action: watch",
-                "URL: https://artifact.local/dashboard",
-                "Watch URL: https://artifact.local/dashboard",
-                "Watch outcome: unsupported_here",
-                "Watch detail: runtime unavailable",
-                "Watching: no",
-                "Additional watch output: {\"futureWatch\":true}",
-            ]
-        );
+            (
+                json!([
+                    {"url":"https://artifact.local/zero","state":"retrying","failures":0,"max_failures":5,"next_in_s":0,"reconnect":false,"rail":"live","at":1234},
+                    {"url":"https://artifact.local/unknown","state":"pending"}
+                ]),
+                vec![
+                    (
+                        "https://artifact.local/zero",
+                        "retrying",
+                        json!({"failures":0,"max_failures":5,"next_in_s":0,"reconnect":false,"rail":"live","at":1234}),
+                    ),
+                    ("https://artifact.local/unknown", "pending", json!({})),
+                ],
+            ),
+        ] {
+            let result = json!({"watches":[],"arms":arms});
+            let mut tc = artifact_tool_call(json!({"action":"status"}), Some(&result.to_string()));
+            let original = tc.content.clone();
+            let body = card_body(&mut tc, 240);
+            for (url, state, diagnostics) in expected {
+                let row = body
+                    .iter()
+                    .find(|row| row.starts_with("Watch arm ") && row.contains(url))
+                    .expect("target arm visible");
+                assert!(row.contains(state), "{row}");
+                if diagnostics == json!({}) {
+                    assert!(
+                        !row.contains("additional"),
+                        "missing diagnostics must stay unknown: {row}"
+                    );
+                } else {
+                    assert_eq!(json_suffix(row), diagnostics);
+                }
+            }
+            assert_eq!(tc.content, original);
+        }
     }
 
-    #[test]
-    fn renders_watcher_status_and_server_details() {
-        let tc = artifact_tool_call(
-            json!({"action": "status"}),
-            Some(
-                r#"{"filter_url":"https://artifact.local/dashboard","watches":[{"url":"https://artifact.local/dashboard","rail":"durable_wake","trigger_id":"trigger-1","since":"2026-09-02","events":["published"],"futureWatcher":true}],"arms":[{"url":"https://artifact.local/dashboard","state":"retrying","server_message":"try later","detail":"connection reset","futureArm":true}]}"#,
-            ),
-        );
-        let rendered = rendered_line_texts(&render_tool_content(&tc));
+    fn assert_fields(rows: &[String], fields: &[(&str, &str)]) {
+        for (label, value) in fields {
+            assert!(
+                rows.iter().any(|row| row == &format!("{label}: {value}")),
+                "missing {label}: {value} in {rows:?}"
+            );
+        }
+    }
 
-        assert!(rendered.contains(&"Watch filter: https://artifact.local/dashboard".to_owned()));
-        assert!(rendered.iter().any(|line| line.contains("futureWatcher")));
-        assert!(rendered.iter().any(|line| line.contains("server message try later")));
-        assert!(rendered.iter().any(|line| line.contains("detail connection reset")));
-        assert!(rendered.iter().any(|line| line.contains("futureArm")));
+    fn assert_json_field(rows: &[String], label: &str, expected: &Value) {
+        let raw = rows
+            .iter()
+            .find_map(|row| row.strip_prefix(&format!("{label}: ")))
+            .expect("JSON field");
+        assert_eq!(&serde_json::from_str::<Value>(raw).unwrap(), expected);
+    }
+
+    fn assert_usage(row: &str, files: [&str; 3], bytes: [&str; 3]) {
+        let tokens: Vec<_> = row
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| part.parse::<u64>().is_ok() || matches!(*part, "files" | "bytes"))
+            .collect();
+        assert!(tokens.windows(3).any(|window| window == files), "{row}");
+        assert!(tokens.windows(3).any(|window| window == bytes), "{row}");
+    }
+
+    fn json_suffix(row: &str) -> Value {
+        let start = row.find('{').expect("additional values must be visible");
+        serde_json::from_str(&row[start..]).expect("literal additional JSON values")
     }
 }
