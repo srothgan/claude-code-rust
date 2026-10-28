@@ -245,7 +245,116 @@ fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcil
 
 #[test]
 fn connected_resets_session_scoped_view_data() {
-    let mut app = make_test_app();
+    for replacement in [false, true] {
+        let (mut app, mut commands) = session_reset_fixture();
+        app.input.set_text("old session draft");
+        app.plugins.session_plugins = reset_attachment("old");
+        begin_reset_folder(&mut app, "old-folder");
+        let old_request =
+            commands.try_recv().expect("old local reload").request_id.expect("old correlation");
+
+        let event = if replacement {
+            ClientEvent::SessionReplaced {
+                session_id: model::SessionId::new("test-session"),
+                cwd: "/test".into(),
+                current_model: test_current_model("claude-updated"),
+                available_models: vec![],
+                mode: None,
+                fast_mode_state: model::FastModeState::Off,
+                fast_mode_disabled_reason: None,
+                ultracode: None,
+                history_updates: vec![],
+                restored_input: None,
+            }
+        } else {
+            connected_event("claude-updated")
+        };
+        handle_client_event(&mut app, event);
+
+        assert!(matches!(app.status, AppStatus::Ready));
+        assert_eq!(app.transcript.messages.len(), 1);
+        assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
+        assert_eq!(app.files_accessed, 0);
+        assert!(app.usage.snapshot.is_none());
+        assert!(app.session_runtime.account_info.is_none());
+        assert!(app.plugins.installed.is_empty());
+        assert!(app.plugins.last_inventory_refresh_at.is_none());
+        assert!(app.config.pending_session_title_change.is_none());
+        assert!(app.session_runtime.session_title.is_none());
+        assert_eq!(
+            app.input.text(),
+            if replacement { "" } else { "old session draft" },
+            "initial connection preserves the composer; replacement discards the old draft"
+        );
+        assert!(app.plugins.session_plugins.is_empty());
+        assert!(app.plugins.pending_reload.is_none());
+        while commands.try_recv().is_ok() {} // connection-triggered snapshot requests
+        begin_reset_folder(&mut app, "new-folder");
+        let request = commands.try_recv().expect("new local reload");
+        assert!(
+            matches!(request.command,crate::agent::wire::BridgeCommand::ReloadPlugins {ref session_id,force:false,ref add_plugins} if session_id=="test-session" && add_plugins==&["new-folder"])
+        );
+        let current = request.request_id.expect("new correlation");
+        for id in [old_request, current.clone()] {
+            handle_client_event(
+                &mut app,
+                ClientEvent::RuntimeReloadCompleted {
+                    session_id: "old-session".into(),
+                    request_id: Some(id),
+                    error_count: 0,
+                    reconciliation_error: None,
+                },
+            );
+        }
+        handle_client_event(
+            &mut app,
+            ClientEvent::PluginInventory {
+                session_id: "old-session".into(),
+                plugins: reset_attachment("late"),
+            },
+        );
+        assert!(app.plugins.session_plugins.is_empty());
+        assert_eq!(
+            app.plugins
+                .pending_reload
+                .as_ref()
+                .expect("new operation survives old outcomes")
+                .request_id,
+            current
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::PluginInventory {
+                session_id: "test-session".into(),
+                plugins: reset_attachment("new"),
+            },
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::RuntimeReloadCompleted {
+                session_id: "test-session".into(),
+                request_id: Some(current),
+                error_count: 0,
+                reconciliation_error: None,
+            },
+        );
+        assert_eq!(app.plugins.session_plugins, reset_attachment("new"));
+        assert!(app.plugins.pending_reload.is_none());
+        assert!(app.config.overlay.is_none());
+    }
+}
+
+fn reset_attachment(name: &str) -> Vec<crate::agent::types::SessionPlugin> {
+    vec![crate::agent::types::SessionPlugin {
+        name: name.into(),
+        path: format!("{name}-folder"),
+        source: None,
+        version: None,
+    }]
+}
+
+fn session_reset_fixture() -> (App, crate::agent::client::CommandReceiver) {
+    let (mut app, commands) = app_with_bridge_connection();
     app.transcript.messages.push(user_msg("hello"));
     app.status = AppStatus::Running;
     app.files_accessed = 9;
@@ -282,18 +391,15 @@ fn connected_resets_session_scoped_view_data() {
     app.session_runtime.session_id = Some(model::SessionId::new("old-session"));
     app.session_runtime.session_title = Some("Old session name".to_owned());
 
-    handle_client_event(&mut app, connected_event("claude-updated"));
+    (app, commands)
+}
 
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert_eq!(app.files_accessed, 0);
-    assert!(app.usage.snapshot.is_none());
-    assert!(app.session_runtime.account_info.is_none());
-    assert!(app.plugins.installed.is_empty());
-    assert!(app.plugins.last_inventory_refresh_at.is_none());
-    assert!(app.config.pending_session_title_change.is_none());
-    assert!(app.session_runtime.session_title.is_none());
+fn begin_reset_folder(app: &mut App, folder: &str) {
+    app.surface_mode = crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+    app.config.active_tab = crate::app::ConfigTab::Plugins;
+    crate::app::test_support::press(app, crossterm::event::KeyCode::Char('l'));
+    handle_terminal_event(app, crossterm::event::Event::Paste(folder.into()));
+    crate::app::test_support::press(app, crossterm::event::KeyCode::Enter);
 }
 
 #[test]

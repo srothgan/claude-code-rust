@@ -275,6 +275,31 @@ fn plugins_tab_uses_arrow_keys_for_inner_navigation() {
     assert_eq!(app.plugins.installed_search_query, "");
     assert_eq!(app.plugins.plugins_search_query, "");
     assert!(app.config.overlay.is_none());
+    // Cross both wrap boundaries and use the content reached after navigation.
+    app.plugins.session_plugins = vec![crate::agent::types::SessionPlugin {
+        name: "local-tools".into(),
+        path: "session-folder".into(),
+        source: None,
+        version: None,
+    }];
+    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // Installed
+    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // Session
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app.config.plugin_source_input_overlay().expect("session folder action").draft,
+        "session-folder"
+    );
+    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // Installed
+    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(
+        app.config
+            .installed_plugin_actions_overlay()
+            .expect("remembered installed target")
+            .plugin_id,
+        "rust-analyzer-lsp@claude-plugins-official"
+    );
 }
 
 #[test]
@@ -1307,18 +1332,90 @@ fn unknown_plugin_owned_mcp_server_does_not_call_set_servers_for_dynamic_remove(
 
 #[test]
 fn stale_plugin_owned_mcp_server_is_filtered_after_plugin_inventory_refresh() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.plugins.last_inventory_refresh_at = Some(std::time::Instant::now());
-    let mut servers =
-        vec![notion_mcp_server_status(), connected_mcp_server_status("fff", "user", None)];
-
-    super::mcp::filter_stale_plugin_mcp_servers(
-        &app,
-        Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
-        &mut servers,
-    );
-
-    assert_eq!(servers.iter().map(|server| server.name.as_str()).collect::<Vec<_>>(), vec!["fff"]);
+    use crate::agent::events::ClientEvent;
+    use crate::app::handle_client_event;
+    use crate::app::plugins::{PluginsCliActionSuccess, PluginsInventorySnapshot};
+    use std::collections::BTreeSet;
+    for action_result in [false, true] {
+        for inventory_first in [false, true] {
+            for selected in ["plugin:Stale:gone", "fff"] {
+                let (_dir, mut app) = open_settings_test_app();
+                app.session_runtime.session_id =
+                    Some(crate::agent::model::SessionId::new("session-1"));
+                app.plugins.session_plugins = vec![crate::agent::types::SessionPlugin {
+                    name: "attached".into(),
+                    path: "session-folder".into(),
+                    source: None,
+                    version: None,
+                }];
+                let servers = vec![
+                    notion_mcp_server_status(),
+                    connected_mcp_server_status("plugin:attached:tools", "dynamic", None),
+                    connected_mcp_server_status("plugin:Stale:gone", "dynamic", None),
+                    connected_mcp_server_status("fff", "user", None),
+                ];
+                let snapshot = PluginsInventorySnapshot {
+                    installed: vec![notion_plugin_entry()],
+                    marketplace: vec![],
+                    marketplaces: vec![],
+                };
+                let inventory = if action_result {
+                    ClientEvent::PluginsCliActionSucceeded {
+                        cwd_raw: app.cwd_raw.clone(),
+                        result: PluginsCliActionSuccess {
+                            snapshot,
+                            message: "Uninstalled stale plugin".into(),
+                            claude_path: "unused-fixture-cli".into(),
+                        },
+                    }
+                } else {
+                    ClientEvent::PluginsInventoryUpdated {
+                        cwd_raw: app.cwd_raw.clone(),
+                        snapshot,
+                        claude_path: "unused-fixture-cli".into(),
+                    }
+                };
+                let mcp = ClientEvent::McpSnapshotReceived {
+                    session_id: "session-1".into(),
+                    servers,
+                    auth_capabilities: crate::agent::model::McpAuthCapabilities::default(),
+                    source: Some(crate::agent::types::McpSnapshotSource::ReloadPlugins),
+                    error: None,
+                };
+                if inventory_first {
+                    handle_client_event(&mut app, inventory);
+                    handle_client_event(&mut app, mcp);
+                } else {
+                    handle_client_event(&mut app, mcp);
+                    assert!(
+                        app.mcp.servers.iter().any(|s| s.name == "plugin:Stale:gone"),
+                        "no confirmed inventory yet"
+                    );
+                    app.config.overlay =
+                        Some(ConfigOverlayState::McpDetails(McpDetailsOverlayState {
+                            server_name: selected.into(),
+                            selected_index: 0,
+                        }));
+                    handle_client_event(&mut app, inventory);
+                    if selected == "fff" {
+                        assert_eq!(
+                            app.config
+                                .mcp_details_overlay()
+                                .expect("live target remains")
+                                .server_name,
+                            "fff"
+                        );
+                    } else {
+                        assert!(app.config.overlay.is_none(), "stale details close");
+                    }
+                }
+                assert_eq!(
+                    app.mcp.servers.iter().map(|s| s.name.as_str()).collect::<BTreeSet<_>>(),
+                    BTreeSet::from(["plugin:Notion:notion", "plugin:attached:tools", "fff"])
+                );
+            }
+        }
+    }
 }
 
 #[test]

@@ -41,7 +41,12 @@ pub(super) fn marketplace_overlay_description(entry: &MarketplaceSourceEntry) ->
 }
 
 pub(super) fn normalize_project_path(path: &str) -> String {
-    path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+    if cfg!(windows) {
+        path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
+    } else {
+        // Unix project paths are case-sensitive and may contain literal backslashes.
+        path.trim_end_matches('/').to_owned()
+    }
 }
 
 pub(super) fn normalize_single_line_input(text: &str) -> String {
