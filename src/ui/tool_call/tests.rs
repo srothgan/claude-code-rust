@@ -1667,11 +1667,8 @@ fn wrapped_content_cap_keeps_permission_rows_visible() {
 
 #[test]
 fn render_tool_call_cached_prefixes_hidden_subagent_child_permission_title() {
-    let mut tc = test_tool_call(
-        "Write probe text to result file",
-        "Write",
-        model::ToolCallStatus::InProgress,
-    );
+    let mut tc =
+        test_tool_call("Write child_probe.txt", "Write", model::ToolCallStatus::InProgress);
     tc.parent_tool_use_id = Some("parent-agent".into());
     tc.content = vec![model::ToolCallContent::from("running...".to_owned())];
     let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
@@ -1691,20 +1688,23 @@ fn render_tool_call_cached_prefixes_hidden_subagent_child_permission_title() {
         ],
         display: Some(
             model::PermissionDisplay::new()
+                .title(Some("SDK_ONLY_TITLE".to_owned()))
                 .display_name(Some("Write".to_owned()))
-                .description(Some("probe file".to_owned())),
+                .description(Some("child_probe.txt SDK_ONLY_DESCRIPTION".to_owned())),
         ),
         subagent_context: Some(crate::app::SubagentPermissionContext {
             subagent_label: "general-purpose".to_owned(),
             child_tool_name: "Write".to_owned(),
-            child_tool_title: "Write probe text to result file".to_owned(),
-            parent_tool_call_id: "agent-1".to_owned(),
+            child_tool_title: "Write child_probe.txt".to_owned(),
+            parent_tool_call_id: "parent-agent".to_owned(),
             parent_tool_title: Some("Agent: general-purpose".to_owned()),
             parent_model: Some("claude-opus-4-8".to_owned()),
-            parent_raw_input: None,
+            parent_raw_input: Some(
+                serde_json::json!({"prompt":"PARENT_ONLY_INPUT", "model":"claude-opus-4-8", "subagent_type":"general-purpose"}),
+            ),
         }),
         response_tx,
-        selected_index: 0,
+        selected_index: 1,
         focused: true,
     });
 
@@ -1719,14 +1719,13 @@ fn render_tool_call_cached_prefixes_hidden_subagent_child_permission_title() {
     let text = rendered_line_texts_trimmed(&rendered);
 
     let first = text.first().expect("missing tool title row");
-    assert!(first.contains("Subagent ·"), "missing inline subagent marker: {text:?}");
     assert!(
-        first.contains("Write probe text to result file"),
+        first.contains("Write child_probe.txt"),
         "first row should be the child tool title: {text:?}"
     );
     let child_idx = text
         .iter()
-        .position(|line| line.contains("Write probe text to result file"))
+        .position(|line| line.contains("Write child_probe.txt"))
         .expect("missing child tool title");
     let content_idx =
         text.iter().position(|line| line.contains("running...")).expect("missing content");
@@ -1739,7 +1738,20 @@ fn render_tool_call_cached_prefixes_hidden_subagent_child_permission_title() {
     assert!(!text.iter().any(|line| line.contains("general-purpose")));
     assert!(!text.iter().any(|line| line.contains("[model:")));
     assert!(!text.iter().any(|line| line.contains("Agent:")));
-    assert!(!text.iter().any(|line| line.contains("probe file")));
+    for sentinel in
+        ["SDK_ONLY_TITLE", "SDK_ONLY_DESCRIPTION", "PARENT_ONLY_INPUT", "claude-opus-4-8"]
+    {
+        assert!(
+            !text.iter().any(|line| line.contains(sentinel)),
+            "suppressed metadata: {sentinel}"
+        );
+    }
+    assert!(first.contains("child_probe.txt"), "the child identity itself is still public");
+    assert!(
+        !text[1..].iter().any(|line| line.contains("child_probe.txt")),
+        "no duplicate SDK description in the body"
+    );
+    test_support::assert_focused_option(&rendered, ["Allow once", "Always allow", "Deny"], 1);
 }
 
 #[test]

@@ -424,343 +424,332 @@ fn single_line_text(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{render_permission_lines, render_plan_approval_lines, render_question_lines};
+mod card_tests {
     use crate::agent::model::{
         PermissionDisplay, PermissionOption, PermissionOptionKind, QuestionOption, QuestionPrompt,
         ToolCallStatus,
     };
-    use crate::app::{InlinePermission, InlineQuestion, ToolCallInfo};
-    use crate::ui::theme;
-    use ratatui::style::Color;
-    use std::collections::BTreeSet;
+    use crate::app::{App, FocusTarget, ToolCallInfo};
+    use crate::ui::tool_call::test_support::{
+        assert_focused_option, attach_permission, attach_question, interaction_app,
+        interaction_card, press,
+    };
+    use crossterm::event::KeyCode;
+    use ratatui::text::Line;
 
-    fn test_question() -> InlineQuestion {
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-        InlineQuestion {
-            idle_timeout: None,
-            last_activity: std::time::Instant::now(),
-            prompt: QuestionPrompt::new(
-                "Which mode should we use?",
-                "Mode",
-                false,
-                vec![
-                    QuestionOption::new("safe", "Safer path"),
-                    QuestionOption::new("fast", "Faster path"),
-                ],
-            ),
-            response_tx,
-            focused_option_index: 0,
-            selected_option_indices: BTreeSet::new(),
-            notes: String::new(),
-            notes_cursor: 0,
-            editing_notes: false,
-            focused: true,
-            question_index: 0,
-            total_questions: 2,
-        }
-    }
+    const LABELS: [&str; 3] = ["Cedar", "Maple", "Birch"];
+    const PERMISSIONS: [&str; 3] = ["Allow once", "Allow session", "Reject request"];
 
-    fn test_tool_call(sdk_tool_name: &str) -> ToolCallInfo {
+    fn tool(name: &str) -> ToolCallInfo {
         ToolCallInfo {
-            title: "Tool".into(),
+            title: "Target operation".into(),
             ..crate::app::test_support::named_tool_call_info(
-                "tool-1",
-                sdk_tool_name,
+                "target",
+                name,
                 ToolCallStatus::InProgress,
             )
         }
     }
 
-    fn test_permission(kind: PermissionOptionKind) -> InlinePermission {
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-        let reject_kind =
-            if matches!(kind, PermissionOptionKind::PlanApprove | PermissionOptionKind::PlanReject)
-            {
-                PermissionOptionKind::PlanReject
-            } else {
-                PermissionOptionKind::RejectOnce
-            };
-        InlinePermission {
-            options: vec![
-                PermissionOption::new("allow", "Allow", kind),
-                PermissionOption::new("deny", "Deny", reject_kind),
-            ],
-            display: None,
-            subagent_context: None,
-            response_tx,
-            selected_index: 0,
-            focused: true,
+    fn prompt(multi: bool, described: bool) -> QuestionPrompt {
+        let options = ["cedar-id", "maple-id", "birch-id"]
+            .into_iter()
+            .zip(LABELS)
+            .enumerate()
+            .map(|(index, (id, label))| {
+                QuestionOption::new(id, label).description(described.then(|| {
+                    ["  Evergreen\n  canopy ", "Broad\tleaf shade", "Pale bark"][index].to_owned()
+                }))
+            })
+            .collect();
+        QuestionPrompt::new("Which tree should we plant?", "Garden choice", multi, options)
+    }
+
+    fn permission_options(plan: bool) -> Vec<PermissionOption> {
+        let kinds = if plan {
+            [
+                PermissionOptionKind::PlanApprove,
+                PermissionOptionKind::PlanApprove,
+                PermissionOptionKind::PlanReject,
+            ]
+        } else {
+            [
+                PermissionOptionKind::AllowOnce,
+                PermissionOptionKind::AllowSession,
+                PermissionOptionKind::RejectOnce,
+            ]
+        };
+        ["once-id", "session-id", "reject-id"]
+            .into_iter()
+            .zip(PERMISSIONS)
+            .zip(kinds)
+            .map(|((id, name), kind)| PermissionOption::new(id, name, kind))
+            .collect()
+    }
+
+    fn text(rows: &[Line<'_>]) -> Vec<String> {
+        rows.iter().map(Line::to_string).collect()
+    }
+
+    fn write_notes(app: &mut App, notes: &str) {
+        press(app, KeyCode::Tab);
+        for ch in notes.chars() {
+            press(app, KeyCode::Char(ch));
         }
     }
 
     #[test]
-    fn focused_question_uses_left_right_footer_hint() {
-        let lines = render_question_lines(&test_question());
-        let footer = lines.last().expect("question footer line");
-        assert_eq!(
-            footer.spans[0].content.as_ref(),
-            "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
+    fn question_focus_preserves_its_prompt_and_restores_its_controls() {
+        let mut app = interaction_app(vec![tool("AskUserQuestion")]);
+        let _response = attach_question(&mut app, "target", prompt(false, false));
+        write_notes(&mut app, "Keep garden notes");
+        press(&mut app, KeyCode::Tab);
+        for focused in [true, false, true] {
+            app.input.set_text("neighbor draft");
+            if focused {
+                app.claim_focus_target(FocusTarget::Permission);
+            } else {
+                app.release_focus_target(FocusTarget::Permission);
+            }
+            app.rebuild_chat_focus_from_state();
+            let rows = interaction_card(&mut app, "target", 100);
+            let content = text(&rows);
+            assert!(content.iter().any(|row| row.contains("Garden choice")));
+            assert!(content.iter().any(|row| row.contains("Which tree should we plant?")));
+            for label in LABELS {
+                assert_eq!(
+                    rows.iter().flat_map(|row| &row.spans).any(|span| span.content == label),
+                    focused
+                );
+            }
+            assert_eq!(content.iter().any(|row| row.contains("Keep garden notes")), focused);
+            assert!(!content.iter().any(|row| row.contains("neighbor draft")));
+            if focused {
+                assert_focused_option(&rows, LABELS, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn question_descriptions_stay_with_their_own_options() {
+        let mut app = interaction_app(vec![tool("AskUserQuestion")]);
+        let _response = attach_question(&mut app, "target", prompt(false, true));
+        let rows = interaction_card(&mut app, "target", 100);
+        let content = text(&rows);
+        let descriptions = ["Evergreen canopy", "Broad leaf shade", "Pale bark"];
+        let mut previous = None;
+        for (index, label) in LABELS.iter().enumerate() {
+            let position = content.iter().position(|row| row.contains(label)).expect("option row");
+            assert!(previous.is_none_or(|previous| previous < position), "option order");
+            previous = Some(position);
+            assert!(content[position].contains(descriptions[index]));
+            for (other, description) in descriptions.iter().enumerate() {
+                assert_eq!(content[position].contains(description), index == other);
+            }
+        }
+    }
+
+    #[test]
+    fn question_preview_follows_focus_and_notes_survive_cached_transitions() {
+        let mut app = interaction_app(vec![tool("AskUserQuestion")]);
+        let mut question = prompt(true, true);
+        question.options[0].preview = Some("Cedar preview".into());
+        question.options[1].preview = Some("Maple preview".into());
+        let _response = attach_question(&mut app, "target", question);
+        write_notes(&mut app, "garden-only note");
+        let editing = text(&interaction_card(&mut app, "target", 100));
+        let notes = editing.iter().find(|row| row.contains("garden-only note")).expect("notes row");
+        assert!(notes.contains("editing"));
+        press(&mut app, KeyCode::Tab);
+        for (focused, expected) in
+            [(0, Some("Cedar preview")), (1, Some("Maple preview")), (2, None)]
+        {
+            if focused > 0 {
+                press(&mut app, KeyCode::Right);
+            }
+            let rows = interaction_card(&mut app, "target", 100);
+            let option_end = rows
+                .iter()
+                .position(|row| row.spans.iter().any(|span| span.content.trim() == "Preview"))
+                .unwrap_or(rows.len());
+            assert_focused_option(&rows[..option_end], LABELS, focused);
+            assert!(
+                rows.iter()
+                    .flat_map(|row| &row.spans)
+                    .any(|span| span.content == "garden-only note")
+            );
+            let content = text(&rows);
+            let notes = content
+                .iter()
+                .find(|row| row.contains("garden-only note"))
+                .expect("retained notes");
+            assert!(!notes.contains("editing"));
+            for preview in ["Cedar preview", "Maple preview"] {
+                assert_eq!(
+                    content.iter().any(|row| row.contains(preview)),
+                    expected == Some(preview)
+                );
+            }
+            if let Some(expected) = expected {
+                let preview = content.iter().position(|row| row.contains(expected)).unwrap();
+                let notes =
+                    content.iter().position(|row| row.contains("garden-only note")).unwrap();
+                assert!(preview < notes, "preview and notes retain separate regions");
+            }
+        }
+    }
+
+    #[test]
+    fn permission_selection_follows_the_option_in_ordinary_and_plan_cards() {
+        for (sdk_name, plan_kinds) in [("Bash", false), ("ExitPlanMode", false), ("Write", true)] {
+            let mut app = interaction_app(vec![tool(sdk_name)]);
+            let _response =
+                attach_permission(&mut app, "target", permission_options(plan_kinds), None);
+            let rows = interaction_card(&mut app, "target", 120);
+            assert_focused_option(&rows, PERMISSIONS, 0);
+            for selected in [1, 2] {
+                press(&mut app, if plan_kinds { KeyCode::Down } else { KeyCode::Right });
+                let rows = interaction_card(&mut app, "target", 120);
+                assert_focused_option(&rows, PERMISSIONS, selected);
+                let option_rows: Vec<_> = rows
+                    .iter()
+                    .filter(|row| {
+                        row.spans.iter().any(|span| PERMISSIONS.contains(&span.content.as_ref()))
+                    })
+                    .collect();
+                if sdk_name == "ExitPlanMode" || plan_kinds {
+                    assert!(
+                        option_rows.iter().all(|row| row
+                            .spans
+                            .iter()
+                            .filter(|span| PERMISSIONS.contains(&span.content.as_ref()))
+                            .count()
+                            == 1),
+                        "plan options must retain their own rows"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn permission_metadata_keeps_useful_headers_without_repeating_tool_identity() {
+        for (sdk, title, name, expected) in [
+            ("Bash", Some("Verify project"), Some("Fallback header"), Some("Verify project")),
+            ("Bash", Some("  bAsH  "), Some("Fallback header"), Some("Fallback header")),
+            ("Bash", None, Some("Fallback header"), Some("Fallback header")),
+            ("Bash", Some("Target operation"), None, None),
+            (
+                "mcp__claude_ai_Strava__list_activities",
+                Some(" Strava: List activities "),
+                None,
+                None,
+            ),
+            (
+                "mcp__claude_ai_Strava__list_activities",
+                Some("Strava: List activities"),
+                Some("Distinct activity request"),
+                Some("Distinct activity request"),
+            ),
+            ("Bash", Some("  "), Some(" "), None),
+        ] {
+            let mut target = tool(sdk);
+            let identity = if sdk.starts_with("mcp__") {
+                target.title = sdk.into();
+                "Strava: List activities"
+            } else {
+                "Target operation"
+            };
+            let mut app = interaction_app(vec![target]);
+            let display = PermissionDisplay::new()
+                .title(title.map(str::to_owned))
+                .display_name(name.map(str::to_owned))
+                .description(Some("Reads only the target project".into()));
+            let _response =
+                attach_permission(&mut app, "target", permission_options(false), Some(display));
+            let rows = interaction_card(&mut app, "target", 150);
+            assert!(rows[0].to_string().contains(identity), "outer identity retained");
+            let body: Vec<_> = rows[1..]
+                .iter()
+                .flat_map(|row| &row.spans)
+                .map(|span| span.content.trim())
+                .collect();
+            assert!(body.contains(&"Reads only the target project"));
+            for header in ["Verify project", "Fallback header", "Distinct activity request"] {
+                assert_eq!(
+                    body.iter().filter(|value| **value == header).count(),
+                    usize::from(expected == Some(header))
+                );
+            }
+            assert!(
+                !body.iter().any(|value| value.eq_ignore_ascii_case(identity)
+                    || value.eq_ignore_ascii_case("Bash"))
+            );
+            assert_focused_option(&rows, PERMISSIONS, 0);
+        }
+        let mut app = interaction_app(vec![tool("Bash")]);
+        let _response = attach_permission(
+            &mut app,
+            "target",
+            permission_options(false),
+            Some(PermissionDisplay::new()),
         );
+        assert_focused_option(&interaction_card(&mut app, "target", 100), PERMISSIONS, 0);
+    }
+
+    fn assert_checks(rows: &[Line<'_>], expected: [bool; 3]) {
+        for (label, checked) in LABELS.into_iter().zip(expected) {
+            let (row, index) = rows
+                .iter()
+                .find_map(|row| {
+                    row.spans
+                        .iter()
+                        .position(|span| span.content == label)
+                        .map(|index| (row, index))
+                })
+                .expect("option label");
+            let marker = row.spans[..index]
+                .iter()
+                .rev()
+                .take_while(|span| !LABELS.contains(&span.content.as_ref()))
+                .find(|span| ["[x]", "[ ]"].contains(&span.content.trim()))
+                .expect("checkbox beside its own label");
+            assert_eq!(
+                marker.content.trim(),
+                if checked { "[x]" } else { "[ ]" },
+                "checked state for {label}"
+            );
+        }
     }
 
     #[test]
-    fn focused_question_text_turns_orange() {
-        let lines = render_question_lines(&test_question());
-        assert_eq!(lines[2].spans[0].style.fg, Some(theme::RUST_ORANGE));
-    }
-
-    #[test]
-    fn unfocused_question_text_stays_gray() {
-        let mut question = test_question();
-        question.focused = false;
-        let lines = render_question_lines(&question);
-        let footer = lines.last().expect("question footer line");
-        assert_eq!(footer.spans[0].content.as_ref(), "  waiting for input... (Tab to focus)");
-        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Gray));
-    }
-
-    #[test]
-    fn focused_question_option_description_stays_on_option_line() {
-        let mut question = test_question();
-        question.prompt.options[0] =
-            QuestionOption::new("safe", "Safer path").description(Some("Avoids churn.".to_owned()));
-
-        let rendered = render_question_lines(&question)
-            .into_iter()
-            .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
-            .collect::<Vec<String>>();
-
-        assert!(rendered.iter().any(|line| line.contains("Safer path - Avoids churn.")));
-        assert!(!rendered.iter().any(|line| line.trim() == "Avoids churn."));
-        let first_option_idx = rendered
-            .iter()
-            .position(|line| line.contains("Safer path - Avoids churn."))
-            .expect("first option line");
-        assert_eq!(rendered.get(first_option_idx + 1).map(String::as_str), Some(""));
-        assert!(
-            rendered.get(first_option_idx + 2).is_some_and(|line| line.contains("Faster path"))
-        );
-    }
-
-    #[test]
-    fn focused_question_preview_and_notes_align_with_option_text() {
-        let mut question = test_question();
-        question.prompt.multi_select = true;
-        question.prompt.options[0] = QuestionOption::new("safe", "Safer path")
-            .description(Some("Avoids churn.".to_owned()))
-            .preview(Some("Preview text".to_owned()));
-        question.notes = "note text".to_owned();
-
-        let rendered = render_question_lines(&question)
-            .into_iter()
-            .map(|line| line.spans.into_iter().map(|span| span.content.into_owned()).collect())
-            .collect::<Vec<String>>();
-
-        assert!(rendered.iter().any(|line| line.contains("        Preview")));
-        assert!(rendered.iter().any(|line| line.contains("          Preview text")));
-        assert!(rendered.iter().any(|line| line.contains("        Notes: note text")));
-    }
-
-    #[test]
-    fn selected_permission_option_uses_orange_label() {
-        let tc = test_tool_call("Bash");
-        let perm = test_permission(PermissionOptionKind::AllowOnce);
-
-        let lines = render_permission_lines(&tc, &perm);
-        let selected_label = lines[1]
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "Allow")
-            .expect("selected permission label");
-
-        assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
-    }
-
-    #[test]
-    fn permission_display_metadata_renders_prompt_header() {
-        let tc = test_tool_call("Bash");
-        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
-        perm.display = Some(
-            PermissionDisplay::new()
-                .title(Some("Claude wants to run tests".to_owned()))
-                .description(Some("This command reads project files".to_owned())),
-        );
-
-        let rendered = render_permission_lines(&tc, &perm)
-            .into_iter()
-            .map(|line| {
-                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(rendered.contains("Claude wants to run tests"));
-        assert!(rendered.contains("This command reads project files"));
-    }
-
-    #[test]
-    fn permission_display_metadata_hides_redundant_tool_header() {
-        let tc = test_tool_call("Bash");
-        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
-        perm.display = Some(
-            PermissionDisplay::new()
-                .title(Some("Bash".to_owned()))
-                .description(Some("This command reads project files".to_owned())),
-        );
-
-        let rendered = render_permission_lines(&tc, &perm)
-            .into_iter()
-            .map(|line| {
-                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(!rendered.contains("\n  Bash\n"));
-        assert!(rendered.contains("This command reads project files"));
-    }
-
-    #[test]
-    fn permission_display_metadata_hides_redundant_mcp_display_title() {
-        let mut tc = test_tool_call("mcp__claude_ai_Strava__list_activities");
-        tc.title = tc.sdk_tool_name.clone();
-        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
-        perm.display = Some(
-            PermissionDisplay::new()
-                .title(Some("Strava: List activities".to_owned()))
-                .description(Some("This action reads activity metadata".to_owned())),
-        );
-
-        let rendered = render_permission_lines(&tc, &perm)
-            .into_iter()
-            .map(|line| {
-                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(!rendered.contains("\n  Strava: List activities\n"));
-        assert!(rendered.contains("This action reads activity metadata"));
-    }
-
-    #[test]
-    fn subagent_permission_context_does_not_render_metadata_rows() {
-        let tc = test_tool_call("Bash");
-        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
-        perm.subagent_context = Some(crate::app::SubagentPermissionContext {
-            subagent_label: "reviewer".to_owned(),
-            child_tool_name: "Bash".to_owned(),
-            child_tool_title: "Bash".to_owned(),
-            parent_tool_call_id: "agent-1".to_owned(),
-            parent_tool_title: Some("Agent: reviewer".to_owned()),
-            parent_model: None,
-            parent_raw_input: None,
-        });
-
-        let rendered = render_permission_lines(&tc, &perm)
-            .into_iter()
-            .map(|line| {
-                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
-            })
-            .collect::<Vec<_>>();
-
-        assert!(!rendered.iter().any(|line| line.contains("Subagent:")));
-        assert!(!rendered.iter().any(|line| line.contains("Tool:")));
-        assert!(rendered.iter().any(|line| line.contains("Allow")));
-    }
-
-    #[test]
-    fn unfocused_subagent_permission_keeps_normal_waiting_row() {
-        let tc = test_tool_call("Bash");
-        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
-        perm.focused = false;
-        perm.subagent_context = Some(crate::app::SubagentPermissionContext {
-            subagent_label: "reviewer".to_owned(),
-            child_tool_name: "Bash".to_owned(),
-            child_tool_title: "Bash".to_owned(),
-            parent_tool_call_id: "agent-1".to_owned(),
-            parent_tool_title: Some("Agent: reviewer".to_owned()),
-            parent_model: None,
-            parent_raw_input: None,
-        });
-
-        let rendered = render_permission_lines(&tc, &perm)
-            .into_iter()
-            .map(|line| {
-                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
-            })
-            .collect::<Vec<_>>();
-
-        assert!(!rendered.iter().any(|line| line.contains("Subagent:")));
-        assert!(!rendered.iter().any(|line| line.contains("Tool:")));
-        assert!(rendered.iter().any(|line| line.contains("Waiting for input")));
-    }
-
-    #[test]
-    fn subagent_permission_suppresses_sdk_display_metadata() {
-        let tc = test_tool_call("Write");
-        let mut perm = test_permission(PermissionOptionKind::AllowOnce);
-        perm.display = Some(
-            PermissionDisplay::new()
-                .display_name(Some("Write".to_owned()))
-                .description(Some("subagent_one_probe.txt".to_owned())),
-        );
-        perm.subagent_context = Some(crate::app::SubagentPermissionContext {
-            subagent_label: "general-purpose".to_owned(),
-            child_tool_name: "Write".to_owned(),
-            child_tool_title: "Write subagent_one_probe.txt".to_owned(),
-            parent_tool_call_id: "agent-1".to_owned(),
-            parent_tool_title: Some("Agent: general-purpose".to_owned()),
-            parent_model: None,
-            parent_raw_input: None,
-        });
-
-        let rendered = render_permission_lines(&tc, &perm)
-            .into_iter()
-            .map(|line| {
-                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(!rendered.contains("subagent_one_probe.txt"));
-        assert!(!rendered.contains("\n  Write\n"));
-        assert!(rendered.contains("Allow"));
-    }
-
-    #[test]
-    fn selected_plan_option_uses_orange_label() {
-        let tc = test_tool_call("ExitPlanMode");
-        let perm = test_permission(PermissionOptionKind::PlanApprove);
-
-        let lines = render_plan_approval_lines(&tc, &perm);
-        let selected_label = lines[1]
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "Allow")
-            .expect("selected plan label");
-
-        assert_eq!(selected_label.style.fg, Some(theme::RUST_ORANGE));
-    }
-
-    #[test]
-    fn plan_approval_hints_use_selection_and_enter() {
-        let tc = test_tool_call("ExitPlanMode");
-        let perm = test_permission(PermissionOptionKind::PlanApprove);
-
-        let rendered = render_plan_approval_lines(&tc, &perm)
-            .into_iter()
-            .map(|line| {
-                line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(rendered.contains("select"));
-        assert!(rendered.contains("enter confirm"));
-        assert!(rendered.contains("esc reject"));
-        assert!(!rendered.contains("Ctrl+y"));
-        assert!(!rendered.contains("Ctrl+n"));
+    fn checked_answers_stay_with_option_ids_while_focus_moves_and_toggles() {
+        for described in [false, true] {
+            let mut app = interaction_app(vec![tool("AskUserQuestion")]);
+            let _response = attach_question(&mut app, "target", prompt(true, described));
+            let _warm = interaction_card(&mut app, "target", 100);
+            for key in [
+                KeyCode::Char(' '),
+                KeyCode::Right,
+                KeyCode::Right,
+                KeyCode::Char(' '),
+                KeyCode::Left,
+            ] {
+                press(&mut app, key);
+            }
+            let rows = interaction_card(&mut app, "target", 100);
+            assert_focused_option(&rows, LABELS, 1);
+            assert_checks(&rows, [true, false, true]);
+            press(&mut app, KeyCode::Left);
+            let rows = interaction_card(&mut app, "target", 100);
+            assert_focused_option(&rows, LABELS, 0);
+            assert_checks(&rows, [true, false, true]);
+            press(&mut app, KeyCode::Right);
+            let _warm = interaction_card(&mut app, "target", 100);
+            press(&mut app, KeyCode::Char(' '));
+            let rows = interaction_card(&mut app, "target", 100);
+            assert_focused_option(&rows, LABELS, 1);
+            assert_checks(&rows, [true, true, true]);
+        }
     }
 }

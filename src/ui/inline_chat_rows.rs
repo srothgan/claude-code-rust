@@ -2140,21 +2140,6 @@ mod tests {
         assert!(live.rows().is_empty(), "confirmed tool titles must not reappear in live output");
     }
 
-    fn tool_call_block_with_interaction(
-        id: &str,
-        hidden: bool,
-        focused_permission: bool,
-        focused_question: bool,
-    ) -> MessageBlock {
-        tool_call_block_with_status_interaction(
-            id,
-            model::ToolCallStatus::Completed,
-            hidden,
-            focused_permission,
-            focused_question,
-        )
-    }
-
     fn tool_call_block_with_status_interaction(
         id: &str,
         status: model::ToolCallStatus,
@@ -2204,53 +2189,6 @@ mod tests {
         }
 
         MessageBlock::ToolCall(Box::new(tool))
-    }
-
-    fn tool_call_block_with_pending_permission(
-        id: &str,
-        hidden: bool,
-        focused: bool,
-    ) -> MessageBlock {
-        let mut block = tool_call_block(id, hidden);
-        let MessageBlock::ToolCall(tool) = &mut block else {
-            unreachable!("tool_call_block always returns a tool call");
-        };
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-        tool.pending_permission = Some(crate::app::InlinePermission {
-            options: Vec::new(),
-            display: None,
-            subagent_context: None,
-            response_tx,
-            selected_index: 0,
-            focused,
-        });
-        block
-    }
-
-    fn tool_call_block_with_subagent_pending_permission(id: &str) -> MessageBlock {
-        let mut block = tool_call_block_with_pending_permission(id, true, true);
-        let MessageBlock::ToolCall(tool) = &mut block else {
-            unreachable!("tool_call_block_with_pending_permission returns a tool call");
-        };
-        let permission = tool.pending_permission.as_mut().expect("pending permission");
-        permission.options = vec![
-            model::PermissionOption::new(
-                "allow",
-                "Allow once",
-                model::PermissionOptionKind::AllowOnce,
-            ),
-            model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
-        ];
-        permission.subagent_context = Some(crate::app::SubagentPermissionContext {
-            subagent_label: "general-purpose".to_owned(),
-            child_tool_name: "Bash".to_owned(),
-            child_tool_title: "Child Tool".to_owned(),
-            parent_tool_call_id: "agent-1".to_owned(),
-            parent_tool_title: Some("Agent: general-purpose".to_owned()),
-            parent_model: Some("claude-opus-4-8".to_owned()),
-            parent_raw_input: None,
-        });
-        block
     }
 
     #[test]
@@ -3629,140 +3567,207 @@ mod tests {
         assert_eq!(serialized.stable_row_count(), serialized.rows().len());
     }
 
-    #[test]
-    fn hidden_canonical_tool_renders_no_rows_or_label() {
-        let mut app = App::test_default();
-        app.transcript
-            .messages
-            .push(assistant_blocks_message(vec![tool_call_block("child-1", true)]));
+    fn child_interaction_region(serialized: &SerializedLiveRows, id: &str) -> Vec<Line<'static>> {
+        let segment = serialized
+            .segments()
+            .iter()
+            .find(|segment| segment.ids.contains(&HistoryOutputId::ToolCall(id.to_owned())))
+            .expect("child's own transcript segment");
+        assert!(!segment.commit_ready, "pending interaction must remain mutable");
+        serialized.segment_rows(segment).expect("child rows").to_vec()
+    }
 
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
+    struct ChildInteractionFixture {
+        app: App,
+        permission_rx: Option<tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>>,
+        question_rx: Option<tokio::sync::oneshot::Receiver<model::RequestQuestionResponse>>,
+        before: Option<Vec<String>>,
+    }
 
-            assert!(rows.is_empty(), "hidden tool rendered rows at width {width}");
+    fn deliver_child_parent_metadata(app: &mut App) {
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::SessionUpdate {
+                session_id: "interaction-render".into(),
+                update: model::SessionUpdate::ToolCallUpdate(
+                    model::ToolCallUpdate::new("child-request", model::ToolCallUpdateFields::new())
+                        .meta(serde_json::json!({"claudeCode":{"parentToolUseId":"parent-agent"}})),
+                ),
+            },
+        );
+    }
+
+    fn child_interaction_fixture(question: bool, late_parent: bool) -> ChildInteractionFixture {
+        use crate::ui::tool_call::test_support::{
+            attach_permission, attach_question, interaction_app,
+        };
+        let mut child = crate::app::test_support::named_tool_call_info(
+            "child-request",
+            if question { "AskUserQuestion" } else { "Write" },
+            model::ToolCallStatus::InProgress,
+        );
+        child.title = "Child operation".into();
+        child.parent_tool_use_id = (!late_parent).then(|| "parent-agent".into());
+        let mut neighbor = crate::app::test_support::named_tool_call_info(
+            "neighbor",
+            "Read",
+            model::ToolCallStatus::Completed,
+        );
+        neighbor.title = "Neighbor result".into();
+        neighbor.content = vec![model::ToolCallContent::from("Neighbor-only content")];
+        let mut app = interaction_app(vec![neighbor, child]);
+        let before = (!late_parent)
+            .then(|| line_texts(serialize_all_rows_with_boundaries(&mut app, 100).rows()));
+        if let Some(before) = &before {
+            assert!(before.iter().any(|row| row.contains("Neighbor-only content")));
+            assert!(!before.iter().any(|row| row.contains("Child operation")));
         }
+        app.input.set_text("unfinished user draft");
+        let (permission_rx, question_rx) = if question {
+            (
+                None,
+                Some(attach_question(
+                    &mut app,
+                    "child-request",
+                    model::QuestionPrompt::new(
+                        "Choose the child's tree",
+                        "Child choice",
+                        false,
+                        vec![
+                            model::QuestionOption::new("oak-c", "Oak-C"),
+                            model::QuestionOption::new("elm-c", "Elm-C"),
+                            model::QuestionOption::new("ash-c", "Ash-C"),
+                        ],
+                    ),
+                )),
+            )
+        } else {
+            (
+                Some(attach_permission(
+                    &mut app,
+                    "child-request",
+                    vec![
+                        model::PermissionOption::new(
+                            "once-c",
+                            "Once-C",
+                            model::PermissionOptionKind::AllowOnce,
+                        ),
+                        model::PermissionOption::new(
+                            "save-c",
+                            "Save-C",
+                            model::PermissionOptionKind::AllowSession,
+                        ),
+                        model::PermissionOption::new(
+                            "deny-c",
+                            "Deny-C",
+                            model::PermissionOptionKind::RejectOnce,
+                        ),
+                    ],
+                    None,
+                )),
+                None,
+            )
+        };
+        if late_parent {
+            // The request arrives before parent metadata: absent context is reachable.
+            deliver_child_parent_metadata(&mut app);
+            assert!(
+                app.tool_call("child-request")
+                    .unwrap()
+                    .pending_permission
+                    .as_ref()
+                    .unwrap()
+                    .subagent_context
+                    .is_none()
+            );
+        }
+        ChildInteractionFixture { app, permission_rx, question_rx, before }
     }
 
     #[test]
-    fn hidden_canonical_tool_with_focused_permission_without_subagent_context_has_no_header() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_interaction("child-1", true, true, false),
-        ]));
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            assert!(
-                text.iter().any(|line| line.starts_with(" ●")),
-                "missing label at width {width}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Child Tool")),
-                "missing tool title at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent:")),
-                "unexpected subagent header at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent ·")),
-                "unexpected subagent title prefix at width {width}: {text:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn hidden_canonical_tool_with_unfocused_permission_renders_interaction_rows() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_pending_permission("child-1", true, false),
-        ]));
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            assert!(
-                text.iter().any(|line| line.starts_with(" ●")),
-                "missing label at width {width}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Child Tool")),
-                "missing tool title at width {width}: {text:?}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Waiting for input")),
-                "missing waiting row at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent:")),
-                "unexpected subagent header at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent ·")),
-                "unexpected subagent title prefix at width {width}: {text:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn hidden_canonical_tool_with_subagent_permission_prefixes_child_tool_title() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_subagent_pending_permission("child-1"),
-        ]));
-
-        for width in [80, 120, 80] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            let child_idx = text
-                .iter()
-                .position(|line| line.contains("Subagent ·") && line.contains("Child Tool"))
-                .expect("missing prefixed child tool line");
-            assert!(
-                !text[child_idx].contains("general-purpose"),
-                "subagent label should not render at width {width}: {text:?}"
-            );
-            let permission_idx = text
-                .iter()
-                .position(|line| line.contains("Allow once"))
-                .expect("missing permission options");
-
-            assert!(child_idx < permission_idx, "permission rendered before child: {text:?}");
-            assert_eq!(
-                text.iter().filter(|line| line.contains("Subagent ·")).count(),
-                1,
-                "expected one prefixed subagent title at width {width}: {text:?}"
-            );
-            assert!(!text.iter().any(|line| line.contains("Subagent:")));
-            assert!(!text.iter().any(|line| line.contains("[model:")));
-            assert!(!text.iter().any(|line| line.contains("Agent:")));
-            assert!(!text.iter().any(|line| line.contains("general-purpose")));
-        }
-    }
-
-    #[test]
-    fn hidden_canonical_tool_with_focused_question_renders_interaction_rows() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_interaction("child-1", true, false, true),
-        ]));
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            assert!(
-                text.iter().any(|line| line.starts_with(" ●")),
-                "missing label at width {width}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Child Tool")),
-                "missing tool title at width {width}: {text:?}"
-            );
+    fn hidden_child_controls_remain_targeted_mutable_and_disappear_after_settlement() {
+        use crate::ui::tool_call::test_support::{assert_focused_option, press};
+        use crossterm::event::KeyCode;
+        for (question, late_parent) in [(false, false), (false, true), (true, false)] {
+            let ChildInteractionFixture { mut app, mut permission_rx, mut question_rx, before } =
+                child_interaction_fixture(question, late_parent);
+            let labels =
+                if question { ["Oak-C", "Elm-C", "Ash-C"] } else { ["Once-C", "Save-C", "Deny-C"] };
+            for width in [48, 100] {
+                let serialized = serialize_all_rows_with_boundaries(&mut app, width);
+                let rows = child_interaction_region(&serialized, "child-request");
+                assert!(
+                    !rows
+                        .iter()
+                        .flat_map(|row| &row.spans)
+                        .any(|span| labels.contains(&span.content.as_ref()))
+                );
+                if question {
+                    assert!(
+                        line_texts(&rows).iter().any(|row| row.contains("Choose the child's tree"))
+                    );
+                } else {
+                    assert!(line_texts(&rows).iter().any(|row| row.contains("Child operation")));
+                }
+                assert!(!line_texts(&rows).iter().any(|row| row.contains("Neighbor-only content")));
+            }
+            app.claim_focus_target(crate::app::FocusTarget::Permission);
+            app.rebuild_chat_focus_from_state();
+            for (selected, width) in [(0, 48), (1, 100), (1, 48)] {
+                if selected == 1 && width == 100 {
+                    press(&mut app, KeyCode::Right);
+                }
+                let serialized = serialize_all_rows_with_boundaries(&mut app, width);
+                let rows = child_interaction_region(&serialized, "child-request");
+                assert_focused_option(&rows, labels, selected);
+                let neighbor = serialized
+                    .segments()
+                    .iter()
+                    .find(|segment| {
+                        segment.ids.contains(&HistoryOutputId::ToolCall("neighbor".into()))
+                    })
+                    .expect("neighbor segment");
+                assert!(
+                    !serialized
+                        .segment_rows(neighbor)
+                        .unwrap()
+                        .iter()
+                        .flat_map(|row| &row.spans)
+                        .any(|span| labels.contains(&span.content.as_ref()))
+                );
+            }
+            press(&mut app, KeyCode::Enter);
+            if let Some(rx) = permission_rx.as_mut() {
+                assert_eq!(
+                    rx.try_recv().expect("child permission answer").outcome,
+                    model::RequestPermissionOutcome::Selected(
+                        model::SelectedPermissionOutcome::new("save-c")
+                    )
+                );
+            }
+            if let Some(rx) = question_rx.as_mut() {
+                let model::RequestQuestionOutcome::Answered(answer) =
+                    rx.try_recv().expect("child question answer").outcome
+                else {
+                    panic!("answer");
+                };
+                assert_eq!(answer.selected_option_ids, ["elm-c"]);
+            }
+            let settled = serialize_all_rows_with_boundaries(&mut app, 100);
+            assert!(!settled.segments().iter().any(|segment| {
+                segment.ids.contains(&HistoryOutputId::ToolCall("child-request".into()))
+            }));
+            let text = line_texts(settled.rows());
+            assert!(text.iter().any(|row| row.contains("Neighbor-only content")));
+            for label in labels {
+                assert!(!text.iter().any(|row| row.contains(label)));
+            }
+            if let Some(before) = before {
+                assert_eq!(
+                    text, before,
+                    "settlement must not leave an orphan child marker or controls"
+                );
+            }
         }
     }
 }

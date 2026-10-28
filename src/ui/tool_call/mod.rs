@@ -418,6 +418,128 @@ pub(super) mod test_support {
     use crate::app::ToolCallInfo;
     use ratatui::text::Line;
 
+    pub(crate) fn interaction_app(tools: Vec<ToolCallInfo>) -> crate::app::App {
+        use crate::app::{App, AppStatus, ChatMessage, MessageBlock, MessageRole};
+        let mut app = App::test_default();
+        app.status = AppStatus::Running;
+        app.session_runtime.session_id = Some("interaction-render".into());
+        let ids: Vec<_> = tools.iter().map(|tool| tool.id.clone()).collect();
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            tools.into_iter().map(|tool| MessageBlock::ToolCall(Box::new(tool))).collect(),
+            None,
+        ));
+        for (index, id) in ids.into_iter().enumerate() {
+            app.index_tool_call(id, 0, index);
+        }
+        app.bind_active_turn_assistant(0);
+        app
+    }
+
+    pub(crate) fn attach_question(
+        app: &mut crate::app::App,
+        id: &str,
+        prompt: model::QuestionPrompt,
+    ) -> tokio::sync::oneshot::Receiver<model::RequestQuestionResponse> {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::QuestionRequest {
+                session_id: "interaction-render".into(),
+                request: model::RequestQuestionRequest::new(
+                    "interaction-render",
+                    model::ToolCallUpdate::new(id, model::ToolCallUpdateFields::new()),
+                    prompt,
+                    0,
+                    1,
+                ),
+                response_tx,
+            },
+        );
+        response_rx
+    }
+
+    pub(crate) fn attach_permission(
+        app: &mut crate::app::App,
+        id: &str,
+        options: Vec<model::PermissionOption>,
+        display: Option<model::PermissionDisplay>,
+    ) -> tokio::sync::oneshot::Receiver<model::RequestPermissionResponse> {
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::PermissionRequest {
+                session_id: "interaction-render".into(),
+                request: model::RequestPermissionRequest::new(
+                    "interaction-render",
+                    model::ToolCallUpdate::new(id, model::ToolCallUpdateFields::new()),
+                    options,
+                    display,
+                ),
+                response_tx,
+            },
+        );
+        response_rx
+    }
+
+    pub(crate) fn press(app: &mut crate::app::App, code: crossterm::event::KeyCode) {
+        use crossterm::event::{Event, KeyEvent, KeyModifiers};
+        crate::app::handle_terminal_event(app, Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    pub(crate) fn interaction_card(
+        app: &mut crate::app::App,
+        id: &str,
+        width: u16,
+    ) -> Vec<Line<'static>> {
+        let (mi, bi) = app.lookup_tool_call(id).expect("target tool");
+        let tool = app.tool_call_at_mut(mi, bi).expect("target card");
+        let mut rows = Vec::new();
+        super::render_tool_call_cached(
+            tool,
+            super::ToolCallRenderContext::default(),
+            width,
+            crate::ui::SpinnerState::Static,
+            &mut rows,
+        );
+        rows
+    }
+
+    pub(crate) fn assert_focused_option(rows: &[Line<'_>], labels: [&str; 3], focused: usize) {
+        let styles: Vec<_> = labels
+            .iter()
+            .map(|label| {
+                let mut styles = Vec::new();
+                for row in rows {
+                    let text = row.to_string();
+                    for (position, _) in text.match_indices(label) {
+                        let mut offset = 0;
+                        let span = row
+                            .spans
+                            .iter()
+                            .find(|span| {
+                                offset += span.content.len();
+                                position < offset
+                            })
+                            .expect("rendered label style");
+                        styles.push(span.style);
+                    }
+                }
+                assert_eq!(styles.len(), 1, "option must appear once in its card: {label}");
+                styles[0]
+            })
+            .collect();
+        let inactive = styles[(focused + 1) % labels.len()];
+        for (index, style) in styles.iter().enumerate() {
+            assert_eq!(
+                *style == inactive,
+                index != focused,
+                "focus must distinguish {}",
+                labels[index]
+            );
+        }
+    }
+
     pub(super) fn tool_call(
         id: &str,
         title: &str,
