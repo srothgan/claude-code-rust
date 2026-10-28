@@ -107,7 +107,7 @@ pub fn handle_terminal_event(app: &mut App, event: Event) -> TerminalEventOutcom
     if matches!(&event, Event::Key(key) if should_dispatch_key_event(app, *key))
         || matches!(&event, Event::Paste(_) | Event::Mouse(_))
     {
-        super::questions::record_activity(app, super::questions::activity_now());
+        super::questions::record_activity(app, super::input_event_now());
     }
     let outcome = match event {
         Event::Key(key) if should_dispatch_key_event(app, key) => dispatch_key_by_view(app, key),
@@ -147,6 +147,9 @@ pub fn reconcile_terminal_size(app: &mut App, width: u16, height: u16) {
 }
 
 fn should_dispatch_key_event(app: &App, key: crossterm::event::KeyEvent) -> bool {
+    if super::keys::is_ctrl_char_shortcut(key, 'v') {
+        return super::keys::is_clipboard_paste_trigger(app, key);
+    }
     // ConPTY delivers zero-width text (for example a combining accent) as a
     // release-only console event. Dropping it changes the user's input payload.
     let zero_width_text_release = cfg!(windows)
@@ -154,9 +157,7 @@ fn should_dispatch_key_event(app: &App, key: crossterm::event::KeyEvent) -> bool
         && super::keys::is_printable_text_modifiers(key.modifiers)
         && matches!(key.code, crossterm::event::KeyCode::Char(ch)
             if !ch.is_control() && unicode_width::UnicodeWidthChar::width(ch) == Some(0));
-    key.kind == KeyEventKind::Press
-        || super::keys::is_clipboard_paste_trigger(app, key)
-        || zero_width_text_release
+    key.kind == KeyEventKind::Press || zero_width_text_release
 }
 
 fn handle_resize(app: &mut App, width: u16, height: u16) -> bool {
@@ -305,7 +306,7 @@ fn dispatch_paste_by_view(app: &mut App, text: &str) -> bool {
                 reclaim_input_from_inline_prompt_if_needed(app);
                 // A terminal paste follows any characters still held by the
                 // key-burst detector. Flush them before queuing its payload.
-                if let Some(action) = app.paste.burst.on_non_char_key(std::time::Instant::now()) {
+                if let Some(action) = app.paste.burst.on_non_char_key(super::input_event_now()) {
                     super::apply_paste_burst_flush(app, action);
                 }
                 app.queue_paste_text(text);

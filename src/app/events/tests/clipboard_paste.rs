@@ -4,10 +4,8 @@
 use super::{app_with_bridge_connection, make_test_app};
 use crate::agent::wire::BridgeCommand;
 use crate::app::clipboard_image::{ClipboardImagePaste, ClipboardRead, ImageAttachment};
-use crate::app::events::{TerminalEventOutcome, handle_terminal_event};
-use crate::app::{
-    App, AppStatus, FullscreenView, MessageRole, SurfaceMode, SystemSeverity, input_submit,
-};
+use crate::app::events::handle_terminal_event;
+use crate::app::{App, AppStatus, MessageRole, SurfaceMode, SystemSeverity, input_submit};
 use base64::Engine as _;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use pretty_assertions::assert_eq;
@@ -47,113 +45,6 @@ fn assert_two_pixel_attachment(attachment: &ImageAttachment) {
     assert_eq!(decoded_rgba(&attachment.data), (2, 1, [RED, HALF_BLUE].concat()));
 }
 
-fn has_warning(app: &App) -> bool {
-    app.transcript
-        .messages
-        .iter()
-        .any(|message| matches!(message.role, MessageRole::System(Some(SystemSeverity::Warning))))
-}
-
-/// Terminals outside Windows report Ctrl+V as a press and never send a release
-/// (issues #385 and #431). Both encodings of the shortcut must attach.
-#[test]
-fn ctrl_v_press_attaches_the_clipboard_image_where_only_presses_arrive() {
-    for (code, modifiers) in
-        [(KeyCode::Char('v'), KeyModifiers::CONTROL), (KeyCode::Char('\u{16}'), KeyModifiers::NONE)]
-    {
-        let mut app = app_with_clipboard(KeyEventKind::Press, two_pixel_image);
-
-        handle_terminal_event(
-            &mut app,
-            Event::Key(KeyEvent::new_with_kind(code, modifiers, KeyEventKind::Press)),
-        );
-
-        assert_eq!(app.input.text(), "[Image #1]", "{code:?}");
-        assert_eq!(app.pending_images.len(), 1, "{code:?}");
-        assert_two_pixel_attachment(&app.pending_images[0]);
-        assert!(!has_warning(&app), "{code:?}");
-    }
-}
-
-#[test]
-fn a_release_after_the_attaching_press_does_not_attach_again() {
-    let mut app = app_with_clipboard(KeyEventKind::Press, two_pixel_image);
-
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
-    let release = handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Release));
-
-    assert_eq!(release, TerminalEventOutcome::ignored());
-    assert_eq!(app.input.text(), "[Image #1]");
-    assert_eq!(app.pending_images.len(), 1);
-}
-
-/// Windows consoles report both edges of the key. Exactly one of them attaches.
-#[test]
-fn ctrl_v_attaches_once_where_press_and_release_both_arrive() {
-    let mut app = app_with_clipboard(KeyEventKind::Release, two_pixel_image);
-
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Release));
-
-    assert_eq!(app.input.text(), "[Image #1]");
-    assert_eq!(app.pending_images.len(), 1);
-    assert_two_pixel_attachment(&app.pending_images[0]);
-}
-
-/// A Windows terminal that keeps the press for its own paste forwards only the release.
-#[test]
-fn ctrl_v_release_alone_attaches_where_the_terminal_keeps_the_press() {
-    let mut app = app_with_clipboard(KeyEventKind::Release, two_pixel_image);
-
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Release));
-
-    assert_eq!(app.input.text(), "[Image #1]");
-    assert_eq!(app.pending_images.len(), 1);
-}
-
-#[test]
-fn each_clipboard_image_gets_the_next_badge_at_the_cursor() {
-    let mut app = app_with_clipboard(KeyEventKind::Press, two_pixel_image);
-    app.input.set_text("ab");
-    let _ = app.input.set_cursor_col(1);
-
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
-
-    assert_eq!(app.input.text(), "a[Image #1][Image #2]b");
-    assert_eq!(app.pending_images.len(), 2);
-}
-
-#[test]
-fn a_pasted_clipboard_image_is_sent_with_the_next_prompt() {
-    let (mut app, mut commands) = app_with_bridge_connection();
-    app.clipboard_paste =
-        ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
-    app.status = AppStatus::Ready;
-    app.input.set_text("what is this ");
-
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
-    input_submit::submit_input(&mut app);
-
-    let BridgeCommand::Prompt { chunks, .. } =
-        commands.try_recv().expect("prompt admitted").command
-    else {
-        panic!("expected prompt");
-    };
-    let images: Vec<_> = chunks.iter().filter(|chunk| chunk.kind == "image").collect();
-    assert_eq!(images.len(), 1, "the prompt must carry the pasted image");
-    assert_eq!(images[0].value["mime_type"], "image/png");
-    assert_eq!(
-        decoded_rgba(images[0].value["data"].as_str().expect("image data")),
-        (2, 1, [RED, HALF_BLUE].concat())
-    );
-    let text: Vec<_> = chunks.iter().filter(|chunk| chunk.kind == "text").collect();
-    assert_eq!(text.len(), 1);
-    assert_eq!(text[0].value.as_str(), Some("what is this [Image #1]"));
-    assert!(app.pending_images.is_empty());
-    assert!(app.input.is_empty());
-}
-
 #[test]
 fn ctrl_v_without_a_clipboard_image_leaves_the_draft_and_transcript_alone() {
     let mut app = app_with_clipboard(KeyEventKind::Press, || ClipboardRead::NoImage);
@@ -162,43 +53,457 @@ fn ctrl_v_without_a_clipboard_image_leaves_the_draft_and_transcript_alone() {
     handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
 
     assert_eq!(app.input.text(), "draft");
-    assert!(app.pending_images.is_empty());
+    assert!(app.input.image_payloads.is_empty());
     assert!(app.transcript.messages.is_empty());
 }
 
 #[test]
-fn ctrl_v_reports_an_unreachable_clipboard_instead_of_failing_silently() {
-    let mut app = app_with_clipboard(KeyEventKind::Press, || ClipboardRead::Unavailable);
-    app.input.set_text("draft");
+fn clipboard_undo_and_redo_control_the_images_in_the_submitted_prompt() {
+    use crate::app::test_support::press;
+    for redo in [false, true] {
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} draft suffix");
+        app.input.set_cursor(0, 2);
+        app.clipboard_paste =
+            ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
+        handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        assert_eq!(app.input.text(), "\u{e9} [Image #1]draft suffix");
+        history_key(&mut app, false);
+        assert_eq!(app.input.text(), "\u{e9} draft suffix");
+        if redo {
+            history_key(&mut app, true);
+        }
+        let expected = if redo { "\u{e9} [Image #1]draft suffix" } else { "\u{e9} draft suffix" };
+        assert_eq!(app.input.text(), expected);
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        let BridgeCommand::Prompt { session_id, chunks, .. } =
+            commands.try_recv().expect("submitted draft").command
+        else {
+            panic!("expected Prompt")
+        };
+        assert_eq!(session_id, "test-session");
+        let text: Vec<_> =
+            chunks.iter().filter(|c| c.kind == "text").map(|c| c.value.clone()).collect();
+        assert_eq!(text, [serde_json::json!(expected)]);
+        let images: Vec<_> = chunks.iter().filter(|c| c.kind == "image").collect();
+        assert_eq!(images.len(), usize::from(redo), "undone clipboard image must not be sent");
+        if redo {
+            assert_eq!(images[0].value["mime_type"], "image/png");
+            assert_eq!(
+                decoded_rgba(images[0].value["data"].as_str().unwrap()),
+                (2, 1, [RED, HALF_BLUE].concat())
+            );
+        }
+    }
+}
 
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
-
-    assert!(has_warning(&app));
-    assert_eq!(app.input.text(), "draft");
-    assert!(app.pending_images.is_empty());
+thread_local! { static CLIPBOARD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+struct ReadScope(usize);
+impl ReadScope {
+    fn new() -> Self {
+        Self(CLIPBOARD_READS.with(|count| count.replace(0)))
+    }
+    fn count() -> usize {
+        CLIPBOARD_READS.with(std::cell::Cell::get)
+    }
+}
+impl Drop for ReadScope {
+    fn drop(&mut self) {
+        CLIPBOARD_READS.with(|count| count.set(self.0));
+    }
+}
+fn counted_image() -> ClipboardRead {
+    CLIPBOARD_READS.with(|count| count.set(count.get() + 1));
+    two_pixel_image()
+}
+fn green_image() -> ClipboardRead {
+    ClipboardRead::Image(arboard::ImageData {
+        width: 1,
+        height: 2,
+        bytes: vec![4, 200, 6, 255, 7, 220, 9, 64].into(),
+    })
+}
+fn forbidden_read() -> ClipboardRead {
+    panic!("clipboard reader must not run on this route")
 }
 
 #[test]
-fn ctrl_v_rejects_a_corrupt_clipboard_image_with_a_warning_and_no_badge() {
-    let mut app = app_with_clipboard(KeyEventKind::Press, || {
-        // Three bytes cannot hold the 2x1 RGBA image the clipboard announces.
-        ClipboardRead::Image(arboard::ImageData { width: 2, height: 1, bytes: vec![0; 3].into() })
-    });
+fn clipboard_encoding_and_edge_policy_reads_once_per_accepted_gesture() {
+    for (code, modifiers) in
+        [(KeyCode::Char('v'), KeyModifiers::CONTROL), (KeyCode::Char('\u{16}'), KeyModifiers::NONE)]
+    {
+        for (trigger, edges) in [
+            (KeyEventKind::Press, vec![KeyEventKind::Press]),
+            (KeyEventKind::Press, vec![KeyEventKind::Press, KeyEventKind::Release]),
+            (KeyEventKind::Release, vec![KeyEventKind::Press, KeyEventKind::Release]),
+            (KeyEventKind::Release, vec![KeyEventKind::Release]),
+        ] {
+            let _reads = ReadScope::new();
+            let (mut app, mut commands) = app_with_bridge_connection();
+            app.input.set_text("\u{e9} suffix");
+            app.input.set_cursor(0, 2);
+            app.clipboard_paste = ClipboardImagePaste { trigger, read: counted_image };
+            let mut accepted = false;
+            for edge in edges {
+                handle_terminal_event(
+                    &mut app,
+                    Event::Key(KeyEvent::new_with_kind(code, modifiers, edge)),
+                );
+                accepted |= edge == trigger;
+                assert_eq!(ReadScope::count(), usize::from(accepted));
+                assert_eq!(
+                    app.input.text(),
+                    if accepted { "\u{e9} [Image #1]suffix" } else { "\u{e9} suffix" }
+                );
+            }
+            assert_eq!(app.input.images().len(), 1);
+            assert_two_pixel_attachment(&app.input.images()[0]);
+            assert!(commands.try_recv().is_err());
+            handle_terminal_event(
+                &mut app,
+                Event::Key(KeyEvent::new_with_kind(code, modifiers, trigger)),
+            );
+            assert_eq!(ReadScope::count(), 2);
+            assert_eq!(app.input.text(), "\u{e9} [Image #1][Image #2]suffix");
+        }
+    }
+    for (trigger, key) in [
+        (
+            KeyEventKind::Press,
+            KeyEvent::new_with_kind(
+                KeyCode::Char('v'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Repeat,
+            ),
+        ),
+        (
+            KeyEventKind::Press,
+            KeyEvent::new_with_kind(
+                KeyCode::Char('v'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Release,
+            ),
+        ),
+        (KeyEventKind::Release, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+        (KeyEventKind::Press, KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::ALT)),
+        (KeyEventKind::Press, KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT)),
+    ] {
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.input.set_text("untouched");
+        app.clipboard_paste = ClipboardImagePaste { trigger, read: forbidden_read };
+        handle_terminal_event(&mut app, Event::Key(key));
+        assert_eq!(app.input.text(), "untouched");
+        assert!(app.input.images().is_empty());
+        assert!(commands.try_recv().is_err());
+    }
+}
 
-    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
-
-    assert!(has_warning(&app));
-    assert!(app.input.is_empty());
-    assert!(app.pending_images.is_empty());
+fn assert_prompt_payload(command: BridgeCommand, expected_text: &str, identities: &[bool]) {
+    let BridgeCommand::Prompt { session_id, chunks, .. } = command else {
+        panic!("expected Prompt")
+    };
+    assert_eq!(session_id, "test-session");
+    assert_eq!(
+        chunks.iter().filter(|c| c.kind == "text").map(|c| c.value.clone()).collect::<Vec<_>>(),
+        [serde_json::json!(expected_text)]
+    );
+    let images: Vec<_> = chunks.iter().filter(|c| c.kind == "image").collect();
+    assert_eq!(images.len(), identities.len());
+    for (chunk, green) in images.iter().zip(identities) {
+        assert_eq!(chunk.value["mime_type"], "image/png");
+        let expected = if *green {
+            (1, 2, vec![4, 200, 6, 255, 7, 220, 9, 64])
+        } else {
+            (2, 1, [RED, HALF_BLUE].concat())
+        };
+        assert_eq!(decoded_rgba(chunk.value["data"].as_str().unwrap()), expected);
+    }
+}
+fn no_prompt(commands: &mut crate::agent::client::CommandReceiver) {
+    while let Ok(envelope) = commands.try_recv() {
+        assert!(!matches!(
+            envelope.command,
+            BridgeCommand::Prompt { .. } | BridgeCommand::CancelTurn { .. }
+        ));
+    }
 }
 
 #[test]
-fn ctrl_v_outside_the_chat_composer_attaches_nothing() {
-    let mut app = app_with_clipboard(KeyEventKind::Press, two_pixel_image);
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
+fn clipboard_images_keep_cursor_association_and_exact_prompt_payloads() {
+    for multi in [false, true] {
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} \u{5c3e}");
+        app.input.set_cursor(0, 2);
+        app.clipboard_paste =
+            ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
+        handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        if multi {
+            app.input.set_cursor(0, 0);
+            app.clipboard_paste.read = green_image;
+            handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        }
+        let expected =
+            if multi { "[Image #2]\u{e9} [Image #1]\u{5c3e}" } else { "\u{e9} [Image #1]\u{5c3e}" };
+        assert_eq!(app.input.text(), expected);
+        assert!(commands.try_recv().is_err());
+        input_submit::submit_input(&mut app);
+        assert_prompt_payload(
+            commands.try_recv().expect("clipboard Prompt").command,
+            expected,
+            if multi { &[false, true] } else { &[false] },
+        );
+        assert!(app.input.is_empty());
+        assert!(app.input.image_payloads.is_empty());
+        no_prompt(&mut commands);
+        super::handle_client_event(&mut app, super::turn_complete(None));
+        no_prompt(&mut commands);
+        app.input.set_text("distinct next prompt");
+        input_submit::submit_input(&mut app);
+        assert_prompt_payload(
+            commands.try_recv().expect("next Prompt").command,
+            "distinct next prompt",
+            &[],
+        );
+        no_prompt(&mut commands);
+    }
+}
 
+fn corrupt_image() -> ClipboardRead {
+    ClipboardRead::Image(arboard::ImageData { width: 2, height: 1, bytes: vec![0; 3].into() })
+}
+fn oversized_image() -> ClipboardRead {
+    ClipboardRead::Image(arboard::ImageData {
+        width: 1700,
+        height: 1700,
+        bytes: crate::app::test_support::clipboard_noise(1700, 1700).into(),
+    })
+}
+
+#[test]
+fn clipboard_failure_preserves_prior_content_and_allows_a_successful_retry() {
+    use crate::app::{ChatMessage, MessageBlock, TextBlock};
+    for (read, causes) in [
+        ((|| ClipboardRead::Unavailable) as fn() -> ClipboardRead, vec!["access", "clipboard"]),
+        (corrupt_image, vec!["invalid", "image"]),
+        (oversized_image, vec!["large", "10 MiB"]),
+    ] {
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("draft tail");
+        app.input.set_cursor(0, 6);
+        app.clipboard_paste =
+            ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
+        handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        app.input.set_cursor(0, 2);
+        app.transcript.messages.push(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(TextBlock::from_complete("earlier preserved message"))],
+            None,
+        ));
+        let before = app.input.snapshot();
+        let prior_id = app.transcript.messages[0].id;
+        let previous_messages = app.transcript.messages.len();
+        app.clipboard_paste.read = read;
+        handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        assert_eq!(app.input.snapshot(), before);
+        assert_eq!(app.transcript.messages[0].id, prior_id);
+        let warnings: Vec<_> = app.transcript.messages[previous_messages..]
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::System(Some(SystemSeverity::Warning))))
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                MessageBlock::Text(t) => Some(t.text.as_str()),
+                MessageBlock::Notice(n) => Some(n.text.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            causes.iter().all(|cause| warnings.iter().any(|text| text.contains(cause))),
+            "{warnings:?}"
+        );
+        assert!(commands.try_recv().is_err());
+        app.clipboard_paste.read = green_image;
+        handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        input_submit::submit_input(&mut app);
+        assert_prompt_payload(
+            commands.try_recv().expect("retry Prompt").command,
+            "dr[Image #2]aft [Image #1]tail",
+            &[false, true],
+        );
+        assert!(
+            matches!(&app.transcript.messages[0].blocks[0], MessageBlock::Text(t) if t.text == "earlier preserved message")
+        );
+        no_prompt(&mut commands);
+    }
+}
+
+#[tokio::test]
+async fn fullscreen_clipboard_routing_preserves_the_composer_and_remains_reusable() {
+    use crate::app::test_support::press;
+    let (mut app, mut commands) = app_with_bridge_connection();
+    app.status = AppStatus::Ready;
+    app.input.set_text("draft tail");
+    app.input.set_cursor(0, 6);
+    app.clipboard_paste =
+        ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
     handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+    app.input.set_cursor(0, 2);
+    let before = app.input.snapshot();
+    crate::app::config::open_tab(&mut app, crate::app::ConfigTab::Settings).expect("open Config");
+    app.clipboard_paste.read = forbidden_read;
+    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+    assert_eq!(app.input.snapshot(), before);
+    no_prompt(&mut commands);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    app.clipboard_paste.read = green_image;
+    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+    input_submit::submit_input(&mut app);
+    assert_prompt_payload(
+        commands.try_recv().expect("post-Config Prompt").command,
+        "dr[Image #2]aft [Image #1]tail",
+        &[false, true],
+    );
+}
 
-    assert!(app.input.is_empty());
-    assert!(app.pending_images.is_empty());
+#[test]
+fn clipboard_image_follows_accepted_held_text_at_its_original_cursor() {
+    use crate::app::test_support::{EventClock, press};
+    for typed in ["ab", "abc"] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("\u{e9} |\u{5c3e}");
+        app.input.set_cursor(0, 2);
+        for ch in typed.chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        app.clipboard_paste =
+            ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
+        handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        let expected = format!("\u{e9} {typed}[Image #1]|\u{5c3e}");
+        assert_eq!(app.input.text(), expected, "clipboard must not overtake held typing");
+        if let Some(action) = app.paste.burst.tick(clock.at(1)) {
+            crate::app::apply_paste_burst_flush(&mut app, action);
+        }
+        crate::app::finalize_pending_paste_event(&mut app);
+        assert_eq!(app.input.text(), expected, "later tick must not duplicate or reorder input");
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        assert_prompt_payload(
+            commands.try_recv().expect("held text and clipboard Prompt").command,
+            &expected,
+            &[false],
+        );
+    }
+}
+
+fn history_key(app: &mut App, redo: bool) {
+    #[cfg(target_os = "macos")]
+    let base = KeyModifiers::SUPER;
+    #[cfg(not(target_os = "macos"))]
+    let base = KeyModifiers::CONTROL;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let undo_char = '_';
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let undo_char = 'z';
+    let (ch, modifiers) = if redo { ('z', base | KeyModifiers::SHIFT) } else { (undo_char, base) };
+    handle_terminal_event(app, Event::Key(KeyEvent::new(KeyCode::Char(ch), modifiers)));
+}
+
+#[test]
+fn clipboard_history_keeps_each_payload_and_survives_a_no_op_edit() {
+    use crate::app::test_support::press;
+    let (mut app, mut commands) = app_with_bridge_connection();
+    app.status = AppStatus::Ready;
+    app.input.set_text("suffix");
+    app.input.set_cursor(0, 0);
+    app.clipboard_paste =
+        ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
+    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+    app.clipboard_paste.read = green_image;
+    handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+    history_key(&mut app, false);
+    assert_eq!(app.input.text(), "[Image #1]suffix");
+    assert_eq!(app.input.images().len(), 1);
+    assert_two_pixel_attachment(&app.input.images()[0]);
+    history_key(&mut app, false);
+    assert_eq!(app.input.text(), "suffix");
+    assert!(app.input.images().is_empty());
+    press(&mut app, KeyCode::Backspace); // At column zero: preserve the redo history.
+    history_key(&mut app, true);
+    assert_eq!(app.input.text(), "[Image #1]suffix");
+    assert_two_pixel_attachment(&app.input.images()[0]);
+    history_key(&mut app, true);
+    assert_eq!(app.input.text(), "[Image #1][Image #2]suffix");
+    press(&mut app, KeyCode::Enter);
+    assert_prompt_payload(
+        commands.try_recv().expect("restored Prompt").command,
+        "[Image #1][Image #2]suffix",
+        &[false, true],
+    );
+}
+
+#[test]
+fn editing_after_clipboard_undo_cannot_revive_the_discarded_image() {
+    use crate::app::test_support::press;
+    for replacement_image in [false, true] {
+        let (mut app, mut commands) = app_with_bridge_connection();
+        app.status = AppStatus::Ready;
+        app.input.set_text("draft ");
+        app.clipboard_paste =
+            ClipboardImagePaste { trigger: KeyEventKind::Press, read: two_pixel_image };
+        handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        history_key(&mut app, false);
+        if replacement_image {
+            app.clipboard_paste.read = green_image;
+            handle_terminal_event(&mut app, ctrl_v(KeyEventKind::Press));
+        } else {
+            handle_terminal_event(&mut app, Event::Paste("[Image #1]".to_owned()));
+            crate::app::finalize_pending_paste_event(&mut app);
+        }
+        history_key(&mut app, true); // A new edit has discarded the old redo branch.
+        assert_eq!(app.input.text(), "draft [Image #1]");
+        press(&mut app, KeyCode::Enter);
+        assert_prompt_payload(
+            commands.try_recv().expect("replacement Prompt").command,
+            "draft [Image #1]",
+            if replacement_image { &[true] } else { &[] },
+        );
+    }
+}
+
+#[test]
+fn clipboard_without_an_image_consumes_both_shortcut_encodings_silently() {
+    use crate::app::test_support::press;
+    for (code, modifiers) in
+        [(KeyCode::Char('v'), KeyModifiers::CONTROL), (KeyCode::Char('\u{16}'), KeyModifiers::NONE)]
+    {
+        for trigger in [KeyEventKind::Press, KeyEventKind::Release] {
+            let (mut app, mut commands) = app_with_bridge_connection();
+            app.status = AppStatus::Ready;
+            app.input.set_text("draft suffix");
+            app.input.set_cursor(0, 6);
+            let before = app.input.snapshot();
+            app.clipboard_paste = ClipboardImagePaste { trigger, read: || ClipboardRead::NoImage };
+            handle_terminal_event(
+                &mut app,
+                Event::Key(KeyEvent::new_with_kind(code, modifiers, trigger)),
+            );
+            assert_eq!(app.input.snapshot(), before, "no-image shortcut cannot become draft text");
+            assert!(app.transcript.messages.is_empty());
+            assert!(commands.try_recv().is_err());
+            handle_terminal_event(&mut app, Event::Paste("new ".to_owned()));
+            crate::app::finalize_pending_paste_event(&mut app);
+            press(&mut app, KeyCode::Enter);
+            assert_prompt_payload(
+                commands.try_recv().expect("usable composer").command,
+                "draft new suffix",
+                &[],
+            );
+        }
+    }
 }

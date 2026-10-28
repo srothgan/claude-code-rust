@@ -3527,7 +3527,7 @@ fn ctrl_c_clears_local_draft_before_quitting() {
     app.input.set_text("draft");
     app.pending_submit = Some(app.input.snapshot());
     app.paste.pending_text = "queued paste".to_owned();
-    app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+    app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
         data: "image-data".to_owned(),
         mime_type: "image/png".to_owned(),
     });
@@ -3541,7 +3541,7 @@ fn ctrl_c_clears_local_draft_before_quitting() {
     assert!(app.input.is_empty());
     assert!(app.pending_submit.is_none());
     assert!(app.paste.pending_text.is_empty());
-    assert!(app.pending_images.is_empty());
+    assert!(app.input.image_payloads.is_empty());
 
     handle_terminal_event(
         &mut app,

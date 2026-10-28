@@ -82,12 +82,8 @@ pub struct App {
     pub pending_submit: Option<InputSnapshot>,
     /// Paste ingestion state: burst detection, queued chunks, session tracking.
     pub paste: PasteState,
-    /// Pending image attachments accumulated via Ctrl+V clipboard reads and
-    /// consumed on submit. No cap on count — this is a developer tool, so
-    /// users are trusted to attach as many images as they need.
-    pub(crate) pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
     /// Locally killed content, including the payload owned by each atom.
-    pub(crate) input_yank: Vec<crate::app::keys::InputYankPart>,
+    pub(crate) input_yank: Vec<crate::app::input::InputYankPart>,
     /// Trigger key event and pixel source for Ctrl+V image paste.
     pub(crate) clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste,
     /// Session-scoped projection of user messages accepted locally while an agent turn is active.
@@ -294,7 +290,6 @@ impl App {
             subagent: None,
             pending_submit: None,
             paste: PasteState::default(),
-            pending_images: Vec::new(),
             input_yank: Vec::new(),
             // Tests never reach the system clipboard unless they install a reader.
             clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste {

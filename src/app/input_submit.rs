@@ -55,7 +55,7 @@ pub(super) fn submit_input(app: &mut App) {
             );
             return;
         }
-        if !inline_pastes.is_empty() || !app.pending_images.is_empty() {
+        if !inline_pastes.is_empty() || !app.input.images().is_empty() {
             crate::app::events::push_submission_feedback(
                 app,
                 super::SystemSeverity::Error,
@@ -110,9 +110,8 @@ fn dispatch_submission(
 }
 
 fn dispatch_prompt_turn(app: &mut App, text: &str, inline_pastes: Vec<String>) {
-    if send_prompt_turn(app, text, app.pending_images.clone(), inline_pastes) {
+    if send_prompt_turn(app, text, app.input.images(), inline_pastes) {
         app.input.clear();
-        app.pending_images.clear();
     }
 }
 
@@ -203,7 +202,7 @@ fn dispatch_active_turn_prompt(app: &mut App, text: String, inline_pastes: Vec<S
         return;
     };
     let message_uuid = uuid::Uuid::new_v4().to_string();
-    let images = app.pending_images.clone();
+    let images = app.input.images();
     let pending =
         super::PendingUserMessage::sending(message_uuid.clone(), text.clone(), images.clone());
     match app.pending_user_messages.try_push_sending(pending) {
@@ -232,7 +231,6 @@ fn dispatch_active_turn_prompt(app: &mut App, text: String, inline_pastes: Vec<S
         Ok(_) => {
             app.session_runtime.prompt_suggestion = None;
             app.input.clear();
-            app.pending_images.clear();
             app.request_active_surface_repaint();
             tracing::info!(
                 target: crate::logging::targets::APP_INPUT,
@@ -282,8 +280,8 @@ mod tests {
         const IMAGE: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=";
         let (mut app, mut rx) = app_with_connection();
         app.status = AppStatus::Running;
-        app.input.set_text("next draft");
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        app.input.set_text("next draft [Image #1]");
+        app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
             data: IMAGE.to_owned(),
             mime_type: "image/png".to_owned(),
         });
@@ -312,8 +310,8 @@ mod tests {
                 terminal_reason: Some(crate::agent::types::TerminalReason::ApiError),
             },
         );
-        assert_eq!(app.input.text(), "next draft");
-        assert_eq!(app.pending_images[0].data, IMAGE);
+        assert_eq!(app.input.text(), "next draft [Image #1]");
+        assert_eq!(app.input.image_payloads[0].data, IMAGE);
         while let Ok(envelope) = rx.try_recv() {
             assert!(
                 !matches!(envelope.command, BridgeCommand::Prompt { .. }),
@@ -328,7 +326,7 @@ mod tests {
             &mut app,
             KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
         );
-        assert_eq!(app.input.text(), "next draft!");
+        assert_eq!(app.input.text(), "next draft [Image #1]!");
         submit_input(&mut app);
         let mut prompts = Vec::new();
         while let Ok(envelope) = rx.try_recv() {
@@ -341,11 +339,11 @@ mod tests {
         let chunks = &prompts[0].1;
         assert_eq!(
             chunks.iter().find(|chunk| chunk.kind == "text").unwrap().value,
-            serde_json::json!("next draft!")
+            serde_json::json!("next draft [Image #1]!")
         );
         assert_eq!(chunks.iter().find(|chunk| chunk.kind == "image").unwrap().value["data"], IMAGE);
         assert!(app.input.is_empty());
-        assert!(app.pending_images.is_empty());
+        assert!(app.input.image_payloads.is_empty());
     }
 
     #[test]
@@ -1056,7 +1054,7 @@ mod tests {
         app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
         app.bind_active_turn_assistant(0);
         app.input.set_text("next prompt [Image #1]");
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         });
@@ -1064,7 +1062,7 @@ mod tests {
         submit_input(&mut app);
 
         assert!(app.input.text().is_empty());
-        assert!(app.pending_images.is_empty());
+        assert!(app.input.image_payloads.is_empty());
         assert!(app.session_runtime.prompt_suggestion.is_none());
         assert!(!app.turn.cancel_requested);
         assert!(matches!(app.status, AppStatus::Running));
@@ -1106,17 +1104,17 @@ mod tests {
                 .expect("queue slot should be available");
         }
         app.input.set_text("keep this draft [Image #1]");
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         });
         let input_before = app.input.snapshot();
-        let images_before = app.pending_images.clone();
+        let images_before = app.input.image_payloads.clone();
 
         submit_input(&mut app);
 
         assert_eq!(app.input.snapshot(), input_before);
-        assert_eq!(app.pending_images, images_before);
+        assert_eq!(app.input.image_payloads, images_before);
         assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("previous suggestion"));
         assert_eq!(
             app.pending_user_messages.len(),
@@ -1159,18 +1157,18 @@ mod tests {
         app.status = AppStatus::Ready;
         app.input.set_text("retry [Image #1]\n");
         app.input.insert_paste_block(&"Unicode 界 🦀\n".repeat(120));
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         });
         let before = app.input.snapshot();
-        let images_before = app.pending_images.clone();
+        let images_before = app.input.image_payloads.clone();
 
         submit_input(&mut app);
         assert!(app.turn.activity.is_none(), "failed queue admission cannot start activity");
 
         assert_eq!(app.input.snapshot(), before);
-        assert_eq!(app.pending_images, images_before);
+        assert_eq!(app.input.image_payloads, images_before);
         assert!(app.pending_user_messages.is_empty());
         assert!(matches!(app.status, AppStatus::Error));
         assert!(
@@ -1189,17 +1187,17 @@ mod tests {
         app.status = AppStatus::Running;
         app.session_runtime.prompt_suggestion = Some("previous suggestion".to_owned());
         app.input.set_text("retry [Image #1]");
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         });
         let before = app.input.snapshot();
-        let images_before = app.pending_images.clone();
+        let images_before = app.input.image_payloads.clone();
 
         submit_input(&mut app);
 
         assert_eq!(app.input.snapshot(), before);
-        assert_eq!(app.pending_images, images_before);
+        assert_eq!(app.input.image_payloads, images_before);
         assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("previous suggestion"));
         assert!(app.pending_user_messages.is_empty());
         assert!(matches!(app.status, AppStatus::Running));
@@ -1412,7 +1410,7 @@ mod tests {
         app.input.insert_str(" [Image #1] between ");
         app.input.insert_paste_block(&second_paste);
         app.input.insert_str(" after");
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         });

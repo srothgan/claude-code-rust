@@ -11,15 +11,6 @@ use crate::app::keys::KeyOutcome;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::Instant;
 
-/// Read one monotonic time source for admission, focus and routed activity.
-pub(super) fn activity_now() -> Instant {
-    #[cfg(test)]
-    if let Some(now) = super::test_support::question_clock_now() {
-        return now;
-    }
-    Instant::now()
-}
-
 /// Question activity and expiry belong to the rendered interaction, not app settings.
 pub(super) fn record_activity(app: &mut App, now: Instant) {
     let ids = app.pending_interaction_ids.clone();
@@ -75,7 +66,7 @@ pub(super) fn execute_question_action(
     if !has_focused_question(app) || !focused_interaction_is_active(app) {
         return KeyOutcome::Ignored;
     }
-    record_activity(app, activity_now());
+    record_activity(app, super::input_event_now());
 
     if focused_question_is_editing_notes(app) {
         return execute_question_note_action(app, action, key);
@@ -833,8 +824,8 @@ mod tests {
 
     #[test]
     fn typing_notes_renews_the_idle_deadline_but_timer_ticks_do_not() {
-        use crate::app::test_support::{QuestionClock, app_with_connection, assert_pending, press};
-        let clock = QuestionClock::new();
+        use crate::app::test_support::{EventClock, app_with_connection, assert_pending, press};
+        let clock = EventClock::new();
         let (mut app, mut commands) = app_with_connection();
         app.status = crate::app::AppStatus::Running;
         let mut receiver = admitted_question(&mut app, "renew", false, Some(60_000), true);
@@ -857,9 +848,9 @@ mod tests {
 
     #[tokio::test]
     async fn fullscreen_and_composer_focus_pause_idle_answers_until_a_full_resumed_interval() {
-        use crate::app::test_support::{QuestionClock, app_with_connection, assert_pending, press};
+        use crate::app::test_support::{EventClock, app_with_connection, assert_pending, press};
         for fullscreen in [false, true] {
-            let clock = QuestionClock::new();
+            let clock = EventClock::new();
             let (mut app, mut commands) = app_with_connection();
             app.status = crate::app::AppStatus::Running;
             let mut receiver = admitted_question(&mut app, "pause", false, Some(60_000), true);

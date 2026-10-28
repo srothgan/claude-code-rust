@@ -8,6 +8,8 @@ pub struct InputSnapshot {
     pub cursor_row: usize,
     pub cursor_col: usize,
     pub paste_blocks: Vec<String>,
+    /// Backing images retained while editor history can restore their badges.
+    pub(crate) image_payloads: Vec<super::clipboard_image::ImageAttachment>,
 }
 
 #[derive(Debug)]
@@ -22,6 +24,8 @@ pub struct InputState {
     /// A placeholder token `[Pasted Text N]` is inserted into `lines` at the paste point.
     /// On `text()`, placeholders are expanded back to the original pasted content.
     pub paste_blocks: Vec<String>,
+    /// Backing images retained while editor history can restore their badges.
+    pub(crate) image_payloads: Vec<super::clipboard_image::ImageAttachment>,
     /// Cached visual line measurement: (`content_version`, width, `max_rows`, result).
     cached_measure: Option<(u64, u16, u16, u16)>,
     /// Tracks which `content_version` highlights were last applied for.
@@ -35,6 +39,14 @@ const PASTE_PREFIX: &str = "[Pasted Text ";
 const PASTE_SUFFIX: &str = "]";
 /// Character threshold above which pasted content is collapsed to a placeholder.
 pub const PASTE_PLACEHOLDER_CHAR_THRESHOLD: usize = 1000;
+
+/// One local yank buffer owns both the deleted source and any referenced payloads.
+#[derive(Clone, Debug)]
+pub(crate) enum InputYankPart {
+    Text(String),
+    Image(super::clipboard_image::ImageAttachment),
+    Paste(String),
+}
 
 impl InputState {
     fn configure_editor(editor: &mut TextArea<'static>) {
@@ -57,6 +69,7 @@ impl InputState {
             version: 0,
             content_version: 0,
             paste_blocks: Vec::new(),
+            image_payloads: Vec::new(),
             cached_measure: None,
             highlight_version: u64::MAX,
             editor,
@@ -115,6 +128,8 @@ impl InputState {
             lines.push(String::new());
         }
         self.editor.set_lines(lines, (cursor_row, cursor_col));
+        // Replacing the editor drops its history, so hidden payloads have no owner.
+        self.discard_image_redo();
         self.refresh_atomic_ranges();
         self.bump_content_version();
     }
@@ -168,8 +183,68 @@ impl InputState {
         self.lines().len() == 1 && self.lines()[0].is_empty()
     }
 
+    /// Visible badges select outgoing payloads; hidden images remain available to editor redo.
+    pub(crate) fn images(&self) -> Vec<super::clipboard_image::ImageAttachment> {
+        let ids: std::collections::BTreeSet<_> =
+            crate::app::input_atoms::resolve_input_atoms(self.lines())
+                .into_iter()
+                .filter_map(|atom| match atom.kind {
+                    crate::app::input_atoms::InputAtomKind::ImageBadge { one_based_index } => {
+                        Some(one_based_index)
+                    }
+                    crate::app::input_atoms::InputAtomKind::PasteBlock { .. } => None,
+                })
+                .collect();
+        self.image_payloads
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| ids.contains(&(index + 1)))
+            .map(|(_, image)| image.clone())
+            .collect()
+    }
+
+    fn visible_image_extent(&self) -> usize {
+        crate::app::input_atoms::resolve_input_atoms(self.lines())
+            .into_iter()
+            .filter_map(|atom| match atom.kind {
+                crate::app::input_atoms::InputAtomKind::ImageBadge { one_based_index } => {
+                    Some(one_based_index)
+                }
+                crate::app::input_atoms::InputAtomKind::PasteBlock { .. } => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .min(self.image_payloads.len())
+    }
+
+    fn discard_image_redo(&mut self) {
+        self.image_payloads.truncate(self.visible_image_extent());
+    }
+
+    /// Insert one composer edit with its payloads. The editor remains the only undo authority.
+    pub(crate) fn insert_parts(&mut self, parts: impl IntoIterator<Item = InputYankPart>) {
+        use std::fmt::Write as _;
+        self.discard_image_redo();
+        let mut text = String::new();
+        for part in parts {
+            match part {
+                InputYankPart::Text(value) => text.push_str(&value),
+                InputYankPart::Image(image) => {
+                    self.image_payloads.push(image);
+                    let _ = write!(text, "[Image #{}]", self.image_payloads.len());
+                }
+                InputYankPart::Paste(value) => {
+                    let placeholder = self.allocate_paste_block_for_insertion(&value, &text);
+                    text.push_str(&placeholder);
+                }
+            }
+        }
+        self.insert_str_inner(&text);
+    }
+
     pub fn clear(&mut self) {
         self.paste_blocks.clear();
+        self.image_payloads.clear();
         self.replace_lines_and_cursor(vec![String::new()], 0, 0);
     }
 
@@ -181,11 +256,13 @@ impl InputState {
             cursor_row,
             cursor_col,
             paste_blocks: self.paste_blocks.clone(),
+            image_payloads: self.image_payloads.clone(),
         }
     }
 
     pub fn restore_snapshot(&mut self, snapshot: InputSnapshot) {
         self.paste_blocks = snapshot.paste_blocks;
+        self.image_payloads = snapshot.image_payloads;
         self.replace_lines_and_cursor(snapshot.lines, snapshot.cursor_row, snapshot.cursor_col);
     }
 
@@ -199,6 +276,7 @@ impl InputState {
         let row = lines.len().saturating_sub(1);
         let col = lines[row].chars().count();
         self.paste_blocks.clear();
+        self.image_payloads.clear();
         self.replace_lines_and_cursor(lines, row, col);
     }
 
@@ -217,6 +295,7 @@ impl InputState {
     }
 
     pub fn textarea_insert_char(&mut self, c: char) -> bool {
+        self.discard_image_redo();
         self.editor.insert_char(c);
         self.refresh_atomic_ranges();
         self.bump_content_version();
@@ -224,6 +303,7 @@ impl InputState {
     }
 
     pub fn textarea_insert_newline(&mut self) -> bool {
+        self.discard_image_redo();
         self.editor.insert_newline();
         self.refresh_atomic_ranges();
         self.bump_content_version();
@@ -231,8 +311,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_char_before(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_char();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -240,8 +322,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_char_after(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_next_char();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -330,8 +414,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_word_before(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_word();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -339,8 +425,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_word_after(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_next_word();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -348,8 +436,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_line_before(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_line_by_head();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -357,8 +447,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_line_after(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_line_by_end();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -377,6 +469,14 @@ impl InputState {
     }
 
     pub fn insert_str(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        self.discard_image_redo();
+        self.insert_str_inner(s);
+    }
+
+    fn insert_str_inner(&mut self, s: &str) {
         if s.is_empty() {
             return;
         }
@@ -525,7 +625,7 @@ impl InputState {
     }
 
     /// Renumber all `[Image #N]` badges in the input to match the current
-    /// `pending_images` indices (1-based). Call after removing an image.
+    /// attachment indices (1-based). Call after removing an image.
     pub fn renumber_image_badges(&mut self) {
         let mut lines = self.lines().to_vec();
         let (cursor_row, cursor_col) = self.cursor();

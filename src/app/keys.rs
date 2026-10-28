@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::clipboard_image::{ClipboardRead, encode_clipboard_image};
+use super::input::InputYankPart;
 use super::paste_burst::CharAction;
 use super::{App, AppStatus, FocusOwner};
 use crate::app::SystemSeverity;
@@ -15,8 +16,6 @@ use crate::app::state::AutocompleteKind;
 use crate::app::{input_atoms, input_atoms::InputAtomKind};
 use crate::app::{mention, permissions, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::fmt::Write as _;
-use std::time::Instant;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCommand {
@@ -318,7 +317,7 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
 
 fn has_local_draft(app: &App) -> bool {
     !app.input.is_empty()
-        || !app.pending_images.is_empty()
+        || !app.input.images().is_empty()
         || app.paste.has_pending_text()
         || app.pending_submit.is_some()
 }
@@ -341,7 +340,6 @@ fn clear_input_or_quit(app: &mut App) -> bool {
     }
 
     app.input.clear();
-    app.pending_images.clear();
     app.paste.clear_all_sessions();
     app.pending_submit = None;
     app.request_chat_repaint();
@@ -407,14 +405,6 @@ fn delete_input_word_after(app: &mut App) -> bool {
     delete_input_content(app, super::InputState::textarea_delete_word_after)
 }
 
-/// One local yank buffer owns both the deleted source and any referenced payloads.
-#[derive(Clone, Debug)]
-pub(crate) enum InputYankPart {
-    Text(String),
-    Image(super::clipboard_image::ImageAttachment),
-    Paste(String),
-}
-
 fn capture_input_yank(app: &App, text: &str) -> Vec<InputYankPart> {
     let mut parts = Vec::new();
     for (row, line) in text.split('\n').enumerate() {
@@ -425,9 +415,12 @@ fn capture_input_yank(app: &App, text: &str) -> Vec<InputYankPart> {
         for atom in input_atoms::resolve_line_atoms(row, line) {
             parts.push(InputYankPart::Text(line[offset..atom.start_byte].to_owned()));
             let part = match atom.kind {
-                InputAtomKind::ImageBadge { one_based_index } => {
-                    app.pending_images.get(one_based_index - 1).cloned().map(InputYankPart::Image)
-                }
+                InputAtomKind::ImageBadge { one_based_index } => app
+                    .input
+                    .image_payloads
+                    .get(one_based_index - 1)
+                    .cloned()
+                    .map(InputYankPart::Image),
                 InputAtomKind::PasteBlock { index, .. } => {
                     app.input.paste_blocks.get(index).cloned().map(InputYankPart::Paste)
                 }
@@ -466,11 +459,11 @@ fn delete_input_content(app: &mut App, edit: impl FnOnce(&mut super::InputState)
     }
     if removed_image {
         // Resolve old badge identities before renumbering, including cursor-positioned pastes.
-        app.pending_images = after
+        app.input.image_payloads = after
             .iter()
             .filter_map(|atom| match atom.kind {
                 InputAtomKind::ImageBadge { one_based_index } => {
-                    app.pending_images.get(one_based_index - 1).cloned()
+                    app.input.image_payloads.get(one_based_index - 1).cloned()
                 }
                 InputAtomKind::PasteBlock { .. } => None,
             })
@@ -485,26 +478,12 @@ fn yank_input_content(app: &mut App) -> bool {
     if app.input_yank.is_empty() {
         return false;
     }
-    let mut text = String::new();
-    for part in app.input_yank.clone() {
-        match part {
-            InputYankPart::Text(value) => text.push_str(&value),
-            InputYankPart::Image(image) => {
-                app.pending_images.push(image);
-                let _ = write!(text, "[Image #{}]", app.pending_images.len());
-            }
-            InputYankPart::Paste(value) => {
-                let placeholder = app.input.allocate_paste_block_for_insertion(&value, &text);
-                text.push_str(&placeholder);
-            }
-        }
-    }
-    app.input.insert_str(&text);
+    app.input.insert_parts(app.input_yank.clone());
     true
 }
 
 fn insert_explicit_newline(app: &mut App) -> bool {
-    if app.paste.burst.on_enter(Instant::now()) {
+    if app.paste.burst.on_enter(super::input_event_now()) {
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "enter_routed_to_paste_buffer",
@@ -609,8 +588,8 @@ fn execute_terminal_action(action: TerminalAction) -> KeyOutcome {
 fn handle_turn_control(app: &mut App) -> bool {
     app.pending_submit = None;
     // Clear any pending image attachments on Escape.
-    if !app.pending_images.is_empty() {
-        app.pending_images.clear();
+    if !app.input.image_payloads.is_empty() {
+        app.input.image_payloads.clear();
         app.request_chat_repaint();
     }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
@@ -632,7 +611,7 @@ fn handle_submit(app: &mut App) -> bool {
         app.pending_submit = None;
         return true;
     }
-    let now = Instant::now();
+    let now = super::input_event_now();
 
     // During an active burst or the post-burst suppression window, Enter
     // becomes a newline to keep multi-line pastes grouped.
@@ -776,15 +755,14 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     };
     match encode_clipboard_image(image) {
         Ok(attachment) => {
-            app.pending_images.push(attachment);
-            // Insert badge text at the cursor position so the user (and
-            // the model) can see where images are relative to text.
-            let idx = app.pending_images.len();
-            let badge = format!("[Image #{idx}]");
-            app.input.insert_str(&badge);
+            if let Some(action) = app.paste.burst.on_non_char_key(super::input_event_now()) {
+                super::apply_paste_burst_flush(app, action);
+                super::finalize_pending_paste_event(app);
+            }
+            app.input.insert_parts([InputYankPart::Image(attachment)]);
             app.request_chat_repaint();
             tracing::debug!(
-                count = app.pending_images.len(),
+                count = app.input.image_payloads.len(),
                 "clipboard_paste: attached image from clipboard"
             );
         }
@@ -816,18 +794,18 @@ pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
 fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     let (KeyCode::Char(c), m) = (key.code, key.modifiers) else {
         // A non-character key ends the burst but must not consume its text.
-        if let Some(action) = app.paste.burst.on_non_char_key(Instant::now()) {
+        if let Some(action) = app.paste.burst.on_non_char_key(super::input_event_now()) {
             super::apply_paste_burst_flush(app, action);
             return true;
         }
         return false;
     };
-    if !is_printable_text_modifiers(m) {
+    if c.is_control() || !is_printable_text_modifiers(m) {
         return false;
     }
     reclaim_input_from_inline_prompt_if_needed(app);
 
-    let now = Instant::now();
+    let now = super::input_event_now();
     match app.paste.burst.on_char(c, now) {
         CharAction::Consumed => {
             // Character absorbed into burst buffer. Don't insert.
@@ -1098,24 +1076,6 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_shortcut_accepts_standard_ctrl_v_encoding() {
-        let key = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-        assert!(is_ctrl_char_shortcut(key, 'v'));
-    }
-
-    #[test]
-    fn ctrl_shortcut_accepts_raw_control_character_encoding() {
-        let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
-        assert!(is_ctrl_char_shortcut(key, 'v'));
-    }
-
-    #[test]
-    fn ctrl_shortcut_rejects_raw_control_character_with_alt() {
-        let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::ALT);
-        assert!(!is_ctrl_char_shortcut(key, 'v'));
-    }
-
-    #[test]
     fn queued_paste_still_blocks_overlapping_key_text() {
         let mut app = App::test_default();
         app.paste.pending_text = "clipboard".to_owned();
@@ -1211,7 +1171,7 @@ mod tests {
         let mut app = App::test_default();
         app.input.set_text("[Image #1]");
         let _ = app.input.set_cursor_col("[Image #1]".chars().count());
-        app.pending_images = vec![crate::app::clipboard_image::ImageAttachment {
+        app.input.image_payloads = vec![crate::app::clipboard_image::ImageAttachment {
             data: "image".to_owned(),
             mime_type: "image/png".to_owned(),
         }];
@@ -1224,7 +1184,7 @@ mod tests {
 
         assert_eq!(outcome, KeyOutcome::Handled(true));
         assert!(app.input.is_empty());
-        assert!(app.pending_images.is_empty());
+        assert!(app.input.image_payloads.is_empty());
         assert!(app.surface_dirty.chat.repaint);
     }
 
@@ -1640,7 +1600,7 @@ mod tests {
                     &surviving,
                 );
                 assert!(app.input.is_empty());
-                assert!(app.pending_images.is_empty());
+                assert!(app.input.image_payloads.is_empty());
                 while let Ok(envelope) = commands.try_recv() {
                     assert!(
                         !matches!(envelope.command, BridgeCommand::Prompt { .. }),

@@ -139,34 +139,47 @@ pub(crate) fn set_tool_scope(app: &mut super::App, id: &str, scope: super::ToolC
 }
 
 thread_local! {
-    static QUESTION_CLOCK: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    static EVENT_CLOCK: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
 }
 
-pub(crate) fn question_clock_now() -> Option<std::time::Instant> {
-    QUESTION_CLOCK.with(std::cell::Cell::get)
+pub(crate) fn event_clock_now() -> Option<std::time::Instant> {
+    EVENT_CLOCK.with(std::cell::Cell::get)
 }
 
-pub(crate) struct QuestionClock {
+pub(crate) struct EventClock {
     start: std::time::Instant,
     previous: Option<std::time::Instant>,
 }
 
-impl QuestionClock {
+impl EventClock {
     pub(crate) fn new() -> Self {
         let start = std::time::Instant::now();
-        let previous = QUESTION_CLOCK.with(|clock| clock.replace(Some(start)));
+        let previous = EVENT_CLOCK.with(|clock| clock.replace(Some(start)));
         Self { start, previous }
     }
 
     pub(crate) fn at(&self, seconds: u64) -> std::time::Instant {
         let now = self.start + std::time::Duration::from_secs(seconds);
-        QUESTION_CLOCK.with(|clock| clock.set(Some(now)));
+        EVENT_CLOCK.with(|clock| clock.set(Some(now)));
         now
     }
 }
 
-impl Drop for QuestionClock {
+impl Drop for EventClock {
     fn drop(&mut self) {
-        QUESTION_CLOCK.with(|clock| clock.set(self.previous));
+        EVENT_CLOCK.with(|clock| clock.set(self.previous));
     }
+}
+
+/// Deterministic incompressible RGBA fixture shared by the size-policy and error/retry owners.
+pub(crate) fn clipboard_noise(width: usize, height: usize) -> Vec<u8> {
+    let mut state = 0x9E37_79B9_u32;
+    (0..width * height * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[1]
+        })
+        .collect()
 }

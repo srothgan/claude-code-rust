@@ -144,7 +144,6 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
 fn reset_input_state_for_new_session(app: &mut App, reset_kind: ChatResetKind) {
     if !reset_kind.preserves_draft() {
         app.input.clear();
-        app.pending_images.clear();
         app.committed_mentions.clear();
     }
     app.pending_submit = None;
@@ -382,8 +381,8 @@ mod tests {
     #[test]
     fn startup_session_reset_preserves_connecting_draft_and_images() {
         let mut app = App::test_default();
-        app.input.set_text("draft while connecting");
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+        app.input.set_text("draft while connecting [Image #1]");
+        app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
             data: "image-data".to_owned(),
             mime_type: "image/png".to_owned(),
         });
@@ -397,8 +396,8 @@ mod tests {
             ChatResetKind::InitialConnection,
         );
 
-        assert_eq!(app.input.text(), "draft while connecting");
-        assert_eq!(app.pending_images.len(), 1);
+        assert_eq!(app.input.text(), "draft while connecting [Image #1]");
+        assert_eq!(app.input.image_payloads.len(), 1);
     }
 
     #[test]

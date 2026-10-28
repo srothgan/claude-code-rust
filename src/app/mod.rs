@@ -461,7 +461,6 @@ fn prepare_app_shutdown(app: &mut App) {
         view::set_chat_surface(app);
     }
     app.input.clear();
-    app.pending_images.clear();
     app.btw.clear();
     app.paste.clear_all_sessions();
     app.pending_submit = None;
@@ -633,8 +632,16 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
     }
 }
 
-/// Apply buffered input and request its paint through the same owner for timer
-/// expiry and non-character key boundaries.
+/// Read one monotonic time source for routed input and interaction activity.
+fn input_event_now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = test_support::event_clock_now() {
+        return now;
+    }
+    Instant::now()
+}
+
+/// Apply buffered input through the shared timer and non-character action owner.
 fn apply_paste_burst_flush(app: &mut App, action: paste_burst::FlushAction) {
     match action {
         paste_burst::FlushAction::EmitChar(ch) => {

@@ -410,7 +410,7 @@ pub(super) fn handle_question_request_event(
     if let Some(tc) = app.tool_call_at_mut(mi, bi) {
         tc.pending_question = Some(InlineQuestion {
             idle_timeout: request.idle_timeout_ms.map(std::time::Duration::from_millis),
-            last_activity: crate::app::questions::activity_now(),
+            last_activity: crate::app::input_event_now(),
             prompt: request.prompt,
             response_tx,
             focused_option_index: 0,
@@ -794,9 +794,9 @@ fn restore_pending_user_messages(app: &mut App, messages: Vec<super::super::Pend
         text_parts.push(current_text);
     }
     let mut images = messages.into_iter().flat_map(|message| message.images).collect::<Vec<_>>();
-    images.append(&mut app.pending_images);
+    images.extend(app.input.images());
     app.input.set_text(&text_parts.join("\n"));
-    app.pending_images = images;
+    app.input.image_payloads = images;
     app.input.renumber_image_badges();
     app.request_active_surface_repaint();
 }
@@ -1131,14 +1131,14 @@ mod tests {
                 ))
                 .is_ok()
         );
-        app.input.set_text("new [Image #4]");
-        app.pending_images.push(image("new-image"));
+        app.input.set_text("new [Image #1]");
+        app.input.image_payloads.push(image("new-image"));
 
         handle_user_message_rejected_event(&mut app, "one", "session input is closed");
 
         assert!(app.pending_user_messages.is_empty());
         assert_eq!(app.input.text(), "old [Image #1]\nnew [Image #2]");
-        assert_eq!(app.pending_images, vec![image("old-image"), image("new-image")]);
+        assert_eq!(app.input.image_payloads, vec![image("old-image"), image("new-image")]);
         let Some(MessageBlock::Notice(notice)) =
             app.transcript.messages.last().and_then(|message| message.blocks.last())
         else {
@@ -1182,14 +1182,14 @@ mod tests {
                 .try_push_sending(pending_message("two", "second [Image #8]", vec![image("two")],))
                 .is_ok()
         );
-        app.input.set_text("draft [Image #3]");
-        app.pending_images.push(image("draft"));
+        app.input.set_text("draft [Image #1]");
+        app.input.image_payloads.push(image("draft"));
 
         recover_all_pending_user_messages(&mut app);
 
         assert!(app.pending_user_messages.is_empty());
         assert_eq!(app.input.text(), "first [Image #1]\nsecond [Image #2]\ndraft [Image #3]");
-        assert_eq!(app.pending_images, vec![image("one"), image("two"), image("draft")]);
+        assert_eq!(app.input.image_payloads, vec![image("one"), image("two"), image("draft")]);
     }
 
     #[test]
@@ -1239,14 +1239,14 @@ mod tests {
         app.bind_active_turn_assistant_to_tail();
         app.input.set_text("next [Image #1]\n");
         app.input.insert_paste_block(&"draft 界 🦀\n".repeat(120));
-        app.pending_images.push(image("draft"));
+        app.input.image_payloads.push(image("draft"));
         let before = app.input.snapshot();
-        let images_before = app.pending_images.clone();
+        let images_before = app.input.image_payloads.clone();
 
         handle_turn_error_event(&mut app, "service unavailable", None, None, None, None);
 
         assert_eq!(app.input.snapshot(), before);
-        assert_eq!(app.pending_images, images_before);
+        assert_eq!(app.input.image_payloads, images_before);
         assert_eq!(app.status, AppStatus::Error);
         assert!(app.active_turn_assistant_idx().is_none());
         assert_eq!(app.transcript.messages.len(), 2);

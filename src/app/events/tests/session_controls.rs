@@ -5,7 +5,7 @@ use crate::agent::model::EffortLevel;
 use crate::agent::wire::BridgeCommand;
 use pretty_assertions::assert_eq;
 
-const DRAFT: &str = "keep my draft";
+const DRAFT: &str = "keep my draft [Image #1]";
 
 fn session_app() -> (App, CommandReceiver) {
     let (mut app, commands) = app_with_bridge_connection();
@@ -15,7 +15,7 @@ fn session_app() -> (App, CommandReceiver) {
     app.session_runtime.config_options.insert("effortLevel".to_owned(), serde_json::json!("high"));
     app.input.set_text(DRAFT);
     let _ = app.input.set_cursor_col(4);
-    app.pending_images = vec![crate::app::clipboard_image::ImageAttachment {
+    app.input.image_payloads = vec![crate::app::clipboard_image::ImageAttachment {
         data: "image".to_owned(),
         mime_type: "image/png".to_owned(),
     }];
@@ -108,7 +108,7 @@ fn current_mode(app: &App) -> &str {
 fn assert_composer_intact(app: &App) {
     assert_eq!(app.input.text(), DRAFT);
     assert_eq!(app.input.cursor_col(), 4);
-    assert_eq!(app.pending_images.len(), 1);
+    assert_eq!(app.input.image_payloads.len(), 1);
     assert!(app.pending_submit.is_none());
 }
 

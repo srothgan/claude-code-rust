@@ -12,7 +12,7 @@ fn shutdown_preparation_normalizes_ui_and_preserves_resume_identity() {
     app.session_runtime.activate_session(model::SessionId::new("session-123"));
     app.input.set_text("draft");
     app.pending_submit = Some(app.input.snapshot());
-    app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
+    app.input.image_payloads.push(crate::app::clipboard_image::ImageAttachment {
         data: "image".to_owned(),
         mime_type: "image/png".to_owned(),
     });
@@ -24,7 +24,7 @@ fn shutdown_preparation_normalizes_ui_and_preserves_resume_identity() {
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.input.is_empty());
     assert!(app.pending_submit.is_none());
-    assert!(app.pending_images.is_empty());
+    assert!(app.input.image_payloads.is_empty());
     assert_eq!(
         app.session_runtime.resumable_session_id().map(ToString::to_string),
         Some("session-123".to_owned())
