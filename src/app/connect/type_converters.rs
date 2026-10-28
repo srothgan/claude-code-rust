@@ -1249,64 +1249,6 @@ mod tests {
     }
 
     #[test]
-    fn map_permission_request_preserves_display_and_mcp_provenance() {
-        let (request, tool_call_id) = map_permission_request(
-            "session-1",
-            types::PermissionRequest {
-                tool_call: types::ToolCall {
-                    tool_call_id: "tool-1".to_owned(),
-                    title: "Bash npm test".to_owned(),
-                    kind: "execute".to_owned(),
-                    status: "in_progress".to_owned(),
-                    source_message_uuid: None,
-                    content: Vec::new(),
-                    raw_input: None,
-                    raw_output: None,
-                    output_metadata: None,
-                    task_metadata: None,
-                    locations: Vec::new(),
-                    meta: None,
-                },
-                options: vec![types::PermissionOption {
-                    option_id: "allow".to_owned(),
-                    name: "Allow".to_owned(),
-                    description: None,
-                    kind: "allow_once".to_owned(),
-                }],
-                display: Some(types::PermissionDisplay {
-                    title: Some("Claude wants to run tests".to_owned()),
-                    display_name: Some("Run tests".to_owned()),
-                    description: Some("This command reads project files".to_owned()),
-                    default_to_no: false,
-                    suppress_always_allow_rule: false,
-                }),
-                mcp_server: Some(types::McpServerProvenance {
-                    name: "filesystem".to_owned(),
-                    source: "project".to_owned(),
-                }),
-            },
-        );
-
-        assert_eq!(tool_call_id, "tool-1");
-        assert_eq!(
-            request.display,
-            Some(
-                model::PermissionDisplay::new()
-                    .title(Some("Claude wants to run tests".to_owned()))
-                    .display_name(Some("Run tests".to_owned()))
-                    .description(Some("This command reads project files".to_owned())),
-            )
-        );
-        assert_eq!(
-            request.mcp_server,
-            Some(model::McpServerProvenance {
-                name: "filesystem".to_owned(),
-                source: "project".to_owned(),
-            })
-        );
-    }
-
-    #[test]
     fn map_question_request_preserves_preview_and_annotation_shape() {
         let (request, tool_call_id) = map_question_request(
             "session-1",
@@ -1779,5 +1721,156 @@ mod tests {
         assert_eq!(tools[0].org_max_permission, Some(model::McpServerOrgMaxPermission::Blocked));
         assert_eq!(tools[1].permission_policy, None);
         assert_eq!(tools[1].org_max_permission, Some(model::McpServerOrgMaxPermission::Ask));
+    }
+    fn permission_wire_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "tool_call": {"tool_call_id":"mapped-tool", "title":"Inspect build", "kind":"execute", "status":"in_progress",
+                "content":[], "locations":[], "raw_input":{"command":"check-build"},
+                "meta":{"claudeCode":{"toolName":"Bash"}}},
+            "options":[
+                {"option_id":"permit-build", "name":"Run build", "description":"Once only", "kind":"allow_once"},
+                {"option_id":"refuse-build", "name":"Stop build", "description":"Leave files alone", "kind":"reject_once"}],
+            "mcp_server":{"name":"build-server", "source":"project"}
+        })
+    }
+
+    #[test]
+    fn mapped_permission_metadata_drives_the_actual_default_response() {
+        use crate::app::test_support::{
+            admit_tool, app_with_connection, assert_permission_response, press, request_permission,
+        };
+        for (display, expected_display, expected_id) in [
+            (serde_json::Value::Null, None, "permit-build"),
+            (
+                serde_json::json!({"title":"  ","display_name":"\t","description":"\n"}),
+                None,
+                "permit-build",
+            ),
+            (
+                serde_json::json!({"default_to_no":true}),
+                Some(model::PermissionDisplay::new().default_to_no(true)),
+                "refuse-build",
+            ),
+            (
+                serde_json::json!({"default_to_no":false,"suppress_always_allow_rule":true}),
+                Some(model::PermissionDisplay::new().suppress_always_allow_rule(true)),
+                "permit-build",
+            ),
+            (
+                serde_json::json!({"title":"  Build approval  ","display_name":" Build action ","description":" Changes outputs ","default_to_no":true,"suppress_always_allow_rule":true}),
+                Some(
+                    model::PermissionDisplay::new()
+                        .title(Some("  Build approval  ".into()))
+                        .display_name(Some(" Build action ".into()))
+                        .description(Some(" Changes outputs ".into()))
+                        .default_to_no(true)
+                        .suppress_always_allow_rule(true),
+                ),
+                "refuse-build",
+            ),
+        ] {
+            let mut fixture = permission_wire_fixture();
+            if !display.is_null() {
+                fixture["display"] = display;
+            }
+            let (request, id) = map_permission_request(
+                "session-1",
+                serde_json::from_value(fixture).expect("literal request"),
+            );
+            assert_eq!(id, "mapped-tool");
+            assert_eq!(request.session_id.to_string(), "session-1");
+            assert_eq!(request.tool_call.tool_call_id, "mapped-tool");
+            assert_eq!(request.tool_call.fields.title.as_deref(), Some("Inspect build"));
+            assert_eq!(request.tool_call.fields.kind, Some(model::ToolKind::Execute));
+            assert_eq!(request.tool_call.fields.status, Some(model::ToolCallStatus::InProgress));
+            assert_eq!(
+                request.tool_call.fields.raw_input,
+                Some(serde_json::json!({"command":"check-build"}))
+            );
+            assert_eq!(
+                request.tool_call.meta,
+                Some(serde_json::json!({"claudeCode":{"toolName":"Bash"}}))
+            );
+            assert_eq!(
+                request.options,
+                vec![
+                    model::PermissionOption::new(
+                        "permit-build",
+                        "Run build",
+                        model::PermissionOptionKind::AllowOnce
+                    )
+                    .description(Some("Once only".into())),
+                    model::PermissionOption::new(
+                        "refuse-build",
+                        "Stop build",
+                        model::PermissionOptionKind::RejectOnce
+                    )
+                    .description(Some("Leave files alone".into())),
+                ]
+            );
+            assert_eq!(request.display, expected_display);
+            assert_eq!(
+                request.mcp_server,
+                Some(model::McpServerProvenance {
+                    name: "build-server".into(),
+                    source: "project".into()
+                })
+            );
+            let (mut app, mut commands) = app_with_connection();
+            app.status = crate::app::AppStatus::Running;
+            admit_tool(
+                &mut app,
+                model::ToolCall::new("mapped-tool", "Inspect build")
+                    .status(model::ToolCallStatus::InProgress),
+            );
+            let mut receiver = request_permission(&mut app, request);
+            press(&mut app, crossterm::event::KeyCode::Enter);
+            assert_permission_response(&mut receiver, expected_id);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn unknown_permission_kinds_are_reject_once_without_losing_option_identity() {
+        for reverse in [false, true] {
+            let mut fixture = permission_wire_fixture();
+            fixture["options"].as_array_mut().expect("options").push(serde_json::json!({
+                "option_id":"future-id", "name":"Future choice", "description":"Future explanation", "kind":"future_permission_kind"
+            }));
+            if reverse {
+                fixture["options"].as_array_mut().expect("options").reverse();
+            }
+            let (request, id) = map_permission_request(
+                "unknown-session",
+                serde_json::from_value(fixture).expect("wire request"),
+            );
+            assert_eq!(id, "mapped-tool");
+            assert_eq!(request.tool_call.tool_call_id, "mapped-tool");
+            assert_eq!(request.session_id.to_string(), "unknown-session");
+            let mut expected = vec![
+                model::PermissionOption::new(
+                    "permit-build",
+                    "Run build",
+                    model::PermissionOptionKind::AllowOnce,
+                )
+                .description(Some("Once only".into())),
+                model::PermissionOption::new(
+                    "refuse-build",
+                    "Stop build",
+                    model::PermissionOptionKind::RejectOnce,
+                )
+                .description(Some("Leave files alone".into())),
+                model::PermissionOption::new(
+                    "future-id",
+                    "Future choice",
+                    model::PermissionOptionKind::RejectOnce,
+                )
+                .description(Some("Future explanation".into())),
+            ];
+            if reverse {
+                expected.reverse();
+            }
+            assert_eq!(request.options, expected);
+        }
     }
 }

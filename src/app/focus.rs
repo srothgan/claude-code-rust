@@ -90,29 +90,43 @@ mod tests {
     use super::{FocusContext, FocusManager, FocusOwner, FocusTarget};
 
     #[test]
-    fn owner_defaults_to_input_without_claims() {
-        let mgr = FocusManager::default();
-        let ctx = FocusContext::new(false, false);
-        assert_eq!(mgr.owner(ctx), FocusOwner::Input);
-    }
+    fn claims_restore_prior_owners_without_resurrecting_released_or_invalid_claims() {
+        use FocusOwner::{Input, Mention, Permission};
+        let both = FocusContext::new(true, true);
+        for (first, second, first_owner, second_owner) in [
+            (FocusTarget::Permission, FocusTarget::Mention, Permission, Mention),
+            (FocusTarget::Mention, FocusTarget::Permission, Mention, Permission),
+        ] {
+            let mut manager = FocusManager::default();
+            manager.claim(first, both);
+            assert_eq!(manager.owner(both), first_owner);
+            manager.claim(second, both);
+            assert_eq!(manager.owner(both), second_owner);
+            manager.release(second, both);
+            assert_eq!(manager.owner(both), first_owner);
+            manager.claim(second, both);
+            manager.claim(first, both);
+            assert_eq!(manager.owner(both), first_owner);
+            manager.release(first, both);
+            assert_eq!(manager.owner(both), second_owner);
+            manager.release(second, both);
+            assert_eq!(manager.owner(both), Input, "reclaim must not leave duplicate claims");
 
-    #[test]
-    fn latest_valid_claim_wins() {
-        let mut mgr = FocusManager::default();
-        let ctx = FocusContext::new(true, true);
-        mgr.claim(FocusTarget::Permission, ctx);
-        mgr.claim(FocusTarget::Mention, ctx);
-        assert_eq!(mgr.owner(ctx), FocusOwner::Mention);
-    }
-
-    #[test]
-    fn invalid_claims_are_normalized_out() {
-        let mut mgr = FocusManager::default();
-        let valid_ctx = FocusContext::new(true, false);
-        let invalid_ctx = FocusContext::new(false, false);
-        mgr.claim(FocusTarget::Mention, valid_ctx);
-        assert_eq!(mgr.owner(valid_ctx), FocusOwner::Mention);
-        mgr.normalize(invalid_ctx);
-        assert_eq!(mgr.owner(invalid_ctx), FocusOwner::Input);
+            manager.claim(first, both);
+            manager.claim(second, both);
+            let only_first =
+                FocusContext::new(first == FocusTarget::Mention, first == FocusTarget::Permission);
+            assert_eq!(manager.owner(only_first), first_owner, "unavailable top is skipped");
+            manager.normalize(only_first);
+            assert_eq!(
+                manager.owner(both),
+                first_owner,
+                "normalization permanently drops unavailable claims"
+            );
+            manager.release(first, both);
+            assert_eq!(manager.owner(both), Input);
+            manager.claim(second, both);
+            assert_eq!(manager.owner(both), second_owner, "explicit reclaim restores availability");
+        }
     }
 }

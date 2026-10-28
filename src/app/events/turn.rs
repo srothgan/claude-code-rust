@@ -1019,49 +1019,6 @@ mod tests {
         Some(text.text.as_str())
     }
 
-    fn tool_call_info(
-        id: &str,
-        title: &str,
-        sdk_tool_name: &str,
-        raw_input: Option<serde_json::Value>,
-        hidden: bool,
-    ) -> crate::app::ToolCallInfo {
-        crate::app::ToolCallInfo {
-            title: title.to_owned(),
-            raw_input,
-            parent_tool_use_id: (hidden).then(|| "parent-agent".to_owned()),
-            ..crate::app::test_support::named_tool_call_info(
-                id,
-                sdk_tool_name,
-                model::ToolCallStatus::InProgress,
-            )
-        }
-    }
-
-    fn push_tool(app: &mut App, tool: crate::app::ToolCallInfo) {
-        let msg_idx = app.transcript.messages.len();
-        let tool_id = tool.id.clone();
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(tool))],
-            None,
-        ));
-        app.index_tool_call(tool_id, msg_idx, 0);
-    }
-
-    fn permission_request(tool_id: &str) -> model::RequestPermissionRequest {
-        model::RequestPermissionRequest::new(
-            "session-1",
-            model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
-            vec![model::PermissionOption::new(
-                "allow",
-                "Allow",
-                model::PermissionOptionKind::AllowOnce,
-            )],
-            None,
-        )
-    }
-
     fn pending_permission_context(
         app: &App,
         tool_id: &str,
@@ -1345,264 +1302,201 @@ mod tests {
         assert!(!app.chat_render.resize_purge_replay_after_turn);
     }
 
-    #[test]
-    fn permission_request_marks_canonical_tool_pending_permission() {
-        let mut app = App::test_default();
-        let tool_id = "bash-1";
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::ToolCall(Box::new(crate::app::ToolCallInfo {
-                title: "tool".to_owned(),
-                ..crate::app::test_support::named_tool_call_info(
-                    tool_id,
-                    "Bash",
-                    model::ToolCallStatus::InProgress,
-                )
-            }))],
-            None,
-        ));
-        app.bind_active_turn_assistant(0);
-        app.index_tool_call(tool_id.to_owned(), 0, 0);
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        let request = model::RequestPermissionRequest::new(
-            "session-1",
-            model::ToolCallUpdate::new(tool_id, model::ToolCallUpdateFields::new()),
-            vec![model::PermissionOption::new(
-                "allow",
-                "Allow",
-                model::PermissionOptionKind::AllowOnce,
-            )],
-            None,
-        );
-
-        handle_permission_request_event(&mut app, request, tx);
-
-        let Some(MessageBlock::ToolCall(tool)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected tool call block");
-        };
-        assert!(tool.pending_permission.is_some());
+    fn event_tool(id: &str, title: &str, name: &str, parent: Option<&str>) -> model::ToolCall {
+        model::ToolCall::new(id, title)
+            .status(model::ToolCallStatus::InProgress)
+            .meta(serde_json::json!({"claudeCode":{"toolName":name,"parentToolUseId":parent}}))
     }
 
-    #[test]
-    fn permission_request_defaults_to_denial_when_sdk_requests_it() {
-        let mut app = App::test_default();
-        push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, false));
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        let request = model::RequestPermissionRequest::new(
-            "session-1",
-            model::ToolCallUpdate::new("bash-1", model::ToolCallUpdateFields::new()),
-            vec![
-                model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ],
-            Some(model::PermissionDisplay::new().default_to_no(true)),
-        );
-
-        handle_permission_request_event(&mut app, request, tx);
-
-        let Some(MessageBlock::ToolCall(tool)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected tool call block");
-        };
-        assert_eq!(
-            tool.pending_permission.as_ref().map(|permission| permission.selected_index),
-            Some(1)
-        );
-    }
-
-    #[test]
-    fn permission_request_applied_log_includes_subagent_and_display_fields() {
-        let context = SubagentPermissionContext {
-            subagent_label: "reviewer".to_owned(),
-            child_tool_name: "Bash".to_owned(),
-            child_tool_title: "Bash".to_owned(),
-            parent_tool_call_id: "agent-1".to_owned(),
-            parent_tool_title: Some("Agent: reviewer".to_owned()),
-            parent_model: Some("claude-opus-4-8".to_owned()),
-            parent_raw_input: None,
-        };
-
-        let records = crate::logging::test_capture::capture(|| {
-            log_permission_request_applied(
+    fn owned_permission(
+        app: &mut App,
+        id: &str,
+    ) -> tokio::sync::oneshot::Receiver<model::RequestPermissionResponse> {
+        crate::app::test_support::request_permission(
+            app,
+            model::RequestPermissionRequest::new(
                 "session-1",
-                "bash-1",
-                2,
+                model::ToolCallUpdate::new(id, model::ToolCallUpdateFields::new()),
+                crate::app::test_support::permission_options(id),
+                Some(
+                    model::PermissionDisplay::new()
+                        .title(Some("Command approval".into()))
+                        .display_name(Some("Build command".into()))
+                        .description(Some("Writes build output".into())),
+                ),
+            ),
+        )
+    }
+
+    #[test]
+    fn admitted_child_permissions_preserve_context_diagnostics_and_callback_identity() {
+        use crate::app::test_support::{
+            admit_tool, app_with_connection, assert_pending, assert_permission_response, press,
+        };
+        use crossterm::event::KeyCode;
+        for (parent_input, parent_title, present, child, expected_label) in [
+            (
+                serde_json::json!({"name":" reviewer ","subagent_type":"tester","model":"parent-model"}),
+                "Parent title",
                 true,
-                Some(&context),
-                PermissionDisplayLogFields {
-                    title: "Allow command?",
-                    name: "Bash",
-                    description: "Runs a command",
-                },
+                true,
+                "reviewer",
+            ),
+            (
+                serde_json::json!({"name":" ","subagent_type":"tester","model":"parent-model"}),
+                "Parent title",
+                true,
+                true,
+                "tester",
+            ),
+            (serde_json::json!({}), "Parent title", true, true, "Parent title"),
+            (serde_json::json!({}), "  ", true, true, "Subagent"),
+            (serde_json::json!({}), "Absent parent", false, true, "Subagent"),
+            (serde_json::json!({"name":"unrelated"}), "Parent title", true, false, ""),
+        ] {
+            let (mut app, mut commands) = app_with_connection();
+            app.status = AppStatus::Running;
+            if present {
+                admit_tool(
+                    &mut app,
+                    event_tool("parent", parent_title, "Agent", None)
+                        .raw_input(parent_input.clone()),
+                );
+            }
+            admit_tool(
+                &mut app,
+                event_tool("target", "Child build", "Bash", child.then_some("parent")).raw_input(
+                    serde_json::json!({"command":"child-build","model":"not-parent-model"}),
+                ),
             );
-        });
+            admit_tool(&mut app, event_tool("neighbor", "Neighbor read", "Read", None));
+            let mut receiver = None;
+            let records = crate::logging::test_capture::capture(|| {
+                receiver = Some(owned_permission(&mut app, "target"));
+            });
+            let mut receiver = receiver.expect("request admitted");
+            let mut neighbor = owned_permission(&mut app, "neighbor");
+            let context = pending_permission_context(&app, "target");
+            if child {
+                let context = context.expect("child context");
+                assert_eq!(context.subagent_label, expected_label);
+                assert_eq!(context.child_tool_name, "Bash");
+                assert_eq!(context.child_tool_title, "Child build");
+                assert_eq!(context.parent_tool_call_id, "parent");
+                assert_eq!(
+                    context.parent_tool_title.as_deref(),
+                    (present && !parent_title.trim().is_empty()).then_some(parent_title)
+                );
+                assert_eq!(
+                    context.parent_model.as_deref(),
+                    parent_input.get("model").and_then(serde_json::Value::as_str)
+                );
+                assert_eq!(context.parent_raw_input, present.then_some(parent_input));
+            } else {
+                assert!(context.is_none());
+            }
+            let record = records
+                .iter()
+                .find(|record| record["event_name"] == "permission_request_applied")
+                .expect("real admission diagnostic");
+            assert_eq!(record["session_id"], "session-1");
+            assert_eq!(record["tool_call_id"], "target");
+            assert_eq!(record["subagent_label"], expected_label);
+            assert_eq!(
+                record["subagent_parent_model"],
+                if child && matches!(expected_label, "reviewer" | "tester") {
+                    "parent-model"
+                } else {
+                    ""
+                }
+            );
+            assert_eq!(record["subagent_child_tool_name"], if child { "Bash" } else { "" });
+            assert_eq!(record["subagent_child_tool_title"], if child { "Child build" } else { "" });
+            assert_eq!(record["subagent_parent_tool_call_id"], if child { "parent" } else { "" });
+            assert_eq!(record["permission_display_title"], "Command approval");
+            assert_eq!(record["permission_display_name"], "Build command");
+            assert_eq!(record["permission_display_description"], "Writes build output");
+            press(&mut app, KeyCode::Right);
+            press(&mut app, KeyCode::Enter);
+            assert_permission_response(&mut receiver, "target-always");
+            assert_pending(&mut neighbor);
+            if present {
+                let tool = indexed_tool_call(&app, "parent").expect("parent retained");
+                assert_eq!(tool.status, model::ToolCallStatus::InProgress);
+                assert!(tool.pending_permission.is_none());
+            }
+            press(&mut app, KeyCode::Enter);
+            assert_permission_response(&mut neighbor, "neighbor-once");
+            assert!(commands.try_recv().is_err());
+        }
+    }
 
-        let [record] = records.as_slice() else {
-            panic!("expected one diagnostics record, got {records:?}");
+    #[test]
+    fn nested_background_permission_remains_answerable_after_real_foreground_completion() {
+        use crate::app::test_support::{
+            admit_tool, app_with_connection, assert_permission_response, deliver_update, press,
         };
-        assert_eq!(record["event_name"], "permission_request_applied");
-        assert_eq!(record["subagent_label"], "reviewer");
-        assert_eq!(record["subagent_parent_tool_call_id"], "agent-1");
-        assert_eq!(record["subagent_parent_model"], "claude-opus-4-8");
-        assert_eq!(record["subagent_child_tool_name"], "Bash");
-        assert_eq!(record["permission_display_title"], "Allow command?");
-        assert_eq!(record["permission_display_name"], "Bash");
-        assert_eq!(record["permission_display_description"], "Runs a command");
-    }
-
-    #[test]
-    fn main_agent_permission_gets_no_subagent_context() {
-        let mut app = App::test_default();
-        push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, false));
-        crate::app::test_support::set_tool_scope(&mut app, "bash-1", ToolCallScope::MainAgent);
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-
-        handle_permission_request_event(&mut app, permission_request("bash-1"), tx);
-
-        assert!(pending_permission_context(&app, "bash-1").is_none());
-    }
-
-    #[test]
-    fn subagent_child_permission_resolves_parent_and_child_context() {
-        let mut app = App::test_default();
-        push_tool(
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Running;
+        deliver_update(
             &mut app,
-            tool_call_info(
-                "agent-1",
-                "Agent: reviewer",
-                "Agent",
-                Some(serde_json::json!({
-                    "name": "reviewer",
-                    "subagent_type": "general-purpose",
-                    "model": "claude-opus-4-8"
-                })),
-                false,
-            ),
+            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+                model::ContentBlock::Text(model::TextContent::new("foreground answer")),
+            )),
         );
-        push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, true));
-        crate::app::test_support::set_tool_scope(&mut app, "agent-1", ToolCallScope::SubagentRoot);
-        crate::app::test_support::set_tool_scope(
+        admit_tool(&mut app, event_tool("foreground", "Foreground read", "Read", None));
+        admit_tool(
             &mut app,
-            "bash-1",
-            ToolCallScope::SubagentChild { parent_tool_use_id: "agent-1".to_owned() },
+            event_tool("outer", "Outer agent", "Agent", None)
+                .status(model::ToolCallStatus::Detached)
+                .raw_input(serde_json::json!({"name":"outer-name"})),
         );
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-
-        handle_permission_request_event(&mut app, permission_request("bash-1"), tx);
-
-        let context = pending_permission_context(&app, "bash-1").expect("subagent context");
-        assert_eq!(context.subagent_label, "reviewer");
+        admit_tool(
+            &mut app,
+            event_tool("nested", "Nested agent", "Agent", Some("outer"))
+                .status(model::ToolCallStatus::Detached)
+                .raw_input(serde_json::json!({"name":"nearest-name","model":"nested-model"})),
+        );
+        admit_tool(&mut app, event_tool("nested-command", "Nested build", "Bash", Some("nested")));
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::TurnComplete {
+                session_id: "session-1".into(),
+                queued_turn_count: None,
+                terminal_reason: None,
+            },
+        );
+        assert_eq!(app.status, AppStatus::Ready);
+        assert_eq!(
+            indexed_tool_call(&app, "foreground").expect("foreground").status,
+            model::ToolCallStatus::Completed
+        );
+        for id in ["outer", "nested"] {
+            assert_eq!(
+                indexed_tool_call(&app, id).expect("background agent").status,
+                model::ToolCallStatus::Detached
+            );
+        }
+        assert_eq!(
+            indexed_tool_call(&app, "nested-command").expect("child").status,
+            model::ToolCallStatus::InProgress
+        );
+        assert!(app.transcript.messages.iter().flat_map(|message| &message.blocks).any(
+            |block| matches!(block, MessageBlock::Text(text) if text.text == "foreground answer")
+        ));
+        while let Ok(envelope) = commands.try_recv() {
+            assert!(
+                matches!(envelope.command, crate::agent::wire::BridgeCommand::GetContextUsage { session_id } if session_id == "session-1")
+            );
+        }
+        let mut receiver = owned_permission(&mut app, "nested-command");
+        let context = pending_permission_context(&app, "nested-command").expect("nearest context");
+        assert_eq!(context.parent_tool_call_id, "nested");
+        assert_eq!(context.subagent_label, "nearest-name");
+        assert_eq!(context.parent_model.as_deref(), Some("nested-model"));
         assert_eq!(context.child_tool_name, "Bash");
-        assert_eq!(context.child_tool_title, "Bash");
-        assert_eq!(context.parent_tool_call_id, "agent-1");
-        assert_eq!(context.parent_tool_title.as_deref(), Some("Agent: reviewer"));
-        assert_eq!(context.parent_model.as_deref(), Some("claude-opus-4-8"));
-        assert!(context.parent_raw_input.is_some());
-    }
-
-    #[test]
-    fn nested_background_permission_keeps_its_agent_context_after_foreground_completion() {
-        let mut app = App::test_default();
-        let mut root = tool_call_info("root-agent", "Background reviewer", "Agent", None, false);
-        root.status = model::ToolCallStatus::Detached;
-        push_tool(&mut app, root);
-        let mut nested = tool_call_info(
-            "nested-agent",
-            "Nested reviewer",
-            "Agent",
-            Some(serde_json::json!({"name": "nested-reviewer"})),
-            true,
-        );
-        nested.status = model::ToolCallStatus::Detached;
-        push_tool(&mut app, nested);
-        push_tool(&mut app, tool_call_info("nested-bash", "Nested command", "Bash", None, true));
-        crate::app::test_support::set_tool_scope(
-            &mut app,
-            "root-agent",
-            ToolCallScope::SubagentRoot,
-        );
-        crate::app::test_support::set_tool_scope(
-            &mut app,
-            "nested-agent",
-            ToolCallScope::SubagentChild { parent_tool_use_id: "root-agent".to_owned() },
-        );
-        crate::app::test_support::set_tool_scope(
-            &mut app,
-            "nested-bash",
-            ToolCallScope::SubagentChild { parent_tool_use_id: "nested-agent".to_owned() },
-        );
-
-        handle_turn_complete_event(&mut app, None, None);
-        let (mi, bi) = app.lookup_tool_call("nested-bash").expect("nested command");
-        let MessageBlock::ToolCall(child) = &app.transcript.messages[mi].blocks[bi] else {
-            panic!("nested command is a tool call");
-        };
-        assert_eq!(child.status, model::ToolCallStatus::InProgress);
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        handle_permission_request_event(&mut app, permission_request("nested-bash"), tx);
-
-        let context =
-            pending_permission_context(&app, "nested-bash").expect("nested context survives");
-        assert_eq!(context.parent_tool_call_id, "nested-agent");
-        assert_eq!(context.subagent_label, "nested-reviewer");
-        assert_eq!(context.child_tool_name, "Bash");
-    }
-
-    #[test]
-    fn subagent_child_permission_missing_parent_falls_back_cleanly() {
-        let mut app = App::test_default();
-        push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, true));
-        crate::app::test_support::set_tool_scope(
-            &mut app,
-            "bash-1",
-            ToolCallScope::SubagentChild { parent_tool_use_id: "missing-parent".to_owned() },
-        );
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-
-        handle_permission_request_event(&mut app, permission_request("bash-1"), tx);
-
-        let context = pending_permission_context(&app, "bash-1").expect("subagent context");
-        assert_eq!(context.subagent_label, "Subagent");
-        assert_eq!(context.parent_tool_call_id, "missing-parent");
-        assert_eq!(context.parent_tool_title, None);
-        assert_eq!(context.parent_model, None);
-        assert_eq!(context.parent_raw_input, None);
-    }
-
-    #[test]
-    fn subagent_label_prefers_name_over_subagent_type() {
-        let mut app = App::test_default();
-        push_tool(
-            &mut app,
-            tool_call_info(
-                "agent-1",
-                "Agent: reviewer",
-                "Agent",
-                Some(serde_json::json!({
-                    "name": "reviewer",
-                    "subagent_type": "tester"
-                })),
-                false,
-            ),
-        );
-        push_tool(&mut app, tool_call_info("bash-1", "Bash", "Bash", None, true));
-        crate::app::test_support::set_tool_scope(
-            &mut app,
-            "bash-1",
-            ToolCallScope::SubagentChild { parent_tool_use_id: "agent-1".to_owned() },
-        );
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-
-        handle_permission_request_event(&mut app, permission_request("bash-1"), tx);
-
-        let context = pending_permission_context(&app, "bash-1").expect("subagent context");
-        assert_eq!(context.subagent_label, "reviewer");
+        press(&mut app, crossterm::event::KeyCode::Enter);
+        assert_permission_response(&mut receiver, "nested-command-once");
+        assert!(commands.try_recv().is_err());
     }
 }

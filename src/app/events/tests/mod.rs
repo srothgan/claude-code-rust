@@ -3264,48 +3264,55 @@ fn question_focus_state(app: &App, tool_id: &str) -> Option<bool> {
     tc.pending_question.as_ref().map(|question| question.focused)
 }
 
+fn control_key_permission_options(plan: bool) -> Vec<model::PermissionOption> {
+    if plan {
+        vec![
+            model::PermissionOption::new(
+                "plan-approve",
+                "Approve",
+                model::PermissionOptionKind::PlanApprove,
+            ),
+            model::PermissionOption::new(
+                "plan-reject",
+                "Reject",
+                model::PermissionOptionKind::PlanReject,
+            ),
+        ]
+    } else {
+        vec![
+            model::PermissionOption::new(
+                "allow-once",
+                "Allow once",
+                model::PermissionOptionKind::AllowOnce,
+            ),
+            model::PermissionOption::new(
+                "allow-always",
+                "Allow always",
+                model::PermissionOptionKind::AllowAlways,
+            ),
+            model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
+        ]
+    }
+}
+
 #[test]
 fn control_keys_do_not_answer_pending_permissions() {
     for (key, plan) in [
+        (KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), false),
+        (KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE), false),
+        (KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE), false),
+        (KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), false),
         (KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), false),
         (KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL), false),
         (KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE), true),
     ] {
         let mut app = make_test_app();
+        app.status = AppStatus::Running;
+        let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
         let tool_id = "permission-control";
         append_tool_call_block(&mut app, tool_id);
-        let options = if plan {
-            vec![
-                model::PermissionOption::new(
-                    "plan-approve",
-                    "Approve",
-                    model::PermissionOptionKind::PlanApprove,
-                ),
-                model::PermissionOption::new(
-                    "plan-reject",
-                    "Reject",
-                    model::PermissionOptionKind::PlanReject,
-                ),
-            ]
-        } else {
-            vec![
-                model::PermissionOption::new(
-                    "allow-once",
-                    "Allow once",
-                    model::PermissionOptionKind::AllowOnce,
-                ),
-                model::PermissionOption::new(
-                    "allow-always",
-                    "Allow always",
-                    model::PermissionOptionKind::AllowAlways,
-                ),
-                model::PermissionOption::new(
-                    "deny",
-                    "Deny",
-                    model::PermissionOptionKind::RejectOnce,
-                ),
-            ]
-        };
+        let options = control_key_permission_options(plan);
         let (response_tx, mut response_rx) = oneshot::channel();
         handle_client_event(
             &mut app,
@@ -3360,6 +3367,8 @@ fn control_keys_do_not_answer_pending_permissions() {
         };
         assert_eq!(selected.option_id, if plan { "plan-reject" } else { "deny" });
         assert!(app.pending_interaction_ids.is_empty());
+        assert!(app.pending_submit.is_none());
+        assert!(commands.try_recv().is_err());
     }
 }
 
