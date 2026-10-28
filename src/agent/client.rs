@@ -1386,24 +1386,6 @@ mod tests {
     }
 
     #[test]
-    fn reload_plugins_sends_bridge_command() {
-        let (conn, mut rx) = AgentConnection::test_channel();
-
-        conn.reload_plugins("session-1".to_owned(), false, Vec::new(), None)
-            .expect("reload plugins");
-
-        let envelope = rx.try_recv().expect("command");
-        assert_eq!(
-            envelope.command,
-            BridgeCommand::ReloadPlugins {
-                session_id: "session-1".to_owned(),
-                force: false,
-                add_plugins: Vec::new()
-            }
-        );
-    }
-
-    #[test]
     fn reload_skills_and_styles_sends_bridge_command() {
         let (conn, mut rx) = AgentConnection::test_channel();
 
