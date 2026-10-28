@@ -1513,4 +1513,60 @@ mod tests {
             [model::ToolCallContent::from("completed tool output")]
         );
     }
+    #[test]
+    fn btw_session_replacement_discards_waiters_and_isolates_the_new_exchange() {
+        use crate::app::test_support::{drain_session_refreshes, session_replacement};
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_with_connection();
+        for question in ["old active", "old waiting"] {
+            app.input.set_text(&format!("/btw {question}"));
+            submit_input(&mut app);
+        }
+        let active = expect_btw(&mut rx, "old active");
+        let waiting = app
+            .btw
+            .status_items()
+            .into_iter()
+            .find(|i| i.question == "old waiting")
+            .unwrap()
+            .id
+            .clone();
+        crate::app::events::handle_client_event(
+            &mut app,
+            session_replacement("new-session", directory.path(), vec![], None),
+        );
+        drain_session_refreshes(&mut rx, "new-session");
+        app.input.set_text("/btw new question");
+        submit_input(&mut app);
+        let BridgeCommand::SideQuestion { session_id, btw_id, question } =
+            rx.try_recv().unwrap().command
+        else {
+            panic!("new session side question");
+        };
+        assert_eq!(session_id, "new-session");
+        assert_eq!(question, "new question");
+        for (id, question) in [(&active, "old active"), (&waiting, "old waiting")] {
+            answer_btw(&mut app, id, question, "obsolete answer");
+            fail_btw(&mut app, id, question, "obsolete failure");
+        }
+        assert!(exchanges(&app).is_empty());
+        assert!(app.btw.get_active(&btw_id).is_some());
+        assert!(rx.try_recv().is_err());
+        crate::app::events::handle_client_event(
+            &mut app,
+            ClientEvent::BtwResult {
+                session_id: "new-session".into(),
+                btw_id,
+                question,
+                answer: "New owned answer".into(),
+                metadata: crate::agent::wire::SideQuestionMetadata {
+                    synthetic: false,
+                    refusal_fallback: None,
+                },
+            },
+        );
+        assert_eq!(exchanges(&app), [("new question".into(), "New owned answer".into())]);
+        assert!(app.btw.status_items().iter().all(|i| !i.question.starts_with("old")));
+        assert!(rx.try_recv().is_err());
+    }
 }

@@ -187,3 +187,120 @@ pub(crate) fn clipboard_noise(width: usize, height: usize) -> Vec<u8> {
         })
         .collect()
 }
+
+pub(crate) fn session_connection(
+    session: &str,
+    directory: &std::path::Path,
+) -> crate::agent::events::ClientEvent {
+    crate::agent::events::ClientEvent::Connected {
+        session_id: session.into(),
+        cwd: directory.to_string_lossy().into_owned(),
+        current_model: model::CurrentModel::new("fixture-model", "fixture-model", "Fixture model")
+            .authoritative(true),
+        available_models: vec![],
+        mode: None,
+        fast_mode_state: model::FastModeState::Off,
+        fast_mode_disabled_reason: None,
+        ultracode: None,
+        history_updates: vec![],
+    }
+}
+
+pub(crate) fn session_replacement(
+    session: &str,
+    directory: &std::path::Path,
+    history: Vec<model::SessionUpdate>,
+    restored_input: Option<&str>,
+) -> crate::agent::events::ClientEvent {
+    crate::agent::events::ClientEvent::SessionReplaced {
+        session_id: session.into(),
+        cwd: directory.to_string_lossy().into_owned(),
+        current_model: model::CurrentModel::new("fixture-model", "fixture-model", "Fixture model")
+            .authoritative(true),
+        available_models: vec![],
+        mode: None,
+        fast_mode_state: model::FastModeState::Off,
+        fast_mode_disabled_reason: None,
+        ultracode: None,
+        history_updates: history,
+        restored_input: restored_input.map(str::to_owned),
+    }
+}
+
+pub(crate) fn drain_session_refreshes(
+    rx: &mut crate::agent::client::CommandReceiver,
+    session: &str,
+) {
+    use crate::agent::wire::BridgeCommand;
+    while let Ok(envelope) = rx.try_recv() {
+        assert!(matches!(envelope.command,
+            BridgeCommand::GetMcpSnapshot { session_id }
+            | BridgeCommand::GetStatusSnapshot { session_id }
+            | BridgeCommand::GetContextUsage { session_id }
+            | BridgeCommand::InspectSettings { session_id, .. } if session_id == session));
+    }
+}
+
+pub(crate) fn expect_session_prompt(
+    rx: &mut crate::agent::client::CommandReceiver,
+    session: &str,
+    text: &str,
+    images: &[super::clipboard_image::ImageAttachment],
+    pastes: &[String],
+) -> String {
+    use crate::agent::wire::BridgeCommand;
+    let BridgeCommand::Prompt { session_id, message_uuid, chunks, inline_pastes } =
+        rx.try_recv().expect("explicit prompt").command
+    else {
+        panic!("expected Prompt");
+    };
+    assert_eq!(session_id, session);
+    assert_eq!(inline_pastes, pastes);
+    assert_eq!(chunks.len(), images.len() + 1);
+    assert_eq!(
+        chunks.iter().filter(|c| c.kind == "text").map(|c| &c.value).collect::<Vec<_>>(),
+        [&serde_json::json!(text)]
+    );
+    let actual: Vec<_> = chunks.iter().filter(|c| c.kind == "image").collect();
+    assert_eq!(actual.len(), images.len());
+    for (got, expected) in actual.into_iter().zip(images) {
+        assert_eq!(got.value["data"], expected.data);
+        assert_eq!(got.value["mime_type"], expected.mime_type);
+    }
+    drain_session_refreshes(rx, session);
+    message_uuid
+}
+
+pub(crate) fn session_image() -> super::clipboard_image::ImageAttachment {
+    super::clipboard_image::ImageAttachment {
+        data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN1sAAAAASUVORK5CYII=".into(),
+        mime_type: "image/png".into(),
+    }
+}
+
+pub(crate) fn source_chunk(source: &str, uuid: &str, user: bool) -> model::SessionUpdate {
+    let chunk =
+        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(source)))
+            .source_message_uuid(Some(uuid.into()));
+    if user {
+        model::SessionUpdate::UserMessageChunk(chunk)
+    } else {
+        model::SessionUpdate::AgentMessageChunk(chunk)
+    }
+}
+
+pub(crate) fn transcript_region(app: &mut super::App, index: usize) -> String {
+    let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+        app,
+        100,
+        &std::collections::BTreeSet::new(),
+        None,
+    );
+    rows.segments()
+        .iter()
+        .filter(|s| s.msg_idx == index)
+        .flat_map(|s| rows.segment_rows(s).unwrap())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}

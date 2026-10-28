@@ -3734,3 +3734,55 @@ fn native_same_size_resize_in_chat_and_fullscreen_preserves_rows_and_never_purge
     test.finish_native();
     test.assert_native_history();
 }
+
+#[test]
+fn initial_connection_preserves_draft_without_purge_and_replacement_replays_only_new_history() {
+    let mut test = TerminalTest::start_with_profile(
+        "session-handoff",
+        120,
+        None,
+        &[],
+        false,
+        &[],
+        AppProfileFixture { pause_at_trust: true, ..AppProfileFixture::default() },
+    );
+    test.send(b"y");
+    test.wait_journal("connection-waiting");
+    test.paste("OLD_SESSION_SOURCE");
+    test.wait_screen("OLD_SESSION_SOURCE");
+    let before_connection = test.raw_offset();
+    std::fs::write(&test.release_file, "connect").unwrap();
+    test.wait_screen_with("[READY]", &["OLD_SESSION_SOURCE"]);
+    let initial = test.raw_since(before_connection);
+    for erase in [b"\x1b[3J", b"\x1b[2J"] {
+        assert!(
+            !initial.windows(erase.len()).any(|w| w == erase),
+            "initial acknowledgement must preserve terminal rows"
+        );
+    }
+    assert!(test.prompts().is_empty(), "acknowledgement must not submit the draft");
+    test.submit_draft();
+    test.wait_turn_finished("streamed line 120");
+    test.assert_prompts(&["OLD_SESSION_SOURCE"]);
+    assert_eq!(test.prompts()[0]["session_id"], "fake-session");
+    std::fs::write(&test.release_file, "replace").unwrap();
+    test.wait_screen_with("Restored replacement draft", &["NEW_HISTORY_ANSWER", "[READY]"]);
+    let rows = test.transcript_rows();
+    for text in ["NEW_HISTORY_USER", "NEW_HISTORY_ANSWER"] {
+        assert_eq!(rows.iter().filter(|r| r.contains(text)).count(), 1, "{rows:?}");
+    }
+    for text in ["OLD_SESSION_SOURCE", "streamed line"] {
+        assert!(
+            !rows.iter().any(|r| r.contains(text)),
+            "old transcript survived replacement: {rows:?}"
+        );
+    }
+    test.assert_prompts(&["OLD_SESSION_SOURCE"]);
+    test.send(b"!");
+    test.wait_screen("Restored replacement draft!");
+    test.submit_draft();
+    test.wait_until("explicit replacement draft submission", |test| test.prompts().len() == 2);
+    test.assert_prompts(&["OLD_SESSION_SOURCE", "Restored replacement draft!"]);
+    assert_eq!(test.prompts()[1]["session_id"], "replacement-session");
+    test.shutdown();
+}

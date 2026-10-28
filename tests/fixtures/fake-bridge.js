@@ -451,6 +451,27 @@ readline
       case 'create_session':
       case 'new_session':
       case 'resume_session':
+        if (SCENARIO === 'session-handoff') {
+          let previous = '';
+          record({ type: 'barrier', name: 'connection-waiting' });
+          nativeActions = setInterval(() => {
+            const action = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+            if (!action || action === previous) return;
+            previous = action;
+            if (action !== 'connect' && action !== 'replace') return;
+            const replacement = action === 'replace';
+            if (replacement) SESSION = 'replacement-session';
+            send({ event: replacement ? 'session_replaced' : 'connected', session_id: SESSION,
+              cwd: message.cwd ?? cwd, current_model: model, available_models: [], mode: null,
+              fast_mode_state: 'off', fast_mode_disabled_reason: null,
+              history_updates: replacement ? [
+                { type: 'user_message_chunk', content: { type: 'text', text: 'NEW_HISTORY_USER' }, source_message_uuid: 'replacement-user' },
+                { type: 'agent_message_chunk', content: { type: 'text', text: 'NEW_HISTORY_ANSWER' }, source_message_uuid: 'replacement-answer' },
+              ] : [], restored_input: replacement ? 'Restored replacement draft' : null });
+            record({ type: 'barrier', name: `handoff-${action}` });
+          }, INTERVAL_MS);
+          break;
+        }
         if (message.command === 'new_session') SESSION = 'fake-session-after-login';
         // Like the SDK's forkSession, a forked resume continues under a new session ID.
         if (message.command === 'resume_session') SESSION = message.launch_settings?.fork_session ? `${message.session_id}-fork` : message.session_id;

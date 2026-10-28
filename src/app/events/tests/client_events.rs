@@ -244,7 +244,7 @@ fn current_model_update_does_not_mutate_welcome_snapshot_after_settings_reconcil
 }
 
 #[test]
-fn connected_resets_session_scoped_view_data() {
+fn session_handoff_isolates_plugin_reload_and_account_context() {
     for replacement in [false, true] {
         let (mut app, mut commands) = session_reset_fixture();
         app.input.set_text("old session draft");
@@ -272,12 +272,9 @@ fn connected_resets_session_scoped_view_data() {
         handle_client_event(&mut app, event);
 
         assert!(matches!(app.status, AppStatus::Ready));
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
         assert!(app.usage.snapshot.is_none());
         assert!(app.session_runtime.account_info.is_none());
         assert!(app.plugins.installed.is_empty());
-        assert!(app.plugins.last_inventory_refresh_at.is_none());
         assert!(app.config.pending_session_title_change.is_none());
         assert!(app.session_runtime.session_title.is_none());
         assert_eq!(
@@ -287,7 +284,7 @@ fn connected_resets_session_scoped_view_data() {
         );
         assert!(app.plugins.session_plugins.is_empty());
         assert!(app.plugins.pending_reload.is_none());
-        while commands.try_recv().is_ok() {} // connection-triggered snapshot requests
+        crate::app::test_support::drain_session_refreshes(&mut commands, "test-session");
         begin_reset_folder(&mut app, "new-folder");
         let request = commands.try_recv().expect("new local reload");
         assert!(
@@ -578,87 +575,6 @@ fn service_status_error_pushes_system_error_without_locking_input() {
 }
 
 #[test]
-fn session_replaced_resets_chat_and_transient_state() {
-    let mut app = make_test_app();
-    app.transcript.messages.push(ChatMessage::welcome(
-        env!("CARGO_PKG_VERSION"),
-        "-",
-        "/test",
-        "-",
-    ));
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first_mut() else {
-        panic!("expected welcome block");
-    };
-    welcome.tip_seed = 5;
-    app.transcript.messages.push(user_msg("hello"));
-    app.transcript
-        .messages
-        .push(assistant_msg(vec![MessageBlock::Text(TextBlock::from_complete("world"))]));
-    app.status = AppStatus::Running;
-    app.pending_interaction_ids.push("perm-1".into());
-    app.sdk_inventory.tasks.push(task_item("task-1", "Task", model::TaskStatus::InProgress));
-    app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-    app.mcp.servers.push(crate::agent::model::McpServerStatus {
-        name: "supabase".into(),
-        status: crate::agent::model::McpServerConnectionStatus::Connected,
-        server_info: None,
-        error: None,
-        config: None,
-        scope: None,
-        source: None,
-        tools: Vec::new(),
-    });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionReplaced {
-            session_id: model::SessionId::new("replacement"),
-            cwd: "/replacement".into(),
-            current_model: test_current_model("new-model"),
-            available_models: Vec::new(),
-            mode: None,
-            fast_mode_state: model::FastModeState::Off,
-            fast_mode_disabled_reason: None,
-            ultracode: None,
-            history_updates: Vec::new(),
-            restored_input: None,
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(
-        app.session_runtime.session_id.as_ref().map(ToString::to_string).as_deref(),
-        Some("replacement")
-    );
-    assert_eq!(
-        app.session_runtime.resumable_session_id().map(model::SessionId::as_str),
-        Some("replacement")
-    );
-    assert_eq!(
-        app.session_runtime.current_model.as_ref().map(|model| model.resolved_id.as_str()),
-        Some("new-model")
-    );
-    assert_eq!(app.transcript.messages.len(), 1);
-    assert!(matches!(app.transcript.messages[0].role, MessageRole::Welcome));
-    assert!(app.pending_interaction_ids.is_empty());
-    assert!(app.sdk_inventory.tasks.is_empty());
-    assert!(app.mention.is_none());
-    assert!(app.mcp.servers.is_empty());
-    assert!(app.mcp.removed_config_servers.is_empty());
-    assert_eq!(app.cwd_raw, "/replacement");
-    assert_eq!(app.cwd, "/replacement");
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.cwd, "/replacement");
-    assert_ne!(welcome.tip_seed, 5);
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::session_replacement())
-    );
-}
-
-#[test]
 fn session_replaced_requests_mcp_snapshot_even_outside_mcp_tab() {
     let (mut app, mut rx) = app_with_bridge_connection();
     app.config.active_tab = crate::app::config::ConfigTab::Status;
@@ -731,67 +647,6 @@ async fn connected_requests_usage_refresh_when_usage_tab_is_open() {
             assert!(app.usage.in_flight);
         })
         .await;
-}
-
-#[test]
-fn stale_status_snapshot_for_old_session_is_ignored() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::StatusSnapshotReceived {
-            session_id: "old-session".into(),
-            account: crate::agent::model::AccountInfo {
-                email: Some("old@example.com".into()),
-                organization: None,
-                subscription_type: None,
-                token_source: None,
-                api_key_source: None,
-                api_provider: None,
-            },
-        },
-    );
-
-    assert!(app.session_runtime.account_info.is_none());
-}
-
-#[test]
-fn stale_session_update_is_rejected_before_dispatch() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate {
-            session_id: "old-session".to_owned(),
-            update: model::SessionUpdate::FastModeUpdate {
-                state: model::FastModeState::Cooldown,
-                disabled_reason: None,
-            },
-        },
-    );
-
-    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
-}
-
-#[test]
-fn matching_session_update_is_dispatched() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate {
-            session_id: "current-session".to_owned(),
-            update: model::SessionUpdate::FastModeUpdate {
-                state: model::FastModeState::Cooldown,
-                disabled_reason: None,
-            },
-        },
-    );
-
-    assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Cooldown);
 }
 
 #[test]
@@ -887,24 +742,6 @@ fn replacement_snapshot_owns_fast_mode_before_and_after_stale_updates() {
 }
 
 #[test]
-fn stale_turn_completion_cannot_finish_current_turn() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    app.status = AppStatus::Running;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::TurnComplete {
-            session_id: "old-session".to_owned(),
-            queued_turn_count: None,
-            terminal_reason: None,
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::Running));
-}
-
-#[test]
 fn status_snapshot_updates_welcome_subscription() {
     let mut app = make_test_app();
     app.transcript.messages.push(ChatMessage::welcome(
@@ -969,45 +806,6 @@ fn status_snapshot_does_not_commit_welcome_when_session_overview_is_suppressed()
     };
     assert_eq!(welcome.subscription, "Claude Max");
     assert!(!session_overview_has_welcome(&app));
-}
-
-#[test]
-fn stale_mcp_snapshot_for_old_session_is_ignored() {
-    let mut app = make_test_app();
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    app.mcp.servers.push(crate::agent::model::McpServerStatus {
-        name: "current".into(),
-        status: crate::agent::model::McpServerConnectionStatus::Connected,
-        server_info: None,
-        error: None,
-        config: None,
-        scope: None,
-        source: None,
-        tools: Vec::new(),
-    });
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::McpSnapshotReceived {
-            session_id: "old-session".into(),
-            auth_capabilities: crate::agent::model::McpAuthCapabilities::default(),
-            servers: vec![crate::agent::model::McpServerStatus {
-                name: "stale".into(),
-                status: crate::agent::model::McpServerConnectionStatus::Connected,
-                server_info: None,
-                error: None,
-                config: None,
-                scope: None,
-                source: None,
-                tools: Vec::new(),
-            }],
-            source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
-            error: None,
-        },
-    );
-
-    assert_eq!(app.mcp.servers.len(), 1);
-    assert_eq!(app.mcp.servers[0].name, "current");
 }
 
 #[test]
@@ -1205,190 +1003,21 @@ fn slash_command_error_while_resuming_returns_ready_and_clears_marker() {
 }
 
 #[test]
-fn matching_resume_at_failure_is_visible_and_clears_pending_state() {
-    let mut app = make_test_app();
-    app.status = AppStatus::CommandPending;
-    app.turn.pending_command_label = Some("Forking before selected message...".into());
-    app.set_pending_session_resume("source-session".into(), Some("resume-at-1".into()));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionResumeFailed {
-            session_id: "source-session".into(),
-            operation_id: "resume-at-1".into(),
-            message: "session changed while selecting a turn".into(),
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert!(app.turn.pending_command_label.is_none());
-    assert!(app.pending_session_resume.is_none());
-    let last = app.transcript.messages.last().expect("visible error notice");
-    let MessageBlock::Notice(notice) = last.blocks.first().expect("error notice block") else {
-        panic!("expected error notice");
-    };
-    assert!(notice.text.text.contains("session changed while selecting a turn"));
-}
-
-#[test]
-fn stale_resume_at_failure_does_not_cancel_current_operation() {
-    let mut app = make_test_app();
-    app.status = AppStatus::CommandPending;
-    app.turn.pending_command_label = Some("Forking before selected message...".into());
-    app.set_pending_session_resume("source-session".into(), Some("resume-at-current".into()));
-    let message_count = app.transcript.messages.len();
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionResumeFailed {
-            session_id: "source-session".into(),
-            operation_id: "resume-at-old".into(),
-            message: "old failure".into(),
-        },
-    );
-
-    assert!(matches!(app.status, AppStatus::CommandPending));
-    assert_eq!(app.pending_session_resume_id(), Some("source-session"));
-    assert_eq!(app.pending_resume_at_operation_id(), Some("resume-at-current"));
-    assert_eq!(app.transcript.messages.len(), message_count);
-}
-
-#[test]
 fn unrelated_slash_command_error_does_not_clear_rewind_target_loading_state() {
-    let mut app = make_test_app();
-    app.sdk_inventory.rewind_targets_in_flight = true;
-    app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
-    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
-        uuid: "user-1".into(),
-        first_text: "hello".into(),
-        input_text: "hello".into(),
-        index: 0,
-        previous_assistant_uuid: None,
-        resume_anchor_uuid: None,
-    }];
-
-    handle_client_event(&mut app, slash_command_error("failed to load rewind targets".into()));
-
+    let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+    request_picker_targets(&mut app, &mut rx, "session-1");
+    handle_client_event(&mut app, slash_command_error("Unrelated settings failure".into()));
     assert!(app.sdk_inventory.rewind_targets_in_flight);
-    assert_eq!(
-        app.sdk_inventory.rewind_targets_session_id.as_ref().map(model::SessionId::as_str),
-        Some("session-1")
-    );
-}
-
-#[test]
-fn matching_rewind_target_response_populates_fullscreen_turn_picker() {
-    let mut app = make_test_app();
-    app.session_picker.turn_session_id = Some("listed-session".to_owned());
-    app.sdk_inventory.rewind_targets_in_flight = true;
-    app.sdk_inventory.rewind_targets_request_session_id =
-        Some(model::SessionId::new("listed-session"));
-    let targets = vec![model::RewindTarget {
-        uuid: "user-2".into(),
-        first_text: "second prompt".into(),
-        input_text: "second prompt".into(),
-        index: 2,
-        previous_assistant_uuid: Some("assistant-1".into()),
-        resume_anchor_uuid: Some("assistant-1".into()),
-    }];
-
-    handle_client_event(
+    deliver_picker_target(
         &mut app,
-        ClientEvent::RewindTargetsReceived {
-            session_id: "listed-session".into(),
-            targets: targets.clone(),
-            error: None,
-        },
+        "session-1",
+        "usable-target",
+        "Usable target after unrelated failure",
     );
-
-    assert_eq!(app.sdk_inventory.rewind_targets, targets);
-    assert_eq!(
-        app.sdk_inventory.rewind_targets_session_id.as_ref().map(model::SessionId::as_str),
-        Some("listed-session")
+    assert!(
+        picker_rows(&mut app).iter().any(|r| r.contains("Usable target after unrelated failure"))
     );
-    assert!(!app.sdk_inventory.rewind_targets_in_flight);
-    assert!(app.sdk_inventory.rewind_targets_request_session_id.is_none());
-}
-
-#[test]
-fn stale_rewind_target_response_cannot_replace_picker_results() {
-    let mut app = make_test_app();
-    app.sdk_inventory.rewind_targets_in_flight = true;
-    app.sdk_inventory.rewind_targets_request_session_id =
-        Some(model::SessionId::new("new-session"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::RewindTargetsReceived {
-            session_id: "old-session".into(),
-            targets: vec![model::RewindTarget {
-                uuid: "old-user".into(),
-                first_text: "stale".into(),
-                input_text: "stale".into(),
-                index: 0,
-                previous_assistant_uuid: None,
-                resume_anchor_uuid: None,
-            }],
-            error: None,
-        },
-    );
-
-    assert!(app.sdk_inventory.rewind_targets.is_empty());
-    assert!(app.sdk_inventory.rewind_targets_in_flight);
-    assert_eq!(
-        app.sdk_inventory.rewind_targets_request_session_id.as_ref().map(model::SessionId::as_str),
-        Some("new-session")
-    );
-}
-
-#[test]
-fn matching_rewind_target_error_stays_local_to_the_request() {
-    let mut app = make_test_app();
-    app.session_picker.turn_session_id = Some("listed-session".to_owned());
-    app.sdk_inventory.rewind_targets_in_flight = true;
-    app.sdk_inventory.rewind_targets_request_session_id =
-        Some(model::SessionId::new("listed-session"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::RewindTargetsReceived {
-            session_id: "listed-session".into(),
-            targets: Vec::new(),
-            error: Some("failed to load rewind targets: history unavailable".into()),
-        },
-    );
-
-    assert!(app.sdk_inventory.rewind_targets.is_empty());
-    assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
-    assert!(!app.sdk_inventory.rewind_targets_in_flight);
-    assert_eq!(
-        app.sdk_inventory.rewind_targets_error.as_deref(),
-        Some("failed to load rewind targets: history unavailable")
-    );
-}
-
-#[test]
-fn slash_rewind_target_error_is_visible_without_clearing_unrelated_state() {
-    let mut app = make_test_app();
-    app.sdk_inventory.rewind_targets_in_flight = true;
-    app.sdk_inventory.rewind_targets_request_session_id =
-        Some(model::SessionId::new("active-session"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::RewindTargetsReceived {
-            session_id: "active-session".into(),
-            targets: Vec::new(),
-            error: Some("failed to load rewind targets: history unavailable".into()),
-        },
-    );
-
-    let message = app.transcript.messages.last().expect("rewind target error notice");
-    let crate::app::MessageBlock::Notice(notice) = message.blocks.first().expect("notice text")
-    else {
-        panic!("expected notice block");
-    };
-    assert_eq!(notice.text.text, "failed to load rewind targets: history unavailable");
+    activate_picker_target(&mut app, &mut rx, "session-1", "usable-target");
 }
 
 #[test]
@@ -2312,4 +1941,489 @@ fn skills_and_styles_reload_does_not_double_the_full_stop_of_an_sdk_message() {
         text,
         "Reloaded skills (1). Could not reload output styles: style directory unreadable."
     );
+}
+
+#[test]
+fn session_authority_rejects_stale_updates_and_accepts_current_outcomes() {
+    use crate::app::test_support::*;
+    for kind in 0..5 {
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("Current turn source");
+        crate::app::input_submit::submit_input(&mut app);
+        expect_session_prompt(&mut rx, "session-1", "Current turn source", &[], &[]);
+        deliver_update(&mut app, source_chunk("Current answer", "current-answer", false));
+        app.session_runtime.account_info = Some(handoff_account("seed@example.test"));
+        app.mcp.servers = handoff_servers("seed-server");
+        let before_model = app.session_runtime.current_model.clone();
+        let before_fast = app.session_runtime.fast_mode_state;
+        for session in ["obsolete-session", "session-1"] {
+            let event = match kind {
+                0 => ClientEvent::StatusSnapshotReceived {
+                    session_id: session.into(),
+                    account: handoff_account("accepted@example.test"),
+                },
+                1 => ClientEvent::SessionUpdate {
+                    session_id: session.into(),
+                    update: model::SessionUpdate::CurrentModelUpdate(
+                        model::CurrentModelUpdate::new(test_current_model("accepted-model")),
+                    ),
+                },
+                2 => ClientEvent::SessionUpdate {
+                    session_id: session.into(),
+                    update: model::SessionUpdate::FastModeUpdate {
+                        state: model::FastModeState::Cooldown,
+                        disabled_reason: None,
+                    },
+                },
+                3 => ClientEvent::TurnComplete {
+                    session_id: session.into(),
+                    queued_turn_count: None,
+                    terminal_reason: None,
+                },
+                _ => handoff_mcp(session, "accepted-server"),
+            };
+            handle_client_event(&mut app, event);
+            let accepted = session == "session-1";
+            match kind {
+                0 => assert_eq!(
+                    app.session_runtime.account_info.as_ref().unwrap().email.as_deref(),
+                    Some(if accepted { "accepted@example.test" } else { "seed@example.test" })
+                ),
+                1 => {
+                    if accepted {
+                        assert_eq!(
+                            app.session_runtime.current_model.as_ref().unwrap().resolved_id,
+                            "accepted-model"
+                        );
+                    } else {
+                        assert_eq!(app.session_runtime.current_model, before_model);
+                    }
+                }
+                2 => assert_eq!(
+                    app.session_runtime.fast_mode_state,
+                    if accepted { model::FastModeState::Cooldown } else { before_fast }
+                ),
+                3 => assert_eq!(matches!(app.status, AppStatus::Ready), accepted),
+                _ => assert_eq!(
+                    app.mcp.servers[0].name,
+                    if accepted { "accepted-server" } else { "seed-server" }
+                ),
+            }
+            assert!(canonical_messages_contain_text(&app, "Current answer"));
+        }
+    }
+}
+
+fn handoff_account(email: &str) -> model::AccountInfo {
+    model::AccountInfo {
+        email: Some(email.into()),
+        organization: None,
+        subscription_type: None,
+        token_source: None,
+        api_key_source: None,
+        api_provider: None,
+    }
+}
+fn handoff_servers(name: &str) -> Vec<model::McpServerStatus> {
+    vec![model::McpServerStatus {
+        name: name.into(),
+        status: model::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: None,
+        scope: Some("user".into()),
+        source: None,
+        tools: vec![],
+    }]
+}
+fn handoff_mcp(session: &str, name: &str) -> ClientEvent {
+    ClientEvent::McpSnapshotReceived {
+        session_id: session.into(),
+        auth_capabilities: model::McpAuthCapabilities::default(),
+        servers: handoff_servers(name),
+        source: Some(crate::agent::types::McpSnapshotSource::McpStatus),
+        error: None,
+    }
+}
+
+#[test]
+fn initial_connection_preserves_editable_source_cursor_and_image_payload() {
+    use crate::app::test_support::*;
+    let directory = tempfile::tempdir().unwrap();
+    let (mut app, mut rx) = app_with_connection();
+    app.status = AppStatus::Connecting;
+    app.session_runtime.session_id = None;
+    app.input.set_text("before |after [Image #1]");
+    app.input.set_cursor(0, 7);
+    let image = session_image();
+    app.input.image_payloads.push(image.clone());
+    let draft = app.input.snapshot();
+    handle_client_event(&mut app, session_connection("connected", directory.path()));
+    drain_session_refreshes(&mut rx, "connected");
+    assert_eq!(app.input.snapshot(), draft);
+    press(&mut app, KeyCode::Char('!'));
+    crate::app::input_submit::submit_input(&mut app);
+    expect_session_prompt(&mut rx, "connected", "before !|after [Image #1]", &[image], &[]);
+}
+
+#[test]
+fn replacement_isolates_pending_source_and_releases_old_mcp_removal_guards() {
+    use crate::app::test_support::*;
+    for restored in [None, Some("Restored source")] {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("Old active source");
+        crate::app::input_submit::submit_input(&mut app);
+        let active = expect_session_prompt(&mut rx, "session-1", "Old active source", &[], &[]);
+        deliver_update(&mut app, source_chunk("Old assistant answer", "old-answer", false));
+        app.input.set_text("Old pending source");
+        crate::app::input_submit::submit_input(&mut app);
+        let queued = expect_session_prompt(&mut rx, "session-1", "Old pending source", &[], &[]);
+        app.input.set_text("Old unsent draft");
+        app.mcp.servers = handoff_servers("old-server");
+        app.mcp.removed_config_servers.insert(
+            crate::app::state::types::RemovedMcpServerKey::new(
+                "user".into(),
+                "reusable-server".into(),
+            ),
+            crate::app::state::types::RemovedMcpServerGuard {
+                expected_source: crate::agent::types::McpSnapshotSource::ReloadPlugins,
+            },
+        );
+        let history = vec![
+            source_chunk("New historical user", "new-user", true),
+            source_chunk("New historical answer", "new-answer", false),
+        ];
+        handle_client_event(
+            &mut app,
+            session_replacement("replacement", directory.path(), history, restored),
+        );
+        drain_session_refreshes(&mut rx, "replacement");
+        for uuid in [active, queued] {
+            handle_client_event(
+                &mut app,
+                ClientEvent::UserMessageQueued {
+                    session_id: "session-1".into(),
+                    message_uuid: uuid.clone(),
+                },
+            );
+            handle_client_event(
+                &mut app,
+                ClientEvent::UserMessageStarted {
+                    session_id: "session-1".into(),
+                    message_uuid: uuid.clone(),
+                    source: crate::agent::types::UserMessageStartSource::StreamEvent,
+                },
+            );
+            handle_client_event(
+                &mut app,
+                ClientEvent::UserMessageRejected {
+                    session_id: "session-1".into(),
+                    message_uuid: uuid,
+                    reason: "old rejection".into(),
+                },
+            );
+        }
+        assert_eq!(app.input.text(), restored.unwrap_or(""));
+        assert!(app.pending_user_messages.is_empty());
+        for old in
+            ["Old active source", "Old pending source", "Old assistant answer", "old rejection"]
+        {
+            assert!(!canonical_messages_contain_text(&app, old));
+        }
+        for text in ["New historical user", "New historical answer"] {
+            let index = app
+                .transcript
+                .messages
+                .iter()
+                .position(|m| {
+                    m.blocks.iter().any(|b| matches!(b,MessageBlock::Text(t) if t.text==text))
+                })
+                .unwrap();
+            assert!(transcript_region(&mut app, index).contains(text));
+        }
+        handle_client_event(&mut app, handoff_mcp("session-1", "old-server"));
+        assert!(app.mcp.servers.is_empty());
+        handle_client_event(&mut app, handoff_mcp("replacement", "reusable-server"));
+        assert_eq!(app.mcp.servers[0].name, "reusable-server");
+        press(&mut app, KeyCode::Char('!'));
+        crate::app::input_submit::submit_input(&mut app);
+        expect_session_prompt(
+            &mut rx,
+            "replacement",
+            &format!("{}!", restored.unwrap_or("")),
+            &[],
+            &[],
+        );
+    }
+}
+
+fn handoff_target(uuid: &str, text: &str) -> model::RewindTarget {
+    model::RewindTarget {
+        uuid: uuid.into(),
+        first_text: text.into(),
+        input_text: text.into(),
+        index: 0,
+        previous_assistant_uuid: None,
+        resume_anchor_uuid: None,
+    }
+}
+fn request_picker_targets(
+    app: &mut App,
+    rx: &mut crate::agent::client::CommandReceiver,
+    session: &str,
+) {
+    app.recent_sessions = vec![crate::app::RecentSessionInfo {
+        session_id: session.into(),
+        summary: "Handoff fixture".into(),
+        last_modified_ms: 1,
+        file_size_bytes: 1,
+        cwd: None,
+        git_branch: None,
+        custom_title: None,
+        first_prompt: None,
+    }];
+    crate::app::session_picker::open(app);
+    crate::app::test_support::press(app, KeyCode::Right);
+    assert!(
+        matches!(rx.try_recv().unwrap().command,crate::agent::wire::BridgeCommand::GetRewindTargets { session_id } if session_id==session)
+    );
+    assert!(rx.try_recv().is_err());
+}
+fn picker_rows(app: &mut App) -> Vec<String> {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 25)).unwrap();
+    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, app)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(100)
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+        .collect()
+}
+fn deliver_picker_target(app: &mut App, session: &str, uuid: &str, text: &str) {
+    handle_client_event(
+        app,
+        ClientEvent::RewindTargetsReceived {
+            session_id: session.into(),
+            targets: vec![handoff_target(uuid, text)],
+            error: None,
+        },
+    );
+}
+fn activate_picker_target(
+    app: &mut App,
+    rx: &mut crate::agent::client::CommandReceiver,
+    session: &str,
+    uuid: &str,
+) -> String {
+    crate::app::test_support::press(app, KeyCode::Enter);
+    let envelope = rx.try_recv().expect("selected fork command");
+    assert!(
+        matches!(envelope.command,crate::agent::wire::BridgeCommand::ResumeSessionAt { session_id, target_user_message_id, .. } if session_id==session && target_user_message_id==uuid)
+    );
+    envelope.request_id.expect("operation correlation")
+}
+
+#[test]
+fn picker_handoff_rejects_old_results_then_renders_and_activates_new_target() {
+    use crate::app::test_support::*;
+    let directory = tempfile::tempdir().unwrap();
+    let (mut app, mut rx) = app_with_connection();
+    request_picker_targets(&mut app, &mut rx, "session-1");
+    deliver_picker_target(&mut app, "session-1", "old-target", "Old selectable source");
+    assert!(picker_rows(&mut app).iter().any(|r| r.contains("Old selectable source")));
+    request_picker_targets(&mut app, &mut rx, "session-1");
+    handle_client_event(
+        &mut app,
+        session_replacement("replacement", directory.path(), vec![], None),
+    );
+    drain_session_refreshes(&mut rx, "replacement");
+    request_picker_targets(&mut app, &mut rx, "replacement");
+    deliver_picker_target(&mut app, "session-1", "old-target", "Old selectable source");
+    assert!(!picker_rows(&mut app).iter().any(|r| r.contains("Old selectable source")));
+    assert!(app.sdk_inventory.rewind_targets_in_flight);
+    deliver_picker_target(&mut app, "replacement", "new-target", "New selectable source");
+    assert!(picker_rows(&mut app).iter().any(|r| r.contains("New selectable source")));
+    activate_picker_target(&mut app, &mut rx, "replacement", "new-target");
+}
+
+#[test]
+fn picker_target_failure_is_local_and_retry_can_activate_a_turn() {
+    let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+    request_picker_targets(&mut app, &mut rx, "listed-session");
+    handle_client_event(
+        &mut app,
+        ClientEvent::RewindTargetsReceived {
+            session_id: "listed-session".into(),
+            targets: vec![],
+            error: Some("History fixture unavailable".into()),
+        },
+    );
+    assert!(picker_rows(&mut app).iter().any(|r| r.contains("History fixture unavailable")));
+    assert!(!canonical_messages_contain_text(&app, "History fixture unavailable"));
+    crate::app::test_support::press(&mut app, KeyCode::Left);
+    request_picker_targets(&mut app, &mut rx, "listed-session");
+    deliver_picker_target(&mut app, "listed-session", "retry-target", "Recovered target source");
+    activate_picker_target(&mut app, &mut rx, "listed-session", "retry-target");
+}
+
+#[test]
+fn resume_at_failure_settles_only_the_requested_source_and_operation() {
+    use crate::app::test_support::*;
+    let (mut app, mut rx) = app_with_connection();
+    request_picker_targets(&mut app, &mut rx, "listed-session");
+    deliver_picker_target(&mut app, "listed-session", "selected-target", "Selected source");
+    let operation = activate_picker_target(&mut app, &mut rx, "listed-session", "selected-target");
+    app.input.set_text("Next unsent source");
+    for (session, id) in
+        [("wrong-session", operation.as_str()), ("listed-session", "wrong-operation")]
+    {
+        handle_client_event(
+            &mut app,
+            ClientEvent::SessionResumeFailed {
+                session_id: session.into(),
+                operation_id: id.into(),
+                message: "STALE failure".into(),
+            },
+        );
+        assert_eq!(app.pending_resume_at_operation_id(), Some(operation.as_str()));
+        assert!(!canonical_messages_contain_text(&app, "STALE failure"));
+        assert!(!app.composer_access().can_submit());
+    }
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionResumeFailed {
+            session_id: "listed-session".into(),
+            operation_id: operation,
+            message: "Selected conversation changed".into(),
+        },
+    );
+    assert!(canonical_messages_contain_text(&app, "Selected conversation changed"));
+    assert!(app.pending_session_resume.is_none());
+    assert!(app.composer_access().can_submit());
+    assert_eq!(app.input.text(), "Next unsent source");
+    crate::app::input_submit::submit_input(&mut app);
+    expect_session_prompt(&mut rx, "session-1", "Next unsent source", &[], &[]);
+}
+
+#[test]
+fn slash_target_failure_preserves_an_actual_running_turn() {
+    use crate::app::test_support::*;
+    let (mut app, mut rx) = app_with_connection();
+    app.input.set_text("Running source");
+    crate::app::input_submit::submit_input(&mut app);
+    expect_session_prompt(&mut rx, "session-1", "Running source", &[], &[]);
+    deliver_update(&mut app, source_chunk("Still working", "running-answer", false));
+    let owner = app.active_turn_assistant_idx();
+    app.input.set_text("/rewind ");
+    crate::app::slash::sync_with_cursor(&mut app);
+    assert!(
+        matches!(rx.try_recv().unwrap().command,crate::agent::wire::BridgeCommand::GetRewindTargets {session_id} if session_id=="session-1")
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::RewindTargetsReceived {
+            session_id: "session-1".into(),
+            targets: vec![],
+            error: Some("Target history unavailable".into()),
+        },
+    );
+    assert_eq!(app.active_turn_assistant_idx(), owner);
+    assert!(matches!(app.status, AppStatus::Running));
+    assert!(canonical_messages_contain_text(&app, "Target history unavailable"));
+    assert_eq!(app.input.text(), "/rewind ");
+    deliver_update(&mut app, source_chunk(" and continued", "running-answer", false));
+    assert_eq!(app.active_turn_assistant_idx(), owner);
+    let shown = transcript_region(&mut app, owner.unwrap());
+    assert!(shown.contains("Still working") && shown.contains("and continued"), "{shown}");
+}
+
+#[test]
+fn replacement_closes_old_permission_and_new_session_input_remains_usable() {
+    use crate::app::test_support::*;
+    let directory = tempfile::tempdir().unwrap();
+    let (mut app, mut rx) = app_with_connection();
+    app.input.set_text("Old permission turn");
+    crate::app::input_submit::submit_input(&mut app);
+    expect_session_prompt(&mut rx, "session-1", "Old permission turn", &[], &[]);
+    admit_tool(
+        &mut app,
+        model::ToolCall::new("old-tool", "Old command approval")
+            .status(model::ToolCallStatus::InProgress)
+            .meta(serde_json::json!({"claudeCode":{"toolName":"Bash"}})),
+    );
+    let mut response = request_permission(
+        &mut app,
+        model::RequestPermissionRequest::new(
+            "session-1",
+            model::ToolCallUpdate::new("old-tool", model::ToolCallUpdateFields::new()),
+            permission_options("old-tool"),
+            None,
+        ),
+    );
+    assert_eq!(app.focus_owner(), FocusOwner::Permission);
+    assert_pending(&mut response);
+    handle_client_event(
+        &mut app,
+        session_replacement("replacement", directory.path(), vec![], None),
+    );
+    drain_session_refreshes(&mut rx, "replacement");
+    assert!(matches!(response.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)));
+    assert!(app.lookup_tool_call("old-tool").is_none());
+    press(&mut app, KeyCode::Char('x'));
+    crate::app::input_submit::submit_input(&mut app);
+    expect_session_prompt(&mut rx, "replacement", "x", &[], &[]);
+}
+
+#[test]
+fn replacement_releases_old_rewind_requests_for_new_session_slash_completion() {
+    use crate::app::test_support::*;
+    for cached in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("/rewind ");
+        press(&mut app, KeyCode::Tab);
+        assert!(
+            matches!(rx.try_recv().unwrap().command, crate::agent::wire::BridgeCommand::GetRewindTargets { session_id } if session_id == "session-1")
+        );
+        if cached {
+            deliver_picker_target(&mut app, "session-1", "old-target", "Old rewind source");
+            assert!(
+                app.slash
+                    .visible()
+                    .unwrap()
+                    .candidates
+                    .iter()
+                    .any(|c| c.insert_value == "old-target")
+            );
+        }
+        handle_client_event(
+            &mut app,
+            session_replacement("replacement", directory.path(), vec![], None),
+        );
+        drain_session_refreshes(&mut rx, "replacement");
+        app.input.set_text("/rewind ");
+        press(&mut app, KeyCode::Tab);
+        assert!(
+            matches!(rx.try_recv().expect("old in-flight work must not block new-session completion").command, crate::agent::wire::BridgeCommand::GetRewindTargets { session_id } if session_id == "replacement")
+        );
+        deliver_picker_target(&mut app, "session-1", "old-target", "Old rewind source");
+        assert!(
+            !app.slash
+                .visible()
+                .is_some_and(|s| s.candidates.iter().any(|c| c.insert_value == "old-target"))
+        );
+        deliver_picker_target(&mut app, "replacement", "new-target", "New rewind source");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "/rewind new-target ");
+        assert!(rx.try_recv().is_err(), "completion alone must not execute a rewind");
+        handle_terminal_event(&mut app, Event::Paste("code".into()));
+        crate::app::finalize_pending_paste_event(&mut app);
+        crate::app::input_submit::submit_input(&mut app);
+        assert!(
+            matches!(rx.try_recv().expect("explicit new-session rewind").command, crate::agent::wire::BridgeCommand::Rewind { session_id, target_user_message_id, restore_mode:crate::agent::types::RewindRestoreMode::Code, .. } if session_id == "replacement" && target_user_message_id == "new-target")
+        );
+        assert!(rx.try_recv().is_err());
+    }
 }
