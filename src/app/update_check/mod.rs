@@ -47,6 +47,15 @@ pub fn start_update_check(app: &App, cli: &Cli) {
 }
 
 fn start_update_check_at(app: &App, disabled: bool, endpoint: &str) {
+    start_update_check_with_clock(app, disabled, endpoint, unix_now_secs);
+}
+
+fn start_update_check_with_clock(
+    app: &App,
+    disabled: bool,
+    endpoint: &str,
+    clock: impl Fn() -> Option<u64> + 'static,
+) {
     if disabled {
         tracing::debug!(
             target: crate::logging::targets::APP_UPDATE,
@@ -78,8 +87,9 @@ fn start_update_check_at(app: &App, disabled: bool, endpoint: &str) {
 
     tokio::task::spawn_local(
         async move {
+            let Some(now) = clock() else { return };
             let Some((mut global_settings, release)) =
-                resolve_latest_release(settings_snapshot, &endpoint).await
+                resolve_latest_release(settings_snapshot, &endpoint, now).await
             else {
                 return;
             };
@@ -89,7 +99,7 @@ fn start_update_check_at(app: &App, disabled: bool, endpoint: &str) {
                 &current_version,
                 &release.latest_version,
                 &release.release_url,
-                unix_now_secs().unwrap_or(0),
+                clock().unwrap_or(0),
             );
             if let Some(result) = global_settings.updates.last_result {
                 let _ = event_tx.send(ClientEvent::UpdateCheckCompleted { result }).await;
@@ -180,9 +190,8 @@ pub(crate) fn update_check_disabled(no_update_check_flag: bool) -> bool {
 async fn resolve_latest_release(
     settings: settings::AppSettings,
     endpoint: &str,
+    now: u64,
 ) -> Option<(settings::AppSettings, LatestRelease)> {
-    let now = unix_now_secs()?;
-
     if let Some(result) = settings.updates.last_result.as_ref()
         && now.saturating_sub(result.checked_at_unix_secs) <= UPDATE_CHECK_TTL_SECS
         && is_valid_version(&result.latest_version)
@@ -274,3 +283,6 @@ pub(crate) fn is_newer_version(candidate: &str, current: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod audit_tests;
