@@ -2556,8 +2556,35 @@ fn completed_transcript_remains_scrollable_when_zooming_during_an_unfinished_cod
     let zoom_in_diagnostics = test.diagnostics();
     test.resize_and_wait_for_draw(120, 120);
     test.wait_completed_reply_in_scrollback(80);
+    let journal_offset = test.journal().len();
     test.release();
-    test.wait_screen("[READY]");
+    test.wait_until("released code turn completes and the app applies it", |test| {
+        test.journal().iter().skip(journal_offset).any(|entry| entry["event"] == "turn_complete")
+            && test.screen().contains("[READY]")
+            && test.screen().contains("code line 80")
+    });
+    let expected = (1..=80).collect::<Vec<usize>>();
+    let code_rows = |test: &TerminalTest| {
+        test.transcript_rows()
+            .iter()
+            .filter_map(|row| {
+                row.split_once("code line ")
+                    .map(|(_, suffix)| suffix.trim().parse::<usize>().unwrap())
+            })
+            .collect::<Vec<_>>()
+    };
+    test.wait_until("completed code reaches history exactly once after resize", |test| {
+        code_rows(test) == expected
+    });
+    let offset = test.raw_offset();
+    test.submit("NEXT_ORDINARY_TURN", "NEXT_ORDINARY_TURN");
+    test.wait_turn_finished("reply 3 started");
+    assert_eq!(code_rows(&test), expected);
+    assert!(
+        !test.raw_since(offset).windows(4).any(|bytes| bytes == b"\x1b[3J"),
+        "consumed turn resize must not purge on the next ordinary turn"
+    );
+    test.assert_prompts(&["COMPLETED_PREFIX", "UNFINISHED_CODE_BLOCK", "NEXT_ORDINARY_TURN"]);
     test.shutdown();
     assert!(
         prefix_survived_zoom_in,

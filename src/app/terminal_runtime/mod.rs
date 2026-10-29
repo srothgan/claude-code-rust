@@ -12,25 +12,40 @@ mod tracked_cursor_backend;
 pub(crate) mod viewport;
 
 use self::chat_session::{ChatTerminalSeed, ChatTerminalSeedProvenance, ChatTerminalSession};
+use self::chat_terminal::NativeTerminalIo;
 use self::fullscreen_session::FullscreenTerminalSession;
 pub(super) use self::input::TerminalInput;
-use self::modes::{
-    apply_actions, chat_startup_actions, enter_fullscreen_actions, exit_fullscreen_actions,
-    shutdown_restore_actions,
-};
-use self::panic_hook::{PanicRestoreHook, restore_once};
-#[cfg(test)]
-use crate::app::ChatRebuildKind;
+use self::modes::{ModeIo, TerminalModes, chat_startup_actions, enter_fullscreen_actions};
+use self::panic_hook::PanicRestoreHook;
 use crate::app::{App, FullscreenView, SurfaceMode, TerminalLifecycleState};
 use anyhow::{Context, anyhow};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+pub(crate) trait RuntimeIo: ModeIo {
+    type FullscreenBackend: ratatui::backend::Backend<Error = std::io::Error>;
+    fn size(&self) -> std::io::Result<(u16, u16)>;
+    fn cursor_before_input_reader(&self) -> std::io::Result<(u16, u16)>;
+    fn fullscreen_backend(&self) -> Self::FullscreenBackend;
+}
+
+impl RuntimeIo for NativeTerminalIo {
+    type FullscreenBackend = ratatui::backend::CrosstermBackend<std::io::Stdout>;
+    fn size(&self) -> std::io::Result<(u16, u16)> {
+        crossterm::terminal::size()
+    }
+    fn cursor_before_input_reader(&self) -> std::io::Result<(u16, u16)> {
+        crossterm::cursor::position()
+    }
+    fn fullscreen_backend(&self) -> Self::FullscreenBackend {
+        ratatui::backend::CrosstermBackend::new(std::io::stdout())
+    }
+}
 
 pub(crate) use release_guard::TerminalReleaseGuard;
 
-enum SurfaceTerminalSession {
+enum SurfaceTerminalSession<B: ratatui::backend::Backend> {
     Chat(ChatTerminalSession),
-    Fullscreen(FullscreenTerminalSession),
+    Fullscreen(FullscreenTerminalSession<B>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,14 +56,13 @@ enum SurfaceTransitionPlan {
     ExitFullscreen { from: FullscreenView },
 }
 
-pub(crate) struct TerminalRuntime {
-    session: Option<SurfaceTerminalSession>,
+pub(crate) struct TerminalRuntime<I: RuntimeIo = NativeTerminalIo> {
+    session: Option<SurfaceTerminalSession<I::FullscreenBackend>>,
     suspended_chat_session: Option<ChatTerminalSession>,
     cached_chat_seed: Option<ChatTerminalSeed>,
     active_surface: SurfaceMode,
-    alternate_screen_active: Arc<AtomicBool>,
+    modes: Arc<TerminalModes<I>>,
     panic_hook: Option<PanicRestoreHook>,
-    restored: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -58,26 +72,18 @@ enum BootstrapSeedMode {
 }
 
 impl BootstrapSeedMode {
-    fn chat_seed(self) -> anyhow::Result<ChatTerminalSeed> {
+    fn chat_seed(self, io: &impl RuntimeIo) -> anyhow::Result<ChatTerminalSeed> {
         match self {
-            Self::MeasureBeforeInputReader => ChatTerminalSeed::read_before_input_reader(),
+            Self::MeasureBeforeInputReader => ChatTerminalSeed::read_before_input_reader(io),
             Self::ConservativeAfterResume => ChatTerminalSeed::conservative_current(
                 ChatTerminalSeedProvenance::ConservativeAfterResume,
+                io,
             ),
-        }
-    }
-
-    fn chat_session(self) -> anyhow::Result<ChatTerminalSession> {
-        match self {
-            Self::MeasureBeforeInputReader => ChatTerminalSession::new_before_input_reader(),
-            Self::ConservativeAfterResume => {
-                Ok(ChatTerminalSession::new_with_seed(self.chat_seed()?))
-            }
         }
     }
 }
 
-impl TerminalRuntime {
+impl<I: RuntimeIo> TerminalRuntime<I> {
     pub(crate) fn has_pending_surface_work(&self, app: &App) -> bool {
         app.surface_dirty.active_surface_needs_draw(app.terminal_lifecycle)
             || (matches!(
@@ -91,76 +97,48 @@ impl TerminalRuntime {
             && matches!(&self.session, Some(SurfaceTerminalSession::Chat(session)) if session.layout_ready())
     }
 
-    pub(crate) fn bootstrap(app: &mut App) -> anyhow::Result<Self> {
-        Self::bootstrap_inner(app, BootstrapSeedMode::MeasureBeforeInputReader)
-    }
-
-    pub(crate) fn bootstrap_with_input_reader(app: &mut App) -> anyhow::Result<Self> {
-        Self::bootstrap_inner(app, BootstrapSeedMode::ConservativeAfterResume)
-    }
-
-    fn bootstrap_inner(app: &mut App, seed_mode: BootstrapSeedMode) -> anyhow::Result<Self> {
+    fn bootstrap_inner(app: &mut App, seed_mode: BootstrapSeedMode, io: I) -> anyhow::Result<Self> {
         let target_surface = app.surface_mode;
-        let restored = Arc::new(AtomicBool::new(false));
-        let alternate_screen_active = Arc::new(AtomicBool::new(false));
-
-        if let Err(err) = apply_startup_actions() {
-            restore_once(restored.as_ref(), || {
-                let _ = restore_terminal_modes(alternate_screen_active.as_ref());
-            });
-            return Err(err).context("failed to configure terminal startup modes");
-        }
-
-        let cached_chat_seed = match target_surface {
-            SurfaceMode::Chat => None,
-            SurfaceMode::Fullscreen(_) => Some(seed_mode.chat_seed()?),
-        };
-
-        let session = match target_surface {
-            SurfaceMode::Chat => seed_mode.chat_session().map(SurfaceTerminalSession::Chat),
-            SurfaceMode::Fullscreen(_) => {
-                if let Err(err) = apply_enter_fullscreen_actions() {
-                    restore_once(restored.as_ref(), || {
-                        let _ = restore_terminal_modes(alternate_screen_active.as_ref());
-                    });
-                    return Err(err).context("failed to enter fullscreen terminal mode");
+        let modes = Arc::new(TerminalModes::new(io));
+        // All acquisition, including seed reads, belongs to the same cleanup scope.
+        let acquired = (|| -> anyhow::Result<_> {
+            modes
+                .apply(chat_startup_actions())
+                .context("failed to configure terminal startup modes")?;
+            let seed = seed_mode.chat_seed(&modes.io)?;
+            match target_surface {
+                SurfaceMode::Chat => Ok((
+                    SurfaceTerminalSession::Chat(ChatTerminalSession::new_with_seed(seed)),
+                    None,
+                )),
+                SurfaceMode::Fullscreen(_) => {
+                    modes
+                        .apply(enter_fullscreen_actions())
+                        .context("failed to enter fullscreen terminal mode")?;
+                    let session = FullscreenTerminalSession::new(modes.io.fullscreen_backend())?;
+                    Ok((SurfaceTerminalSession::Fullscreen(session), Some(seed)))
                 }
-                alternate_screen_active.store(true, Ordering::SeqCst);
-                FullscreenTerminalSession::new().map(SurfaceTerminalSession::Fullscreen)
+            }
+        })();
+        let (session, cached_chat_seed) = match acquired {
+            Ok(acquired) => acquired,
+            Err(error) => {
+                restore_modes(&modes);
+                return Err(error);
             }
         };
-        let session = match session {
-            Ok(session) => session,
-            Err(err) => {
-                restore_once(restored.as_ref(), || {
-                    let _ = restore_terminal_modes(alternate_screen_active.as_ref());
-                });
-                return Err(err);
-            }
-        };
-
-        let alternate_for_hook = Arc::clone(&alternate_screen_active);
-        let panic_hook = PanicRestoreHook::install(Arc::clone(&restored), move || {
-            if let Err(err) = restore_terminal_modes(alternate_for_hook.as_ref()) {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_LIFECYCLE,
-                    event_name = "terminal_restore_failed",
-                    message = "failed to restore terminal state",
-                    outcome = "failure",
-                    error_message = %err,
-                );
-            }
+        let modes_for_hook = Arc::clone(&modes);
+        let panic_hook = PanicRestoreHook::install(move || {
+            restore_modes(&modes_for_hook);
         });
         app.terminal_lifecycle = TerminalLifecycleState::Running(target_surface);
-
         Ok(Self {
             session: Some(session),
             suspended_chat_session: None,
             cached_chat_seed,
             active_surface: target_surface,
-            alternate_screen_active,
+            modes,
             panic_hook: Some(panic_hook),
-            restored,
         })
     }
 
@@ -176,20 +154,20 @@ impl TerminalRuntime {
                 };
                 chat_session.suspend_for_fullscreen(app);
 
-                if let Err(err) = apply_enter_fullscreen_actions() {
+                if let Err(err) = self.modes.apply(enter_fullscreen_actions()) {
                     self.session = Some(SurfaceTerminalSession::Chat(chat_session));
                     return Err(err).context("failed to enter fullscreen terminal mode");
                 }
-                self.alternate_screen_active.store(true, Ordering::SeqCst);
                 app.chat_render.line_wrap_disabled = false;
-                let fullscreen_session = match FullscreenTerminalSession::new() {
-                    Ok(session) => session,
-                    Err(err) => {
-                        let _ = apply_exit_fullscreen_actions(&self.alternate_screen_active);
-                        self.session = Some(SurfaceTerminalSession::Chat(chat_session));
-                        return Err(err);
-                    }
-                };
+                let fullscreen_session =
+                    match FullscreenTerminalSession::new(self.modes.io.fullscreen_backend()) {
+                        Ok(session) => session,
+                        Err(err) => {
+                            let _ = self.modes.exit_fullscreen();
+                            self.session = Some(SurfaceTerminalSession::Chat(chat_session));
+                            return Err(err);
+                        }
+                    };
                 self.suspended_chat_session = Some(chat_session);
                 self.session = Some(SurfaceTerminalSession::Fullscreen(fullscreen_session));
                 self.active_surface = SurfaceMode::Fullscreen(view);
@@ -213,8 +191,7 @@ impl TerminalRuntime {
                     }
                 }
 
-                apply_exit_fullscreen_actions(&self.alternate_screen_active)
-                    .context("failed to exit fullscreen terminal mode")?;
+                self.modes.exit_fullscreen().context("failed to exit fullscreen terminal mode")?;
                 app.chat_render.line_wrap_disabled = false;
                 let reused_chat_session = self.suspended_chat_session.is_some();
                 let chat_session = if let Some(session) = self.suspended_chat_session.take() {
@@ -223,9 +200,11 @@ impl TerminalRuntime {
                     let seed = match self.cached_chat_seed.take() {
                         Some(seed) => seed.with_current_size(
                             ChatTerminalSeedProvenance::CachedBeforeFullscreen,
+                            &self.modes.io,
                         )?,
                         None => ChatTerminalSeed::conservative_current(
                             ChatTerminalSeedProvenance::ConservativeAfterFullscreen,
+                            &self.modes.io,
                         )?,
                     };
                     ChatTerminalSession::new_with_seed(seed)
@@ -271,7 +250,7 @@ impl TerminalRuntime {
     }
 
     pub(crate) fn restore(&mut self, app: &mut App) {
-        if !self.restored.load(Ordering::SeqCst) {
+        if !self.modes.is_restored() {
             app.terminal_lifecycle = TerminalLifecycleState::Restoring;
         }
 
@@ -282,16 +261,7 @@ impl TerminalRuntime {
             Some(SurfaceTerminalSession::Chat(chat_session)) => Some(chat_session),
             _ => suspended_chat_session.as_ref(),
         };
-        restore_once(self.restored.as_ref(), || {
-            if let Err(err) = restore_terminal_modes(self.alternate_screen_active.as_ref()) {
-                tracing::warn!(
-                    target: crate::logging::targets::APP_LIFECYCLE,
-                    event_name = "terminal_restore_failed",
-                    message = "failed to restore terminal state",
-                    outcome = "failure",
-                    error_message = %err,
-                );
-            }
+        if restore_modes(&self.modes) {
             // Output printed after exit, such as the resume hint, starts below the chat viewport.
             if let Some(chat_session) = chat_session
                 && let Err(err) = chat_session.park_cursor_at_viewport_end()
@@ -304,54 +274,42 @@ impl TerminalRuntime {
                     error_message = %err,
                 );
             }
-        });
+        }
         let _hook = self.panic_hook.take();
         app.terminal_lifecycle = TerminalLifecycleState::Exited;
     }
 
-    fn session_mut(&mut self) -> anyhow::Result<&mut SurfaceTerminalSession> {
+    fn session_mut(&mut self) -> anyhow::Result<&mut SurfaceTerminalSession<I::FullscreenBackend>> {
         self.session.as_mut().ok_or_else(|| anyhow!("terminal runtime has already been restored"))
     }
 }
 
-fn apply_startup_actions() -> std::io::Result<()> {
-    let mut stdout = std::io::stdout();
-    apply_actions(&mut stdout, chat_startup_actions())
+impl<I: RuntimeIo> Drop for TerminalRuntime<I> {
+    fn drop(&mut self) {
+        restore_modes(&self.modes);
+    }
 }
 
-fn apply_enter_fullscreen_actions() -> std::io::Result<()> {
-    let mut stdout = std::io::stdout();
-    apply_actions(&mut stdout, enter_fullscreen_actions())
+impl TerminalRuntime {
+    pub(crate) fn bootstrap(app: &mut App) -> anyhow::Result<Self> {
+        Self::bootstrap_inner(app, BootstrapSeedMode::MeasureBeforeInputReader, NativeTerminalIo)
+    }
+    pub(crate) fn bootstrap_with_input_reader(app: &mut App) -> anyhow::Result<Self> {
+        Self::bootstrap_inner(app, BootstrapSeedMode::ConservativeAfterResume, NativeTerminalIo)
+    }
 }
 
-fn apply_exit_fullscreen_actions(alternate_screen_active: &AtomicBool) -> std::io::Result<()> {
-    if !alternate_screen_active.swap(false, Ordering::SeqCst) {
-        return Ok(());
-    }
-
-    let mut stdout = std::io::stdout();
-    apply_actions(&mut stdout, exit_fullscreen_actions())
-}
-
-fn restore_terminal_modes(alternate_screen_active: &AtomicBool) -> std::io::Result<()> {
-    let mut first_error = None;
-
-    if let Err(err) = apply_exit_fullscreen_actions(alternate_screen_active)
-        && first_error.is_none()
-    {
-        first_error = Some(err);
-    }
-
-    let mut stdout = std::io::stdout();
-    if let Err(err) = apply_actions(&mut stdout, shutdown_restore_actions())
-        && first_error.is_none()
-    {
-        first_error = Some(err);
-    }
-
-    match first_error {
-        Some(err) => Err(err),
-        None => Ok(()),
+fn restore_modes<I: ModeIo>(modes: &TerminalModes<I>) -> bool {
+    match modes.restore() {
+        Ok(restored) => restored,
+        Err(err) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "terminal_restore_failed", message = "failed to restore terminal state",
+                outcome = "failure", error_message = %err,
+            );
+            false
+        }
     }
 }
 
@@ -385,4 +343,4 @@ fn request_chat_rebuild_after_fullscreen_exit(app: &mut App, reused_chat_session
 }
 
 #[cfg(test)]
-mod tests;
+mod lifecycle_audit_tests;

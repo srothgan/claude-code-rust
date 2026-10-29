@@ -35,7 +35,7 @@ pub(super) trait TerminalIo: Clone {
 }
 
 #[derive(Clone)]
-pub(super) struct NativeTerminalIo;
+pub(crate) struct NativeTerminalIo;
 
 impl TerminalIo for NativeTerminalIo {
     type Backend = CrosstermBackend<Stdout>;

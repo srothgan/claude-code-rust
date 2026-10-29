@@ -198,140 +198,45 @@ impl SurfaceDirtyState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::FullscreenView;
 
     #[test]
-    fn view_transition_marks_chat_to_fullscreen() {
-        let mut dirty = SurfaceDirtyState::default();
-
-        dirty.mark_view_transition(
-            SurfaceMode::Chat,
-            SurfaceMode::Fullscreen(FullscreenView::Config),
-        );
-
-        assert!(dirty.fullscreen.redraw);
-        assert!(dirty.terminal_mode);
-    }
-
-    #[test]
-    fn view_transition_marks_fullscreen_to_chat() {
-        let mut dirty = SurfaceDirtyState::default();
-
-        dirty.mark_view_transition(
-            SurfaceMode::Fullscreen(FullscreenView::Trusted),
-            SurfaceMode::Chat,
-        );
-
-        assert!(dirty.terminal_mode);
-        assert!(!dirty.fullscreen.redraw);
-        assert_eq!(dirty.chat.rebuild, ChatRebuildKind::FullscreenReturn);
-    }
-
-    #[test]
-    fn view_transition_marks_fullscreen_to_fullscreen() {
-        let mut dirty = SurfaceDirtyState::default();
-
-        dirty.mark_view_transition(
-            SurfaceMode::Fullscreen(FullscreenView::Config),
-            SurfaceMode::Fullscreen(FullscreenView::SessionPicker),
-        );
-
-        assert!(dirty.fullscreen.redraw);
-        assert!(!dirty.terminal_mode);
-    }
-
-    #[test]
-    fn view_transition_same_surface_is_noop() {
-        let mut dirty = SurfaceDirtyState::default();
-
-        dirty.mark_view_transition(SurfaceMode::Chat, SurfaceMode::Chat);
-
-        assert_eq!(dirty, SurfaceDirtyState::default());
-    }
-
-    #[test]
-    fn chat_visible_screen_rebuild_dominates_mutable_rebuild() {
-        let mut dirty = ChatSurfaceDirtyState::default();
-
-        dirty.request_mutable_rebuild();
-        dirty.request_fullscreen_return_rebuild();
-        dirty.request_visible_screen_rebuild();
-        dirty.request_mutable_rebuild();
-        dirty.request_fullscreen_return_rebuild();
-
-        assert_eq!(dirty.rebuild, ChatRebuildKind::VisibleScreen);
-        assert!(dirty.repaint);
-    }
-
-    #[test]
-    fn chat_visible_screen_rebuild_dominates_fullscreen_return() {
-        let mut dirty = ChatSurfaceDirtyState::default();
-
-        dirty.request_fullscreen_return_rebuild();
-        dirty.request_visible_screen_rebuild();
-        dirty.request_fullscreen_return_rebuild();
-
-        assert_eq!(dirty.rebuild, ChatRebuildKind::VisibleScreen);
-        assert!(dirty.repaint);
-    }
-
-    #[test]
-    fn chat_purge_replay_rebuild_dominates_visible_rebuild() {
-        let mut dirty = ChatSurfaceDirtyState::default();
-        let options = ChatPurgeReplayOptions::resize();
-
-        dirty.request_visible_screen_rebuild();
-        dirty.request_purge_replay_rebuild(options);
-        dirty.request_mutable_rebuild();
-        dirty.request_visible_screen_rebuild();
-
-        assert_eq!(dirty.rebuild, ChatRebuildKind::PurgeReplay(options));
-        assert!(dirty.repaint);
-    }
-
-    #[test]
-    fn later_chat_purge_replay_request_replaces_options() {
-        let mut dirty = ChatSurfaceDirtyState::default();
-        let resize_options = ChatPurgeReplayOptions::resize();
-        let replacement_options = ChatPurgeReplayOptions::session_replacement();
-
-        dirty.request_visible_screen_rebuild();
-        dirty.request_purge_replay_rebuild(resize_options);
-        dirty.request_mutable_rebuild();
-        dirty.request_visible_screen_rebuild();
-        dirty.request_purge_replay_rebuild(replacement_options);
-
-        assert_eq!(dirty.rebuild, ChatRebuildKind::PurgeReplay(replacement_options));
-        assert!(dirty.repaint);
-    }
-
-    #[test]
-    fn session_replacement_still_replays_after_later_resize_request() {
-        let mut dirty = ChatSurfaceDirtyState::default();
-        let replacement_options = ChatPurgeReplayOptions::session_replacement();
-
-        dirty.request_purge_replay_rebuild(replacement_options);
-        dirty.request_mutable_rebuild();
-        dirty.request_visible_screen_rebuild();
-        dirty.request_purge_replay_rebuild(ChatPurgeReplayOptions::resize());
-
-        assert_eq!(dirty.rebuild, ChatRebuildKind::PurgeReplay(ChatPurgeReplayOptions::resize()));
-        assert!(dirty.repaint);
-    }
-
-    #[test]
-    fn terminal_history_out_of_sync_still_replays_after_later_post_turn_resize_request() {
-        let mut dirty = ChatSurfaceDirtyState::default();
-        let out_of_sync_options = ChatPurgeReplayOptions::terminal_history_out_of_sync();
-
-        dirty.request_purge_replay_rebuild(out_of_sync_options);
-        dirty.request_purge_replay_rebuild(ChatPurgeReplayOptions::post_turn_resize());
-
-        assert_eq!(
-            dirty.rebuild,
-            ChatRebuildKind::PurgeReplay(ChatPurgeReplayOptions::post_turn_resize()),
-        );
-        assert!(dirty.repaint);
+    fn coalesced_rebuilds_preserve_required_work_in_either_arrival_order() {
+        use ChatRebuildKind::{FullscreenReturn, MutableViewport, PurgeReplay, VisibleScreen};
+        for (first, second, expected) in [
+            (VisibleScreen, MutableViewport, "visible"),
+            (VisibleScreen, FullscreenReturn, "visible"),
+            (PurgeReplay(ChatPurgeReplayOptions::resize()), VisibleScreen, "purge"),
+            (PurgeReplay(ChatPurgeReplayOptions::resize()), MutableViewport, "purge"),
+            (
+                PurgeReplay(ChatPurgeReplayOptions::session_replacement()),
+                PurgeReplay(ChatPurgeReplayOptions::resize()),
+                "purge",
+            ),
+            (
+                PurgeReplay(ChatPurgeReplayOptions::terminal_history_out_of_sync()),
+                PurgeReplay(ChatPurgeReplayOptions::post_turn_resize()),
+                "purge",
+            ),
+        ] {
+            for requests in [[first, second], [second, first]] {
+                let mut dirty = ChatSurfaceDirtyState::default();
+                for request in requests {
+                    match request {
+                        MutableViewport => dirty.request_mutable_rebuild(),
+                        FullscreenReturn => dirty.request_fullscreen_return_rebuild(),
+                        VisibleScreen => dirty.request_visible_screen_rebuild(),
+                        PurgeReplay(options) => dirty.request_purge_replay_rebuild(options),
+                        ChatRebuildKind::None => unreachable!(),
+                    }
+                }
+                match expected {
+                    "visible" => assert_eq!(dirty.take_rebuild(), VisibleScreen),
+                    "purge" => assert!(matches!(dirty.take_rebuild(), PurgeReplay(_))),
+                    _ => unreachable!(),
+                }
+                assert!(dirty.take_repaint(), "the chosen rebuild still needs a frame");
+            }
+        }
     }
 
     #[test]

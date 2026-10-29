@@ -78,18 +78,75 @@ fn set_surface_mode_switches_to_config_from_trusted() {
     assert!(app.paste.pending_text.is_empty());
 }
 
-#[test]
-fn set_surface_mode_same_view_is_noop() {
-    let mut app = busy_view_test_app();
-    app.surface_dirty.chat.repaint = false;
+#[tokio::test(flavor = "current_thread")]
+async fn set_surface_mode_same_view_is_noop() {
+    use crate::agent::{events::ClientEvent, types, wire::BridgeCommand};
+    use crate::app::events::{handle_client_event, handle_terminal_event};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-    set_surface_mode(&mut app, SurfaceMode::Chat);
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let mut pending = busy_view_test_app();
+            pending.surface_dirty.chat.repaint = false;
+            set_surface_mode(&mut pending, SurfaceMode::Chat);
+            assert!(pending.mention.is_some());
+            assert_eq!(pending.paste.pending_text, "blocked");
+            assert!(pending.pending_submit.is_some());
+            assert!(!pending.surface_dirty.chat.repaint);
 
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert!(app.mention.is_some());
-    assert!(!app.paste.pending_text.is_empty());
-    assert!(app.pending_submit.is_some());
-    assert!(!app.surface_dirty.chat.repaint);
+            let mut app = App::test_default();
+            let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+            app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+            app.session_runtime.session_id =
+                Some(crate::agent::model::SessionId::new("same-surface"));
+            app.status = crate::app::AppStatus::Ready;
+            handle_terminal_event(&mut app, Event::Paste("ACCEPTED_DRAFT".into()));
+            set_surface_mode(&mut app, SurfaceMode::Chat);
+            crate::app::finalize_pending_paste_event(&mut app);
+            assert_eq!(app.input.text(), "ACCEPTED_DRAFT");
+            assert!(commands.try_recv().is_err());
+            handle_client_event(
+                &mut app,
+                ClientEvent::McpElicitationRequest {
+                    session_id: "same-surface".into(),
+                    request: types::ElicitationRequest {
+                        request_id: "pending-form".into(),
+                        server_name: "forms".into(),
+                        message: "Pending answer".into(),
+                        mode: types::ElicitationMode::Form,
+                        url: None,
+                        elicitation_id: None,
+                        field_order: vec!["name".into()],
+                        requested_schema: Some(serde_json::json!({
+                            "type": "object", "properties": {"name": {"type": "string"}},
+                            "required": ["name"]
+                        })),
+                    },
+                },
+            );
+            assert!(crate::app::config::handle_paste(&mut app, "retained-answer"));
+            set_surface_mode(&mut app, SurfaceMode::Fullscreen(FullscreenView::Config));
+            assert!(commands.try_recv().is_err());
+            assert!(crate::app::config::handle_paste(&mut app, "!"));
+            handle_terminal_event(
+                &mut app,
+                Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
+            );
+            let command =
+                tokio::time::timeout(std::time::Duration::from_secs(2), commands.recv_envelope())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .command;
+            assert!(matches!(command, BridgeCommand::ElicitationResponse {
+                elicitation_request_id, action: types::ElicitationAction::Accept,
+                content: Some(value), ..
+            } if elicitation_request_id == "pending-form"
+                && value == serde_json::json!({"name": "retained-answer!"})));
+            assert_eq!(app.input.text(), "ACCEPTED_DRAFT");
+            assert!(commands.try_recv().is_err());
+        }))
+        .await;
 }
 
 #[test]

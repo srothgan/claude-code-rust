@@ -71,11 +71,11 @@ pub(super) enum ChatTerminalSeedProvenance {
 }
 
 impl ChatTerminalSeed {
-    pub(super) fn read_before_input_reader() -> anyhow::Result<Self> {
+    pub(super) fn read_before_input_reader(io: &impl super::RuntimeIo) -> anyhow::Result<Self> {
         let (terminal_width, terminal_height) =
-            crossterm::terminal::size().context("failed to read chat terminal size")?;
-        let (cursor_x, cursor_y) = read_cursor_position_before_input_reader()
-            .context("failed to read chat terminal cursor")?;
+            io.size().context("failed to read chat terminal size")?;
+        let (cursor_x, cursor_y) =
+            io.cursor_before_input_reader().context("failed to read chat terminal cursor")?;
         Ok(Self {
             terminal_width,
             terminal_height,
@@ -87,9 +87,10 @@ impl ChatTerminalSeed {
 
     pub(super) fn conservative_current(
         provenance: ChatTerminalSeedProvenance,
+        io: &impl super::RuntimeIo,
     ) -> anyhow::Result<Self> {
         let (terminal_width, terminal_height) =
-            crossterm::terminal::size().context("failed to read chat terminal size")?;
+            io.size().context("failed to read chat terminal size")?;
         Ok(Self {
             terminal_width,
             terminal_height,
@@ -102,9 +103,10 @@ impl ChatTerminalSeed {
     pub(super) fn with_current_size(
         self,
         provenance: ChatTerminalSeedProvenance,
+        io: &impl super::RuntimeIo,
     ) -> anyhow::Result<Self> {
         let (terminal_width, terminal_height) =
-            crossterm::terminal::size().context("failed to read chat terminal size")?;
+            io.size().context("failed to read chat terminal size")?;
         Ok(Self {
             terminal_width,
             terminal_height,
@@ -116,10 +118,6 @@ impl ChatTerminalSeed {
 }
 
 impl ChatTerminalSession {
-    pub(super) fn new_before_input_reader() -> anyhow::Result<Self> {
-        Ok(Self::new_with_seed(ChatTerminalSeed::read_before_input_reader()?))
-    }
-
     pub(super) fn new_with_seed(seed: ChatTerminalSeed) -> Self {
         let width = seed.terminal_width.max(1);
         let height = seed.terminal_height.max(1);
@@ -753,11 +751,6 @@ impl<I: TerminalIo> ChatTerminalSession<I> {
 
         ComposerSurface { activity_rows, hint_rows, btw_rows, editor, footer_rows }
     }
-}
-
-fn read_cursor_position_before_input_reader() -> anyhow::Result<(u16, u16)> {
-    crossterm::cursor::position()
-        .context("cursor position may only be read before the terminal reader owns terminal input")
 }
 
 fn viewport_layout(
