@@ -25,6 +25,11 @@ const pending = [];
 const record = entry => {
   if (JOURNAL) fs.appendFileSync(JOURNAL, `${JSON.stringify(entry)}\n`);
 };
+if (SCENARIO.startsWith('trust-gate')) {
+  record({ type: 'bridge_entry', cwd });
+  const file = path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json');
+  record({ type: 'trust_at_entry', preferences: fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null });
+}
 let nativeActions;
 const send = event => {
   record({ type: 'event', ...event });

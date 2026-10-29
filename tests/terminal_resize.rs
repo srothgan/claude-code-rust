@@ -3743,6 +3743,79 @@ fn native_initial_fullscreen_trust_creates_usable_current_session_chat() {
 }
 
 #[test]
+fn trust_gate_prevents_bridge_execution_on_refusal_and_waits_for_durable_acceptance() {
+    for route in ["refuse", "accept", "repair"] {
+        let initial = "TRUST_GATE_INITIAL_PROMPT";
+        let mut test = TerminalTest::start_with_profile(
+            "trust-gate",
+            3,
+            None,
+            &[initial],
+            true,
+            &[],
+            AppProfileFixture { pause_at_trust: true, ..AppProfileFixture::default() },
+        );
+        let preferences = test.temp.path().join("profile/.claude.json");
+        assert!(!preferences.exists());
+        assert!(test.journal().is_empty(), "no bridge script entry before approval");
+        if route == "refuse" {
+            test.send(b"n");
+            assert!(test.child.wait_for_exit(WAIT_LIMIT).expect("refusal exit").success());
+            assert!(
+                test.journal().is_empty(),
+                "complete journal after refusal contains no bridge entry"
+            );
+            assert!(!preferences.exists());
+            continue;
+        }
+        let original = serde_json::json!({"account":"keep", "projects":{"unrelated":{"hasTrustDialogAccepted":true}}});
+        if route == "repair" {
+            std::fs::write(&preferences, "{broken").unwrap();
+            test.send(b"y");
+            test.wait_screen("Invalid trust preferences");
+            assert_eq!(std::fs::read_to_string(&preferences).unwrap(), "{broken");
+            assert!(test.journal().is_empty(), "failed acceptance cannot execute the bridge");
+        }
+        std::fs::write(&preferences, serde_json::to_vec(&original).unwrap()).unwrap();
+        test.send(b"\x1b[B");
+        test.wait_screen("> No");
+        test.resize_keeping(42, 100, &["> No"]);
+        assert!(
+            test.journal().is_empty(),
+            "untrusted navigation and resize cannot start the bridge"
+        );
+        test.accept_trust(true);
+        test.wait_turn_finished("reply 1 started");
+        let physical = test.project_dir().canonicalize().unwrap().to_string_lossy().into_owned();
+        let key = if cfg!(windows) {
+            physical.strip_prefix(r"\\?\").unwrap_or(&physical).replace('\\', "/")
+        } else {
+            physical
+        };
+        let mut expected = original;
+        expected["projects"][&key] = serde_json::json!({"hasTrustDialogAccepted":true});
+        let journal = test.journal();
+        let entries =
+            journal.iter().filter(|entry| entry["type"] == "bridge_entry").collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1, "one actual bridge process entry");
+        assert_eq!(
+            journal.iter().find(|entry| entry["type"] == "trust_at_entry").unwrap()["preferences"],
+            expected,
+            "approval must be durable before child entry"
+        );
+        assert_eq!(test.commands("initialize").len(), 1);
+        assert_eq!(test.commands("create_session").len(), 1);
+        assert!(
+            journal.iter().position(|e| e["type"] == "bridge_entry")
+                < journal.iter().position(|e| e["command"] == "initialize")
+        );
+        test.assert_prompts(&[initial]);
+        test.shutdown();
+        test.assert_prompts(&[initial]);
+    }
+}
+
+#[test]
 fn native_same_size_resize_in_chat_and_fullscreen_preserves_rows_and_never_purges() {
     let mut test = TerminalTest::start("native-surfaces", 48);
     test.seed_native_history();

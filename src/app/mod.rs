@@ -46,6 +46,8 @@ pub(crate) mod terminal_runtime;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod trust;
+#[cfg(test)]
+pub(crate) use trust::test_support as trust_test_support;
 pub(crate) mod update_check;
 mod update_install;
 mod update_prompt;

@@ -86,6 +86,13 @@ fn replace_with_check(
         if !check()? {
             return Ok(false);
         }
+        #[cfg(test)]
+        if REPLACEMENT_FAILURE.with(|target| target.borrow().as_deref() == Some(path)) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected replacement denial",
+            ));
+        }
         std::fs::rename(&temp_path, path)?;
         Ok(true)
     });
@@ -93,6 +100,23 @@ fn replace_with_check(
         let _ = std::fs::remove_file(&temp_path);
     }
     result
+}
+
+#[cfg(test)]
+thread_local! {
+    static REPLACEMENT_FAILURE: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_replacement_failure(path: &Path, operation: impl FnOnce()) {
+    struct Reset(Option<std::path::PathBuf>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            REPLACEMENT_FAILURE.with(|target| *target.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(REPLACEMENT_FAILURE.with(|target| target.replace(Some(path.to_owned()))));
+    operation();
 }
 
 #[cfg(test)]
