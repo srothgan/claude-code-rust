@@ -1104,329 +1104,6 @@ mod tests {
         assert!(app.mention.is_none());
     }
 
-    #[test]
-    fn activate_with_empty_query_keeps_empty_candidates_until_threshold() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-
-        activate(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert_eq!(mention.query, "");
-        assert!(mention.candidates.is_empty());
-        assert_eq!(
-            mention.placeholder_message().as_deref(),
-            Some("Type a file or folder name after @")
-        );
-    }
-
-    #[test]
-    fn activate_waits_for_the_session_index_without_starting_a_scan() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@main");
-        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
-
-        activate(&mut app);
-
-        assert!(app.file_index.root.is_none());
-        assert!(app.file_index.scan.is_none());
-        assert!(matches!(app.file_index.status, file_index::FileIndexStatus::NotStarted));
-        assert!(app.mention.as_ref().is_some_and(|mention| {
-            matches!(mention.search_status, MentionSearchStatus::WaitingForIndex)
-        }));
-    }
-
-    #[test]
-    fn whitespace_only_query_stays_hint_without_searching_everything() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-        activate(&mut app);
-        app.input.set_text("@ ");
-        let _ = app.input.set_cursor(0, 2);
-        update_query(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert_eq!(mention.query, " ");
-        assert!(mention.candidates.is_empty());
-        assert!(matches!(mention.search_status, MentionSearchStatus::Hint));
-    }
-
-    #[test]
-    fn user_query_refresh_keeps_existing_candidates_visible() {
-        let mut app = App::test_default();
-        let mut mention = MentionState::new(0, 0, "src".to_owned(), vec![candidate("src/lib.rs")]);
-        mention.search_status = MentionSearchStatus::Ready;
-        app.mention = Some(mention);
-
-        request_match_for_active_mention(&mut app, MatchRequestMode::UserQuery);
-
-        let mention = app.mention.as_ref().expect("mention should remain active");
-        assert_eq!(mention.candidates.len(), 1);
-        assert_eq!(mention.candidates[0].rel_path, "src/lib.rs");
-        assert!(matches!(mention.search_status, MentionSearchStatus::Searching));
-    }
-
-    #[test]
-    fn update_query_keeps_active_when_query_becomes_empty() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        app.input.set_text("@src");
-        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
-        activate(&mut app);
-        run_search(&mut app);
-        assert!(app.mention.is_some());
-
-        let _ = app.input.set_cursor_col(1);
-        update_query(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should stay active");
-        assert_eq!(mention.query, "");
-        assert!(mention.candidates.is_empty());
-    }
-
-    #[test]
-    fn activate_hides_gitignored_files_by_default() {
-        let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs"]);
-        std::fs::create_dir_all(tmp.path().join(".git")).expect("create .git");
-        std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").expect("write .gitignore");
-        start_session_index(&mut app);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-
-        activate(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "visible.rs"));
-        assert!(!mention.candidates.iter().any(|candidate| candidate.rel_path == "ignored.rs"));
-    }
-
-    #[test]
-    fn activate_includes_gitignored_files_when_setting_is_disabled() {
-        let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs"]);
-        std::fs::create_dir_all(tmp.path().join(".git")).expect("create .git");
-        std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").expect("write .gitignore");
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "respectGitignore",
-            serde_json::json!(false),
-        ));
-        start_session_index(&mut app);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-
-        activate(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "visible.rs"));
-        assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "ignored.rs"));
-    }
-
-    #[test]
-    fn nested_gitignore_hides_same_directory_children() {
-        let (mut app, _tmp) =
-            app_with_temp_files(&["src/.gitignore", "src/visible.rs", "src/hidden.rs"]);
-        let root = std::path::PathBuf::from(&app.cwd_raw);
-        std::fs::create_dir_all(root.join(".git")).expect("create .git");
-        std::fs::write(root.join("src").join(".gitignore"), "hidden.rs\n")
-            .expect("write .gitignore");
-        start_session_index(&mut app);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-
-        activate(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "src/visible.rs"));
-        assert!(!mention.candidates.iter().any(|candidate| candidate.rel_path == "src/hidden.rs"));
-    }
-
-    #[test]
-    fn update_query_loads_candidates_once_threshold_is_reached() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        start_session_index(&mut app);
-        app.input.set_text("@s");
-        let _ = app.input.set_cursor(0, 2);
-
-        activate(&mut app);
-        assert!(app.mention.as_ref().is_some_and(|mention| mention.candidates.is_empty()));
-
-        app.input.set_text("@sr");
-        let _ = app.input.set_cursor(0, 3);
-        update_query(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should remain active");
-        assert_eq!(mention.query, "sr");
-        assert!(!mention.candidates.is_empty());
-    }
-
-    #[test]
-    fn completed_search_includes_shallow_and_deep_matches() {
-        let (mut app, _tmp) =
-            app_with_temp_files(&["root.rs", "src/nested/deep.rs", "src/other.txt"]);
-        start_session_index(&mut app);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-
-        activate(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs"));
-        assert!(
-            mention.candidates.iter().any(|candidate| candidate.rel_path == "src/nested/deep.rs")
-        );
-        assert!(matches!(mention.search_status, MentionSearchStatus::Ready));
-    }
-
-    #[test]
-    fn query_change_refilters_from_cache_without_restarting_walk() {
-        let (mut app, _tmp) =
-            app_with_temp_files(&["root.rs", "src/nested/needle.rs", "src/nested/other.rs"]);
-        start_session_index(&mut app);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-
-        activate(&mut app);
-        run_search(&mut app);
-        assert!(app.mention.as_ref().is_some_and(|mention| {
-            mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs")
-        }));
-
-        app.input.set_text("@needle");
-        let _ = app.input.set_cursor(0, "@needle".chars().count());
-        // Compare around the query change alone: draining events may also apply a rebuild
-        // requested by the watcher, which restarts the index for unrelated reasons.
-        let generation = app.file_index.generation;
-        update_query(&mut app);
-        assert_eq!(app.file_index.generation, generation);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should remain active");
-        let paths: Vec<&str> =
-            mention.candidates.iter().map(|candidate| candidate.rel_path.as_str()).collect();
-        assert_eq!(paths, ["src/nested/needle.rs"]);
-    }
-
-    #[test]
-    fn index_restart_replaces_a_request_left_pending_by_the_previous_generation() {
-        let (mut app, _tmp) = app_with_temp_files(&["root.rs", "src/nested/needle.rs"]);
-        start_session_index(&mut app);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-        activate(&mut app);
-        run_search(&mut app);
-
-        // Leave a request in flight, then restart the index underneath it. This is
-        // what a watcher-driven rebuild does when a `.gitignore` changes while the
-        // mention menu is open: the matcher drops the stale-generation request
-        // without replying, so nothing will ever answer this sequence.
-        request_match_for_active_mention(&mut app, MatchRequestMode::UserQuery);
-        let stale = app
-            .mention
-            .as_ref()
-            .and_then(|mention| mention.pending_match)
-            .expect("a request should be in flight");
-        assert_eq!(stale.generation, app.file_index.generation);
-
-        file_index::restart(&mut app);
-        assert_ne!(app.file_index.generation, stale.generation);
-
-        // The dead request must not hold off the refresh that follows the restart.
-        refresh_from_file_index(&mut app);
-        let pending = app
-            .mention
-            .as_ref()
-            .and_then(|mention| mention.pending_match)
-            .expect("the restart should have issued a fresh request");
-        assert_eq!(pending.generation, app.file_index.generation);
-        assert_ne!(pending.sequence, stale.sequence);
-
-        run_search(&mut app);
-        let mention = app.mention.as_ref().expect("mention should remain active");
-        assert_eq!(mention.pending_match, None);
-        assert!(!matches!(mention.search_status, MentionSearchStatus::Searching));
-        assert!(mention.candidates.iter().any(|candidate| candidate.rel_path == "root.rs"));
-    }
-
-    #[test]
-    fn scan_refresh_does_not_starve_pending_query_result() {
-        let mut app = App::test_default();
-        app.file_index.index_version = 5;
-        app.file_index.status = file_index::FileIndexStatus::Scanning;
-        let mut state = MentionState::new(0, 0, "web".to_owned(), Vec::new());
-        state.next_match_sequence = 1;
-        state.pending_match =
-            Some(PendingMatch { sequence: 1, generation: app.file_index.generation });
-        app.mention = Some(state);
-
-        refresh_from_file_index_after_scan_batch(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should remain active");
-        assert_eq!(mention.pending_match.map(|pending| pending.sequence), Some(1));
-        assert!(mention.refresh_after_pending_match);
-
-        let generation = app.file_index.generation;
-        let applied = apply_match_result(
-            &mut app,
-            file_index::MentionMatchResult {
-                generation,
-                index_version: 1,
-                sequence: 1,
-                query: "web".to_owned(),
-                candidates: vec![file_index::FileCandidate {
-                    rel_path: "web_dev_work/".to_owned(),
-                    rel_path_lower: "web_dev_work/".to_owned(),
-                    basename_lower: "web_dev_work".to_owned(),
-                    depth: 0,
-                }],
-                status: file_index::FileIndexStatus::Scanning,
-            },
-        );
-
-        let mention = app.mention.as_ref().expect("mention should remain active");
-        assert!(applied);
-        assert_eq!(mention.candidates[0].rel_path, "web_dev_work/");
-        assert_eq!(mention.pending_match.map(|pending| pending.sequence), Some(2));
-        assert!(!mention.refresh_after_pending_match);
-    }
-
-    #[test]
-    fn basename_prefix_ranks_ahead_of_shallow_path_substring() {
-        let mut app = App::test_default();
-        app.file_index.root = Some(std::path::PathBuf::from(&app.cwd_raw));
-        app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
-        app.file_index.status = file_index::FileIndexStatus::Complete;
-        app.file_index.entries.insert(
-            "docs/guide-rs.txt".to_owned(),
-            file_index::FileCandidate {
-                rel_path: "docs/guide-rs.txt".to_owned(),
-                rel_path_lower: "docs/guide-rs.txt".to_owned(),
-                basename_lower: "guide-rs.txt".to_owned(),
-                depth: 1,
-            },
-        );
-        app.file_index.entries.insert(
-            "src/rs-helper.rs".to_owned(),
-            file_index::FileCandidate {
-                rel_path: "src/rs-helper.rs".to_owned(),
-                rel_path_lower: "src/rs-helper.rs".to_owned(),
-                basename_lower: "rs-helper.rs".to_owned(),
-                depth: 1,
-            },
-        );
-
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-        activate(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert_eq!(mention.candidates[0].rel_path, "src/rs-helper.rs");
-    }
     fn select_path(app: &mut App, path: &str) {
         run_search(app);
         let candidates = &app.mention.as_ref().unwrap().candidates;
@@ -1603,6 +1280,360 @@ mod tests {
                 app.input.text(),
                 format!("FIRST\n{caret}!{}\nLAST", expected.strip_prefix(caret).unwrap())
             );
+        }
+    }
+    fn search_paths(app: &App) -> Vec<String> {
+        let mut paths = app
+            .mention
+            .as_ref()
+            .map(|m| m.candidates.iter().map(|c| c.rel_path.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        paths.sort();
+        paths
+    }
+    fn search_menu(app: &App) -> Vec<String> {
+        crate::ui::input_rows::build_composer_hint_rows(app)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+    fn deliver_match(
+        app: &mut App,
+        request: &file_index::MentionMatchRequest,
+        paths: &[&str],
+        version: u64,
+        status: file_index::FileIndexStatus,
+    ) {
+        app.file_index_event_tx
+            .send(file_index::FileIndexEvent::MatchResult(file_index::MentionMatchResult {
+                generation: request.generation,
+                index_version: version,
+                sequence: request.sequence,
+                query: request.query.clone(),
+                candidates: paths.iter().map(|p| candidate(p)).collect(),
+                status,
+            }))
+            .unwrap();
+        file_index::drain_events(app);
+    }
+    fn current_match(app: &mut App, request: &file_index::MentionMatchRequest, paths: &[&str]) {
+        deliver_match(app, request, paths, app.file_index.index_version, app.file_index.status);
+    }
+    #[test]
+    fn blank_mentions_release_selection_and_one_character_search_recovers() {
+        let (mut app, _tmp) = app_with_temp_files(&["alpha.txt", "beta.txt"]);
+        start_session_index(&mut app);
+        run_search(&mut app);
+        app.input.set_text("@");
+        activate(&mut app);
+        run_search(&mut app);
+        assert!(search_paths(&app).is_empty());
+        assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+        app.input.insert_str("a");
+        update_query(&mut app);
+        run_search(&mut app);
+        assert_eq!(search_paths(&app), ["alpha.txt", "beta.txt"]);
+        app.input.textarea_delete_char_before();
+        update_query(&mut app);
+        run_search(&mut app);
+        assert!(search_paths(&app).is_empty());
+        assert_eq!(app.input.text(), "@");
+        assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+        app.input.insert_str(" ");
+        update_query(&mut app);
+        run_search(&mut app);
+        assert!(search_paths(&app).is_empty());
+        assert_eq!(app.input.text(), "@ ");
+        assert!(!search_menu(&app).iter().any(|row| row.contains("> ")));
+        app.input.textarea_delete_char_before();
+        app.input.insert_str("beta");
+        update_query(&mut app);
+        select_path(&mut app, "beta.txt");
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "@'beta.txt' ");
+    }
+    #[test]
+    fn waiting_mention_uses_session_index_without_retyping_its_query() {
+        let (mut app, _tmp) = app_with_temp_files(&["ready.txt", "other.md"]);
+        app.input.set_text("open @ready later");
+        app.input.set_cursor(0, 11);
+        activate(&mut app);
+        assert!(app.file_index.root.is_none() && app.file_index.scan.is_none());
+        assert!(search_paths(&app).is_empty());
+        assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+        start_session_index(&mut app);
+        select_path(&mut app, "ready.txt");
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "open @'ready.txt' later");
+    }
+    #[test]
+    fn saved_ignore_policy_controls_selectable_paths_and_confirmation() {
+        for respect in [true, false] {
+            let (mut app, tmp) = app_with_temp_files(&["visible.rs", "ignored.rs", ".gitignore"]);
+            std::fs::create_dir(tmp.path().join(".git")).unwrap();
+            std::fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").unwrap();
+            if !respect {
+                app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+                    "respectGitignore",
+                    serde_json::json!(false),
+                ));
+            }
+            start_session_index(&mut app);
+            app.input.set_text("@rs");
+            activate(&mut app);
+            run_search(&mut app);
+            assert_eq!(
+                search_paths(&app),
+                if respect { vec!["visible.rs"] } else { vec!["ignored.rs", "visible.rs"] }
+            );
+            let target = if respect { "visible.rs" } else { "ignored.rs" };
+            select_path(&mut app, target);
+            confirm_selection(&mut app);
+            assert_eq!(app.input.text(), format!("@'{target}' "));
+        }
+    }
+    #[test]
+    fn refresh_keeps_selected_rows_until_the_current_result_replaces_them() {
+        let (mut app, _tmp) = app_with_temp_files(&["alpha.rs", "beta.rs", "next.txt"]);
+        start_session_index(&mut app);
+        app.input.set_text("@rs");
+        activate(&mut app);
+        run_search(&mut app);
+        let initial = search_menu(&app).into_iter().find(|r| r.contains("> ")).unwrap();
+        move_down(&mut app);
+        let before = search_menu(&app);
+        let selected = before.iter().filter(|r| r.contains("> ")).collect::<Vec<_>>();
+        assert_eq!(selected.len(), 1);
+        assert_ne!(selected[0], &initial);
+        assert!(selected[0].contains("alpha.rs") || selected[0].contains("beta.rs"));
+        let held = file_index::test_support::HeldMatcher::install(&mut app);
+        app.input.set_text("@next");
+        update_query(&mut app);
+        let request = held.request();
+        assert_eq!(search_menu(&app), before);
+        current_match(&mut app, &request, &["next.txt"]);
+        assert_eq!(search_paths(&app), ["next.txt"]);
+        assert!(search_menu(&app).iter().any(|r| r.contains("> ") && r.contains("next.txt")));
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "@'next.txt' ");
+    }
+    #[test]
+    fn completed_tree_search_excludes_nonmatches_and_confirms_deep_file() {
+        let (mut app, _tmp) = app_with_temp_files(&["root.rs", "nested/deep.rs", "unrelated.txt"]);
+        start_session_index(&mut app);
+        app.input.set_text("@rs");
+        activate(&mut app);
+        run_search(&mut app);
+        assert_eq!(search_paths(&app), ["nested/deep.rs", "root.rs"]);
+        select_path(&mut app, "nested/deep.rs");
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "@'nested/deep.rs' ");
+    }
+    #[test]
+    fn index_rebuild_replaces_a_held_request_with_new_generation_content() {
+        let (mut app, tmp) = app_with_temp_files(&["old.rs"]);
+        start_session_index(&mut app);
+        app.input.set_text("@rs");
+        activate(&mut app);
+        run_search(&mut app);
+        app.file_index.watch = None;
+        let held = file_index::test_support::HeldMatcher::install(&mut app);
+        update_query(&mut app);
+        let stale = held.request();
+        std::fs::remove_file(tmp.path().join("old.rs")).unwrap();
+        std::fs::write(tmp.path().join("new.rs"), "").unwrap();
+        app.file_index_event_tx
+            .send(file_index::FileIndexEvent::RebuildRequested { generation: stale.generation })
+            .unwrap();
+        file_index::drain_events(&mut app);
+        run_search(&mut app);
+        assert_eq!(search_paths(&app), ["new.rs"]);
+        select_path(&mut app, "new.rs");
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "@'new.rs' ");
+    }
+    #[test]
+    fn scan_batches_preserve_a_live_partial_result_then_deliver_new_candidates() {
+        let mut app = App::test_default();
+        index_paths(&mut app, &["web-old.rs"]);
+        app.file_index.status = file_index::FileIndexStatus::Scanning;
+        let held = file_index::test_support::HeldMatcher::install(&mut app);
+        app.input.set_text("@web");
+        activate(&mut app);
+        let first = held.request();
+        app.mention.as_mut().unwrap().last_scan_batch_request_at =
+            Instant::now().checked_sub(SCAN_BATCH_REFRESH_INTERVAL);
+        app.file_index_event_tx
+            .send(file_index::FileIndexEvent::ScanBatch {
+                generation: first.generation,
+                entries: vec![candidate("web-new.rs")],
+            })
+            .unwrap();
+        file_index::drain_events(&mut app);
+        assert!(held.has_no_request());
+        deliver_match(
+            &mut app,
+            &first,
+            &["web-old.rs"],
+            first.index_version,
+            file_index::FileIndexStatus::Scanning,
+        );
+        assert_eq!(search_paths(&app), ["web-old.rs"]);
+        assert!(search_menu(&app).iter().any(|r| r.contains("web-old.rs")));
+        let follow_up = held.request();
+        assert_eq!(follow_up.generation, app.file_index.generation);
+        current_match(&mut app, &follow_up, &["web-old.rs", "web-new.rs"]);
+        move_down(&mut app);
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "@'web-new.rs' ");
+    }
+    #[test]
+    fn stale_match_events_preserve_current_selection_and_do_not_consume_live_requests() {
+        for scenario in ["superseded", "old-query", "old-generation", "dismissed"] {
+            let mut app = App::test_default();
+            index_paths(&mut app, &["seed-a.rs", "seed-b.rs", "current.rs", "obsolete.rs"]);
+            let mut held = file_index::test_support::HeldMatcher::install(&mut app);
+            app.input.set_text("@seed");
+            activate(&mut app);
+            let first = held.request();
+            current_match(&mut app, &first, &["seed-a.rs", "seed-b.rs"]);
+            move_down(&mut app);
+            let stale;
+            match scenario {
+                "superseded" => {
+                    update_query(&mut app);
+                    stale = held.request();
+                    update_query(&mut app);
+                }
+                "old-query" => {
+                    deactivate(&mut app);
+                    app.input.set_text("@old");
+                    activate(&mut app);
+                    stale = held.request();
+                    deactivate(&mut app);
+                    app.input.set_text("@current");
+                    activate(&mut app);
+                }
+                "old-generation" => {
+                    update_query(&mut app);
+                    stale = held.request();
+                    file_index::reset(&mut app);
+                    index_paths(&mut app, &["current.rs"]);
+                    held = file_index::test_support::HeldMatcher::install(&mut app);
+                    app.input.set_text("@current");
+                    update_query(&mut app);
+                }
+                _ => {
+                    update_query(&mut app);
+                    stale = held.request();
+                    deactivate(&mut app);
+                }
+            }
+            let current = if scenario == "dismissed" { None } else { Some(held.request()) };
+            if scenario == "old-query" {
+                assert_eq!(stale.sequence, current.as_ref().unwrap().sequence);
+                assert_ne!(stale.query, current.as_ref().unwrap().query);
+            }
+            let menu = search_menu(&app);
+            let draft = app.input.text();
+            let focus = app.focus_owner();
+            let pending = app.mention.as_ref().and_then(|m| m.pending_match);
+            current_match(&mut app, &stale, &["obsolete.rs"]);
+            assert_eq!(search_menu(&app), menu, "{scenario}");
+            assert_eq!(app.input.text(), draft);
+            assert_eq!(app.focus_owner(), focus);
+            assert_eq!(app.mention.as_ref().and_then(|m| m.pending_match), pending);
+            let current = current.unwrap_or_else(|| {
+                assert!(app.mention.is_none());
+                app.input.set_text("@current");
+                activate(&mut app);
+                held.request()
+            });
+            current_match(&mut app, &current, &["current.rs"]);
+            assert_eq!(search_paths(&app), ["current.rs"]);
+            confirm_selection(&mut app);
+            assert_eq!(app.input.text(), "@'current.rs' ");
+        }
+    }
+    fn assert_escaped_highlight(app: &mut App, source: &str, token: &str) {
+        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+        crate::ui::input::configure_input_textarea(app);
+        let area = Rect::new(0, 0, 120, 1);
+        let mut b = Buffer::empty(area);
+        app.input.editor().render(area, &mut b);
+        let cells = b
+            .content
+            .iter()
+            .flat_map(|c| {
+                c.symbol().chars().filter(|ch| !ch.is_whitespace()).map(move |ch| (ch, c.style()))
+            })
+            .collect::<Vec<_>>();
+        let plain = source.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        assert_eq!(cells.iter().map(|x| x.0).collect::<String>(), plain);
+        let token = token.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+        let begin = plain[..plain.find(&token).unwrap()].chars().count();
+        let end = begin + token.chars().count();
+        let ordinary = cells.last().unwrap().1;
+        assert_ne!(cells[begin].1, ordinary);
+        for (i, (_, style)) in cells.iter().enumerate() {
+            if (begin..end).contains(&i) {
+                assert_eq!(*style, cells[begin].1);
+            } else {
+                assert_eq!(*style, ordinary);
+            }
+        }
+    }
+    #[test]
+    fn escaped_selected_and_literal_paths_preserve_identity_on_reentry_and_rendering() {
+        let (mut app, _tmp) = app_with_temp_files(&["docs/it's me.md"]);
+        start_session_index(&mut app);
+        run_search(&mut app);
+        app.input.set_text("界 @docs/it END");
+        app.input.set_cursor(0, "界 @docs/it".chars().count());
+        activate(&mut app);
+        select_path(&mut app, "docs/it's me.md");
+        confirm_selection(&mut app);
+        let expected = "界 @'docs/it\\'s me.md' END";
+        let token = "@'docs/it\\'s me.md'";
+        assert_eq!(app.input.text(), expected);
+        assert_escaped_highlight(&mut app, expected, token);
+        app.input.textarea_insert_char('!');
+        assert_eq!(app.input.text(), "界 @'docs/it\\'s me.md'! END");
+        app.input.textarea_delete_char_before();
+        app.input.set_cursor(0, "界 @'docs/it\\'s me.md".chars().count());
+        sync_with_cursor(&mut app);
+        run_search(&mut app);
+        let m = app.mention.as_ref().unwrap();
+        assert_eq!(m.query, "docs/it's me.md");
+        assert_eq!(m.replace_end_col, "界 @'docs/it\\'s me.md'".chars().count());
+        select_path(&mut app, "docs/it's me.md");
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), expected);
+        for (literal, expected, token, decoded) in [
+            ("it's missing", "界 @'it\\'s missing' END", "@'it\\'s missing'", "it's missing"),
+            (r"folder\notes", "界 @'folder\\\\notes' END", "@'folder\\\\notes'", r"folder\notes"),
+        ] {
+            let mut app = App::test_default();
+            app.input.set_text("界 @ END");
+            app.input.set_cursor(0, 3);
+            activate(&mut app);
+            app.input.insert_str(literal);
+            update_query(&mut app);
+            assert!(commit_literal_if_active(&mut app));
+            assert_eq!(app.input.text(), expected);
+            assert_escaped_highlight(&mut app, expected, token);
+            let caret = 2 + token.chars().count();
+            assert_eq!(app.input.cursor(), (0, caret));
+            app.input.textarea_insert_char('!');
+            assert_eq!(app.input.text(), format!("界 {token}! END"));
+            app.input.textarea_delete_char_before();
+            app.input.set_cursor(0, caret - 1);
+            sync_with_cursor(&mut app);
+            let m = app.mention.as_ref().unwrap();
+            assert_eq!(m.query, decoded);
+            assert_eq!(m.replace_end_col, caret);
+            assert!(commit_literal_if_active(&mut app));
+            assert_eq!(app.input.text(), expected);
         }
     }
 }
