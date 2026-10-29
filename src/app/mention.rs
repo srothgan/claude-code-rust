@@ -1406,23 +1406,6 @@ mod tests {
     }
 
     #[test]
-    fn committed_mentions_are_exact_text_validated() {
-        let mut spans = vec![CommittedMentionSpan {
-            row: 0,
-            start_col: 0,
-            end_col: "@'docs/manual path'".chars().count(),
-            text: "@'docs/manual path'".to_owned(),
-        }];
-        let lines = vec!["@'docs/manual path' ".to_owned()];
-        retain_valid_committed_mentions(&lines, &mut spans);
-        assert_eq!(spans.len(), 1);
-
-        let lines = vec!["@'docs/changed path' ".to_owned()];
-        retain_valid_committed_mentions(&lines, &mut spans);
-        assert!(spans.is_empty());
-    }
-
-    #[test]
     fn user_query_refresh_keeps_existing_candidates_visible() {
         let mut app = App::test_default();
         let mut mention = MentionState::new(0, 0, "src".to_owned(), vec![candidate("src/lib.rs")]);

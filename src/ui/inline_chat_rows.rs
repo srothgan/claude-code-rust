@@ -1876,10 +1876,9 @@ mod tests {
             for row in [0, 2, 5] {
                 assert!((0..width).all(|column| buffer[(column, row)].symbol() == " "));
             }
-            let geometry = crate::ui::input::compute_render_geometry(
-                ratatui::layout::Rect::new(0, 0, width, 3),
-                0,
-            );
+            let geometry = crate::ui::input::compute_render_geometry(ratatui::layout::Rect::new(
+                0, 0, width, 3,
+            ));
             assert_eq!(geometry.text.x, 3);
             let MessageBlock::Text(source) = &app.transcript.messages[0].blocks[0] else {
                 panic!("user text");

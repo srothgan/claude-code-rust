@@ -280,15 +280,33 @@ fn reduced_motion_stops_animation_and_reset_resumes_it() {
         "prefersReducedMotion",
         serde_json::json!(true),
     ));
+    app.status = AppStatus::CommandPending;
+    app.turn.pending_command_label = Some("Apply workspace setting".into());
+    let rendered = |app: &App| {
+        crate::ui::input_rows::blocked_input_lines(
+            app,
+            crate::app::ComposerBlockReason::CommandPending,
+            80,
+        )
+        .unwrap()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+    };
+    let stable = rendered(&app);
+    assert!(stable.iter().any(|r| r.contains("Apply workspace setting")));
     let frame = app.spinner_frame;
     for elapsed in [95, 121, 5000] {
         advance_spinner_frame(&mut app, base + Duration::from_millis(elapsed));
         assert_eq!(app.spinner_frame, frame);
+        assert_eq!(rendered(&app), stable);
         assert_eq!(crate::ui::SpinnerState::for_app(&app).icon(), "\u{25C6}");
     }
     app.config.snapshot = None;
     advance_spinner_frame(&mut app, base + Duration::from_millis(5001));
     assert_ne!(app.spinner_frame, frame);
+    assert_ne!(rendered(&app), stable);
+    assert!(rendered(&app).iter().any(|r| r.contains("Apply workspace setting")));
     assert_ne!(crate::ui::SpinnerState::for_app(&app).icon(), "\u{25C6}");
 }
 

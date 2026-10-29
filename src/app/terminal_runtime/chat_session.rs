@@ -11,7 +11,9 @@ use crate::ui::inline_chat_rows::LiveRowBoundaryKind;
 use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
 use crate::ui::inline_chat_rows::{LiveRowsCursor, SerializedLiveRows};
 use crate::ui::input;
-use crate::ui::input_rows::{blocked_input_lines, build_btw_status_rows, build_composer_hint_rows};
+use crate::ui::input_rows::{
+    blocked_input_lines, build_btw_status_rows, wrapped_composer_hint_rows,
+};
 use crate::ui::layout_control::LayoutControl;
 use crate::ui::theme;
 use anyhow::Context;
@@ -466,26 +468,14 @@ impl ChatTerminalSession {
         let history_action = history_plan.take_action();
         self.queue_history_plan(history_action);
         let outcome_result = self.terminal.draw_chat_frame(chat_frame, |frame, viewport_area| {
-            let (live_area, activity_area, hint_area, btw_area, editor_area, footer_area) =
-                layout_plan.areas(viewport_area);
-            if !live_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_live_rows.clone()), live_area);
-            }
-            if !activity_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_activity_rows.clone()), activity_area);
-            }
-            if !hint_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_hint_rows.clone()), hint_area);
-            }
-            if !btw_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_btw_rows.clone()), btw_area);
-            }
-            if !editor_area.is_empty() {
-                render_composer_editor(frame, app, &composer.editor, editor_area);
-            }
-            if !footer_area.is_empty() {
-                frame.render_widget(Paragraph::new(visible_footer_rows.clone()), footer_area);
-            }
+            render_mutable_frame(
+                frame,
+                app,
+                &composer,
+                layout_plan,
+                &visible_live_rows,
+                viewport_area,
+            );
         });
         let Some(outcome) = self.resolve_chat_draw_outcome(app, outcome_result)? else {
             return Ok(());
@@ -700,7 +690,7 @@ impl ChatTerminalSession {
         let activity_rows =
             crate::ui::activity_rows::build_activity_rows(app, width, std::time::Instant::now());
         let activity_row_count = u16::try_from(activity_rows.len()).unwrap_or(u16::MAX);
-        let mut hint_rows = build_composer_hint_rows(app);
+        let mut hint_rows = wrapped_composer_hint_rows(app, width);
         if app.chat_render.viewport.is_reading() {
             hint_rows.extend(crate::ui::input_rows::reading_hint_rows(app, width));
         }
@@ -718,8 +708,7 @@ impl ChatTerminalSession {
         let editor = if let Some(rows) = status_rows {
             ComposerEditor::Status(rows)
         } else {
-            let desired_height =
-                input::visual_line_count(app, width).saturating_sub(hint_row_count).max(1);
+            let desired_height = input::editor_height(app, width);
             ComposerEditor::TextArea { desired_height }
         };
         let editor_row_count = editor.total_len_u16();
@@ -1341,6 +1330,31 @@ impl MutableLayoutPlan {
     }
 }
 
+fn render_mutable_frame(
+    frame: &mut ratatui::Frame<'_>,
+    app: &mut App,
+    composer: &ComposerSurface,
+    layout: MutableLayoutPlan,
+    visible_live_rows: &[Line<'static>],
+    viewport: Rect,
+) {
+    let (live, activity, hints, btw, editor, footer) = layout.areas(viewport);
+    for (area, rows) in [
+        (live, visible_live_rows),
+        (activity, layout.activity_window.slice(&composer.activity_rows)),
+        (hints, layout.hint_visible_rows(&composer.hint_rows)),
+        (btw, layout.btw_visible_rows(&composer.btw_rows)),
+        (footer, layout.footer_visible_rows(&composer.footer_rows)),
+    ] {
+        if !area.is_empty() {
+            frame.render_widget(Paragraph::new(rows.to_vec()), area);
+        }
+    }
+    if !editor.is_empty() {
+        render_composer_editor(frame, app, &composer.editor, editor);
+    }
+}
+
 fn render_composer_editor(
     frame: &mut ratatui::Frame<'_>,
     app: &mut App,
@@ -1355,7 +1369,7 @@ fn render_composer_editor(
 
 /// Paints the composer field background and prompt marker shared by every editor body.
 fn render_composer_field(frame: &mut ratatui::Frame<'_>, area: Rect) -> input::InputRenderGeometry {
-    let geometry = input::compute_render_geometry(area, 0);
+    let geometry = input::compute_render_geometry(area);
     frame.render_widget(
         Paragraph::new("").style(Style::default().bg(theme::USER_MSG_BG)),
         geometry.field,
@@ -1552,7 +1566,6 @@ mod tests {
     use crate::ui::{input, theme};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::layout::Position;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1576,7 +1589,7 @@ mod tests {
             for (index, cell) in buffer.content.iter().enumerate() {
                 assert_eq!(cell.bg, theme::USER_MSG_BG, "cell {index} at width {width}");
             }
-            let text = input::compute_render_geometry(Rect::new(0, 0, width, height), 0).text;
+            let text = input::compute_render_geometry(Rect::new(0, 0, width, height)).text;
             let first = &buffer[(text.x, text.y)];
             assert_eq!(first.symbol(), "I");
             assert_eq!(first.fg, theme::STATUS_ERROR);
@@ -1905,14 +1918,36 @@ mod tests {
 
     #[test]
     fn render_textarea_editor_sets_native_cursor_when_input_has_focus() {
+        use ratatui::style::Modifier;
         let mut app = App::test_default();
         app.input.set_text("hello");
-        let _ = app.input.set_cursor(0, 5);
-
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
-
-        assert!(backend.cursor_visible());
-        assert_eq!(backend.cursor_position(), Position { x: 8, y: 1 });
+        for column in [2, 5] {
+            app.input.set_cursor(0, column);
+            let before = draw_composer_fixture(&mut app, 30, 14);
+            before.assert_caret_after(if column == 2 { "he" } else { "hello" });
+            let position = before.backend.cursor_position();
+            assert_eq!(
+                before.backend.buffer()[position].symbol(),
+                if column == 2 { "l" } else { " " }
+            );
+            assert!(
+                before
+                    .backend
+                    .buffer()
+                    .content
+                    .iter()
+                    .all(|c| !c.modifier.contains(Modifier::REVERSED))
+            );
+            let _rx = request_composer_permission(&mut app);
+            let focused = draw_composer_fixture(&mut app, 30, 14);
+            assert!(!focused.backend.cursor_visible());
+            assert_eq!(focused.draft(), "hello");
+            resolve_composer_permission(&mut app);
+            let restored = draw_composer_fixture(&mut app, 30, 14);
+            assert!(restored.backend.cursor_visible());
+            assert_eq!(restored.backend.cursor_position(), position);
+            assert_eq!(app.input.text(), "hello");
+        }
     }
 
     #[test]
@@ -1989,17 +2024,48 @@ mod tests {
 
     #[test]
     fn silent_pending_command_keeps_draft_in_composer_field() {
+        use crate::agent::{events::ClientEvent, model};
+        for label in [None, Some("Apply workspace mode")] {
+            let mut app = App::test_default();
+            app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+            app.input.set_text("UNSENT_DRAFT");
+            app.input.set_cursor(0, 12);
+            app.status = AppStatus::CommandPending;
+            app.turn.pending_command_label = label.map(str::to_owned);
+            app.turn.pending_command_ack = Some(crate::app::PendingCommandAck::CurrentMode);
+            let blocked = draw_composer_fixture(&mut app, 80, 18);
+            assert!(!blocked.backend.cursor_visible());
+            assert_eq!(app.input.text(), "UNSENT_DRAFT");
+            if let Some(label) = label {
+                assert!(blocked.region(blocked.editor).contains(label));
+                assert!(!blocked.region(blocked.editor).contains("UNSENT_DRAFT"));
+            } else {
+                assert_eq!(blocked.draft(), "UNSENT_DRAFT");
+            }
+            crate::app::events::handle_client_event(
+                &mut app,
+                ClientEvent::SessionUpdate {
+                    session_id: "test-session".into(),
+                    update: model::SessionUpdate::ModeStateUpdate(crate::app::ModeState {
+                        current_mode_id: "default".into(),
+                        current_mode_name: "Default".into(),
+                        available_modes: vec![],
+                    }),
+                },
+            );
+            let restored = draw_composer_fixture(&mut app, 80, 18);
+            restored.assert_caret_after("UNSENT_DRAFT");
+            app.input.textarea_insert_char('!');
+            assert_eq!(draw_composer_fixture(&mut app, 80, 18).draft(), "UNSENT_DRAFT!");
+        }
         let mut app = App::test_default();
-        app.input.set_text("keep my draft");
-        app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = None;
-
-        let rows = render_composer_editor_rows(&mut app, 40);
-
-        let prompt = input::prompt_prefix_text();
-        assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|(_, field_bg)| *field_bg));
-        assert_eq!(rows[1].0, format!(" {prompt}keep my draft"));
+        app.input.set_text("ERROR_DRAFT");
+        app.status = AppStatus::Error;
+        let failed = draw_composer_fixture(&mut app, 80, 18);
+        let body = failed.region(failed.editor);
+        assert!(body.contains("error") && body.contains("Ctrl+Q") && body.contains("ERROR_DRAFT"));
+        assert!(!failed.backend.cursor_visible());
+        assert_eq!(app.input.text(), "ERROR_DRAFT");
     }
 
     #[test]
@@ -2485,6 +2551,39 @@ mod tests {
     }
 
     #[test]
+    fn composer_field_contains_draft_and_caret_through_constrained_resize() {
+        let mut app = App::test_default();
+        app.input.set_text("FIRST\nLAST");
+        app.input.set_cursor(1, 4);
+        let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+        for area in [Rect::new(5, 3, 30, 4), Rect::new(5, 3, 60, 12)] {
+            let view = paint_composer_fixture(&mut app, &mut terminal, area);
+            assert_eq!(view.draft(), if area.height == 4 { "LAST" } else { "FIRST\nLAST" });
+            view.assert_caret_after("LAST");
+            assert!(view.editor.bottom() <= view.footer.y);
+            for y in 0..30 {
+                for x in 0..90 {
+                    if !area.contains((x, y).into()) {
+                        assert_eq!(view.backend.buffer()[(x, y)].symbol(), " ");
+                    }
+                }
+            }
+            let first_y = (view.editor.y..view.editor.bottom())
+                .find(|y| {
+                    (view.editor.x..view.editor.right())
+                        .map(|x| view.backend.buffer()[(x, *y)].symbol())
+                        .collect::<String>()
+                        .contains(if area.height == 4 { "LAST" } else { "FIRST" })
+                })
+                .unwrap();
+            let prefix = (view.editor.x..view.text.x)
+                .map(|x| view.backend.buffer()[(x, first_y)].symbol())
+                .collect::<String>();
+            assert!(!prefix.trim().is_empty());
+        }
+    }
+
+    #[test]
     fn mutable_layout_keeps_btw_surface_between_hints_and_editor() {
         let live_rows = rows(1);
         let composer = ComposerSurface {
@@ -2597,5 +2696,469 @@ mod tests {
         let plan = plan_inline_geometry(Some(old_area), 3, 120, 40);
 
         assert_eq!(plan.target_area, Some(Rect::new(0, 36, 120, 3)));
+    }
+    struct ComposerFrame {
+        backend: TestBackend,
+        hints: Rect,
+        editor: Rect,
+        text: Rect,
+        footer: Rect,
+    }
+
+    impl ComposerFrame {
+        fn region(&self, area: Rect) -> String {
+            (area.y..area.bottom())
+                .map(|y| {
+                    (area.x..area.right())
+                        .map(|x| self.backend.buffer()[(x, y)].symbol())
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        fn draft(&self) -> String {
+            self.region(self.text)
+        }
+        fn hints(&self) -> String {
+            self.region(self.hints)
+        }
+        fn assert_caret_after(&self, word: &str) {
+            assert!(self.backend.cursor_visible());
+            let cursor = self.backend.cursor_position();
+            assert!(self.text.contains(cursor));
+            let row = (self.text.x..cursor.x)
+                .map(|x| self.backend.buffer()[(x, cursor.y)].symbol())
+                .collect::<String>();
+            assert!(row.ends_with(word), "caret after {row:?}, expected {word:?}");
+        }
+        fn assert_tokens(&self, source: &str, tokens: &[&str]) {
+            let chars = (self.text.y..self.text.bottom())
+                .flat_map(|y| (self.text.x..self.text.right()).map(move |x| (x, y)))
+                .flat_map(|xy| {
+                    let cell = &self.backend.buffer()[xy];
+                    cell.symbol()
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .map(move |c| (c, cell.style()))
+                })
+                .collect::<Vec<_>>();
+            let expected = source.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+            assert_eq!(chars.iter().map(|(c, _)| *c).collect::<String>(), expected);
+            let ordinary = chars.last().unwrap().1;
+            let mut highlighted = vec![false; chars.len()];
+            for token in tokens {
+                let token = token.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+                let byte = expected.find(&token).unwrap();
+                let start = expected[..byte].chars().count();
+                let end = start + token.chars().count();
+                let style = chars[start].1;
+                assert_ne!(style, ordinary, "missing token style: {token}");
+                for i in start..end {
+                    assert_eq!(chars[i].1, style, "partial token: {token}");
+                    highlighted[i] = true;
+                }
+            }
+            for (i, (_, style)) in chars.iter().enumerate() {
+                if !highlighted[i] {
+                    assert_eq!(*style, ordinary, "styled neighbor at {i}");
+                }
+            }
+        }
+    }
+    fn paint_composer_fixture(
+        app: &mut App,
+        terminal: &mut Terminal<TestBackend>,
+        area: Rect,
+    ) -> ComposerFrame {
+        let surface = ChatTerminalSession::build_composer_surface(app, area.width);
+        let layout = MutableLayoutPlan::new(&[], &surface, area.height);
+        let (_, _, hints, _, editor, footer) = layout.areas(area);
+        terminal
+            .draw(|frame| super::render_mutable_frame(frame, app, &surface, layout, &[], area))
+            .unwrap();
+        ComposerFrame {
+            backend: terminal.backend().clone(),
+            hints,
+            editor,
+            footer,
+            text: input::compute_render_geometry(editor).text,
+        }
+    }
+    fn draw_composer_fixture(app: &mut App, width: u16, height: u16) -> ComposerFrame {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        paint_composer_fixture(app, &mut terminal, Rect::new(0, 0, width, height))
+    }
+    fn press_composer_key(
+        app: &mut App,
+        code: crossterm::event::KeyCode,
+        modifiers: crossterm::event::KeyModifiers,
+    ) {
+        crate::app::events::handle_terminal_event(
+            app,
+            crossterm::event::Event::Key(crossterm::event::KeyEvent::new(code, modifiers)),
+        );
+    }
+    fn request_composer_permission(
+        app: &mut App,
+    ) -> tokio::sync::oneshot::Receiver<crate::agent::model::RequestPermissionResponse> {
+        use crate::agent::{events::ClientEvent, model};
+        app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
+        let tc = crate::app::test_support::tool_call_info(
+            "audit-permission",
+            model::ToolCallStatus::InProgress,
+        );
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(tc))],
+            None,
+        ));
+        app.index_tool_call("audit-permission".into(), app.transcript.messages.len() - 1, 0);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        crate::app::events::handle_client_event(
+            app,
+            ClientEvent::PermissionRequest {
+                session_id: "test-session".into(),
+                request: model::RequestPermissionRequest::new(
+                    "test-session",
+                    model::ToolCallUpdate::new(
+                        "audit-permission",
+                        model::ToolCallUpdateFields::new(),
+                    ),
+                    vec![model::PermissionOption::new(
+                        "allow",
+                        "Allow",
+                        model::PermissionOptionKind::AllowOnce,
+                    )],
+                    None,
+                ),
+                response_tx: tx,
+            },
+        );
+        app.claim_focus_target(FocusTarget::Permission);
+        rx
+    }
+    fn resolve_composer_permission(app: &mut App) {
+        crate::app::events::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::InteractionCancelled {
+                session_id: "test-session".into(),
+                interaction_id: "audit-permission".into(),
+            },
+        );
+    }
+    #[test]
+    fn composer_slash_highlights_only_the_leading_token() {
+        for (source, tokens) in [
+            ("/mode plan END", vec!["/mode"]),
+            ("\u{3000}/møde plan END", vec!["/møde"]),
+            ("hello /mode END", vec![]),
+            ("/ END", vec![]),
+            ("   END", vec![]),
+        ] {
+            let mut app = App::test_default();
+            app.input.set_text(source);
+            draw_composer_fixture(&mut app, 80, 16).assert_tokens(source, &tokens);
+            assert_eq!(app.input.text(), source);
+        }
+    }
+    #[test]
+    fn composer_subagent_highlights_refresh_after_edits() {
+        let mut app = App::test_default();
+        app.input.set_text("界 &reviewer and &explore && END");
+        draw_composer_fixture(&mut app, 80, 16)
+            .assert_tokens("界 &reviewer and &explore && END", &["&reviewer", "&explore"]);
+        app.input.set_cursor(0, 2);
+        app.input.textarea_delete_char_after();
+        draw_composer_fixture(&mut app, 80, 16)
+            .assert_tokens("界 reviewer and &explore && END", &["&explore"]);
+        app.input.set_text("cargo test && cargo clippy END");
+        draw_composer_fixture(&mut app, 80, 16)
+            .assert_tokens("cargo test && cargo clippy END", &[]);
+    }
+    #[test]
+    fn composer_literal_mentions_keep_their_unicode_regions_and_clear_stale_style() {
+        let mut app = App::test_default();
+        app.input.set_text("界 @");
+        app.input.set_cursor(0, 3);
+        crate::app::mention::activate(&mut app);
+        app.input.insert_str("döcs/manual path");
+        crate::app::mention::update_query(&mut app);
+        assert!(crate::app::mention::commit_literal_if_active(&mut app));
+        app.input.insert_str("and @");
+        crate::app::mention::activate(&mut app);
+        app.input.insert_str("other path");
+        crate::app::mention::update_query(&mut app);
+        assert!(crate::app::mention::commit_literal_if_active(&mut app));
+        app.input.insert_str("END");
+        let source = "界 @'döcs/manual path' and @'other path' END";
+        assert_eq!(app.input.text(), source);
+        let cursor = app.input.cursor();
+        draw_composer_fixture(&mut app, 100, 18)
+            .assert_tokens(source, &["@'döcs/manual path'", "@'other path'"]);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input.text(), source);
+        app.input.set_cursor(0, 2);
+        app.input.textarea_delete_char_after();
+        app.input.textarea_insert_char('x');
+        draw_composer_fixture(&mut app, 100, 18)
+            .assert_tokens("界 x'döcs/manual path' and @'other path' END", &["@'other path'"]);
+    }
+    #[test]
+    fn composer_atoms_keep_payloads_and_highlights_after_unicode_edits() {
+        use crate::app::{clipboard_image::ImageAttachment, input::InputYankPart};
+        let mut app = App::test_default();
+        let images = [
+            ImageAttachment { data: "YQ==".into(), mime_type: "image/png".into() },
+            ImageAttachment { data: "Yg==".into(), mime_type: "image/jpeg".into() },
+        ];
+        app.input.insert_parts([
+            InputYankPart::Text("界 prefix ".into()),
+            InputYankPart::Paste("stored\nbody".into()),
+            InputYankPart::Text(" mid ".into()),
+            InputYankPart::Image(images[0].clone()),
+            InputYankPart::Text(" ".into()),
+            InputYankPart::Image(images[1].clone()),
+            InputYankPart::Text(" 終 END".into()),
+        ]);
+        let original = app.input.lines().join("\n");
+        let expanded = app.input.text();
+        let cursor = app.input.cursor();
+        let paste = app.input.inline_pastes();
+        let start = original.find('[').unwrap();
+        let end = original[start..].find(']').unwrap() + start + 1;
+        let label = original[start..end].to_owned();
+        for width in [34, 90] {
+            draw_composer_fixture(&mut app, width, 24)
+                .assert_tokens(&original, &[&label, "[Image #1]", "[Image #2]"]);
+        }
+        assert_eq!(app.input.lines().join("\n"), original);
+        assert_eq!(app.input.text(), expanded);
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input.images(), images);
+        assert_eq!(app.input.inline_pastes(), paste);
+        app.input.set_cursor(0, 0);
+        app.input.insert_str("é ");
+        let changed = app.input.lines().join("\n");
+        draw_composer_fixture(&mut app, 34, 24)
+            .assert_tokens(&changed, &[&label, "[Image #1]", "[Image #2]"]);
+        assert_eq!(app.input.images(), images);
+        assert_eq!(app.input.inline_pastes(), paste);
+    }
+    #[test]
+    fn composer_bounded_viewport_keeps_both_draft_ends_editable() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        let draft = (0..25)
+            .map(|n| format!("DRAFT_{n:02} words with a tail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.input.set_text(&draft);
+        for width in [36, 75] {
+            app.input.set_cursor(24, 27);
+            let last = draw_composer_fixture(&mut app, width, 45);
+            assert!(last.draft().contains("DRAFT_24"));
+            assert!(!last.draft().contains("DRAFT_00"));
+            assert!(last.text.height < 25);
+            assert!(last.backend.cursor_visible());
+            assert!(last.editor.bottom() <= last.footer.y);
+            app.input.set_cursor(0, 0);
+            let first = draw_composer_fixture(&mut app, width, 45);
+            assert!(first.draft().contains("DRAFT_00"));
+            assert!(!first.draft().contains("DRAFT_24"));
+            assert_eq!(app.input.text(), draft);
+        }
+        app.input.textarea_insert_char('X');
+        assert!(draw_composer_fixture(&mut app, 75, 45).draft().contains("XDRAFT_00"));
+        app.input.set_text("SHORT_END");
+        app.input.set_cursor(0, 9);
+        let short = draw_composer_fixture(&mut app, 75, 45);
+        short.assert_caret_after("SHORT_END");
+        assert!(short.text.height < 10);
+    }
+    #[test]
+    fn composer_hint_allocation_keeps_the_actual_draft_budget() {
+        for cancel in [false, true] {
+            let mut app = App::test_default();
+            app.status = AppStatus::Running;
+            app.turn.cancel_requested = cancel;
+            app.input.set_text("FIRST\nSECOND\nTHIRD");
+            app.input.set_cursor(2, 5);
+            let plain = draw_composer_fixture(&mut app, 80, 30);
+            assert_eq!(plain.draft(), "FIRST\nSECOND\nTHIRD");
+            plain.assert_caret_after("THIRD");
+            app.session_runtime.login_hint = Some(crate::app::LoginHint {
+                method_name: "OAuth".into(),
+                method_description: "Sign in safely".into(),
+            });
+            app.pending_user_messages
+                .try_push_sending(crate::app::PendingUserMessage::sending(
+                    "queued".into(),
+                    "QUEUED_BODY".into(),
+                    vec![],
+                ))
+                .unwrap();
+            let combined = draw_composer_fixture(&mut app, 80, 30);
+            assert_eq!(combined.draft(), "FIRST\nSECOND\nTHIRD");
+            combined.assert_caret_after("THIRD");
+            assert!(combined.hints().contains("OAuth"));
+            assert!(combined.hints().contains("QUEUED_BODY"));
+            assert!(combined.hints.bottom() <= combined.editor.y);
+        }
+    }
+    #[test]
+    fn composer_login_content_and_action_survive_wrapping() {
+        for (width, description) in [
+            (40, "Visit the browser and authorize this project before continuing"),
+            (90, "Use browser"),
+        ] {
+            let mut app = App::test_default();
+            app.input.set_text("DRAFT_END");
+            app.input.set_cursor(0, 9);
+            app.session_runtime.login_hint = Some(crate::app::LoginHint {
+                method_name: "OAuth".into(),
+                method_description: description.into(),
+            });
+            let view = draw_composer_fixture(&mut app, width, 30);
+            let hints = view.hints().split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(hints.contains("OAuth"));
+            assert!(hints.contains(description));
+            assert!(hints.contains("/login"));
+            assert_eq!(view.draft(), "DRAFT_END");
+            view.assert_caret_after("DRAFT_END");
+        }
+    }
+    #[test]
+    fn composer_suggestions_follow_real_focus_draft_and_autocomplete_transitions() {
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        app.session_runtime.prompt_suggestion = Some("Inspect retries".into());
+        for cancel in [false, true] {
+            app.turn.cancel_requested = cancel;
+            let v = draw_composer_fixture(&mut app, 80, 22);
+            assert!(v.hints().contains("Inspect retries") && v.hints().contains("Tab"));
+        }
+        app.turn.cancel_requested = false;
+        app.input.set_text("DRAFT");
+        let v = draw_composer_fixture(&mut app, 80, 22);
+        assert!(!v.hints().contains("Inspect retries"));
+        assert_eq!(v.draft(), "DRAFT");
+        app.input.clear();
+        let _rx = request_composer_permission(&mut app);
+        let v = draw_composer_fixture(&mut app, 80, 22);
+        assert!(!v.hints().contains("Inspect retries"));
+        assert!(!v.backend.cursor_visible());
+        resolve_composer_permission(&mut app);
+        assert!(draw_composer_fixture(&mut app, 80, 22).hints().contains("Inspect retries"));
+        app.input.set_text("@");
+        app.input.set_cursor(0, 1);
+        crate::app::mention::activate(&mut app);
+        let v = draw_composer_fixture(&mut app, 80, 22);
+        assert!(v.hints().contains("file") && v.hints().contains('@'));
+        assert!(!v.hints().contains("Inspect retries"));
+        crate::app::mention::deactivate(&mut app);
+        app.input.clear();
+        assert!(draw_composer_fixture(&mut app, 80, 22).hints().contains("Inspect retries"));
+        app.session_runtime.prompt_suggestion = Some("   ".into());
+        assert!(draw_composer_fixture(&mut app, 80, 22).hints().trim().is_empty());
+    }
+    #[test]
+    fn composer_queue_previews_keep_ordinals_and_refresh_without_second_lines() {
+        let mut app = App::test_default();
+        app.input.set_text("DRAFT_END");
+        app.input.set_cursor(0, 9);
+        let mut terminal = Terminal::new(TestBackend::new(80, 22)).unwrap();
+        for (id, body) in
+            [("a", "APPLE"), ("b", "BERRY"), ("c", "CHERRY"), ("d", "DATE"), ("e", "ELDER")]
+        {
+            app.pending_user_messages
+                .try_push_sending(crate::app::PendingUserMessage::sending(
+                    id.into(),
+                    format!("{body}\nPRIVATE_SECOND"),
+                    vec![],
+                ))
+                .unwrap();
+        }
+        let first = paint_composer_fixture(&mut app, &mut terminal, Rect::new(0, 0, 80, 22));
+        let hints = first.hints();
+        assert!(hints.contains("(5)") && hints.contains("Esc"));
+        assert!(!hints.contains("APPLE") && !hints.contains("PRIVATE_SECOND"));
+        let visible = hints.lines().filter_map(|r| r.trim().split_once(". ")).collect::<Vec<_>>();
+        assert!(!visible.is_empty() && visible.len() < 5);
+        for (ordinal, body) in &visible {
+            let n = ordinal.parse::<usize>().unwrap();
+            assert_eq!(*body, ["APPLE", "BERRY", "CHERRY", "DATE", "ELDER"][n - 1]);
+        }
+        assert_eq!(
+            visible.iter().map(|(n, _)| n.parse::<usize>().unwrap()).collect::<Vec<_>>(),
+            ((6 - visible.len())..=5).collect::<Vec<_>>()
+        );
+        assert_eq!(visible.last().unwrap().1, "ELDER");
+        first.assert_caret_after("DRAFT_END");
+        app.pending_user_messages.remove("e").unwrap();
+        app.pending_user_messages
+            .try_push_sending(crate::app::PendingUserMessage::sending(
+                "f".into(),
+                "FIG\nPRIVATE_SECOND".into(),
+                vec![],
+            ))
+            .unwrap();
+        let next = paint_composer_fixture(&mut app, &mut terminal, Rect::new(0, 0, 80, 22));
+        assert!(!next.hints().contains("ELDER"));
+        assert!(next.hints().lines().any(|r| r.trim() == "5. FIG"));
+        assert_eq!(next.draft(), "DRAFT_END");
+        app.pending_user_messages.drain();
+        let empty = paint_composer_fixture(&mut app, &mut terminal, Rect::new(0, 0, 80, 22));
+        assert!(empty.hints().trim().is_empty());
+        empty.assert_caret_after("DRAFT_END");
+    }
+    #[test]
+    fn composer_reading_hints_preserve_multiline_draft_and_caret() {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let mut app = App::test_default();
+        app.status = AppStatus::Ready;
+        for n in 0..20 {
+            app.push_message_tracked(ChatMessage::new(
+                MessageRole::User,
+                vec![MessageBlock::Text(TextBlock::from_complete(&format!("HISTORY {n}")))],
+                None,
+            ));
+        }
+        app.input.set_text("FIRST source\nSECOND source\nTHIRD_END");
+        app.input.set_cursor(2, 9);
+        let mut terminal = Terminal::new(TestBackend::new(38, 30)).unwrap();
+        press_composer_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+        assert!(app.chat_render.viewport.is_reading());
+        let reading = paint_composer_fixture(&mut app, &mut terminal, Rect::new(0, 0, 38, 30));
+        assert!(reading.hints().contains("Reading output"));
+        assert!(reading.hints.height > 1);
+        assert_eq!(reading.draft(), "FIRST source\nSECOND source\nTHIRD_END");
+        reading.assert_caret_after("THIRD_END");
+        press_composer_key(&mut app, KeyCode::End, KeyModifiers::CONTROL);
+        let live = paint_composer_fixture(&mut app, &mut terminal, Rect::new(0, 0, 38, 30));
+        assert!(!live.region(Rect::new(0, 0, 38, 30)).contains("Reading output"));
+        assert_eq!(live.draft(), "FIRST source\nSECOND source\nTHIRD_END");
+        live.assert_caret_after("THIRD_END");
+        terminal.backend_mut().resize(70, 30);
+        let wide = paint_composer_fixture(&mut app, &mut terminal, Rect::new(0, 0, 70, 30));
+        assert_eq!(wide.draft(), "FIRST source\nSECOND source\nTHIRD_END");
+        wide.assert_caret_after("THIRD_END");
+    }
+    #[test]
+    fn composer_shutdown_selects_guidance_over_competing_status() {
+        for status in [AppStatus::Error, AppStatus::CommandPending] {
+            let mut app = App::test_default();
+            app.status = status;
+            app.turn.pending_command_label = Some("COMPETING_LABEL".into());
+            app.input.set_text("UNSENT_DRAFT");
+            app.request_shutdown();
+            let v = draw_composer_fixture(&mut app, 90, 18);
+            let body = v.region(v.editor);
+            assert!(body.contains("Shutting down") && body.contains("Ctrl+C"));
+            assert!(!body.contains("COMPETING_LABEL"));
+            assert!(!v.backend.cursor_visible());
+            assert_eq!(app.input.text(), "UNSENT_DRAFT");
+        }
     }
 }

@@ -1,0 +1,183 @@
+# Vendored from crates.io tui-textarea-2 0.13.2 (upstream dfaa7cfca9bf6d49231af8abdfe091dabeee7184).
+# Local patch: clamp the vertical viewport to the current rendered source extent.
+# Remove this override when an upstream release contains the viewport fix.
+# Examples/readme omitted; dev backend features limited to crossterm for host-independent tests.
+[package]
+edition = "2024"
+rust-version = "1.88.0"
+name = "tui-textarea-2"
+version = "0.13.2"
+authors = [
+    "Simon Peter Rothgang <simonrothgang@icloud.com>",
+    "rhysd <lin90162@yahoo.co.jp>",
+]
+build = false
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+description = """
+tui-textarea is a simple yet powerful text editor widget for ratatui. Multi-line
+text editor can be easily put as part of your TUI application.
+"""
+homepage = "https://github.com/srothgan/tui-textarea#readme"
+documentation = "https://docs.rs/tui-textarea-2/latest/tui_textarea/"
+readme = false
+keywords = [
+    "tui",
+    "textarea",
+    "editor",
+    "input",
+    "ratatui",
+]
+categories = [
+    "text-editors",
+    "text-processing",
+]
+license = "MIT"
+repository = "https://github.com/srothgan/tui-textarea"
+
+[package.metadata.docs.rs]
+features = [
+    "search",
+    "crossterm",
+    "termwiz",
+    "termion",
+    "serde",
+]
+rustdoc-args = [
+    "--cfg",
+    "docsrs",
+]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[features]
+arbitrary = ["dep:arbitrary"]
+crossterm = [
+    "ratatui",
+    "dep:crossterm",
+]
+crossterm_0_28 = [
+    "ratatui",
+    "dep:crossterm-028",
+]
+default = ["crossterm"]
+no-backend = ["ratatui"]
+ratatui = [
+    "dep:ratatui-core",
+    "dep:ratatui-widgets",
+]
+search = ["dep:regex"]
+serde = ["dep:serde"]
+termion = [
+    "ratatui",
+    "dep:termion",
+]
+termwiz = [
+    "ratatui",
+    "dep:termwiz",
+]
+
+[lib]
+name = "tui_textarea"
+path = "src/lib.rs"
+
+[[test]]
+name = "atomic"
+path = "tests/atomic.rs"
+
+[[test]]
+name = "cursor"
+path = "tests/cursor.rs"
+
+[[test]]
+name = "history"
+path = "tests/history.rs"
+
+[[test]]
+name = "input"
+path = "tests/input.rs"
+
+[[test]]
+name = "measure"
+path = "tests/measure.rs"
+
+[[test]]
+name = "search"
+path = "tests/search.rs"
+
+[[test]]
+name = "serde"
+path = "tests/serde.rs"
+
+[[test]]
+name = "textarea"
+path = "tests/textarea.rs"
+
+[[test]]
+name = "wrap"
+path = "tests/wrap.rs"
+
+[dependencies.arbitrary]
+version = "1"
+features = ["derive"]
+optional = true
+
+[dependencies.crossterm]
+version = "0.29"
+optional = true
+package = "crossterm"
+
+[dependencies.crossterm-028]
+version = "0.28"
+optional = true
+package = "crossterm"
+
+[dependencies.portable-atomic]
+version = "1.11.1"
+
+[dependencies.ratatui-core]
+version = "0.1.0"
+optional = true
+default-features = false
+
+[dependencies.ratatui-widgets]
+version = "0.3.0"
+optional = true
+default-features = false
+
+[dependencies.regex]
+version = "1"
+optional = true
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+optional = true
+
+[dependencies.termion]
+version = "4.0"
+optional = true
+
+[dependencies.termwiz]
+version = "0.23.0"
+optional = true
+
+[dependencies.unicode-segmentation]
+version = "1.10.1"
+
+[dependencies.unicode-width]
+version = "0.2.0"
+
+[dev-dependencies.ratatui]
+version = "0.30.0"
+features = [
+    "crossterm",
+]
+
+[dev-dependencies.serde_json]
+version = "1.0.120"
+
+[profile.bench]
+lto = "thin"

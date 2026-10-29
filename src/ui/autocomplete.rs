@@ -23,10 +23,6 @@ pub fn is_active(app: &App) -> bool {
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
-pub fn composer_hint_height(app: &App) -> u16 {
-    u16::try_from(composer_hint_rows(app).len()).unwrap_or(u16::MAX)
-}
-
 pub fn composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let Some(dropdown) = active_dropdown(app) else {
         return Vec::new();
@@ -339,7 +335,7 @@ fn push_highlighted_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{composer_hint_height, composer_hint_rows, find_case_insensitive_range, is_active};
+    use super::{composer_hint_rows, find_case_insensitive_range, is_active};
     use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App, file_index, mention, slash, subagent};
     use crate::ui::theme;
 
@@ -367,7 +363,7 @@ mod tests {
         let rows = composer_hint_rows(&app);
 
         assert!(is_active(&app));
-        assert_eq!(composer_hint_height(&app), 1);
+        assert_eq!(composer_hint_rows(&app).len(), 1);
         assert_eq!(rows.len(), 1);
         assert_eq!(line_text(&rows[0]), "  [ Type a file or folder name after @");
     }
@@ -381,7 +377,7 @@ mod tests {
 
         let rows = composer_hint_rows(&app);
 
-        assert_eq!(composer_hint_height(&app), 5);
+        assert_eq!(composer_hint_rows(&app).len(), 5);
         assert_eq!(rows.len(), 5);
         assert!(line_text(&rows[0]).contains("/agent"));
     }
@@ -398,7 +394,7 @@ mod tests {
 
         let rows = composer_hint_rows(&app);
 
-        assert_eq!(composer_hint_height(&app), 1);
+        assert_eq!(composer_hint_rows(&app).len(), 1);
         assert_eq!(rows.len(), 1);
         assert_eq!(line_text(&rows[0]), "  [ Loading messages");
     }
@@ -414,7 +410,7 @@ mod tests {
 
         let rows = composer_hint_rows(&app);
 
-        assert_eq!(composer_hint_height(&app), 1);
+        assert_eq!(composer_hint_rows(&app).len(), 1);
         assert_eq!(rows.len(), 1);
         assert_eq!(line_text(&rows[0]), "  [ Type a subagent name after &");
     }
@@ -444,7 +440,7 @@ mod tests {
 
         let rows = composer_hint_rows(&app);
 
-        assert_eq!(composer_hint_height(&app), 2);
+        assert_eq!(composer_hint_rows(&app).len(), 2);
         assert_eq!(rows.len(), 2);
         assert!(line_text(&rows[0]).starts_with("  \u{250c}\u{2500} "));
         assert!(line_text(&rows[1]).starts_with("  \u{2514}\u{2500} "));
