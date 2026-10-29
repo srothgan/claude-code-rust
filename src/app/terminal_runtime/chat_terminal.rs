@@ -9,7 +9,7 @@ use crossterm::cursor::MoveTo;
 use crossterm::queue;
 use crossterm::style::Print;
 use crossterm::terminal::{Clear, ClearType, DisableLineWrap};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
@@ -19,8 +19,66 @@ use std::error::Error;
 use std::fmt;
 use std::io::{Stdout, Write};
 
-type StdoutBackend = super::tracked_cursor_backend::TrackedCursorBackend<CrosstermBackend<Stdout>>;
-type StdoutTerminal = Terminal<StdoutBackend>;
+type InlineTerminal<I> =
+    Terminal<super::tracked_cursor_backend::TrackedCursorBackend<<I as TerminalIo>::Backend>>;
+
+/// External terminal operations shared by the owner and its Ratatui backend.
+pub(super) trait TerminalIo: Clone {
+    type Backend: Backend<Error = std::io::Error>;
+    fn backend(&self) -> Self::Backend;
+    fn snapshot(&self) -> anyhow::Result<TerminalSnapshot>;
+    fn move_cursor(&self, position: Position) -> anyhow::Result<()>;
+    fn clear_lines(&self, rows: std::ops::Range<u16>) -> anyhow::Result<()>;
+    fn append_blank_lines(&self, bottom: u16, rows: u16) -> anyhow::Result<()>;
+    fn purge(&self) -> anyhow::Result<()>;
+    fn synchronized<T>(&self, draw: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T>;
+}
+
+#[derive(Clone)]
+pub(super) struct NativeTerminalIo;
+
+impl TerminalIo for NativeTerminalIo {
+    type Backend = CrosstermBackend<Stdout>;
+    fn backend(&self) -> Self::Backend {
+        CrosstermBackend::new(std::io::stdout())
+    }
+    fn snapshot(&self) -> anyhow::Result<TerminalSnapshot> {
+        TerminalSnapshot::current("failed to read terminal size")
+    }
+    fn move_cursor(&self, position: Position) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout();
+        queue!(stdout, MoveTo(position.x, position.y)).context("failed to queue cursor move")?;
+        stdout.flush().context("failed to flush cursor move")
+    }
+    fn clear_lines(&self, rows: std::ops::Range<u16>) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout();
+        for row in rows {
+            queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine))
+                .context("failed to queue bounded inline clear")?;
+        }
+        stdout.flush().context("failed to flush bounded inline clear")
+    }
+    fn append_blank_lines(&self, bottom: u16, rows: u16) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout();
+        queue!(stdout, MoveTo(0, bottom)).context("failed to move cursor before owned growth")?;
+        for _ in 0..rows {
+            queue!(stdout, Print("\r\n")).context("failed to queue owned growth newline")?;
+        }
+        stdout.flush().context("failed to flush owned growth newlines")
+    }
+    fn purge(&self) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout();
+        stdout
+            .write_all(PURGE_REPLAY_CLEAR_ANSI.as_bytes())
+            .context("failed to queue purge replay clear")?;
+        stdout.flush().context("failed to flush purge replay clear")
+    }
+    fn synchronized<T>(&self, draw: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+        std::io::stdout()
+            .sync_update(|_| draw())
+            .context("failed synchronized inline chat terminal update")?
+    }
+}
 pub(super) const PURGE_REPLAY_CLEAR_ANSI: &str = "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,8 +212,9 @@ impl InlineViewportState {
     }
 }
 
-pub(super) struct ChatTerminal {
-    terminal: Option<StdoutTerminal>,
+pub(super) struct ChatTerminal<I: TerminalIo = NativeTerminalIo> {
+    io: I,
+    terminal: Option<InlineTerminal<I>>,
     state: InlineViewportState,
     pending_history: VecDeque<PendingHistoryBatch>,
     replay: Option<ReplayState>,
@@ -199,7 +258,25 @@ impl ReplayState {
 
 impl ChatTerminal {
     pub(super) fn new(owned_top: u16) -> Self {
+        Self::with_io(owned_top, NativeTerminalIo)
+    }
+    pub(super) fn ensure_line_wrap_disabled(disabled: &mut bool) -> anyhow::Result<()> {
+        if *disabled {
+            return Ok(());
+        }
+
+        let mut stdout = std::io::stdout();
+        queue!(stdout, DisableLineWrap).context("failed to disable inline viewport line wrap")?;
+        stdout.flush().context("failed to flush line-wrap disable")?;
+        *disabled = true;
+        Ok(())
+    }
+}
+
+impl<I: TerminalIo> ChatTerminal<I> {
+    fn with_io(owned_top: u16, io: I) -> Self {
         Self {
+            io,
             terminal: None,
             state: InlineViewportState::new(owned_top),
             pending_history: VecDeque::new(),
@@ -213,13 +290,10 @@ impl ChatTerminal {
     }
 
     pub(super) fn reset_purge_replay(&mut self, reason: &'static str) -> anyhow::Result<()> {
-        let (terminal_width, terminal_height) = crossterm::terminal::size()
-            .context("failed to read terminal size before purge replay")?;
-        let mut stdout = std::io::stdout();
-        stdout
-            .write_all(PURGE_REPLAY_CLEAR_ANSI.as_bytes())
-            .context("failed to queue purge replay clear")?;
-        stdout.flush().context("failed to flush purge replay clear")?;
+        let snapshot =
+            self.io.snapshot().context("failed to read terminal size before purge replay")?;
+        let (terminal_width, terminal_height) = (snapshot.width, snapshot.height);
+        self.io.purge()?;
 
         self.reset_after_purge_replay_clear(terminal_width, terminal_height);
         tracing::debug!(
@@ -273,18 +347,6 @@ impl ChatTerminal {
         self.clear_inline_terminal_viewport("mutable_reset")?;
         self.terminal = None;
         self.pending_native_clear_reason = None;
-        Ok(())
-    }
-
-    pub(super) fn ensure_line_wrap_disabled(disabled: &mut bool) -> anyhow::Result<()> {
-        if *disabled {
-            return Ok(());
-        }
-
-        let mut stdout = std::io::stdout();
-        queue!(stdout, DisableLineWrap).context("failed to disable inline viewport line wrap")?;
-        stdout.flush().context("failed to flush line-wrap disable")?;
-        *disabled = true;
         Ok(())
     }
 
@@ -352,7 +414,7 @@ impl ChatTerminal {
         let Some(area) = self.state.area else {
             return Ok(());
         };
-        move_cursor_to(Rect::new(0, area.bottom().saturating_sub(1), 0, 0))
+        self.io.move_cursor(Position::new(0, area.bottom().saturating_sub(1)))
     }
 
     pub(super) fn is_replay_active(&self) -> bool {
@@ -382,43 +444,40 @@ impl ChatTerminal {
     where
         F: FnOnce(&mut ratatui::Frame<'_>, Rect),
     {
-        let mut stdout = std::io::stdout();
-        stdout
-            .sync_update(|_| -> anyhow::Result<ChatDrawOutcome> {
-                let snapshot = chat_frame.terminal;
-                ensure_terminal_snapshot(snapshot, "draw_start")?;
-                // Insert history before allocating the live viewport. A full-height
-                // live window must not consume the capacity needed to restore scrollback.
-                if self.has_pending_history_rows() {
-                    self.ensure_chat_geometry(1, snapshot)?;
-                }
-                let flushed_history = self.flush_queued_history(snapshot)?;
-                self.ensure_chat_geometry(chat_frame.requested_inline_height, snapshot)?;
-                let viewport_area = self.draw_mutable_viewport(snapshot, render_mutable)?;
+        self.io.clone().synchronized(|| -> anyhow::Result<ChatDrawOutcome> {
+            let snapshot = chat_frame.terminal;
+            ensure_terminal_snapshot(&self.io, snapshot, "draw_start")?;
+            // Insert history before allocating the live viewport. A full-height
+            // live window must not consume the capacity needed to restore scrollback.
+            if self.has_pending_history_rows() {
+                self.ensure_chat_geometry(1, snapshot)?;
+            }
+            let flushed_history = self.flush_queued_history(snapshot)?;
+            self.ensure_chat_geometry(chat_frame.requested_inline_height, snapshot)?;
+            let viewport_area = self.draw_mutable_viewport(snapshot, render_mutable)?;
 
-                self.state.area = Some(viewport_area);
-                self.mark_area_owned(viewport_area, snapshot.height, "viewport_draw");
-                tracing::debug!(
-                    target: crate::logging::targets::APP_RENDER,
-                    event_name = "inline_chat_terminal_draw_transaction",
-                    message = "chat terminal owner completed draw transaction",
-                    outcome = "success",
-                    terminal_width = snapshot.width,
-                    terminal_height = snapshot.height,
-                    requested_height = chat_frame.requested_inline_height,
-                    final_height = viewport_area.height,
-                    viewport_top = viewport_area.top(),
-                    owned_top = self.state.owned_top,
-                    owned_bottom = self.state.owned_bottom,
-                    flushed_rows = flushed_history.flushed_rows,
-                    confirmed_ids = flushed_history.confirmed_ids.len(),
-                    replay_complete = flushed_history.replay_complete,
-                    replay_incomplete = flushed_history.replay_incomplete,
-                );
+            self.state.area = Some(viewport_area);
+            self.mark_area_owned(viewport_area, snapshot.height, "viewport_draw");
+            tracing::debug!(
+                target: crate::logging::targets::APP_RENDER,
+                event_name = "inline_chat_terminal_draw_transaction",
+                message = "chat terminal owner completed draw transaction",
+                outcome = "success",
+                terminal_width = snapshot.width,
+                terminal_height = snapshot.height,
+                requested_height = chat_frame.requested_inline_height,
+                final_height = viewport_area.height,
+                viewport_top = viewport_area.top(),
+                owned_top = self.state.owned_top,
+                owned_bottom = self.state.owned_bottom,
+                flushed_rows = flushed_history.flushed_rows,
+                confirmed_ids = flushed_history.confirmed_ids.len(),
+                replay_complete = flushed_history.replay_complete,
+                replay_incomplete = flushed_history.replay_incomplete,
+            );
 
-                Ok(ChatDrawOutcome { viewport_area, flushed_history })
-            })
-            .context("failed synchronized inline chat terminal update")?
+            Ok(ChatDrawOutcome { viewport_area, flushed_history })
+        })
     }
 
     fn ensure_chat_geometry(
@@ -444,7 +503,7 @@ impl ChatTerminal {
         anchor_area: Option<Rect>,
         snapshot: TerminalSnapshot,
     ) -> anyhow::Result<()> {
-        ensure_terminal_snapshot(snapshot, "ensure_inline_terminal_height")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "ensure_inline_terminal_height")?;
         let screen_height = snapshot.height;
         let next_height = desired_height.max(1).min(screen_height);
         let current_anchor = self.state.area;
@@ -476,8 +535,7 @@ impl ChatTerminal {
             )?;
         }
 
-        move_cursor_to(Rect::new(seed_cursor.x, seed_cursor.y, snapshot.width, 1))
-            .context("failed to restore inline viewport anchor")?;
+        self.io.move_cursor(seed_cursor).context("failed to restore inline viewport anchor")?;
 
         tracing::debug!(
             target: crate::logging::targets::APP_RENDER,
@@ -495,7 +553,7 @@ impl ChatTerminal {
             owned_bottom = self.state.owned_bottom,
         );
 
-        let terminal = create_inline_terminal(next_height, seed_cursor)?;
+        let terminal = create_inline_terminal(&self.io, next_height, seed_cursor)?;
         self.track_owned_region_scroll(
             inline_viewport_scroll_rows_after_create(cursor_y, next_height, screen_height),
             screen_height,
@@ -552,13 +610,13 @@ impl ChatTerminal {
         let Some(area) = self.state.area else {
             return Ok(());
         };
-        let snapshot = TerminalSnapshot::current("failed to read terminal size before clear")?;
+        let snapshot = self.io.snapshot().context("failed to read terminal size before clear")?;
         self.clear_owned_area(area, reason, snapshot)
     }
 
     fn clear_owned_region(&mut self, reason: &'static str) -> anyhow::Result<Option<Rect>> {
-        let (terminal_width, terminal_height) =
-            crossterm::terminal::size().context("failed to read terminal size before clear")?;
+        let snapshot = self.io.snapshot().context("failed to read terminal size before clear")?;
+        let (terminal_width, terminal_height) = (snapshot.width, snapshot.height);
         let top = self.state.owned_top.min(terminal_height);
         let bottom = self.state.owned_bottom.min(terminal_height);
         if top >= bottom {
@@ -586,7 +644,7 @@ impl ChatTerminal {
             self.clear_ratatui_inline_viewport(reason, Some(snapshot))?;
         }
 
-        ensure_terminal_snapshot(snapshot, "draw_mutable_viewport")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "draw_mutable_viewport")?;
         let terminal = self
             .terminal
             .as_mut()
@@ -599,7 +657,7 @@ impl ChatTerminal {
                 render_mutable(frame, viewport_area);
             })
             .context("failed to draw ratatui inline chat viewport")?;
-        ensure_terminal_snapshot(snapshot, "draw_mutable_viewport_complete")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "draw_mutable_viewport_complete")?;
         ensure_area_inside_snapshot(viewport_area, snapshot, "draw_mutable_viewport_area")?;
 
         Ok(viewport_area)
@@ -618,7 +676,7 @@ impl ChatTerminal {
             return Ok(false);
         };
         if let Some(snapshot) = expected_snapshot {
-            ensure_terminal_snapshot(snapshot, "ratatui_inline_clear_start")?;
+            ensure_terminal_snapshot(&self.io, snapshot, "ratatui_inline_clear_start")?;
         }
         let terminal_size =
             terminal.size().context("failed to read terminal size before ratatui inline clear")?;
@@ -635,7 +693,7 @@ impl ChatTerminal {
         }
         terminal.clear().context("failed to clear ratatui inline viewport")?;
         if let Some(snapshot) = expected_snapshot {
-            ensure_terminal_snapshot(snapshot, "ratatui_inline_clear_complete")?;
+            ensure_terminal_snapshot(&self.io, snapshot, "ratatui_inline_clear_complete")?;
         }
         self.pending_native_clear_reason = None;
         if let Some(area) = self.state.area {
@@ -847,7 +905,7 @@ impl ChatTerminal {
         plan: ScrollbackInsertPlan,
         snapshot: TerminalSnapshot,
     ) -> anyhow::Result<()> {
-        ensure_terminal_snapshot(snapshot, "scrollback_insert_start")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "scrollback_insert_start")?;
         if plan.scroll_rows_before_insert > 0 {
             self.append_blank_lines_for_owned_region(plan.scroll_rows_before_insert, snapshot)?;
             self.state.area = Some(plan.viewport_after_scroll);
@@ -858,7 +916,7 @@ impl ChatTerminal {
                 snapshot,
             )?;
         }
-        ensure_terminal_snapshot(snapshot, "scrollback_insert_before_insert")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "scrollback_insert_before_insert")?;
 
         let before_area = self
             .state
@@ -883,7 +941,7 @@ impl ChatTerminal {
                 Paragraph::new(rendered_rows).render(buffer.area, buffer);
             })
             .context("failed to insert committed chat rows above inline viewport")?;
-        ensure_terminal_snapshot(snapshot, "scrollback_insert_complete")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "scrollback_insert_complete")?;
         self.request_native_inline_clear("scrollback_insert");
 
         let after_area =
@@ -943,15 +1001,10 @@ impl ChatTerminal {
             return Ok(());
         }
 
-        ensure_terminal_snapshot(snapshot, "owned_region_growth_start")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "owned_region_growth_start")?;
         let bottom = snapshot.height.saturating_sub(1);
-        let mut stdout = std::io::stdout();
-        queue!(stdout, MoveTo(0, bottom)).context("failed to move cursor before owned growth")?;
-        for _ in 0..rows {
-            queue!(stdout, Print("\r\n")).context("failed to queue owned growth newline")?;
-        }
-        stdout.flush().context("failed to flush owned growth newlines")?;
-        ensure_terminal_snapshot(snapshot, "owned_region_growth_complete")?;
+        self.io.append_blank_lines(bottom, rows)?;
+        ensure_terminal_snapshot(&self.io, snapshot, "owned_region_growth_complete")?;
         self.request_native_inline_clear("owned_region_growth");
 
         let old_top = self.state.owned_top;
@@ -1023,7 +1076,7 @@ impl ChatTerminal {
             return Ok(());
         }
 
-        ensure_terminal_snapshot(snapshot, "clear_owned_area")?;
+        ensure_terminal_snapshot(&self.io, snapshot, "clear_owned_area")?;
         let visible_bottom = self.state.owned_bottom.min(snapshot.height);
         if area.top() < self.state.owned_top || area.bottom() > visible_bottom {
             bail!(
@@ -1035,12 +1088,7 @@ impl ChatTerminal {
             );
         }
 
-        let mut stdout = std::io::stdout();
-        for y in area.top()..area.bottom() {
-            queue!(stdout, MoveTo(0, y), Clear(ClearType::CurrentLine))
-                .context("failed to queue bounded inline clear")?;
-        }
-        stdout.flush().context("failed to flush bounded inline clear")?;
+        self.io.clear_lines(area.top()..area.bottom())?;
         if self.terminal.is_some() {
             self.request_native_inline_clear(reason);
         }
@@ -1090,25 +1138,24 @@ impl ChatTerminal {
     }
 }
 
-fn create_inline_terminal(height: u16, seed_cursor: Position) -> anyhow::Result<StdoutTerminal> {
-    let backend = super::tracked_cursor_backend::TrackedCursorBackend::new(
-        CrosstermBackend::new(std::io::stdout()),
-        seed_cursor,
-    );
+fn create_inline_terminal<I: TerminalIo>(
+    io: &I,
+    height: u16,
+    seed_cursor: Position,
+) -> anyhow::Result<InlineTerminal<I>> {
+    let backend =
+        super::tracked_cursor_backend::TrackedCursorBackend::new(io.backend(), seed_cursor);
 
     Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(height.max(1)) })
         .context("failed to construct ratatui inline chat terminal")
 }
 
-fn move_cursor_to(area: Rect) -> anyhow::Result<()> {
-    let mut stdout = std::io::stdout();
-    queue!(stdout, MoveTo(area.x, area.y)).context("failed to queue cursor move")?;
-    stdout.flush().context("failed to flush cursor move")?;
-    Ok(())
-}
-
-fn ensure_terminal_snapshot(expected: TerminalSnapshot, phase: &'static str) -> anyhow::Result<()> {
-    let actual = TerminalSnapshot::current("failed to read terminal size during inline draw")?;
+fn ensure_terminal_snapshot(
+    io: &impl TerminalIo,
+    expected: TerminalSnapshot,
+    phase: &'static str,
+) -> anyhow::Result<()> {
+    let actual = io.snapshot().context("failed to read terminal size during inline draw")?;
     if actual != expected {
         return Err(TerminalResizeDuringDraw::new(expected, actual, phase).into());
     }
@@ -1372,360 +1419,380 @@ fn log_inline_geometry_plan(plan: &InlineGeometryPlan) {
 }
 
 #[cfg(test)]
+#[path = "terminal_test_io.rs"]
+pub(super) mod test_io;
+
+#[cfg(test)]
 mod tests {
     use super::{
-        ChatTerminal, HistoryBatchKind, InlineViewportState, PendingHistoryBatch,
-        RenderedHistoryRows, ScrollbackInsertAction, TerminalSnapshot,
-        inline_viewport_reconfigure_clear_area, inline_viewport_scroll_rows_after_create,
-        inline_viewport_top_after_create, plan_inline_geometry, plan_owned_insert, shift_area_up,
-        viewport_area_after_insert_exact,
+        ChatTerminal, HistoryBatchKind, PendingHistoryBatch, RenderedHistoryRows,
+        plan_inline_geometry, plan_owned_insert,
     };
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    use ratatui::buffer::Cell;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
-    use ratatui::widgets::{Clear as RatatuiClear, Paragraph, Widget};
-    use ratatui::{TerminalOptions, Viewport};
+    use ratatui::widgets::Paragraph;
 
-    fn trimmed_backend_lines(terminal: &Terminal<TestBackend>) -> Vec<String> {
-        let buffer = terminal.backend().buffer();
-        let width = usize::from(buffer.area.width);
-        buffer
-            .content
-            .chunks(width)
-            .map(|row| row.iter().map(Cell::symbol).collect::<String>().trim_end().to_owned())
-            .collect()
+    fn output_id() -> crate::app::HistoryOutputId {
+        crate::app::HistoryOutputId::AssistantLabel(crate::app::ChatMessageId::new())
     }
-
-    #[test]
-    fn inline_viewport_state_height_derives_from_area() {
-        let mut state = InlineViewportState::new(10);
-        assert_eq!(state.height(), 0);
-
-        state.area = Some(Rect::new(0, 20, 80, 5));
-
-        assert_eq!(state.height(), 5);
+    fn history_batch(
+        kind: HistoryBatchKind,
+        texts: &[String],
+        id: crate::app::HistoryOutputId,
+    ) -> PendingHistoryBatch {
+        PendingHistoryBatch::new(
+            kind,
+            RenderedHistoryRows::new(32, texts.iter().cloned().map(Line::from).collect()),
+            vec![id],
+        )
     }
-
-    #[test]
-    fn area_helper_shifts_viewport_up_after_terminal_scroll() {
-        let area = Rect::new(0, 28, 120, 5);
-
-        assert_eq!(shift_area_up(area, 5), Rect::new(0, 23, 120, 5));
+    fn owner_draw(
+        owner: &mut ChatTerminal<super::test_io::TestIo>,
+        io: &super::test_io::TestIo,
+        texts: &[String],
+    ) -> super::ChatDrawOutcome {
+        use super::TerminalIo;
+        owner
+            .draw_chat_frame(
+                super::ChatDrawRequest {
+                    requested_inline_height: u16::try_from(texts.len()).unwrap(),
+                    terminal: io.snapshot().unwrap(),
+                },
+                |frame, area| {
+                    frame.render_widget(
+                        Paragraph::new(texts.iter().cloned().map(Line::from).collect::<Vec<_>>()),
+                        area,
+                    );
+                },
+            )
+            .unwrap()
     }
-
+    fn text_rows(texts: &[&str]) -> Vec<String> {
+        texts.iter().map(|s| (*s).to_owned()).collect()
+    }
+    fn assert_once_in_order(io: &super::test_io::TestIo, expected: &[String]) {
+        let rows = io.transcript();
+        let mut previous = None;
+        for text in expected {
+            let positions = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| *row == text)
+                .map(|(i, _)| i)
+                .collect::<Vec<_>>();
+            assert_eq!(positions.len(), 1, "{text}: {rows:?}");
+            if let Some(before) = previous {
+                assert!(before < positions[0], "{rows:?}");
+            }
+            previous = Some(positions[0]);
+        }
+    }
     #[test]
-    fn ratatui_inline_insert_preserves_unchanged_viewport_rows() {
-        let backend = TestBackend::new(48, 8);
-        let mut terminal =
-            Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(3) })
-                .expect("terminal");
-
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    Paragraph::new(vec![
-                        Line::from("prompt"),
-                        Line::from("[Auto] [Opus]"),
-                        Line::from("loc"),
-                    ]),
-                    frame.area(),
+    fn queued_history_preserves_live_cells_and_clears_shrunken_rows() {
+        for (screen_height, height, seed, expected_top) in
+            [(12, 1, 2, 4), (12, 3, 2, 4), (12, 12, 2, 0), (1, 1, 0, 0), (2, 2, 0, 0)]
+        {
+            let io = super::test_io::TestIo::new(32, screen_height);
+            if seed > 0 {
+                io.seed_row(0, "outside-a");
+                io.seed_row(1, "outside-b");
+            }
+            let mut owner = ChatTerminal::with_io(seed, io.clone());
+            let mut live = (0..height).map(|i| format!("live-{i}")).collect::<Vec<_>>();
+            live[0] = "draft".into();
+            owner_draw(&mut owner, &io, &live);
+            io.take_operations();
+            let id = output_id();
+            owner.queue_static_history(history_batch(
+                HistoryBatchKind::Normal,
+                &text_rows(&["history-a", "history-b"]),
+                id.clone(),
+            ));
+            if height > 1 {
+                live[1] = "new-status".into();
+            }
+            let drawn = owner_draw(&mut owner, &io, &live);
+            assert_eq!(drawn.flushed_history.confirmed_ids, [id]);
+            assert_eq!(drawn.viewport_area, Rect::new(0, expected_top, 32, height));
+            assert_eq!(
+                &io.screen_rows()[usize::from(expected_top)..usize::from(expected_top + height)],
+                live
+            );
+            if height == 1 {
+                use super::test_io::Operation;
+                let operations = io.take_operations();
+                let clear = operations
+                    .iter()
+                    .position(|op| {
+                        matches!(op, Operation::Clear(ratatui::backend::ClearType::AfterCursor))
+                    })
+                    .expect("native clear before repainting unchanged live cells");
+                assert!(
+                    operations[clear + 1..].iter().any(|op| match op {
+                        Operation::Draw(cells) => "draft".chars().enumerate().all(|(x, ch)| cells
+                            .iter()
+                            .any(|(cx, cy, c)| usize::from(*cx) == x
+                                && *cy == expected_top
+                                && c.symbol() == ch.to_string())),
+                        _ => false,
+                    }),
+                    "unchanged draft must actually be repainted after clear"
                 );
-            })
-            .expect("initial draw");
-        terminal
-            .insert_before(3, |buffer| {
-                Paragraph::new(vec![
-                    Line::from("Error"),
-                    Line::from("failed to set mode to auto"),
-                    Line::default(),
-                ])
-                .render(buffer.area, buffer);
-            })
-            .expect("insert before");
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    Paragraph::new(vec![
-                        Line::from("prompt"),
-                        Line::from("[Default] [Opus]"),
-                        Line::from("loc"),
-                    ]),
-                    frame.area(),
+            }
+            let mut expected =
+                if seed > 0 { text_rows(&["outside-a", "outside-b"]) } else { Vec::new() };
+            expected.extend(text_rows(&["history-a", "history-b"]));
+            expected.extend(live.clone());
+            assert_once_in_order(&io, &expected);
+            let repeated = owner_draw(&mut owner, &io, &live);
+            assert!(repeated.flushed_history.confirmed_ids.is_empty());
+            assert_once_in_order(&io, &expected);
+            if height == 3 {
+                let small = owner_draw(&mut owner, &io, &text_rows(&["draft"]));
+                assert_eq!(small.viewport_area, Rect::new(0, 4, 32, 1));
+                assert_eq!(&io.screen_rows()[4..7], ["draft", "", ""]);
+                assert_once_in_order(
+                    &io,
+                    &text_rows(&["outside-a", "outside-b", "history-a", "history-b", "draft"]),
                 );
-            })
-            .expect("post-insert draw");
-
-        let lines = trimmed_backend_lines(&terminal);
-
-        assert!(lines.iter().any(|line| line == "Error"));
-        assert!(lines.iter().any(|line| line == "failed to set mode to auto"));
-        assert!(lines.windows(3).any(|rows| {
-            rows[0] == "prompt" && rows[1] == "[Default] [Opus]" && rows[2] == "loc"
-        }));
+            }
+            assert_eq!(io.queries(), 0);
+        }
     }
-
     #[test]
-    fn ratatui_inline_native_clear_after_insert_removes_shrunken_viewport_rows() {
-        let backend = TestBackend::new(48, 8);
-        let mut terminal =
-            Terminal::with_options(backend, TerminalOptions { viewport: Viewport::Inline(3) })
-                .expect("terminal");
-
-        terminal
-            .draw(|frame| {
-                frame.render_widget(
-                    Paragraph::new(vec![
-                        Line::from("live tool output that should disappear"),
-                        Line::from("live detail that should disappear"),
-                        Line::from("prompt"),
-                    ]),
-                    frame.area(),
-                );
-            })
-            .expect("initial draw");
-        terminal
-            .insert_before(2, |buffer| {
-                Paragraph::new(vec![
-                    Line::from("static transcript row"),
-                    Line::from("static transcript detail"),
-                ])
-                .render(buffer.area, buffer);
-            })
-            .expect("insert before");
-        terminal.clear().expect("native inline clear");
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                frame.render_widget(RatatuiClear, area);
-                frame.render_widget(Paragraph::new(vec![Line::from("prompt")]), area);
-            })
-            .expect("post-clear draw");
-
-        let lines = trimmed_backend_lines(&terminal);
-
-        assert!(lines.iter().any(|line| line == "static transcript row"));
-        assert!(lines.iter().any(|line| line == "static transcript detail"));
-        assert!(lines.iter().any(|line| line == "prompt"));
-        assert!(!lines.iter().any(|line| line.contains("should disappear")));
+    fn insertion_policy_preserves_safe_progress_and_required_placement() {
+        for (y, owned, requested, progress, scroll, final_y) in [
+            (22, 22, 9, 9, 0, 31),
+            (22, 22, 10, 10, 0, 32),
+            (28, 20, 9, 9, 5, 32),
+            (28, 3, 40, 32, 28, 32),
+        ] {
+            let plan = plan_owned_insert(Rect::new(0, y, 120, 5), owned, requested, 37);
+            assert_eq!(plan.inserted_rows, progress);
+            assert_eq!(plan.scroll_rows_before_insert, scroll);
+            assert_eq!(plan.viewport_after_insert, Rect::new(0, final_y, 120, 5));
+        }
     }
-
     #[test]
-    fn owned_insert_plan_allows_insert_when_viewport_has_room_below() {
-        let plan = plan_owned_insert(Rect::new(0, 22, 120, 5), 22, 9, 37);
-
-        assert_eq!(plan.action, ScrollbackInsertAction::Insert);
-        assert_eq!(plan.inserted_rows, 9);
-        assert_eq!(plan.available_below, 10);
-        assert_eq!(plan.scroll_rows_before_insert, 0);
-        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 22, 120, 5));
-        assert_eq!(plan.viewport_after_insert, Rect::new(0, 31, 120, 5));
+    fn geometry_keeps_the_anchor_unless_growth_requires_scroll() {
+        for (old, desired, target, scroll) in [
+            (Rect::new(0, 22, 120, 4), 4, Rect::new(0, 22, 120, 4), 0),
+            (Rect::new(0, 22, 120, 4), 8, Rect::new(0, 22, 120, 8), 0),
+            (Rect::new(0, 32, 120, 4), 8, Rect::new(0, 29, 120, 8), 3),
+            (Rect::new(0, 17, 120, 20), 4, Rect::new(0, 17, 120, 4), 0),
+        ] {
+            let plan = plan_inline_geometry(Some(old), desired, 120, 37);
+            assert_eq!(plan.target_area, Some(target));
+            assert_eq!(plan.scroll_rows_before_resize, scroll);
+        }
     }
-
     #[test]
-    fn owned_insert_plan_expands_downward_before_insert_scrolls_above_owned_top() {
-        let plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 20, 9, 37);
-
-        assert_eq!(plan.action, ScrollbackInsertAction::Insert);
-        assert_eq!(plan.inserted_rows, 9);
-        assert_eq!(plan.available_below, 4);
-        assert_eq!(plan.scroll_rows_before_insert, 5);
-        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 23, 120, 5));
-        assert_eq!(plan.viewport_after_insert, Rect::new(0, 32, 120, 5));
+    fn resized_terminal_clips_old_geometry_and_paints_the_full_requested_region() {
+        for (top, old_height, new_height, requested, clipped, target, scroll) in [
+            (32, 8, 37, 8, Some(Rect::new(0, 32, 32, 5)), Rect::new(0, 29, 32, 8), 3),
+            (34, 6, 20, 11, None, Rect::new(0, 9, 32, 11), 0),
+        ] {
+            let io = super::test_io::TestIo::new(40, 40);
+            io.seed_row(0, "outside");
+            let mut owner = ChatTerminal::with_io(top, io.clone());
+            let old = (0..old_height).map(|i| format!("stale-{i}")).collect::<Vec<_>>();
+            owner_draw(&mut owner, &io, &old);
+            io.resize(32, new_height);
+            let plan = plan_inline_geometry(
+                Some(Rect::new(0, top, 40, old_height)),
+                requested,
+                32,
+                new_height,
+            );
+            assert_eq!(plan.old_area, clipped);
+            assert_eq!(plan.target_area, Some(target));
+            assert_eq!(plan.scroll_rows_before_resize, scroll);
+            let current = (0..requested).map(|i| format!("current-{i}")).collect::<Vec<_>>();
+            let drawn = owner_draw(&mut owner, &io, &current);
+            assert_eq!(drawn.viewport_area, target);
+            assert_eq!(
+                &io.screen_rows()[usize::from(target.top())..usize::from(target.bottom())],
+                current
+            );
+            assert!(!io.screen_rows().iter().any(|r| r.starts_with("stale-")));
+            assert_once_in_order(&io, &["outside".into()]);
+        }
     }
-
     #[test]
-    fn owned_insert_plan_splits_batches_larger_than_viewport_capacity() {
-        let plan = plan_owned_insert(Rect::new(0, 28, 120, 5), 3, 40, 37);
-
-        assert_eq!(plan.action, ScrollbackInsertAction::SplitBatch);
-        assert_eq!(plan.inserted_rows, 32);
-        assert_eq!(plan.max_insert_rows_for_viewport, 32);
-        assert_eq!(plan.scroll_rows_before_insert, 28);
-        assert_eq!(plan.viewport_after_scroll, Rect::new(0, 0, 120, 5));
-        assert_eq!(plan.viewport_after_insert, Rect::new(0, 32, 120, 5));
-    }
-
-    #[test]
-    fn owned_insert_plan_rebuilds_when_viewport_consumes_screen() {
-        let plan = plan_owned_insert(Rect::new(0, 0, 120, 37), 0, 1, 37);
-
-        assert_eq!(plan.action, ScrollbackInsertAction::RebuildVisibleRows);
-        assert_eq!(plan.inserted_rows, 0);
-        assert_eq!(plan.max_insert_rows_for_viewport, 0);
-    }
-
-    #[test]
-    fn area_helpers_require_exact_viewport_movement_after_insert() {
+    fn replay_delivers_every_row_before_confirming_finished_input_once() {
+        let io = super::test_io::TestIo::new(32, 8);
+        let mut owner = ChatTerminal::with_io(0, io.clone());
+        let live = text_rows(&["LIVE"]);
+        let first = output_id();
+        let second = output_id();
+        owner.queue_replay(
+            32,
+            vec![history_batch(
+                HistoryBatchKind::Replay,
+                &text_rows(&["prefix-a", "prefix-b"]),
+                first.clone(),
+            )],
+            vec![first.clone()],
+            false,
+        );
+        let prefix = owner_draw(&mut owner, &io, &live);
+        assert!(prefix.flushed_history.confirmed_ids.is_empty());
+        assert_once_in_order(&io, &text_rows(&["prefix-a", "prefix-b", "LIVE"]));
+        let waiting = owner_draw(&mut owner, &io, &live);
+        assert!(waiting.flushed_history.confirmed_ids.is_empty());
+        assert!(waiting.flushed_history.replay_incomplete);
+        owner.queue_replay(
+            32,
+            vec![
+                history_batch(HistoryBatchKind::Replay, &text_rows(&["continued"]), first.clone()),
+                history_batch(HistoryBatchKind::Replay, &text_rows(&["second"]), second.clone()),
+            ],
+            vec![first.clone(), second.clone()],
+            true,
+        );
+        let done = owner_draw(&mut owner, &io, &live);
         assert_eq!(
-            viewport_area_after_insert_exact(Rect::new(0, 23, 120, 5), 9, 37),
-            Some(Rect::new(0, 32, 120, 5))
+            done.flushed_history
+                .confirmed_ids
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            [first, second].into_iter().collect()
         );
-        assert_eq!(viewport_area_after_insert_exact(Rect::new(0, 28, 120, 6), 6, 37), None);
-    }
-
-    #[test]
-    fn inline_viewport_scroll_rows_track_bottom_reconfigure_scroll() {
-        assert_eq!(inline_viewport_scroll_rows_after_create(31, 8, 37), 2);
-        assert_eq!(inline_viewport_scroll_rows_after_create(23, 11, 37), 0);
-    }
-
-    #[test]
-    fn geometry_plan_scrolls_before_bottom_expansion_claims_transcript_rows() {
-        let plan = plan_inline_geometry(Some(Rect::new(0, 32, 133, 4)), 8, 133, 37);
-
-        assert_eq!(plan.scroll_rows_before_resize, 3);
-        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 29, 133, 4)));
-        assert_eq!(plan.target_area, Some(Rect::new(0, 29, 133, 8)));
-    }
-
-    #[test]
-    fn geometry_plan_clips_stale_bottom_viewport_before_resize_clear() {
-        let plan = plan_inline_geometry(Some(Rect::new(0, 32, 144, 8)), 8, 133, 37);
-
-        assert_eq!(plan.old_area, Some(Rect::new(0, 32, 133, 5)));
-        assert_eq!(plan.scroll_rows_before_resize, 3);
-        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 29, 133, 5)));
-        assert_eq!(plan.target_area, Some(Rect::new(0, 29, 133, 8)));
-    }
-
-    #[test]
-    fn geometry_plan_expands_downward_when_room_exists_below_viewport() {
-        let plan = plan_inline_geometry(Some(Rect::new(0, 22, 120, 4)), 8, 120, 37);
-
-        assert_eq!(plan.scroll_rows_before_resize, 0);
-        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 22, 120, 4)));
-        assert_eq!(plan.target_area, Some(Rect::new(0, 22, 120, 8)));
-    }
-
-    #[test]
-    fn reconfigure_clear_area_includes_shifted_old_rows_and_new_live_rows() {
-        let clear_area = inline_viewport_reconfigure_clear_area(
-            Rect::new(0, 29, 120, 4),
-            Rect::new(0, 29, 120, 8),
+        assert_once_in_order(
+            &io,
+            &text_rows(&["prefix-a", "prefix-b", "continued", "second", "LIVE"]),
         );
+        assert!(owner_draw(&mut owner, &io, &live).flushed_history.confirmed_ids.is_empty());
 
-        assert_eq!(clear_area, Rect::new(0, 29, 120, 8));
-    }
-
-    #[test]
-    fn reconfigure_clear_area_keeps_old_rows_when_viewport_shrinks() {
-        let clear_area = inline_viewport_reconfigure_clear_area(
-            Rect::new(0, 17, 120, 20),
-            Rect::new(0, 17, 120, 4),
+        let io = super::test_io::TestIo::new(32, 6);
+        let mut owner = ChatTerminal::with_io(0, io.clone());
+        let count = crate::ui::layout_control::replay_row_budget(6) * 2 + 3;
+        let expected = (0..count).map(|i| format!("delivered-{i:03}")).collect::<Vec<_>>();
+        let id = output_id();
+        owner.queue_replay(
+            32,
+            vec![history_batch(HistoryBatchKind::Replay, &expected, id.clone())],
+            vec![id.clone()],
+            true,
         );
-
-        assert_eq!(clear_area, Rect::new(0, 17, 120, 20));
+        let first_draw = owner_draw(&mut owner, &io, &live);
+        let mut delivered =
+            io.transcript().into_iter().filter(|r| r.starts_with("delivered-")).collect::<Vec<_>>();
+        assert!(!delivered.is_empty() && delivered.len() < expected.len());
+        assert_eq!(delivered, expected[..delivered.len()]);
+        assert!(first_draw.flushed_history.confirmed_ids.is_empty());
+        for _ in 0..expected.len() {
+            let outcome = owner_draw(&mut owner, &io, &live);
+            delivered =
+                io.transcript().into_iter().filter(|r| r.starts_with("delivered-")).collect();
+            assert_eq!(delivered, expected[..delivered.len()]);
+            if delivered.len() == expected.len() {
+                assert_eq!(outcome.flushed_history.confirmed_ids, std::slice::from_ref(&id));
+                break;
+            }
+            assert!(outcome.flushed_history.confirmed_ids.is_empty());
+        }
+        assert_eq!(delivered, expected);
+        let repeated = owner_draw(&mut owner, &io, &live);
+        assert!(repeated.flushed_history.confirmed_ids.is_empty());
+        assert_once_in_order(&io, &expected);
+        owner.queue_replay(32, Vec::new(), Vec::new(), false);
+        assert!(owner_draw(&mut owner, &io, &live).flushed_history.replay_incomplete);
+        owner.queue_replay(32, Vec::new(), Vec::new(), true);
+        assert!(owner_draw(&mut owner, &io, &live).flushed_history.replay_complete);
     }
-
     #[test]
-    fn owned_region_tracks_inline_terminal_scroll() {
-        let mut terminal = ChatTerminal::new(23);
-        terminal.state.owned_bottom = 34;
-        terminal.state.area = Some(Rect::new(0, 31, 120, 3));
-
-        terminal.track_owned_region_scroll(5, 37, "test");
-
-        assert_eq!(terminal.state.owned_top, 18);
-        assert_eq!(terminal.state.owned_bottom, 29);
-        assert_eq!(terminal.state.area, Some(Rect::new(0, 26, 120, 3)));
+    fn clear_after_inline_creation_preserves_scrolled_outside_content() {
+        for (seed, expected_top) in [(3, 3), (6, 4)] {
+            let io = super::test_io::TestIo::new(32, 8);
+            let outside = (0..seed).map(|i| format!("outside-{i}")).collect::<Vec<_>>();
+            for (y, text) in outside.iter().enumerate() {
+                io.seed_row(u16::try_from(y).unwrap(), text);
+            }
+            let mut owner = ChatTerminal::with_io(seed, io.clone());
+            let old = text_rows(&["old-a", "old-b", "old-c", "old-d"]);
+            assert_eq!(
+                owner_draw(&mut owner, &io, &old).viewport_area,
+                Rect::new(0, expected_top, 32, 4)
+            );
+            assert_once_in_order(&io, &outside);
+            owner.reset_visible().unwrap();
+            assert_once_in_order(&io, &outside);
+            assert!(!io.transcript().iter().any(|r| r.starts_with("old-")));
+            let new = text_rows(&["new-a", "new-b"]);
+            assert_eq!(
+                owner_draw(&mut owner, &io, &new).viewport_area,
+                Rect::new(0, expected_top, 32, 2)
+            );
+            assert_eq!(
+                &io.screen_rows()[usize::from(expected_top)..usize::from(expected_top + 2)],
+                new
+            );
+            assert_once_in_order(&io, &outside);
+        }
     }
-
     #[test]
-    fn session_boundary_anchor_restarts_next_viewport_at_cleared_top() {
-        let mut terminal = ChatTerminal::new(17);
-        terminal.state.owned_bottom = 37;
-        terminal.state.area = Some(Rect::new(0, 31, 120, 3));
-
-        terminal.anchor_next_viewport_to_cleared_region(Rect::new(0, 17, 120, 20));
-
-        assert_eq!(terminal.state.area, Some(Rect::new(0, 17, 120, 1)));
-
-        let plan = plan_inline_geometry(terminal.state.area, 11, 120, 37);
-
-        assert_eq!(plan.target_area, Some(Rect::new(0, 17, 120, 11)));
-        assert_eq!(inline_viewport_top_after_create(17, plan.height, 37), 17);
-    }
-
-    #[test]
-    fn visible_reset_anchor_restarts_next_viewport_at_cleared_top() {
-        let mut terminal = ChatTerminal::new(17);
-        terminal.state.owned_bottom = 37;
-        terminal.state.area = Some(Rect::new(0, 31, 120, 3));
-
-        terminal.reset_after_owned_region_clear(Some(Rect::new(0, 17, 120, 20)));
-
-        assert_eq!(terminal.state.area, Some(Rect::new(0, 17, 120, 1)));
-
-        let plan = plan_inline_geometry(terminal.state.area, 11, 120, 37);
-
-        assert_eq!(plan.target_area, Some(Rect::new(0, 17, 120, 11)));
-        assert_eq!(inline_viewport_top_after_create(17, plan.height, 37), 17);
-    }
-
-    #[test]
-    fn geometry_plan_clamps_shrink_target_inside_terminal() {
-        let plan = plan_inline_geometry(Some(Rect::new(0, 34, 120, 6)), 11, 80, 20);
-
-        assert_eq!(plan.height, 11);
-        assert_eq!(plan.old_area, None);
-        assert_eq!(plan.target_area, Some(Rect::new(0, 9, 80, 11)));
-    }
-
-    #[test]
-    fn purge_replay_uses_codex_clear_sequence() {
-        assert_eq!(super::PURGE_REPLAY_CLEAR_ANSI, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
-    }
-
-    #[test]
-    fn replay_cannot_complete_while_layout_may_still_produce_rows() {
-        let mut terminal = ChatTerminal::new(0);
-        let snapshot = TerminalSnapshot::new(80, 24);
-        terminal.queue_replay(80, Vec::new(), Vec::new(), false);
-        let waiting = terminal.flush_replay_history(snapshot).unwrap();
-        assert!(waiting.replay_incomplete);
-        assert!(!waiting.replay_complete);
-        assert!(waiting.confirmed_ids.is_empty());
-        terminal.queue_replay(80, Vec::new(), Vec::new(), true);
-        let finished = terminal.flush_replay_history(snapshot).unwrap();
-        assert!(finished.replay_complete);
-        assert!(!finished.replay_incomplete);
-        assert!(!terminal.is_replay_active());
-    }
-
-    #[test]
-    fn purge_replay_reset_anchors_viewport_at_top() {
-        let mut terminal = ChatTerminal::new(12);
-        terminal.state.owned_bottom = 29;
-        terminal.state.area = Some(Rect::new(0, 17, 120, 6));
-
-        terminal.reset_after_purge_replay_clear(120, 39);
-
-        assert!(terminal.terminal.is_none());
-        assert_eq!(terminal.state.owned_top, 0);
-        assert_eq!(terminal.state.owned_bottom, 39);
-        assert_eq!(terminal.state.area, Some(Rect::new(0, 0, 120, 1)));
-    }
-
-    #[test]
-    fn unsafe_pending_history_insert_is_deferred_without_error() {
-        let mut terminal = ChatTerminal::new(0);
-        terminal.state.owned_bottom = 32;
-        terminal.state.area = Some(Rect::new(0, 0, 124, 32));
-        let rows: Vec<Line<'static>> =
-            (0..19).map(|idx| Line::from(format!("row {idx}"))).collect();
-        let mut batch = PendingHistoryBatch::new(
-            HistoryBatchKind::Normal,
-            RenderedHistoryRows::new(124, rows),
-            Vec::new(),
-        );
-
-        let inserted = terminal
-            .insert_history_batch(&mut batch, TerminalSnapshot::new(124, 32), usize::MAX)
-            .unwrap();
-
-        assert_eq!(inserted, 0);
-        assert_eq!(batch.next_row, 0);
+    fn visible_reset_discards_old_work_and_reuses_the_cleared_anchor() {
+        for replay in [false, true] {
+            let io = super::test_io::TestIo::new(32, 12);
+            io.seed_row(0, "outside-a");
+            io.seed_row(1, "outside-b");
+            let mut owner = ChatTerminal::with_io(2, io.clone());
+            let old = text_rows(&["old-live", "old-footer"]);
+            owner_draw(&mut owner, &io, &old);
+            let old_id = output_id();
+            owner.queue_static_history(history_batch(
+                HistoryBatchKind::Normal,
+                &text_rows(&["old-committed"]),
+                old_id.clone(),
+            ));
+            owner_draw(&mut owner, &io, &old);
+            if replay {
+                owner.queue_replay(
+                    32,
+                    vec![history_batch(
+                        HistoryBatchKind::Replay,
+                        &text_rows(&["old-replay-prefix"]),
+                        old_id.clone(),
+                    )],
+                    vec![old_id.clone()],
+                    false,
+                );
+                assert!(owner_draw(&mut owner, &io, &old).flushed_history.confirmed_ids.is_empty());
+                owner.queue_replay(
+                    32,
+                    vec![history_batch(
+                        HistoryBatchKind::Replay,
+                        &text_rows(&["old-pending"]),
+                        old_id.clone(),
+                    )],
+                    vec![old_id],
+                    false,
+                );
+            } else {
+                owner.queue_static_history(history_batch(
+                    HistoryBatchKind::Normal,
+                    &text_rows(&["old-pending"]),
+                    old_id,
+                ));
+            }
+            owner.reset_visible().unwrap();
+            let new = text_rows(&["new-live", "new-footer"]);
+            let first = owner_draw(&mut owner, &io, &new);
+            assert_eq!(first.viewport_area, Rect::new(0, 2, 32, 2));
+            assert!(first.flushed_history.confirmed_ids.is_empty());
+            assert!(!io.transcript().iter().any(|r| r.starts_with("old-")));
+            let new_id = output_id();
+            owner.queue_static_history(history_batch(
+                HistoryBatchKind::Normal,
+                &text_rows(&["new-committed"]),
+                new_id.clone(),
+            ));
+            assert_eq!(owner_draw(&mut owner, &io, &new).flushed_history.confirmed_ids, [new_id]);
+            assert_once_in_order(
+                &io,
+                &text_rows(&["outside-a", "outside-b", "new-committed", "new-live", "new-footer"]),
+            );
+        }
     }
 }

@@ -2650,53 +2650,6 @@ mod tests {
         assert_eq!(editor_area.height.saturating_add(footer_area.height), 3);
     }
 
-    #[test]
-    fn plan_for_existing_viewport_preserves_anchor() {
-        let area = Rect::new(0, 20, 120, 8);
-
-        let plan = plan_inline_geometry(Some(area), 8, 120, 40);
-
-        assert_eq!(plan.target_area, Some(area));
-    }
-
-    #[test]
-    fn plan_for_unchanged_geometry_without_insert_does_not_clear() {
-        let area = Rect::new(0, 20, 120, 8);
-
-        let plan = plan_inline_geometry(Some(area), 8, 120, 40);
-
-        assert_eq!(plan.target_area, Some(area));
-    }
-
-    #[test]
-    fn plan_for_composer_expansion_with_room_preserves_viewport_anchor() {
-        let old_area = Rect::new(0, 10, 120, 3);
-
-        let plan = plan_inline_geometry(Some(old_area), 4, 120, 40);
-
-        assert_eq!(plan.target_area, Some(Rect::new(0, 10, 120, 4)));
-    }
-
-    #[test]
-    fn plan_for_composer_expansion_at_bottom_preserves_required_height() {
-        let old_area = Rect::new(0, 34, 120, 3);
-
-        let plan = plan_inline_geometry(Some(old_area), 4, 120, 37);
-
-        assert_eq!(plan.target_area, Some(Rect::new(0, 33, 120, 4)));
-        assert_eq!(plan.old_area_after_scroll, Some(Rect::new(0, 33, 120, 3)));
-        assert_eq!(plan.scroll_rows_before_resize, 1);
-        assert_eq!(plan.height, 4);
-    }
-
-    #[test]
-    fn plan_for_composer_shrink_preserves_viewport_anchor() {
-        let old_area = Rect::new(0, 36, 120, 4);
-
-        let plan = plan_inline_geometry(Some(old_area), 3, 120, 40);
-
-        assert_eq!(plan.target_area, Some(Rect::new(0, 36, 120, 3)));
-    }
     struct ComposerFrame {
         backend: TestBackend,
         hints: Rect,
