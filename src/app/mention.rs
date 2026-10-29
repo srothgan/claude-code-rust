@@ -945,7 +945,9 @@ fn longest_indexed_path_span(
     for (path_col, ch) in chars.iter().enumerate().skip(trigger_col + 1) {
         candidate.push(*ch);
         let end_col = path_col + 1;
-        if entries.contains_key(&candidate) {
+        if entries.contains_key(&candidate)
+            && chars.get(end_col).is_none_or(|ch| is_bare_mention_delimiter(*ch))
+        {
             longest = Some((end_col, candidate.clone()));
         }
     }
@@ -1051,41 +1053,6 @@ mod tests {
     }
 
     #[test]
-    fn sync_with_cursor_activates_inside_existing_mention() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs", "tests/integration.rs"]);
-        start_session_index(&mut app);
-        app.input.set_text("open @src/main.rs now");
-        let _ = app.input.set_cursor(0, "open @src".chars().count());
-
-        sync_with_cursor(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert_eq!(mention.query, "src");
-        assert!(!mention.candidates.is_empty());
-    }
-
-    #[test]
-    fn detects_and_highlights_indexed_file_path_with_spaces() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["docs/my file.md"]);
-
-        let spans = find_mention_spans(0, "open @docs/my file.md now", &app.file_index, None);
-
-        assert_eq!(spans, vec![(5, 21, "docs/my file.md".to_owned())]);
-    }
-
-    #[test]
-    fn detects_and_highlights_indexed_folder_path_with_spaces() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["docs/my folder/"]);
-
-        let spans = find_mention_spans(0, "open @docs/my folder/ now", &app.file_index, None);
-
-        assert_eq!(spans, vec![(5, 21, "docs/my folder/".to_owned())]);
-    }
-
-    #[test]
     fn longest_indexed_path_wins_when_paths_share_prefixes() {
         let mut app = App::test_default();
         index_paths(&mut app, &["foo", "foo bar.md"]);
@@ -1106,16 +1073,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_and_highlights_quoted_indexed_path() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["docs/my file.md"]);
-
-        let spans = find_mention_spans(0, "open @'docs/my file.md' now", &app.file_index, None);
-
-        assert_eq!(spans, vec![(5, 23, "docs/my file.md".to_owned())]);
-    }
-
-    #[test]
     fn comma_after_quoted_path_does_not_reenter_autocomplete() {
         let mut app = App::test_default();
         index_paths(&mut app, &["src/app/mention.rs"]);
@@ -1133,22 +1090,6 @@ mod tests {
     }
 
     #[test]
-    fn cursor_inside_quoted_path_reenters_autocomplete() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["src/app/mention.rs"]);
-        app.input.set_text("@'src/app/mention.rs'");
-        let _ = app.input.set_cursor(0, "@'src/app/mention".chars().count());
-
-        sync_with_cursor(&mut app);
-        run_search(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should re-enter inside quotes");
-        assert_eq!(mention.query, "src/app/mention");
-        assert_eq!(mention.replace_end_col, "@'src/app/mention.rs'".chars().count());
-        assert!(!mention.candidates.is_empty());
-    }
-
-    #[test]
     fn missing_right_quote_stays_active_and_confirm_repairs_delimiter() {
         let mut app = App::test_default();
         index_paths(&mut app, &["src/app/mention.rs"]);
@@ -1161,123 +1102,6 @@ mod tests {
 
         assert_eq!(app.input.lines()[0], "@'src/app/mention.rs' ");
         assert!(app.mention.is_none());
-    }
-
-    #[test]
-    fn deleting_left_quote_falls_back_to_bare_path_highlighting() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["src/app/mention.rs"]);
-
-        let spans = find_mention_spans(0, "@src/app/mention.rs'", &app.file_index, None);
-
-        assert_eq!(spans, vec![(0, 19, "src/app/mention.rs".to_owned())]);
-    }
-
-    #[test]
-    fn deleting_right_quote_keeps_literal_highlighting_to_line_end() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["src/app/mention.rs"]);
-
-        let spans = find_mention_spans(0, "@'src/app/mention.rs", &app.file_index, None);
-
-        assert_eq!(spans, vec![(0, 20, "src/app/mention.rs".to_owned())]);
-    }
-
-    #[test]
-    fn reentering_autocomplete_inside_spaced_path_uses_cursor_query_and_full_span() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["docs/my folder/read me.md"]);
-        app.input.set_text("open @docs/my folder/read me.md now");
-        let _ = app.input.set_cursor(0, "open @docs/my folder/read".chars().count());
-
-        sync_with_cursor(&mut app);
-
-        let mention = app.mention.as_ref().expect("mention should be active");
-        assert_eq!(mention.query, "docs/my folder/read");
-        assert_eq!(mention.replace_end_col, "open @docs/my folder/read me.md".chars().count());
-    }
-
-    #[test]
-    fn editing_right_side_of_spaced_mention_keeps_full_replacement_span() {
-        let mut app = App::test_default();
-        index_paths(&mut app, &["docs/my folder/read me.txt", "docs/my folder/read me.md"]);
-        app.input.set_text("open @docs/my folder/read me.txt now");
-        let _ = app.input.set_cursor(0, "open @docs/my folder/read me.".chars().count());
-        sync_with_cursor(&mut app);
-
-        let _ = app.input.textarea_insert_char('m');
-        update_query(&mut app);
-        {
-            let mention = app.mention.as_mut().expect("mention should stay active");
-            mention.candidates = vec![candidate("docs/my folder/read me.md")];
-            mention.search_status = MentionSearchStatus::Ready;
-        }
-        confirm_selection(&mut app);
-
-        assert_eq!(app.input.lines()[0], "open @'docs/my folder/read me.md' now");
-    }
-
-    #[test]
-    fn confirm_selection_replaces_full_existing_token_without_double_space() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/lib.rs"]);
-        start_session_index(&mut app);
-        app.input.set_text("open @src/lib.txt now");
-        let _ = app.input.set_cursor(0, "open @src/lib".chars().count());
-
-        activate(&mut app);
-        run_search(&mut app);
-        confirm_selection(&mut app);
-
-        assert_eq!(app.input.lines()[0], "open @'src/lib.rs' now");
-        assert!(app.mention.is_none());
-    }
-
-    #[test]
-    fn confirm_selection_at_end_keeps_trailing_space() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        start_session_index(&mut app);
-        app.input.set_text("@src/mai");
-        let _ = app.input.set_cursor(0, app.input.lines()[0].chars().count());
-
-        activate(&mut app);
-        run_search(&mut app);
-        confirm_selection(&mut app);
-
-        assert_eq!(app.input.lines()[0], "@'src/main.rs' ");
-    }
-
-    #[test]
-    fn confirming_spaced_candidate_at_end_inserts_trailing_space() {
-        let (mut app, _tmp) = app_with_temp_files(&["path with spaces.md"]);
-        start_session_index(&mut app);
-        app.input.set_text("@path");
-        let _ = app.input.set_cursor(0, "@path".chars().count());
-
-        activate(&mut app);
-        run_search(&mut app);
-        confirm_selection(&mut app);
-
-        assert_eq!(app.input.lines()[0], "@'path with spaces.md' ");
-    }
-
-    #[test]
-    fn confirming_spaced_candidate_before_text_does_not_add_double_space() {
-        let mut app = App::test_default();
-        app.input.set_text("open @path with typo later");
-        let trigger_col = "open ".chars().count();
-        let mut mention = MentionState::new(
-            0,
-            trigger_col,
-            "path with typo".to_owned(),
-            vec![candidate("path with spaces.md")],
-        );
-        mention.replace_end_col = "open @path with typo".chars().count();
-        mention.search_status = MentionSearchStatus::Ready;
-        app.mention = Some(mention);
-
-        confirm_selection(&mut app);
-
-        assert_eq!(app.input.lines()[0], "open @'path with spaces.md' later");
     }
 
     #[test]
@@ -1327,82 +1151,6 @@ mod tests {
         assert_eq!(mention.query, " ");
         assert!(mention.candidates.is_empty());
         assert!(matches!(mention.search_status, MentionSearchStatus::Hint));
-    }
-
-    #[test]
-    fn commit_literal_adds_trailing_space_at_line_end() {
-        let mut app = App::test_default();
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-        activate(&mut app);
-        app.input.set_text("@docs/manual path");
-        let _ = app.input.set_cursor(0, "@docs/manual path".chars().count());
-        update_query(&mut app);
-
-        assert!(commit_literal_if_active(&mut app));
-
-        assert!(app.mention.is_none());
-        assert_eq!(app.input.lines()[0], "@'docs/manual path' ");
-        assert_eq!(app.input.cursor_col(), "@'docs/manual path' ".chars().count());
-        assert_eq!(
-            app.committed_mentions,
-            vec![CommittedMentionSpan {
-                row: 0,
-                start_col: 0,
-                end_col: "@'docs/manual path'".chars().count(),
-                text: "@'docs/manual path'".to_owned(),
-            }]
-        );
-    }
-
-    #[test]
-    fn commit_literal_before_existing_space_does_not_add_double_space() {
-        let mut app = App::test_default();
-        app.input.set_text("@manual path now");
-        let end_col = "@manual path".chars().count();
-        let _ = app.input.set_cursor(0, end_col);
-        let mut mention = MentionState::new(0, 0, "manual path".to_owned(), Vec::new());
-        mention.replace_end_col = end_col;
-        app.mention = Some(mention);
-
-        assert!(commit_literal_if_active(&mut app));
-
-        assert_eq!(app.input.lines()[0], "@'manual path' now");
-        assert_eq!(app.committed_mentions.len(), 1);
-        assert_eq!(app.committed_mentions[0].text, "@'manual path'");
-        assert_eq!(app.committed_mentions[0].end_col, "@'manual path'".chars().count());
-    }
-
-    #[test]
-    fn commit_literal_with_trailing_separator_space_does_not_add_another_space() {
-        let mut app = App::test_default();
-        app.input.set_text("@manual path ");
-        let line_end_col = "@manual path ".chars().count();
-        let _ = app.input.set_cursor(0, line_end_col);
-        let mut mention = MentionState::new(0, 0, "manual path ".to_owned(), Vec::new());
-        mention.replace_end_col = line_end_col;
-        app.mention = Some(mention);
-
-        assert!(commit_literal_if_active(&mut app));
-
-        assert_eq!(app.input.lines()[0], "@'manual path' ");
-        assert_eq!(app.committed_mentions.len(), 1);
-        assert_eq!(app.committed_mentions[0].text, "@'manual path'");
-        assert_eq!(app.committed_mentions[0].end_col, "@'manual path'".chars().count());
-    }
-
-    #[test]
-    fn commit_literal_empty_query_only_deactivates() {
-        let mut app = App::test_default();
-        app.input.set_text("@ ");
-        let _ = app.input.set_cursor(0, 2);
-        app.mention = Some(MentionState::new(0, 0, " ".to_owned(), Vec::new()));
-
-        assert!(commit_literal_if_active(&mut app));
-
-        assert!(app.mention.is_none());
-        assert!(app.committed_mentions.is_empty());
-        assert_eq!(app.input.lines()[0], "@ ");
     }
 
     #[test]
@@ -1678,5 +1426,183 @@ mod tests {
 
         let mention = app.mention.as_ref().expect("mention should be active");
         assert_eq!(mention.candidates[0].rel_path, "src/rs-helper.rs");
+    }
+    fn select_path(app: &mut App, path: &str) {
+        run_search(app);
+        let candidates = &app.mention.as_ref().unwrap().candidates;
+        let target = candidates
+            .iter()
+            .position(|c| c.rel_path == path)
+            .unwrap_or_else(|| panic!("missing {path}: {candidates:?}"));
+        for _ in 0..target {
+            move_down(app);
+        }
+        assert_eq!(
+            app.mention.as_ref().unwrap().candidates[app.mention.as_ref().unwrap().dialog.selected]
+                .rel_path,
+            path
+        );
+    }
+    #[test]
+    fn mention_span_table_preserves_indexed_and_partial_quote_boundaries() {
+        for (source, path, start, end) in [
+            ("open @docs/my file.md now", "docs/my file.md", 5, 21),
+            ("open @docs/my folder/ now", "docs/my folder/", 5, 21),
+            ("open @'docs/my file.md' now", "docs/my file.md", 5, 23),
+            ("@src/app/mention.rs'", "src/app/mention.rs", 0, 19),
+            ("@'src/app/mention.rs", "src/app/mention.rs", 0, 20),
+            ("界 @'é.md' tail", "é.md", 2, 9),
+        ] {
+            let mut app = App::test_default();
+            index_paths(&mut app, &[path]);
+            assert_eq!(
+                find_mention_spans(1, source, &app.file_index, None),
+                [(start, end, path.to_owned())],
+                "{source}"
+            );
+        }
+    }
+    #[test]
+    fn mention_reentry_confirms_the_real_match_without_consuming_the_suffix() {
+        for (source, cursor_prefix, target, completed, caret) in [
+            (
+                "open @src/main.rs now",
+                "open @src",
+                "src/main.rs",
+                "open @'src/main.rs' now",
+                "open @'src/main.rs'",
+            ),
+            (
+                "open @'src/main.rs' now",
+                "open @'src/ma",
+                "src/main.rs",
+                "open @'src/main.rs' now",
+                "open @'src/main.rs'",
+            ),
+            (
+                "界 @docs/my folder/read me.md now",
+                "界 @docs/my folder/read",
+                "docs/my folder/read me.md",
+                "界 @'docs/my folder/read me.md' now",
+                "界 @'docs/my folder/read me.md'",
+            ),
+        ] {
+            let (mut app, _tmp) = app_with_temp_files(&[
+                target,
+                "src/mapping.rs",
+                "docs/my folder/reader.md",
+                "unrelated.txt",
+            ]);
+            start_session_index(&mut app);
+            run_search(&mut app);
+            app.input.set_text(&format!("FIRST\n{source}\nLAST"));
+            app.input.set_cursor(1, cursor_prefix.chars().count());
+            sync_with_cursor(&mut app);
+            select_path(&mut app, target);
+            confirm_selection(&mut app);
+            assert_eq!(app.input.text(), format!("FIRST\n{completed}\nLAST"));
+            assert_eq!(app.input.cursor(), (1, caret.chars().count()));
+            assert!(app.mention.is_none());
+        }
+    }
+    #[test]
+    fn mention_edit_receives_the_matching_file_before_replacing_the_entire_token() {
+        let (mut app, _tmp) = app_with_temp_files(&[
+            "docs/my folder/read me.txt",
+            "docs/my folder/read me.md",
+            "other.txt",
+        ]);
+        start_session_index(&mut app);
+        run_search(&mut app);
+        app.input.set_text("open @docs/my folder/read me.txt now");
+        app.input.set_cursor(0, "open @docs/my folder/read me.".chars().count());
+        sync_with_cursor(&mut app);
+        run_search(&mut app);
+        app.input.textarea_insert_char('m');
+        update_query(&mut app);
+        select_path(&mut app, "docs/my folder/read me.md");
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "open @'docs/my folder/read me.md' now");
+        assert_eq!(app.input.cursor(), (0, "open @'docs/my folder/read me.md'".chars().count()));
+        app.input.textarea_insert_char('!');
+        assert_eq!(app.input.text(), "open @'docs/my folder/read me.md'! now");
+    }
+    #[test]
+    fn mention_confirmation_quotes_selected_paths_and_preserves_separators() {
+        for (source, prefix, target, expected, caret) in [
+            (
+                "open @src/lib.txt now",
+                "open @src/lib",
+                "src/lib.rs",
+                "open @'src/lib.rs' now",
+                "open @'src/lib.rs'",
+            ),
+            ("@src/mai", "@src/mai", "src/main.rs", "@'src/main.rs' ", "@'src/main.rs' "),
+            (
+                "@path",
+                "@path",
+                "path with spaces.md",
+                "@'path with spaces.md' ",
+                "@'path with spaces.md' ",
+            ),
+            (
+                "open @path with typo later",
+                "open @path with",
+                "path with spaces.md",
+                "open @'path with spaces.md' later",
+                "open @'path with spaces.md'",
+            ),
+        ] {
+            let (mut app, _tmp) = app_with_temp_files(&[target, "path with typo", "other.txt"]);
+            start_session_index(&mut app);
+            run_search(&mut app);
+            app.input.set_text(&format!("FIRST\n{source}\nLAST"));
+            app.input.set_cursor(1, prefix.chars().count());
+            sync_with_cursor(&mut app);
+            assert!(
+                app.mention.is_some(),
+                "missing menu for {source:?}, cursor {:?}, index {:?}",
+                app.input.cursor(),
+                app.file_index.entries.keys().collect::<Vec<_>>()
+            );
+            select_path(&mut app, target);
+            confirm_selection(&mut app);
+            assert_eq!(app.input.text(), format!("FIRST\n{expected}\nLAST"));
+            assert_eq!(app.input.cursor(), (1, caret.chars().count()));
+            assert!(app.mention.is_none());
+            assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+        }
+    }
+    #[test]
+    fn literal_mention_commit_preserves_spacing_and_remains_editable() {
+        for (suffix, typed, expected, caret) in [
+            ("", "manual path", "界 @'manual path' ", "界 @'manual path' "),
+            (" now", "manual path", "界 @'manual path' now", "界 @'manual path'"),
+            ("", "manual path ", "界 @'manual path' ", "界 @'manual path'"),
+            ("", " ", "界 @ ", "界 @ "),
+        ] {
+            let (mut app, _tmp) = app_with_temp_files(&["unrelated.txt"]);
+            start_session_index(&mut app);
+            run_search(&mut app);
+            app.input.set_text(&format!("FIRST\n界 @{suffix}\nLAST"));
+            app.input.set_cursor(1, 3);
+            activate(&mut app);
+            for c in typed.chars() {
+                app.input.textarea_insert_char(c);
+                update_query(&mut app);
+            }
+            run_search(&mut app);
+            assert!(app.mention.as_ref().unwrap().candidates.is_empty());
+            assert!(commit_literal_if_active(&mut app));
+            assert_eq!(app.input.text(), format!("FIRST\n{expected}\nLAST"));
+            assert_eq!(app.input.cursor(), (1, caret.chars().count()));
+            assert!(app.mention.is_none());
+            assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+            app.input.textarea_insert_char('!');
+            assert_eq!(
+                app.input.text(),
+                format!("FIRST\n{caret}!{}\nLAST", expected.strip_prefix(caret).unwrap())
+            );
+        }
     }
 }
