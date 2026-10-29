@@ -2007,28 +2007,50 @@ fn diff_tool_renders_without_expand_hint() {
 
 #[test]
 fn diff_tool_body_adds_nested_indent_inside_tool_prefix() {
-    let mut tc = test_tool_call("tc-diff-indent", "Edit", model::ToolCallStatus::Completed);
-    tc.content = vec![model::ToolCallContent::Diff(
-        model::Diff::new("src/main.rs", "new".to_owned())
-            .old_text(Some("old".to_owned()))
-            .repository(Some("acme/project".to_owned())),
-    )];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(rendered.iter().any(|line| line.starts_with("  │    [acme/project]")));
-    assert!(rendered.iter().any(|line| line.starts_with("  │    (+1, -1)")));
-    assert!(rendered.iter().any(|line| {
-        (line.starts_with("  │   ") || line.starts_with("  └─   ")) && line.contains("+  new")
-    }));
+    for width in [48, 100] {
+        let mut tc = test_tool_call("repository-diffs", "Write", model::ToolCallStatus::Completed);
+        let first = (0..79).fold(String::new(), |mut text, n| {
+            writeln!(text, "ALPHA_{n:02}_long_wrapped_source_ending").unwrap();
+            text
+        }) + "ALPHA_LAST\n";
+        tc.content = vec![
+            model::ToolCallContent::Diff(
+                model::Diff::new("alpha.rs", first).repository(Some("alpha/repo".into())),
+            ),
+            model::ToolCallContent::Diff(
+                model::Diff::new("beta.rs", "BETA_NEW")
+                    .old_text(Some("BETA_OLD"))
+                    .repository(Some("beta/repo".into())),
+            ),
+        ];
+        let lines = standard::ToolBodyCursor::default().render(
+            &tc,
+            width,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
+        let rows = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>();
+        let alpha = rows.iter().position(|r| r.contains("alpha/repo")).unwrap();
+        let beta = rows.iter().position(|r| r.contains("beta/repo")).unwrap();
+        let first = &rows[alpha..beta];
+        let second = &rows[beta..];
+        assert!(first.iter().any(|r| r.contains("+80")));
+        assert!(first.iter().any(|r| r.contains("diff lines omitted")));
+        assert!(first.iter().any(|r| r.contains("ALPHA_LAST")));
+        assert!(!first.iter().any(|r| r.contains("BETA")));
+        assert!(second.iter().any(|r| r.contains("+1") && r.contains("-1")));
+        assert!(second.iter().any(|r| r.contains("BETA_NEW")));
+        assert!(second.iter().any(|r| r.contains("BETA_OLD")));
+        assert!(!second.iter().any(|r| r.contains("ALPHA")));
+        let prefix_end = rows[alpha].find('\u{2502}').unwrap();
+        let repository_start = rows[alpha].find("alpha/repo").unwrap();
+        let count = first.iter().find(|r| r.contains("+80")).unwrap();
+        assert!(repository_start > prefix_end + '\u{2502}'.len_utf8());
+        assert!(count.find("+80").unwrap() > prefix_end + '\u{2502}'.len_utf8());
+        assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
+    }
 }
 
 #[test]
@@ -2055,29 +2077,38 @@ fn diff_tool_body_preserves_source_code_indentation() {
 
 #[test]
 fn diff_tool_body_preserves_nested_indent_for_wrapped_continuations() {
-    let mut tc = test_tool_call("tc-diff-wrap", "Edit", model::ToolCallStatus::Completed);
-    tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
-        "src/main.rs",
-        "        This is a long added line that should wrap onto another visual line.\n".to_owned(),
-    ))];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        28,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(rendered.iter().any(|line| line.contains("diff lines")));
-    assert!(
-        rendered.iter().any(|line| line.starts_with("  │                  "))
-            || rendered.iter().any(|line| line.starts_with("  └─                  "))
-    );
-    assert!(rendered.iter().any(|line| line.contains("another")));
-    assert!(rendered.iter().any(|line| line.contains("line.")));
+    let source = "        alpha  beta gamma delta epsilon zeta END";
+    for width in [40, 60] {
+        let mut tc = test_tool_call("wrapped-source", "Edit", model::ToolCallStatus::Completed);
+        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("f.rs", source))];
+        let lines = standard::ToolBodyCursor::default().render(
+            &tc,
+            width,
+            &crate::ui::layout_control::LayoutControl::uninterrupted(),
+        );
+        let rows = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>();
+        let start = rows.iter().position(|r| r.contains("alpha")).unwrap();
+        let marker = rows[start].find('+').unwrap();
+        let body = rows[start]
+            .chars()
+            .take(rows[start][..marker].chars().count() + 3)
+            .collect::<String>()
+            .len();
+        let indent = source.len() - source.trim_start().len();
+        let mut recovered = rows[start][body..].to_owned();
+        for row in &rows[start + 1..] {
+            let prefix_chars = rows[start][..body].chars().count() + indent;
+            let prefix = row.chars().take(prefix_chars).collect::<String>();
+            assert!(prefix.chars().rev().take(indent).all(char::is_whitespace));
+            recovered.push_str(&row[prefix.len()..]);
+        }
+        assert_eq!(recovered.trim_end(), source);
+        assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
+        assert!(!rows.iter().any(|r| r.contains("omitted")));
+    }
 }
 
 #[test]

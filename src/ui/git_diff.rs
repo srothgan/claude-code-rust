@@ -370,10 +370,32 @@ mod tests {
 
     #[test]
     fn full_file_wrapping_preserves_source_whitespace_and_gutter_alignment() {
-        let lines = full_file_lines("    let x = \"a  b\";", "src/lib.rs", 14);
-        let text = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
-
-        assert_eq!(text, ["1      let x =", "    \"a  b\";"]);
-        assert!(lines[0].spans.iter().skip(1).any(|span| span.style.fg.is_some()));
+        let source = "    let x = \"a  b\";\n\n  alpha_beta_gamma_delta_END\nlast";
+        for width in [14, 23, 60] {
+            let lines = full_file_lines(source, "src/lib.rs", width);
+            let rows = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let starts = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    r.split_whitespace().next()?.parse::<usize>().ok().map(|n| (i, n))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(starts.iter().map(|(_, n)| *n).collect::<Vec<_>>(), [1, 2, 3, 4]);
+            let gutter = rows[starts[3].0].find("last").unwrap();
+            for (index, expected) in source.lines().enumerate() {
+                let start = starts[index].0;
+                let end = starts.get(index + 1).map_or(rows.len(), |r| r.0);
+                let mut recovered = String::new();
+                for (offset, row) in rows[start..end].iter().enumerate() {
+                    if offset > 0 {
+                        assert!(row[..gutter].trim().is_empty());
+                    }
+                    recovered.push_str(&row[gutter..]);
+                }
+                assert_eq!(recovered, expected);
+            }
+            assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
+        }
     }
 }

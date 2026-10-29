@@ -89,7 +89,23 @@ where
     parse_opts.insert(ParseOptions::ENABLE_TABLES);
     let parser = Parser::new_ext(input, parse_opts);
 
-    let mut writer = TextWriter::new(parser, options.styles.clone(), options.image_fallback);
+    from_events_with_options(parser, options)
+}
+
+/// Render already-parsed Markdown events, retaining their resolved document-wide references.
+/// The caller owns parsing and may render a balanced subset of one document's events.
+pub fn from_events_with_options<'a, S>(
+    events: impl IntoIterator<Item = Event<'a>>,
+    options: &Options<S>,
+) -> Text<'a>
+where
+    S: StyleSheet,
+{
+    let mut writer = TextWriter::new(
+        events.into_iter(),
+        options.styles.clone(),
+        options.image_fallback,
+    );
     writer.table_width = options.table_width;
     writer.table_row_dividers = options.table_row_dividers;
     #[cfg(feature = "highlight-code")]

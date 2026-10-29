@@ -323,4 +323,48 @@ mod tests {
             "prefix\u{1b}]0;title\u{07}\u{1b}]8;;https://example.com\u{1b}\\link\u{1b}]8;;\u{1b}\\";
         assert_eq!(strip_ansi(input), "prefixlink");
     }
+    #[test]
+    fn malformed_sequences_recover_without_payload_leaks_or_style_bleed() {
+        use super::{Color, LayoutControl, render_terminal_output};
+        for (input, expected) in [
+            ("before\x1b]0;PRIVATE\nafter", "before\nafter"),
+            ("before\x1b_PRIVATE\nafter", "before\nafter"),
+            ("before\x1b[31;\u{754c}after", "before\u{754c}after"),
+            ("visible\x1b", "visible"),
+            ("before\x1bPPRIVATE\x1b\\after", "beforeafter"),
+            ("before\x1b_PRIVATE\x1b\\after", "beforeafter"),
+            ("before\x1b]0;PRIVATE\x07after", "beforeafter"),
+        ] {
+            assert_eq!(strip_ansi(input), expected);
+            let original = render_terminal_output(input, &LayoutControl::uninterrupted());
+            assert_eq!(
+                original.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"),
+                expected
+            );
+            let source = format!("{input}\x1b[32mGREEN\x1b[0mRESET");
+            let expected = format!("{expected}GREENRESET");
+            assert_eq!(strip_ansi(&source), expected);
+            let lines = render_terminal_output(&source, &LayoutControl::uninterrupted());
+            let text = lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(text, expected);
+            let last = lines.last().unwrap();
+            let chars = last
+                .spans
+                .iter()
+                .flat_map(|s| s.content.chars().map(|c| (c, last.style.patch(s.style))))
+                .collect::<Vec<_>>();
+            let tail = &chars[chars.len() - 10..];
+            assert!(tail[..5].iter().all(|(_, style)| style.fg == Some(Color::Green)));
+            assert!(tail[5..].iter().all(|(_, style)| style.fg.is_none()));
+            assert!(!text.contains("PRIVATE") && !text.contains('\x1b'));
+        }
+        let source = "old\rnew\x07\x1b]unfinished\nNEXT";
+        assert_eq!(strip_ansi(source), "old\rnew\x07\nNEXT");
+        let rows = render_terminal_output(source, &LayoutControl::uninterrupted());
+        assert_eq!(rows.iter().map(ToString::to_string).collect::<Vec<_>>(), ["new", "NEXT"]);
+    }
 }

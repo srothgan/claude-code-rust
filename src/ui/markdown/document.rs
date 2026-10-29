@@ -3,7 +3,6 @@
 //! Document layout from one parse. Code blocks use app layout; lists, tables and their
 //! enclosing containers render through `tui-markdown`.
 
-use std::borrow::Cow;
 use std::ops::Range;
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Tag};
@@ -32,7 +31,7 @@ enum Node<'a> {
     Inline(Event<'a>, Range<usize>),
 }
 
-impl Node<'_> {
+impl<'a> Node<'a> {
     fn into_owned(self) -> Node<'static> {
         match self {
             Self::Block(tag, range, children) => Node::Block(
@@ -70,15 +69,25 @@ impl Node<'_> {
         }
     }
 
-    fn soft_breaks(&self, out: &mut Vec<Range<usize>>) {
+    fn append_events(
+        &self,
+        preserve_newlines: bool,
+        control: &LayoutControl<'_>,
+        out: &mut Vec<Event<'a>>,
+    ) {
+        if control.cancelled() {
+            return;
+        }
         match self {
-            Self::Block(_, _, children) => {
+            Self::Block(tag, _, children) => {
+                out.push(Event::Start(tag.clone()));
                 for child in children {
-                    child.soft_breaks(out);
+                    child.append_events(preserve_newlines, control, out);
                 }
+                out.push(Event::End(tag.to_end()));
             }
-            Self::Inline(Event::SoftBreak, range) => out.push(range.clone()),
-            Self::Inline(_, _) => {}
+            Self::Inline(Event::SoftBreak, _) if preserve_newlines => out.push(Event::HardBreak),
+            Self::Inline(event, _) => out.push(event.clone()),
         }
     }
 }
@@ -126,7 +135,6 @@ pub(super) fn render(
 #[derive(Default)]
 struct DocumentState {
     next_node: usize,
-    section_start: usize,
     separate_next: bool,
     previous_nonblank: bool,
     code: Option<CodeRows>,
@@ -203,7 +211,6 @@ impl DocumentState {
                 Node::Block(_, _, children) => render_document(children, layout, prefix, &mut out),
                 Node::Inline(_, _) => {}
             }
-            self.section_start = node.range().end;
             self.next_node += 1;
         } else {
             if std::mem::take(&mut self.separate_next) {
@@ -236,7 +243,7 @@ impl DocumentState {
                 self.next_node += 1;
             }
             let run = nodes[start..self.next_node].iter().collect::<Vec<_>>();
-            render_plain(&run, self.section_start, layout, out);
+            render_plain(&run, layout, out);
         } else {
             if let Node::Block(Tag::BlockQuote(_), _, children) = node {
                 render_document(children, layout, &format!("{prefix}> "), out);
@@ -329,47 +336,24 @@ impl CodeRows {
     }
 }
 
-/// Consecutive blocks without layout render as one source slice, so reference definitions and
-/// block spacing between them stay intact.
-fn render_plain(run: &[&Node<'_>], start: usize, layout: Layout<'_>, out: &mut Vec<Line<'static>>) {
+/// Render resolved events from the original document parse. Re-parsing a source slice would
+/// lose reference definitions in other sections (or beyond the final visible block).
+fn render_plain(run: &[&Node<'_>], layout: Layout<'_>, out: &mut Vec<Line<'static>>) {
     if layout.control.cancelled() {
         return;
     }
-    let Some(end) = run.last().map(|node| node.range().end) else {
+    let (Some(first), Some(last)) = (run.first(), run.last()) else {
         return;
     };
-    let source = &layout.source[start..end];
-    let text = if layout.preserve_newlines {
-        let mut breaks = Vec::new();
-        for node in run {
-            node.soft_breaks(&mut breaks);
-        }
-        with_hard_breaks(source, start, &breaks)
-    } else {
-        Cow::Borrowed(source)
-    };
-    out.extend(super::render_with_tui_markdown(&text, layout.width, layout.bg));
-}
-
-/// Two trailing spaces before each parsed soft break turn it into a hard break.
-fn with_hard_breaks<'s>(source: &'s str, start: usize, breaks: &[Range<usize>]) -> Cow<'s, str> {
-    if breaks.is_empty() {
-        return Cow::Borrowed(source);
+    let mut events = Vec::new();
+    for node in run {
+        node.append_events(layout.preserve_newlines, layout.control, &mut events);
     }
-    let mut text = String::with_capacity(source.len() + breaks.len() * 2);
-    let mut copied = 0;
-    for range in breaks {
-        let local = range.start - start..range.end - start;
-        let Some(newline) = source[local.clone()].find(['\r', '\n']) else {
-            continue;
-        };
-        let at = local.start + newline;
-        text.push_str(&source[copied..at]);
-        text.push_str("  ");
-        copied = at;
+    if layout.control.cancelled() {
+        return;
     }
-    text.push_str(&source[copied..]);
-    Cow::Owned(text)
+    let fallback = &layout.source[first.range().start..last.range().end];
+    out.extend(super::render_with_tui_markdown(fallback, events, layout.width, layout.bg));
 }
 
 /// Separates blocks with one blank row, never stacking blank rows.

@@ -1,6 +1,6 @@
 # Vendored from crates.io tui-markdown 0.3.12 (upstream 60ca93207130d20b8c9ab8bb88b0ec0aec8e0f0f).
-# Local patch: retain the active item indentation on subsequent list paragraphs.
-# Remove this override after an upstream release contains the fix.
+# Local patches: retain list-paragraph indentation and accept resolved Markdown events.
+# Remove this override after an upstream release supports both changes.
 [package]
 edition = "2021"
 rust-version = "1.88.0"
