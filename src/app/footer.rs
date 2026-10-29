@@ -264,49 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn saved_order_and_disabled_placement_survive_round_trip() {
-        let fixture = json!([
-            {"id":"effort","visible":false,"side":"right"},
-            {"id":"model","visible":true,"side":"left"},
-            {"id":"gitBranch","visible":true,"side":"right"}
-        ]);
-        let layout = FooterLayout::from_saved(Some(&fixture)).expect("layout");
-        let right: Vec<_> =
-            layout.fields().iter().filter(|f| f.side == FooterSide::Right).collect();
-        assert_eq!(right[0].id, FooterFieldId::Effort);
-        assert!(!right[0].visible);
-        assert_eq!(right[1].id, FooterFieldId::GitBranch);
-        assert_eq!(layout.fields().iter().filter(|f| f.visible).count(), 2);
-        let saved = serde_json::to_value(&layout).expect("serialize");
-        assert_eq!(FooterLayout::from_saved(Some(&saved)).expect("reload"), layout);
-    }
-
-    #[test]
-    fn empty_layout_disables_fields_and_missing_setting_restores_defaults() {
-        let empty = FooterLayout::from_saved(Some(&json!([]))).expect("empty layout");
-        for id in [
-            FooterFieldId::PermissionMode,
-            FooterFieldId::Model,
-            FooterFieldId::Effort,
-            FooterFieldId::Ultracode,
-            FooterFieldId::FastMode,
-            FooterFieldId::RunningSubagents,
-            FooterFieldId::Directory,
-            FooterFieldId::GitBranch,
-            FooterFieldId::ContextRemaining,
-        ] {
-            assert!(
-                empty.fields().iter().any(|field| field.id == id),
-                "omitted {id:?} remains editable"
-            );
-        }
-        assert!(empty.fields().iter().all(|f| !f.visible));
-        assert!(
-            FooterLayout::from_saved(None).expect("defaults").fields().iter().all(|f| f.visible)
-        );
-    }
-
-    #[test]
     fn invalid_fields_and_duplicates_are_rejected() {
         for fixture in [
             json!([{"id":"model","visible":true,"side":"middle"}]),
@@ -319,23 +276,8 @@ mod tests {
             assert!(FooterLayout::from_saved(Some(&fixture)).is_err());
         }
     }
-
-    #[test]
-    fn reordering_stays_within_side_and_switching_appends_to_destination() {
-        let mut layout = FooterLayout::default();
-        assert_eq!(layout.move_field(0, false), 0);
-        assert_eq!(layout.move_field(5, true), 5);
-        assert_eq!(layout.move_field(8, true), 8);
-        let moved = layout.move_field(1, true);
-        assert_eq!(moved, 2);
-        assert_eq!(layout.fields()[moved].id, FooterFieldId::Model);
-        layout.toggle(moved);
-        let moved = layout.switch_side(moved);
-        assert_eq!(moved, 8);
-        assert_eq!(layout.fields()[moved].id, FooterFieldId::Model);
-        assert!(!layout.fields()[moved].visible);
-        let moved = layout.switch_side(moved);
-        assert_eq!(moved, 5);
-        assert_eq!(layout.fields()[moved].side, FooterSide::Left);
-    }
 }
+
+#[cfg(test)]
+#[path = "footer/layout_audit_tests.rs"]
+mod audit_tests;

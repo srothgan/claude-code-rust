@@ -83,6 +83,17 @@ fn replace_with_check(
     })();
     drop(file);
     let result = result.and_then(|()| {
+        #[cfg(test)]
+        if let Some(checkpoint) = BEFORE_REPLACEMENT.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.as_ref().is_some_and(|(target, _)| target == path) {
+                slot.take().map(|(_, checkpoint)| checkpoint)
+            } else {
+                None
+            }
+        }) {
+            checkpoint();
+        }
         if !check()? {
             return Ok(false);
         }
@@ -103,8 +114,31 @@ fn replace_with_check(
 }
 
 #[cfg(test)]
+type ReplacementCheckpoint = (std::path::PathBuf, Box<dyn FnOnce()>);
+
+#[cfg(test)]
 thread_local! {
     static REPLACEMENT_FAILURE: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+    static BEFORE_REPLACEMENT: std::cell::RefCell<Option<ReplacementCheckpoint>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run one path-scoped checkpoint after serialization and before the real comparison.
+#[cfg(test)]
+pub(crate) fn with_before_replacement<T>(
+    path: &Path,
+    checkpoint: impl FnOnce() + 'static,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct Reset(Option<ReplacementCheckpoint>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            BEFORE_REPLACEMENT.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(
+        BEFORE_REPLACEMENT.with(|slot| slot.replace(Some((path.to_owned(), Box::new(checkpoint))))),
+    );
+    operation()
 }
 
 #[cfg(test)]
