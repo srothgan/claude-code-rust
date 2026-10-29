@@ -2,7 +2,7 @@
 
 use crossterm::cursor::{Hide, SetCursorStyle, Show};
 use crossterm::event::{DisableFocusChange, EnableFocusChange};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -26,15 +26,15 @@ pub(super) enum TerminalModeAction {
     RestoreDefaultCursorShape,
     DisableLineWrap,
     EnableLineWrap,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     PushKeyboardEnhancement,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     PopKeyboardEnhancement,
 }
 
 const CHAT_STARTUP_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::EnableRawMode,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PushKeyboardEnhancement,
     TerminalModeAction::EnableFocusChange,
     TerminalModeAction::DisableLineWrap,
@@ -61,7 +61,7 @@ const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];
@@ -71,7 +71,7 @@ const RELEASE_TO_CHILD_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];
@@ -128,12 +128,12 @@ pub(super) fn apply_actions(
             TerminalModeAction::EnableLineWrap => {
                 execute!(stdout, crossterm::terminal::EnableLineWrap)
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             TerminalModeAction::PushKeyboardEnhancement => execute!(
                 stdout,
                 PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
             ),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             TerminalModeAction::PopKeyboardEnhancement => {
                 execute!(stdout, PopKeyboardEnhancementFlags)
             }
@@ -166,7 +166,7 @@ mod tests {
             chat_startup_actions(),
             &[
                 TerminalModeAction::EnableRawMode,
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 TerminalModeAction::PushKeyboardEnhancement,
                 TerminalModeAction::EnableFocusChange,
                 TerminalModeAction::DisableLineWrap,
@@ -211,7 +211,7 @@ mod tests {
                 TerminalModeAction::ShowCursor,
                 TerminalModeAction::EnableLineWrap,
                 TerminalModeAction::DisableFocusChange,
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 TerminalModeAction::PopKeyboardEnhancement,
                 TerminalModeAction::DisableRawMode,
             ]
@@ -227,7 +227,7 @@ mod tests {
                 TerminalModeAction::ShowCursor,
                 TerminalModeAction::EnableLineWrap,
                 TerminalModeAction::DisableFocusChange,
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 TerminalModeAction::PopKeyboardEnhancement,
                 TerminalModeAction::DisableRawMode,
             ]
@@ -259,7 +259,7 @@ mod tests {
         );
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::ShowCursor));
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::EnableLineWrap));
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(shutdown_restore_actions().contains(&TerminalModeAction::PopKeyboardEnhancement));
     }
 
@@ -280,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn chat_startup_actions_enable_keyboard_enhancement() {
         assert!(chat_startup_actions().contains(&TerminalModeAction::PushKeyboardEnhancement));
     }
