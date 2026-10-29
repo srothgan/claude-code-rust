@@ -551,6 +551,17 @@ async fn inline_arrows_and_space_cycle_choices_and_render_acknowledged_values() 
         .await;
 }
 
+fn settings_screen_rows(
+    terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+) -> Vec<String> {
+    let buffer = terminal.backend().buffer();
+    buffer
+        .content
+        .chunks(usize::from(buffer.area.width))
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+        .collect()
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn settings_load_automatically_when_authentication_finishes_with_config_open() {
     use crate::agent::model;
@@ -579,17 +590,12 @@ async fn settings_load_automatically_when_authentication_finishes_with_config_op
             terminal
                 .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
                 .expect("startup render");
-            let rows: Vec<String> = terminal
-                .backend()
-                .buffer()
-                .content
-                .chunks(100)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
-                .collect();
+            let rows = settings_screen_rows(&terminal);
             assert!(
                 rows.iter().any(|row| row.contains("Footer") && row.contains("Default layout")),
                 "local preferences are available before agent settings"
             );
+            assert_eq!(app.config.selected_setting().unwrap().id, crate::app::footer::SETTING_ID);
             let cwd = app.cwd_raw.clone();
             crate::app::events::handle_client_event(
                 &mut app,
@@ -615,7 +621,18 @@ async fn settings_load_automatically_when_authentication_finishes_with_config_op
                     break command;
                 }
             };
-            let resolved = snapshot(&app.cwd_raw, "German");
+            let mut resolved = snapshot(&app.cwd_raw, "German");
+            let catalog: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../../tests/fixtures/settings-ui-catalog.json"
+            ))
+            .unwrap();
+            let model = catalog["catalog"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["id"] == "model")
+                .unwrap();
+            resolved.catalog.push(serde_json::from_value(model.clone()).unwrap());
             crate::app::events::handle_client_event(
                 &mut app,
                 ClientEvent::SettingsResultReceived {
@@ -633,19 +650,16 @@ async fn settings_load_automatically_when_authentication_finishes_with_config_op
                 .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
                 .expect("loaded settings");
             assert_eq!(app.config.saved_value("language"), Some(&json!("German")));
-            let rows: Vec<String> = terminal
-                .backend()
-                .buffer()
-                .content
-                .chunks(100)
-                .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
-                .collect();
+            let rows = settings_screen_rows(&terminal);
             assert!(
                 rows.iter()
                     .any(|row| row.contains("Language") && row.trim_end().ends_with("German")),
                 "loaded value must appear beside its setting: {rows:?}"
             );
             assert!(app.config.last_error.is_none());
+            assert_eq!(app.config.selected_setting().unwrap().id, "model");
+            assert!(rows.iter().any(|r| r.contains("Default model") && r.contains('\u{203a}')));
+            assert!(rows.iter().any(|r| r.contains("Footer") && !r.contains('\u{203a}')));
         })
         .await;
 }

@@ -187,19 +187,91 @@ fn activate_tab_clears_status_and_error_feedback() {
 }
 
 #[test]
-fn reopen_clears_stale_transient_feedback() {
-    let (_dir, mut app) = open_settings_test_app();
-    let _commands = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some("session-1".into());
-    app.config.status_message = Some("stale status".to_owned());
-    app.config.last_error = Some("stale error".to_owned());
-
-    super::controller::close(&mut app);
-    open(&mut app).expect("reopen");
-
-    assert_ne!(app.config.status_message.as_deref(), Some("stale status"));
-    assert!(app.config.last_error.is_none());
-    assert!(app.config.pending_settings_request.is_some(), "reopening refreshes agent settings");
+fn reopen_clears_feedback_filter_scroll_and_selection_in_current_and_new_sessions() {
+    use crate::agent::{
+        events::ClientEvent,
+        settings::{SettingsApplication, SettingsPersistence, SettingsResult},
+    };
+    for new_session in [false, true] {
+        let (_directory, mut app) = open_settings_test_app();
+        let _commands = attach_test_connection(&mut app);
+        app.session_runtime.session_id = Some("session-1".into());
+        app.config.load_footer(app.global_settings_path.as_deref());
+        let catalog: serde_json::Value =
+            serde_json::from_str(include_str!("../../../tests/fixtures/settings-ui-catalog.json"))
+                .expect("catalog");
+        app.config.snapshot.as_mut().expect("snapshot").catalog.push(
+            serde_json::from_value(
+                catalog["catalog"]
+                    .as_array()
+                    .expect("catalog")
+                    .iter()
+                    .find(|entry| entry["id"] == "model")
+                    .expect("Default model control")
+                    .clone(),
+            )
+            .expect("descriptor"),
+        );
+        app.config.project_footer(app.global_settings_path.as_deref());
+        let mut incoming = app.config.snapshot.clone().expect("loaded settings");
+        incoming.cwd.clone_from(&app.cwd_raw);
+        app.config.settings.select(crate::app::footer::SETTING_ID.into());
+        app.config.settings.position_mut().scroll = 20;
+        app.config.settings.query = "Footer".into();
+        app.config.settings.cursor = 6;
+        app.config.last_error = Some("stale error".into());
+        app.config.status_message = Some("stale status".into());
+        controller::close(&mut app);
+        if new_session {
+            app.bump_session_scope_epoch();
+            app.session_runtime.session_id = Some("session-2".into());
+        }
+        app.input.set_text("/config");
+        crate::app::input_submit::submit_input(&mut app);
+        let request_id = app
+            .config
+            .pending_settings_request
+            .as_ref()
+            .expect("inspection")
+            .request_id()
+            .to_owned();
+        let session_id = app.session_runtime.session_id.as_ref().expect("session").to_string();
+        crate::app::handle_client_event(
+            &mut app,
+            ClientEvent::SettingsResultReceived {
+                session_id,
+                request_id: Some(request_id),
+                result: SettingsResult {
+                    persistence: SettingsPersistence::NotRequested,
+                    application: SettingsApplication::Host,
+                    snapshot: Some(incoming),
+                    error: None,
+                },
+            },
+        );
+        assert!(app.config.last_error.is_none());
+        assert_ne!(app.config.status_message.as_deref(), Some("stale status"));
+        assert!(app.config.settings.query.is_empty());
+        assert_eq!(app.config.settings.focus, SettingsFocus::Content);
+        assert_eq!(app.config.selected_setting().expect("top control").id, "model");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |buffer: &ratatui::buffer::Buffer, y: u16| -> String {
+            (0..100).map(|x| buffer[(x, y)].symbol()).collect()
+        };
+        let find_row = |buffer: &ratatui::buffer::Buffer, label: &str| {
+            (0..30).find(|&y| row(buffer, y).contains(label)).unwrap()
+        };
+        let top = find_row(buffer, "Default model");
+        let text = row(buffer, top);
+        assert!(text.contains('›'));
+        let x = u16::try_from(text.chars().position(|ch| ch == 'D').expect("control label"))
+            .expect("column");
+        assert_eq!(buffer[(x, top)].bg, crate::ui::theme::USER_MSG_BG);
+        assert_eq!(app.config.settings.position().map_or(0, |position| position.scroll), 0);
+    }
 }
 
 #[test]
