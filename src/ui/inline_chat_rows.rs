@@ -1290,7 +1290,7 @@ fn frame_assistant_rows(
         .boundaries
         .iter()
         .enumerate()
-        .filter(|(_, boundary)| boundary.kind == LiveRowBoundaryKind::AssistantBtw)
+        .filter(|(_, boundary)| !boundary.kind.uses_assistant_gutter())
         .map(|(index, boundary)| {
             boundary.start_row
                 ..rendered

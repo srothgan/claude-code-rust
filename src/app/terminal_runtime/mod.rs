@@ -19,7 +19,9 @@ use self::modes::{
     shutdown_restore_actions,
 };
 use self::panic_hook::{PanicRestoreHook, restore_once};
-use crate::app::{App, ChatRebuildKind, FullscreenView, SurfaceMode, TerminalLifecycleState};
+#[cfg(test)]
+use crate::app::ChatRebuildKind;
+use crate::app::{App, FullscreenView, SurfaceMode, TerminalLifecycleState};
 use anyhow::{Context, anyhow};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -241,25 +243,10 @@ impl TerminalRuntime {
 
     pub(crate) fn apply_surface_rebuilds(&mut self, app: &mut App) -> anyhow::Result<()> {
         match self.session_mut()? {
-            SurfaceTerminalSession::Chat(session) => match app.surface_dirty.chat.take_rebuild() {
-                ChatRebuildKind::None => Ok(()),
-                ChatRebuildKind::MutableViewport => {
-                    session.clear_mutable_viewport(app);
-                    Ok(())
-                }
-                ChatRebuildKind::FullscreenReturn => {
-                    session.reattach_after_fullscreen(app);
-                    Ok(())
-                }
-                ChatRebuildKind::VisibleScreen => {
-                    session.clear(app);
-                    Ok(())
-                }
-                ChatRebuildKind::PurgeReplay(options) => {
-                    session.clear_for_purge_replay(app, options);
-                    Ok(())
-                }
-            },
+            SurfaceTerminalSession::Chat(session) => {
+                session.apply_rebuild(app);
+                Ok(())
+            }
             SurfaceTerminalSession::Fullscreen(_) => Ok(()),
         }
     }

@@ -166,6 +166,13 @@ pub(crate) enum LiveRowBoundaryKind {
     AssistantPadding,
 }
 
+impl LiveRowBoundaryKind {
+    /// Assistant rows share a role gutter, except independently framed BTW cards.
+    pub(crate) const fn uses_assistant_gutter(self) -> bool {
+        !matches!(self, Self::Message | Self::AssistantBtw)
+    }
+}
+
 pub(crate) fn ids_are_excluded(
     ids: &[HistoryOutputId],
     excluded_ids: &BTreeSet<HistoryOutputId>,

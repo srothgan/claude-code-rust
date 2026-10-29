@@ -237,7 +237,7 @@ function streamReply(messageUuid) {
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
     return;
   }
-  if (SCENARIO === 'native-surfaces') {
+  if (SCENARIO === 'native-surfaces' || (SCENARIO === 'permission-after-history' && replyNumber === 1)) {
     const body = replyNumber === 1
       ? Array.from({ length: 48 }, (_, i) => {
           const id = String(i + 1).padStart(3, '0');
@@ -323,30 +323,40 @@ function streamReply(messageUuid) {
     }
   }, INTERVAL_MS);
   active = { timer };
-  if (replyNumber === 1 && ['permission', 'question'].includes(SCENARIO)) {
+  if ((replyNumber === 1 && ['permission', 'question'].includes(SCENARIO)) || (replyNumber === 2 && SCENARIO === 'permission-after-history')) {
     clearInterval(timer);
-    const tool_call = {
-      tool_call_id: 'fixture-tool', title: 'Fixture action', kind: 'other',
-      status: 'pending', source_message_uuid: null, content: [],
-      raw_input: null, raw_output: null, locations: [], meta: null,
+    const requestInteraction = () => {
+      const tool_call = {
+        tool_call_id: 'fixture-tool', title: 'Fixture action', kind: 'other',
+        status: 'pending', source_message_uuid: null, content: [],
+        raw_input: null, raw_output: null, locations: [], meta: null,
+      };
+      send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call } });
+      send(SCENARIO.startsWith('permission') ? {
+        event: 'permission_request', session_id: SESSION,
+        request: { tool_call, options: [
+          { option_id: 'allow-once', name: 'Allow once', kind: 'allow_once', description: null },
+          { option_id: 'deny-once', name: 'Deny once', kind: 'reject_once', description: null },
+        ], display: null, mcp_server: null },
+      } : {
+        event: 'question_request', session_id: SESSION,
+        request: { tool_call, question_index: 0, total_questions: 1, prompt: {
+          question: 'Choose fixture destination', header: 'Destination', multi_select: false,
+          options: [
+            { option_id: 'alpha', label: 'Alpha', description: null, preview: null },
+            { option_id: 'beta', label: 'Beta', description: null, preview: null },
+          ],
+        } },
+      });
     };
-    send({ event: 'session_update', session_id: SESSION, update: { type: 'tool_call', tool_call } });
-    send(SCENARIO === 'permission' ? {
-      event: 'permission_request', session_id: SESSION,
-      request: { tool_call, options: [
-        { option_id: 'allow-once', name: 'Allow once', kind: 'allow_once', description: null },
-        { option_id: 'deny-once', name: 'Deny once', kind: 'reject_once', description: null },
-      ], display: null, mcp_server: null },
-    } : {
-      event: 'question_request', session_id: SESSION,
-      request: { tool_call, question_index: 0, total_questions: 1, prompt: {
-        question: 'Choose fixture destination', header: 'Destination', multi_select: false,
-        options: [
-          { option_id: 'alpha', label: 'Alpha', description: null, preview: null },
-          { option_id: 'beta', label: 'Beta', description: null, preview: null },
-        ],
-      } },
-    });
+    if (SCENARIO === 'permission-after-history') {
+      record({ type: 'barrier', name: 'permission-held' });
+      active.timer = setInterval(() => {
+        if (!fs.existsSync(RELEASE_FILE)) return;
+        clearInterval(active.timer);
+        requestInteraction();
+      }, INTERVAL_MS);
+    } else requestInteraction();
   }
 }
 
@@ -492,7 +502,7 @@ readline
           ] : null,
           restored_input: null,
         });
-        if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-') || SCENARIO === 'native-surfaces') send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-') || ['native-surfaces', 'permission-after-history'].includes(SCENARIO)) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
         if (SCENARIO === 'status-rename') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'clear', description: 'Clear conversation history', input_hint: null },

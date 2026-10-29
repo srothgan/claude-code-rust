@@ -1909,6 +1909,50 @@ fn permission_accept_and_deny_survive_resize_and_send_one_correlated_response() 
 }
 
 #[test]
+fn permission_dismissal_preserves_scrollback_and_draft_without_resize() {
+    for (keys, option) in [(b"\r".as_slice(), "allow-once"), (b"\x1b".as_slice(), "deny-once")] {
+        let mut test = TerminalTest::start("permission-after-history", 48);
+        test.seed_native_history();
+        test.submit("REQUEST_PERMISSION", "REQUEST_PERMISSION");
+        test.wait_journal("permission-held");
+        test.paste("PRESERVED_DRAFT");
+        test.wait_screen("PRESERVED_DRAFT");
+        test.release();
+        test.wait_screen("Tab to focus");
+        test.send(b"\t");
+        test.wait_screen_with("Allow once", &["Deny once"]);
+        let offset = test.raw_offset();
+        test.send(keys);
+        test.wait_until("correlated permission response and restored editable draft", |test| {
+            let responses = test.commands("permission_response");
+            responses.len() == 1
+                && responses[0]["tool_call_id"] == "fixture-tool"
+                && test.screen().contains("[READY]")
+                && test.screen().contains("PRESERVED_DRAFT")
+                && !test.screen().contains("Allow once")
+                && !test.screen().contains("Deny once")
+        });
+        let responses = test.commands("permission_response");
+        assert_eq!(responses[0]["session_id"], "fake-session");
+        assert_eq!(
+            responses[0]["outcome"],
+            serde_json::json!({"outcome":"selected","option_id":option})
+        );
+        let raw = test.raw_since(offset);
+        for clear in [b"\x1b[2J", b"\x1b[3J"] {
+            assert!(!raw.windows(4).any(|w| w == clear));
+        }
+        test.assert_native_history();
+        test.paste("!");
+        test.wait_screen("PRESERVED_DRAFT!");
+        test.submit_draft();
+        test.wait_screen("reply 3 started");
+        test.assert_prompts(&["NATIVE_HISTORY_REQUEST", "REQUEST_PERMISSION", "PRESERVED_DRAFT!"]);
+        test.shutdown();
+    }
+}
+
+#[test]
 fn question_selection_and_cancellation_survive_resize_without_submitting_a_prompt() {
     for answered in [true, false] {
         let mut test = TerminalTest::start("question", 3);

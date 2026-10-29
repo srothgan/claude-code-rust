@@ -274,7 +274,16 @@ impl ChatTerminal {
 }
 
 impl<I: TerminalIo> ChatTerminal<I> {
-    fn with_io(owned_top: u16, io: I) -> Self {
+    pub(super) fn io(&self) -> &I {
+        &self.io
+    }
+
+    #[cfg(test)]
+    pub(super) fn rendered_area(&self) -> Rect {
+        self.state.area.unwrap()
+    }
+
+    pub(super) fn with_io(owned_top: u16, io: I) -> Self {
         Self {
             io,
             terminal: None,

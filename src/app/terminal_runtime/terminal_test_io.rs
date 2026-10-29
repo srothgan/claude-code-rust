@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::io;
 use std::ops::Range;
 use std::rc::Rc;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Operation {
@@ -24,6 +25,7 @@ struct State {
     operations: Vec<Operation>,
     fail: Option<&'static str>,
     queries: usize,
+    resize_after_draw: Option<(u16, u16)>,
 }
 
 #[derive(Clone)]
@@ -36,7 +38,11 @@ impl TestIo {
             operations: Vec::new(),
             fail: None,
             queries: 0,
+            resize_after_draw: None,
         })))
+    }
+    pub(crate) fn resize_after_draw(&self, width: u16, height: u16) {
+        self.0.borrow_mut().resize_after_draw = Some((width, height));
     }
     pub(crate) fn fail_on(&self, operation: Option<&'static str>) {
         self.0.borrow_mut().fail = operation;
@@ -61,7 +67,16 @@ impl TestIo {
         buffer
             .content
             .chunks(usize::from(buffer.area.width))
-            .map(|row| row.iter().map(Cell::symbol).collect::<String>().trim_end().to_owned())
+            .map(|row| {
+                let mut text = String::new();
+                let mut column = 0;
+                while column < row.len() {
+                    let symbol = row[column].symbol();
+                    text.push_str(symbol);
+                    column += symbol.width().max(1);
+                }
+                text.trim_end().to_owned()
+            })
             .collect()
     }
     pub(crate) fn screen_rows(&self) -> Vec<String> {
@@ -104,7 +119,11 @@ impl Backend for ObservedBackend {
             return Err(io::Error::other("injected draw-partial failure"));
         }
         self.0.0.borrow_mut().screen.draw(cells.iter().map(|(x, y, c)| (*x, *y, c))).unwrap();
-        Ok(())
+        let resize = self.0.0.borrow_mut().resize_after_draw.take();
+        if let Some((width, height)) = resize {
+            self.0.resize(width, height);
+        }
+        self.0.check("draw-after")
     }
     fn append_lines(&mut self, n: u16) -> io::Result<()> {
         self.0.check("append")?;

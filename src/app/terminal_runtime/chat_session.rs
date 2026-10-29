@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::chat_terminal::{
-    ChatDrawOutcome, ChatDrawRequest, ChatTerminal, HistoryBatchKind, PendingHistoryBatch,
-    TerminalResizeDuringDraw, TerminalSnapshot,
+    ChatDrawOutcome, ChatDrawRequest, ChatTerminal, HistoryBatchKind, NativeTerminalIo,
+    PendingHistoryBatch, TerminalIo, TerminalResizeDuringDraw, TerminalSnapshot,
 };
 use super::history_insert::RenderedHistoryRows;
 use crate::app::{App, ChatPurgeReplayOptions, HistoryOutputId};
@@ -25,8 +25,8 @@ use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-pub(super) struct ChatTerminalSession {
-    terminal: ChatTerminal,
+pub(super) struct ChatTerminalSession<I: TerminalIo = NativeTerminalIo> {
+    terminal: ChatTerminal<I>,
     history: HistoryCommitState,
     preparation: Option<Box<ReplayPreparation>>,
 }
@@ -116,25 +116,6 @@ impl ChatTerminalSeed {
 }
 
 impl ChatTerminalSession {
-    pub(super) fn has_pending_work(&self) -> bool {
-        self.preparation.is_some() || self.terminal.has_pending_history_rows()
-    }
-
-    pub(super) fn layout_ready(&self) -> bool {
-        self.preparation.is_some() && !self.terminal.has_pending_history_rows()
-    }
-
-    fn needs_draw(&self, app: &App, rows: &SerializedLiveRows) -> bool {
-        app.surface_dirty.chat.repaint
-            || !rows.rows().is_empty()
-            || self.terminal.has_pending_history_rows()
-            || self.preparation.as_ref().is_some_and(|preparation| preparation.finished)
-    }
-
-    pub(super) fn park_cursor_at_viewport_end(&self) -> anyhow::Result<()> {
-        self.terminal.park_cursor_at_viewport_end()
-    }
-
     pub(super) fn new_before_input_reader() -> anyhow::Result<Self> {
         Ok(Self::new_with_seed(ChatTerminalSeed::read_before_input_reader()?))
     }
@@ -171,6 +152,27 @@ impl ChatTerminalSession {
             history: HistoryCommitState::default(),
             preparation: None,
         }
+    }
+}
+
+impl<I: TerminalIo> ChatTerminalSession<I> {
+    pub(super) fn has_pending_work(&self) -> bool {
+        self.preparation.is_some() || self.terminal.has_pending_history_rows()
+    }
+
+    pub(super) fn layout_ready(&self) -> bool {
+        self.preparation.is_some() && !self.terminal.has_pending_history_rows()
+    }
+
+    fn needs_draw(&self, app: &App, rows: &SerializedLiveRows) -> bool {
+        app.surface_dirty.chat.repaint
+            || !rows.rows().is_empty()
+            || self.terminal.has_pending_history_rows()
+            || self.preparation.as_ref().is_some_and(|preparation| preparation.finished)
+    }
+
+    pub(super) fn park_cursor_at_viewport_end(&self) -> anyhow::Result<()> {
+        self.terminal.park_cursor_at_viewport_end()
     }
 
     pub(super) fn clear(&mut self, app: &mut App) {
@@ -234,7 +236,26 @@ impl ChatTerminalSession {
         );
     }
 
+    pub(super) fn apply_rebuild(&mut self, app: &mut App) {
+        use crate::app::ChatRebuildKind;
+        match app.surface_dirty.chat.take_rebuild() {
+            ChatRebuildKind::None => {}
+            ChatRebuildKind::MutableViewport => self.clear_mutable_viewport(app),
+            ChatRebuildKind::FullscreenReturn => self.reattach_after_fullscreen(app),
+            ChatRebuildKind::VisibleScreen => self.clear(app),
+            ChatRebuildKind::PurgeReplay(options) => self.clear_for_purge_replay(app, options),
+        }
+    }
+
     pub(super) fn update(&mut self, app: &mut App) -> anyhow::Result<()> {
+        self.update_with_budget(app, None)
+    }
+
+    fn update_with_budget(
+        &mut self,
+        app: &mut App,
+        budget: Option<Duration>,
+    ) -> anyhow::Result<()> {
         ChatTerminal::ensure_line_wrap_disabled(&mut app.chat_render.line_wrap_disabled)?;
 
         // The recorded size is owned by the resize path. A live size that differs
@@ -260,22 +281,25 @@ impl ChatTerminalSession {
         let snapshot = TerminalSnapshot::new(width, terminal_height);
         let observed_resize = Cell::new(None);
         let last_check = Cell::new(None::<Instant>);
+        let io = self.terminal.io().clone();
         let check_size = || {
             // Check inside parsing, highlighting and wrapping without a system call per cell.
             if last_check.get().is_some_and(|at| at.elapsed() < Duration::from_millis(1)) {
                 return false;
             }
             last_check.set(Some(Instant::now()));
-            if let Ok((width, height)) = crossterm::terminal::size() {
-                let actual = TerminalSnapshot::new(width, height);
-                if actual != snapshot {
-                    observed_resize.set(Some(actual));
-                    return true;
-                }
+            if let Ok(actual) = io.snapshot()
+                && actual != snapshot
+            {
+                observed_resize.set(Some(actual));
+                return true;
             }
             false
         };
-        let control = LayoutControl::new(&check_size);
+        let control = budget.map_or_else(
+            || LayoutControl::new(&check_size),
+            |budget| LayoutControl::with_budget(&check_size, budget),
+        );
         let Some(serialized_rows) =
             self.prepare_rows(app, width, &serialization_excluded_ids, &control)
         else {
@@ -1549,73 +1573,23 @@ fn preview_rows(rows: &[Line<'static>], limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ChatTerminalSession, ComposerEditor, ComposerSurface, HistoryCommitState,
-        MutableLayoutPlan, RowWindow,
-    };
+    type ChatTerminalSession = super::ChatTerminalSession;
+    use super::{HistoryCommitState, MutableLayoutPlan};
     use crate::app::terminal_runtime::chat_terminal::ChatTerminal;
-    use crate::app::terminal_runtime::chat_terminal::plan_inline_geometry;
     use crate::app::{
         App, AppStatus, ChatMessage, ChatMessageId, FocusTarget, HistoryOutputId, MessageBlock,
         MessageRole, TextBlock, TextBlockSpacing,
     };
-    use crate::ui::inline_chat_rows::{
-        LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows,
-        serialize_live_rows_with_boundaries_excluding,
-    };
-    use crate::ui::{input, theme};
+    use crate::ui::inline_chat_rows::{LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows};
+    use crate::ui::input;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use std::collections::BTreeSet;
 
-    #[test]
-    fn wrapped_error_status_keeps_the_composer_background_and_error_foreground() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Error;
-        app.input.set_text("Unsent draft with enough text to wrap on a narrow terminal");
-        for width in [20, 80] {
-            let rows = crate::ui::input_rows::blocked_input_lines(
-                &app,
-                crate::app::ComposerBlockReason::Error,
-                width,
-            )
-            .expect("error status");
-            let height = input::status_field_height(rows.len());
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal.draw(|frame| super::render_status_editor(frame, &rows, frame.area())).unwrap();
-            let buffer = terminal.backend().buffer();
-            for (index, cell) in buffer.content.iter().enumerate() {
-                assert_eq!(cell.bg, theme::USER_MSG_BG, "cell {index} at width {width}");
-            }
-            let text = input::compute_render_geometry(Rect::new(0, 0, width, height)).text;
-            let first = &buffer[(text.x, text.y)];
-            assert_eq!(first.symbol(), "I");
-            assert_eq!(first.fg, theme::STATUS_ERROR);
-            let draft_text: String = (text.y..text.bottom())
-                .flat_map(|y| (text.x..text.right()).map(move |x| buffer[(x, y)].symbol()))
-                .collect();
-            assert!(draft_text.contains("Unsent draft"));
-        }
-    }
-
     fn rows(count: usize) -> Vec<Line<'static>> {
         (0..count).map(|idx| Line::from(format!("row {idx}"))).collect()
-    }
-
-    fn textarea_composer(
-        hint_rows: usize,
-        editor_height: u16,
-        footer_rows: usize,
-    ) -> ComposerSurface {
-        ComposerSurface {
-            activity_rows: Vec::new(),
-            hint_rows: rows(hint_rows),
-            btw_rows: Vec::new(),
-            editor: ComposerEditor::TextArea { desired_height: editor_height },
-            footer_rows: rows(footer_rows),
-        }
     }
 
     fn output_id() -> HistoryOutputId {
@@ -1644,198 +1618,6 @@ mod tests {
 
     fn session_with_history(history: HistoryCommitState) -> ChatTerminalSession {
         ChatTerminalSession { terminal: ChatTerminal::new(0), history, preparation: None }
-    }
-
-    #[test]
-    fn read_preparation_yields_without_repainting_and_preserves_preview_boundaries() {
-        use crate::agent::model;
-        use crate::ui::layout_control::LayoutControl;
-        use std::fmt::Write as _;
-        use std::time::Duration;
-
-        let cases: &[(usize, &[usize], Option<usize>)] = &[
-            (1, &[1], None),
-            (7, &[1, 2, 3, 4, 5, 6, 7], None),
-            (8, &[1, 2, 3, 4, 5, 6, 7, 8], None),
-            (9, &[1, 2, 3, 6, 7, 8, 9], Some(2)),
-            (10, &[1, 2, 3, 7, 8, 9, 10], Some(3)),
-            (107, &[1, 2, 3, 104, 105, 106, 107], Some(100)),
-            (207, &[1, 2, 3, 204, 205, 206, 207], Some(200)),
-        ];
-        for &(count, visible, hidden) in cases {
-            for width in [25, 80] {
-                let mut app = App::test_default();
-                let mut tool = crate::app::test_support::tool_call_info(
-                    "preview.txt",
-                    model::ToolCallStatus::Completed,
-                );
-                let mut content = String::new();
-                for line in 1..=count {
-                    writeln!(content, "READ_ROW_{line:03}").unwrap();
-                }
-                tool.content = vec![model::ToolCallContent::from(content)];
-                app.push_message_tracked(assistant_blocks_message(vec![MessageBlock::ToolCall(
-                    Box::new(tool),
-                )]));
-                app.surface_dirty = crate::app::SurfaceDirtyState::default();
-                let mut history = HistoryCommitState::default();
-                history.reset_for_purge_replay();
-                let mut session = session_with_history(history);
-                let mut output = Vec::new();
-                let mut yielded = false;
-                loop {
-                    // Force a checkpoint after each source line, independent of machine speed.
-                    let control = LayoutControl::with_budget(&|| false, Duration::ZERO);
-                    let rows =
-                        session.prepare_rows(&mut app, width, &BTreeSet::new(), &control).unwrap();
-                    assert!(!app.surface_dirty.chat.repaint, "preparation is not a UI change");
-                    assert!(session.has_pending_work());
-                    if session.preparation.as_ref().unwrap().finished {
-                        assert!(session.needs_draw(&app, &rows), "completion must be flushed");
-                        output.extend(rows.rows().iter().map(line_text));
-                        break;
-                    }
-                    if rows.rows().is_empty() {
-                        yielded = true;
-                        assert!(session.layout_ready(), "preparation must keep making progress");
-                        assert!(!session.needs_draw(&app, &rows), "empty work must not repaint");
-                        app.input.set_text("draft during preparation");
-                        app.request_chat_repaint();
-                        assert!(session.needs_draw(&app, &rows), "input must still repaint");
-                        app.surface_dirty.chat.take_repaint();
-                    } else {
-                        assert!(session.needs_draw(&app, &rows), "ready rows must be inserted");
-                    }
-                    output.extend(rows.rows().iter().map(line_text));
-                }
-                if count > 1 {
-                    assert!(yielded, "fixture must exercise pending Read preparation");
-                }
-                let actual = output
-                    .iter()
-                    .filter_map(|row| row.split_once("READ_ROW_"))
-                    .map(|(_, number)| number.trim().parse::<usize>().unwrap())
-                    .collect::<Vec<_>>();
-                assert_eq!(actual, visible, "Read {count} at width {width}");
-                let omissions =
-                    output.iter().filter(|row| row.contains("hidden")).collect::<Vec<_>>();
-                if let Some(hidden) = hidden {
-                    assert_eq!(omissions.len(), 1);
-                    assert!(omissions[0].split_whitespace().any(|word| word == hidden.to_string()));
-                } else {
-                    assert!(omissions.is_empty());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn completed_replay_schedules_the_remaining_live_response() {
-        let mut app = App::test_default();
-        app.push_message_tracked(assistant_blocks_message(vec![MessageBlock::Text(
-            TextBlock::from_complete("Live response remains visible"),
-        )]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-        let mut history = HistoryCommitState::default();
-        history.reset_for_purge_replay();
-        let mut session = session_with_history(history);
-        let control = crate::ui::layout_control::LayoutControl::uninterrupted();
-        loop {
-            let _ = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control);
-            if session.preparation.as_ref().unwrap().finished {
-                break;
-            }
-        }
-        assert!(session.preparation.as_ref().unwrap().mutable_seen);
-        assert!(!session.preparation.as_ref().unwrap().cursor.is_finished());
-        app.surface_dirty.chat.take_repaint();
-        session.complete_history_flush(
-            &mut app,
-            &super::super::chat_terminal::ChatDrawOutcome {
-                viewport_area: Rect::new(0, 20, 80, 4),
-                flushed_history: super::super::chat_terminal::FlushedHistory {
-                    replay_complete: true,
-                    ..Default::default()
-                },
-            },
-        );
-        assert!(app.surface_dirty.chat.repaint, "the live suffix still needs a frame");
-        assert!(!session.has_pending_work(), "completed replay must release its continuation");
-        let rows = session.prepare_rows(&mut app, 80, &BTreeSet::new(), &control).unwrap();
-        assert!(
-            rows.rows().iter().any(|row| line_text(row).contains("Live response remains visible"))
-        );
-    }
-
-    #[test]
-    fn replay_exposes_first_message_before_preparing_later_history() {
-        let mut app = App::test_default();
-        for text in
-            ["FIRST".to_owned(), format!("{}LAST", "long subsequent message\n".repeat(1000))]
-        {
-            app.transcript.messages.push(ChatMessage::new(
-                MessageRole::User,
-                vec![MessageBlock::Text(TextBlock::from_complete(&text))],
-                None,
-            ));
-        }
-        let mut history = HistoryCommitState::default();
-        history.reset_for_purge_replay();
-        let mut session = session_with_history(history);
-        let rows = session
-            .prepare_rows(
-                &mut app,
-                80,
-                &BTreeSet::new(),
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            )
-            .unwrap();
-        let text = rows.rows().iter().map(line_text).collect::<Vec<_>>();
-        assert!(text.iter().any(|row| row.contains("FIRST")));
-        assert!(!text.iter().any(|row| row.contains("subsequent") || row.contains("LAST")));
-        let mut plan = session.prepare_history_flush(&rows, 80, BTreeSet::new());
-        session.queue_history_plan(plan.take_action());
-        assert!(session.terminal.has_pending_history_rows());
-        assert!(
-            session.history.confirmed_ids().is_empty(),
-            "prepared output is not committed output"
-        );
-        let blocked = session
-            .prepare_rows(
-                &mut app,
-                80,
-                &BTreeSet::new(),
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            )
-            .unwrap();
-        assert!(
-            blocked.rows().is_empty(),
-            "insertion must consume pending rows before more are prepared"
-        );
-    }
-
-    #[test]
-    fn replay_inserts_a_continued_block_even_when_its_prefix_is_already_queued() {
-        let id = output_id();
-        let continued = SerializedLiveRows::from_parts_for_test(
-            vec![Line::from("remaining source")],
-            vec![live_segment(0, 1, id.clone())],
-        );
-        let mut history = HistoryCommitState::default();
-        history.reset_for_purge_replay();
-        let mut session = session_with_history(history);
-        let plan = session.prepare_history_flush(&continued, 40, BTreeSet::from([id.clone()]));
-        assert_eq!(
-            plan.queued_rows, 1,
-            "a queued semantic ID does not mean all of its rows were produced"
-        );
-        let super::HistoryFlushAction::FeedReplay { batches, confirm_ids, .. } = plan.action else {
-            panic!("continued replay")
-        };
-        assert_eq!(line_text(&batches[0].rows.slice(0..1)[0]), "remaining source");
-        assert_eq!(confirm_ids, vec![id]);
-        assert!(session.history.confirmed_ids().is_empty());
     }
 
     #[test]
@@ -1905,261 +1687,6 @@ mod tests {
         assert_eq!(text.iter().filter(|row| row.contains("LAST")).count(), 1);
     }
 
-    fn render_textarea_to_test_backend(app: &mut App, area: Rect) -> TestBackend {
-        let backend = TestBackend::new(area.width.max(1), area.height.max(1));
-        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
-        terminal
-            .draw(|frame| {
-                super::render_textarea_editor(frame, app, area);
-            })
-            .expect("test draw should succeed");
-        terminal.backend().clone()
-    }
-
-    #[test]
-    fn render_textarea_editor_sets_native_cursor_when_input_has_focus() {
-        use ratatui::style::Modifier;
-        let mut app = App::test_default();
-        app.input.set_text("hello");
-        for column in [2, 5] {
-            app.input.set_cursor(0, column);
-            let before = draw_composer_fixture(&mut app, 30, 14);
-            before.assert_caret_after(if column == 2 { "he" } else { "hello" });
-            let position = before.backend.cursor_position();
-            assert_eq!(
-                before.backend.buffer()[position].symbol(),
-                if column == 2 { "l" } else { " " }
-            );
-            assert!(
-                before
-                    .backend
-                    .buffer()
-                    .content
-                    .iter()
-                    .all(|c| !c.modifier.contains(Modifier::REVERSED))
-            );
-            let _rx = request_composer_permission(&mut app);
-            let focused = draw_composer_fixture(&mut app, 30, 14);
-            assert!(!focused.backend.cursor_visible());
-            assert_eq!(focused.draft(), "hello");
-            resolve_composer_permission(&mut app);
-            let restored = draw_composer_fixture(&mut app, 30, 14);
-            assert!(restored.backend.cursor_visible());
-            assert_eq!(restored.backend.cursor_position(), position);
-            assert_eq!(app.input.text(), "hello");
-        }
-    }
-
-    #[test]
-    fn render_textarea_editor_hides_native_cursor_when_permission_has_focus() {
-        let mut app = App::test_default();
-        app.input.set_text("hello");
-        let _ = app.input.set_cursor(0, 5);
-        app.pending_interaction_ids.push("perm-1".to_owned());
-        app.claim_focus_target(FocusTarget::Permission);
-
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
-
-        assert!(!backend.cursor_visible());
-    }
-
-    #[test]
-    fn render_textarea_editor_hides_native_cursor_when_text_area_is_empty() {
-        let mut app = App::test_default();
-        app.input.set_text("hello");
-        let _ = app.input.set_cursor(0, 5);
-
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 0, 1));
-
-        assert!(!backend.cursor_visible());
-    }
-
-    #[test]
-    fn render_textarea_editor_uses_user_message_background_for_empty_input() {
-        let mut app = App::test_default();
-
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
-        let buffer = backend.buffer();
-
-        for y in 0..3 {
-            for x in 0..20 {
-                assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
-            }
-        }
-    }
-
-    #[test]
-    fn render_textarea_editor_uses_user_message_background_for_populated_input() {
-        let mut app = App::test_default();
-        app.input.set_text("hello");
-
-        let backend = render_textarea_to_test_backend(&mut app, Rect::new(0, 0, 20, 3));
-        let buffer = backend.buffer();
-
-        for y in 0..3 {
-            for x in 0..20 {
-                assert_eq!(buffer[(x, y)].style().bg, Some(theme::USER_MSG_BG));
-            }
-        }
-    }
-
-    fn render_composer_editor_rows(app: &mut App, width: u16) -> Vec<(String, bool)> {
-        let surface = ChatTerminalSession::build_composer_surface(app, width);
-        let area = Rect::new(0, 0, width, surface.editor.total_len_u16());
-        let backend = TestBackend::new(area.width, area.height);
-        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
-        terminal
-            .draw(|frame| super::render_composer_editor(frame, app, &surface.editor, area))
-            .expect("test draw should succeed");
-        let buffer = terminal.backend().buffer().clone();
-        (0..area.height)
-            .map(|y| {
-                let text = (0..area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>();
-                let field_bg =
-                    (0..area.width).all(|x| buffer[(x, y)].style().bg == Some(theme::USER_MSG_BG));
-                (text.trim_end().to_owned(), field_bg)
-            })
-            .collect()
-    }
-
-    #[test]
-    fn silent_pending_command_keeps_draft_in_composer_field() {
-        use crate::agent::{events::ClientEvent, model};
-        for label in [None, Some("Apply workspace mode")] {
-            let mut app = App::test_default();
-            app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
-            app.input.set_text("UNSENT_DRAFT");
-            app.input.set_cursor(0, 12);
-            app.status = AppStatus::CommandPending;
-            app.turn.pending_command_label = label.map(str::to_owned);
-            app.turn.pending_command_ack = Some(crate::app::PendingCommandAck::CurrentMode);
-            let blocked = draw_composer_fixture(&mut app, 80, 18);
-            assert!(!blocked.backend.cursor_visible());
-            assert_eq!(app.input.text(), "UNSENT_DRAFT");
-            if let Some(label) = label {
-                assert!(blocked.region(blocked.editor).contains(label));
-                assert!(!blocked.region(blocked.editor).contains("UNSENT_DRAFT"));
-            } else {
-                assert_eq!(blocked.draft(), "UNSENT_DRAFT");
-            }
-            crate::app::events::handle_client_event(
-                &mut app,
-                ClientEvent::SessionUpdate {
-                    session_id: "test-session".into(),
-                    update: model::SessionUpdate::ModeStateUpdate(crate::app::ModeState {
-                        current_mode_id: "default".into(),
-                        current_mode_name: "Default".into(),
-                        available_modes: vec![],
-                    }),
-                },
-            );
-            let restored = draw_composer_fixture(&mut app, 80, 18);
-            restored.assert_caret_after("UNSENT_DRAFT");
-            app.input.textarea_insert_char('!');
-            assert_eq!(draw_composer_fixture(&mut app, 80, 18).draft(), "UNSENT_DRAFT!");
-        }
-        let mut app = App::test_default();
-        app.input.set_text("ERROR_DRAFT");
-        app.status = AppStatus::Error;
-        let failed = draw_composer_fixture(&mut app, 80, 18);
-        let body = failed.region(failed.editor);
-        assert!(body.contains("error") && body.contains("Ctrl+Q") && body.contains("ERROR_DRAFT"));
-        assert!(!failed.backend.cursor_visible());
-        assert_eq!(app.input.text(), "ERROR_DRAFT");
-    }
-
-    #[test]
-    fn labeled_pending_command_renders_status_inside_composer_field() {
-        let mut app = App::test_default();
-        app.input.set_text("keep my draft");
-        app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = Some("Starting new session...".to_owned());
-        let spinner = crate::ui::SpinnerState::for_app(&app).icon();
-
-        let rows = render_composer_editor_rows(&mut app, 40);
-
-        let prompt = input::prompt_prefix_text();
-        assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|(_, field_bg)| *field_bg));
-        assert_eq!(rows[0].0, "");
-        assert_eq!(rows[1].0, format!(" {prompt}{spinner} Starting new session..."));
-        assert_eq!(rows[2].0, "");
-    }
-
-    #[test]
-    fn composer_places_btw_status_after_the_complete_queued_message_field() {
-        let mut app = App::test_default();
-        app.pending_user_messages
-            .try_push_sending(crate::app::PendingUserMessage::sending(
-                "message-1".to_owned(),
-                "queued prompt".to_owned(),
-                Vec::new(),
-            ))
-            .expect("queue prompt");
-        app.btw
-            .try_push("btw-1".to_owned(), "side question".to_owned())
-            .expect("queue side question");
-
-        let surface = ChatTerminalSession::build_composer_surface(&mut app, 80);
-        let hint_text = surface.hint_rows.iter().map(line_text).collect::<Vec<_>>();
-        let btw_text = surface.btw_rows.iter().map(line_text).collect::<Vec<_>>();
-
-        assert_eq!(hint_text.len(), 2);
-        assert!(hint_text[0].starts_with("Queued Messages (1)"));
-        assert!(hint_text[1].contains("1. queued prompt"));
-        assert_eq!(btw_text.len(), 1);
-        assert!(btw_text[0].contains("BTW  side question"));
-        assert_eq!(app.chat_render.composer.hint_rows, 2);
-        assert_eq!(app.chat_render.composer.btw_rows, 1);
-        assert_eq!(
-            app.chat_render.composer.total_rows,
-            app.chat_render
-                .composer
-                .hint_rows
-                .saturating_add(app.chat_render.composer.btw_rows)
-                .saturating_add(app.chat_render.composer.editor_rows)
-                .saturating_add(app.chat_render.composer.footer_rows)
-        );
-    }
-
-    #[test]
-    fn history_commit_state_confirms_output_ids_once() {
-        let mut state = HistoryCommitState::default();
-        let first = output_id();
-        let second = output_id();
-
-        state.confirm(vec![first.clone()]);
-        state.confirm(vec![first.clone(), second.clone()]);
-
-        assert_eq!(state.confirmed_len(), 2);
-        assert!(state.confirmed_ids().contains(&first));
-        assert!(state.confirmed_ids().contains(&second));
-        assert!(state.is_synced());
-    }
-
-    #[test]
-    fn purge_replay_marks_history_unsynced_and_clears_confirmed_ids() {
-        let mut state = HistoryCommitState::default();
-        state.confirm(vec![output_id()]);
-
-        state.reset_for_purge_replay();
-
-        assert!(!state.is_synced());
-        assert_eq!(state.confirmed_len(), 0);
-    }
-
-    #[test]
-    fn replay_completion_marks_history_synced_and_confirms_output() {
-        let mut state = HistoryCommitState::default();
-        let id = output_id();
-
-        state.reset_for_purge_replay();
-        state.confirm(vec![id.clone()]);
-
-        assert!(state.is_synced());
-        assert!(state.confirmed_ids().contains(&id));
-    }
-
     #[test]
     fn replay_preserves_all_retained_segments_in_transcripts_over_nine_thousand_rows() {
         let first = output_id();
@@ -2180,374 +1707,6 @@ mod tests {
         assert_eq!(text, (0..9_100).map(|index| format!("row {index}")).collect::<Vec<_>>());
         assert_eq!(replay.rows, 9_100);
         assert_eq!(replay.confirm_ids, vec![first, second]);
-    }
-
-    #[test]
-    fn thinking_and_activity_stay_out_of_history_insertion_and_resize_replay() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![
-                MessageBlock::Text(TextBlock::from_complete("completed prefix")),
-                MessageBlock::Text(TextBlock::from_complete("live tail")),
-            ],
-            None,
-        ));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Thinking;
-        app.begin_turn_activity(std::time::Instant::now());
-        for width in [32, 120, 32] {
-            let serialized = serialize_live_rows_with_boundaries_excluding(
-                &mut app,
-                width,
-                &BTreeSet::new(),
-                None,
-            );
-            assert!(serialized.rows().iter().any(|row| line_text(row).contains("Thinking…")));
-            let inserted =
-                super::build_static_history_batches(&serialized, width, &BTreeSet::new());
-            let replay = super::build_replay_history_batches(&serialized, width, &BTreeSet::new());
-            for batches in [&inserted, &replay.batches] {
-                let text: Vec<_> = batches
-                    .iter()
-                    .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
-                    .map(line_text)
-                    .collect();
-                assert_eq!(text, ["", " ● completed prefix"]);
-                assert!(
-                    !batches
-                        .iter()
-                        .flat_map(|batch| &batch.confirm_ids)
-                        .any(|id| { matches!(id, HistoryOutputId::AssistantThinking(_)) })
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn static_history_batches_do_not_reinsert_confirmed_text_blocks() {
-        let first = TextBlock::from_complete("first paragraph\n\n")
-            .with_trailing_spacing(TextBlockSpacing::ParagraphBreak);
-        let first_id = first.id;
-        let second = TextBlock::from_complete("second paragraph");
-        let second_id = second.id;
-        let message = ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::Text(first), MessageBlock::Text(second)],
-            None,
-        );
-        let message_id = message.id;
-        let mut app = App::test_default();
-        app.transcript.messages.push(message);
-
-        let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &BTreeSet::new(), None);
-        let excluded_ids = BTreeSet::from([
-            HistoryOutputId::AssistantLabel(message_id),
-            HistoryOutputId::Block(first_id),
-        ]);
-        let batches = super::build_static_history_batches(&serialized, 120, &excluded_ids);
-        let inserted_text = batches
-            .iter()
-            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
-            .map(line_text)
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            batches
-                .iter()
-                .flat_map(|batch| batch.confirm_ids.iter().cloned())
-                .collect::<BTreeSet<_>>(),
-            BTreeSet::from([
-                HistoryOutputId::Block(second_id),
-                HistoryOutputId::AssistantPadding(message_id)
-            ])
-        );
-        assert_eq!(
-            inserted_text
-                .iter()
-                .map(|row| row.trim())
-                .filter(|row| !row.is_empty())
-                .collect::<Vec<_>>(),
-            ["second paragraph"]
-        );
-    }
-
-    #[test]
-    fn btw_card_commits_during_active_turn_and_survives_streaming_and_resize_replay() {
-        use crate::agent::{events::ClientEvent, model};
-        use crate::app::BtwExchangeBlock;
-
-        let exchange =
-            BtwExchangeBlock::new("Side question?".to_owned(), "Side answer.".to_owned());
-        let exchange_id = HistoryOutputId::Block(exchange.id);
-        let mut app = App::test_default();
-        app.session_runtime.session_id = Some(model::SessionId::new("test-session"));
-        app.push_message_tracked(assistant_blocks_message(vec![
-            MessageBlock::Text(TextBlock::new("Before the card.".to_owned())),
-            MessageBlock::BtwExchange(exchange),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
-        let batches = super::build_static_history_batches(&serialized, 80, &BTreeSet::new());
-        let committed_rows: Vec<_> = batches
-            .iter()
-            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()).iter().cloned())
-            .collect();
-        let mut history = HistoryCommitState::default();
-        for batch in batches {
-            history.confirm(batch.confirm_ids);
-        }
-        assert!(
-            history.confirmed_ids().contains(&exchange_id),
-            "completed card must enter actual history batches, even at the active tail"
-        );
-        assert!(committed_rows.iter().any(|line| line_text(line).contains("Claude · BTW")));
-
-        crate::app::events::handle_client_event(
-            &mut app,
-            ClientEvent::SessionUpdate {
-                session_id: "test-session".to_owned(),
-                update: model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                    model::ContentBlock::Text(model::TextContent::new("After the card.")),
-                )),
-            },
-        );
-        let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &BTreeSet::new(), None);
-        assert!(
-            super::build_static_history_batches(&serialized, 80, history.confirmed_ids())
-                .is_empty(),
-            "only the new streaming tail remains; confirmed cards must not be queued again"
-        );
-        let live = serialize_live_rows_with_boundaries_excluding(
-            &mut app,
-            80,
-            history.confirmed_ids(),
-            None,
-        );
-        assert!(live.rows().iter().any(|line| line_text(line) == "   After the card."));
-        assert!(!live.rows().iter().any(|line| line_text(line).contains("Claude · BTW")));
-        let combined: Vec<_> =
-            committed_rows.into_iter().chain(live.rows().iter().cloned()).collect();
-        assert_eq!(combined, serialized.rows());
-
-        history.reset_for_purge_replay();
-        let resized = serialize_live_rows_with_boundaries_excluding(
-            &mut app,
-            24,
-            history.confirmed_ids(),
-            None,
-        );
-        let replay = super::build_replay_history_batches(&resized, 24, &BTreeSet::new());
-        assert!(replay.confirm_ids.contains(&exchange_id));
-        let replay_text: Vec<_> = replay
-            .batches
-            .iter()
-            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
-            .map(line_text)
-            .collect();
-        assert_eq!(replay_text.iter().filter(|line| line.contains("Claude · BTW")).count(), 1);
-        assert!(!replay_text.iter().any(|line| line == "   After the card."));
-        history.confirm(replay.confirm_ids);
-
-        crate::app::events::handle_client_event(
-            &mut app,
-            ClientEvent::TurnComplete {
-                session_id: "test-session".to_owned(),
-                queued_turn_count: Some(0),
-                terminal_reason: None,
-            },
-        );
-        let completed =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 24, &BTreeSet::new(), None);
-        let final_batches =
-            super::build_static_history_batches(&completed, 24, history.confirmed_ids());
-        let final_rows: Vec<_> = final_batches
-            .iter()
-            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
-            .map(line_text)
-            .collect();
-        assert!(final_rows.iter().any(|line| line == "   After the card."));
-        assert!(!final_rows.iter().any(|line| line.contains("Claude · BTW")));
-    }
-
-    #[test]
-    fn static_history_batches_preserve_rendered_table_prefix_before_mutable_tail() {
-        let table = concat!(
-            "| Hassle | What users report | Refs |\n",
-            "| --- | --- | --- |\n",
-            "| Input lag | Keystrokes echo late as context fills | #18943 |\n",
-            "| Paste freeze | Pasting many lines froze the terminal |  |\n",
-            "| Scrollback destroyed |  | #42002 |\n",
-        );
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(
-                TextBlock::from_complete(table)
-                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
-            ),
-            MessageBlock::Text(TextBlock::from_complete("streaming tail remains mutable")),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &BTreeSet::new(), None);
-        let batches = super::build_static_history_batches(&serialized, 180, &BTreeSet::new());
-        let inserted_text = batches
-            .iter()
-            .flat_map(|batch| batch.rows.slice(0..batch.rows.len()))
-            .map(line_text)
-            .collect::<Vec<_>>();
-        let excluded_ids = batches
-            .iter()
-            .flat_map(|batch| batch.confirm_ids.iter().cloned())
-            .collect::<BTreeSet<_>>();
-        let remaining_live_text =
-            serialized.rows_excluding_ids(&excluded_ids).iter().map(line_text).collect::<Vec<_>>();
-
-        assert!(inserted_text.iter().any(|line| line.starts_with(" ●")));
-        assert!(inserted_text.iter().any(|line| line.contains("Paste freeze")));
-        assert!(inserted_text.iter().any(|line| line.contains("Scrollback destroyed")));
-        assert!(!inserted_text.iter().any(|line| line.trim_start().starts_with('|')));
-        assert_eq!(
-            remaining_live_text
-                .iter()
-                .map(|row| row.trim())
-                .filter(|row| !row.is_empty())
-                .collect::<Vec<_>>(),
-            ["streaming tail remains mutable"]
-        );
-    }
-
-    #[test]
-    fn history_batches_skip_invalid_live_row_segments() {
-        let invalid_id = output_id();
-        let serialized = SerializedLiveRows::from_parts_for_test(
-            rows(2),
-            vec![live_segment(0, 3, invalid_id.clone())],
-        );
-
-        let static_batches =
-            super::build_static_history_batches(&serialized, 120, &BTreeSet::new());
-        let replay = super::build_replay_history_batches(&serialized, 120, &BTreeSet::new());
-        let excluded_rows = super::excluded_row_count(&serialized, &BTreeSet::from([invalid_id]));
-
-        assert!(static_batches.is_empty());
-        assert!(replay.batches.is_empty());
-        assert!(replay.confirm_ids.is_empty());
-        assert_eq!(replay.rows, 0);
-        assert_eq!(excluded_rows, 0);
-    }
-
-    #[test]
-    fn row_window_slice_returns_empty_for_stale_ranges() {
-        let rows = rows(2);
-        let stale = RowWindow { start: 4, visible_len: 2 };
-
-        assert!(stale.slice(&rows).is_empty());
-    }
-
-    #[test]
-    fn fullscreen_reattach_preserves_history_commit_state() {
-        let mut state = HistoryCommitState::default();
-        state.confirm(vec![output_id()]);
-        let mut session = session_with_history(state.clone());
-        let mut app = App::test_default();
-        app.chat_render.live_region.anchor_valid = true;
-
-        session.reattach_after_fullscreen(&mut app);
-
-        assert_eq!(session.history, state);
-        assert!(!app.chat_render.live_region.anchor_valid);
-    }
-
-    #[test]
-    fn mutable_viewport_clear_preserves_history_commit_state() {
-        let mut state = HistoryCommitState::default();
-        state.confirm(vec![output_id()]);
-        let mut session = session_with_history(state.clone());
-        let mut app = App::test_default();
-        app.chat_render.live_region.anchor_valid = true;
-
-        session.clear_mutable_viewport(&mut app);
-
-        assert_eq!(session.history, state);
-        assert!(!app.chat_render.live_region.anchor_valid);
-    }
-
-    #[test]
-    fn mutable_layout_prefers_footer_and_editor_when_height_is_tight() {
-        let live_rows = rows(4);
-        let composer = textarea_composer(2, 3, 2);
-
-        let plan = MutableLayoutPlan::new(&live_rows, &composer, 4);
-        let (live_area, _activity_area, hint_area, btw_area, editor_area, footer_area) =
-            plan.areas(Rect::new(0, 0, 80, 4));
-
-        assert_eq!(footer_area.height, 2);
-        assert_eq!(editor_area.height, 2);
-        assert_eq!(hint_area.height, 0);
-        assert_eq!(btw_area.height, 0);
-        assert_eq!(live_area.height, 0);
-        assert_eq!(plan.viewport_height, 4);
-    }
-
-    #[test]
-    fn activity_and_tip_stay_adjacent_above_queue_and_editor_without_spacer() {
-        let mut composer = textarea_composer(2, 2, 1);
-        composer.activity_rows = vec![Line::from("│ Working…"), Line::from("│ Tip: example")];
-        let live = rows(4);
-        let full = MutableLayoutPlan::new(&live, &composer, 20);
-        let (live_area, activity_area, hints, btw, editor, footer) =
-            full.areas(Rect::new(0, 5, 80, full.viewport_height));
-        assert_eq!(activity_area.y, live_area.bottom());
-        assert_eq!(hints.y, activity_area.bottom());
-        assert_eq!(hints.height, 2);
-        assert_eq!(editor.y, btw.bottom());
-        assert_eq!(footer.y, editor.bottom());
-        assert_eq!(composer.total_len(), full.visible_composer_len());
-        for height in 3..=8 {
-            let plan = MutableLayoutPlan::new(&live, &composer, height);
-            let (_, activity, hints, _, editor, footer) = plan.areas(Rect::new(0, 0, 80, height));
-            assert_eq!(footer.height, 1);
-            assert_eq!(editor.height, 2);
-            assert_eq!(hints.height, (height - 3).min(2));
-            assert_eq!(activity.height, height.saturating_sub(5).min(2));
-            if activity.height > 0 {
-                assert_eq!(
-                    plan.activity_window.slice(&composer.activity_rows)[0].to_string(),
-                    "│ Working…"
-                );
-            }
-            if activity.height > 1 {
-                assert_eq!(
-                    plan.activity_window.slice(&composer.activity_rows)[1].to_string(),
-                    "│ Tip: example"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn mutable_layout_uses_remaining_height_for_hints_then_live_rows() {
-        let live_rows = rows(4);
-        let composer = textarea_composer(2, 1, 1);
-
-        let plan = MutableLayoutPlan::new(&live_rows, &composer, 5);
-        let (live_area, _activity_area, hint_area, btw_area, editor_area, footer_area) =
-            plan.areas(Rect::new(0, 0, 80, 5));
-
-        assert_eq!(footer_area.height, 1);
-        assert_eq!(editor_area.height, 1);
-        assert_eq!(hint_area.height, 2);
-        assert_eq!(btw_area.height, 0);
-        assert_eq!(live_area.height, 1);
-        assert_eq!(plan.viewport_height, 5);
     }
 
     #[test]
@@ -2581,73 +1740,6 @@ mod tests {
                 .collect::<String>();
             assert!(!prefix.trim().is_empty());
         }
-    }
-
-    #[test]
-    fn mutable_layout_keeps_btw_surface_between_hints_and_editor() {
-        let live_rows = rows(1);
-        let composer = ComposerSurface {
-            activity_rows: Vec::new(),
-            hint_rows: rows(2),
-            btw_rows: rows(1),
-            editor: ComposerEditor::TextArea { desired_height: 1 },
-            footer_rows: rows(1),
-        };
-
-        let plan = MutableLayoutPlan::new(&live_rows, &composer, 6);
-        let (live_area, _activity_area, hint_area, btw_area, editor_area, footer_area) =
-            plan.areas(Rect::new(0, 0, 80, 6));
-
-        assert_eq!(live_area, Rect::new(0, 0, 80, 1));
-        assert_eq!(hint_area, Rect::new(0, 1, 80, 2));
-        assert_eq!(btw_area, Rect::new(0, 3, 80, 1));
-        assert_eq!(editor_area, Rect::new(0, 4, 80, 1));
-        assert_eq!(footer_area, Rect::new(0, 5, 80, 1));
-    }
-
-    #[test]
-    fn mutable_layout_preserves_btw_priority_when_only_part_of_the_status_field_fits() {
-        let composer = ComposerSurface {
-            activity_rows: Vec::new(),
-            hint_rows: rows(2),
-            btw_rows: vec![
-                Line::from("active"),
-                Line::from("failed"),
-                Line::from("waiting"),
-                Line::from("overflow"),
-            ],
-            editor: ComposerEditor::TextArea { desired_height: 1 },
-            footer_rows: rows(1),
-        };
-        for screen_height in 3..=6 {
-            let plan = MutableLayoutPlan::new(&[], &composer, screen_height);
-            let visible = plan.btw_visible_rows(&composer.btw_rows);
-            assert_eq!(visible, &composer.btw_rows[..usize::from(screen_height - 2)]);
-            assert_eq!(line_text(&visible[0]), "active");
-        }
-    }
-
-    #[test]
-    fn resolved_geometry_keeps_required_live_rows_visible_near_terminal_bottom() {
-        let live_rows = rows(3);
-        let composer = textarea_composer(0, 1, 2);
-        let requested_plan = MutableLayoutPlan::new(&live_rows, &composer, 40);
-        let geometry_plan = plan_inline_geometry(
-            Some(Rect::new(0, 37, 120, requested_plan.viewport_height)),
-            requested_plan.viewport_height,
-            120,
-            40,
-        );
-
-        let resolved_plan = MutableLayoutPlan::new(&live_rows, &composer, geometry_plan.height);
-        let (live_area, _, _, _, editor_area, footer_area) = resolved_plan
-            .areas(geometry_plan.target_area.expect("geometry should resolve a viewport"));
-
-        assert_eq!(requested_plan.viewport_height, 6);
-        assert_eq!(geometry_plan.height, 6);
-        assert_eq!(resolved_plan.live_visible_rows(&live_rows).len(), 3);
-        assert_eq!(live_area.height, 3);
-        assert_eq!(editor_area.height.saturating_add(footer_area.height), 3);
     }
 
     struct ComposerFrame {
@@ -3114,4 +2206,5 @@ mod tests {
             assert_eq!(app.input.text(), "UNSENT_DRAFT");
         }
     }
+    include!("chat_session_audit_tests.rs");
 }
