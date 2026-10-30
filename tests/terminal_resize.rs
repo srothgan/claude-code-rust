@@ -76,6 +76,12 @@ fn screen_region(screen: &vt100::Screen, top: u16, bottom: u16, left: u16, right
         .join("\n")
 }
 
+fn rendered_final_output(raw: &[u8], rows: u16, cols: u16) -> String {
+    let mut parser = capture_parser(rows, cols);
+    parser.process(raw);
+    screen_region(parser.screen(), 0, rows, 0, cols)
+}
+
 struct TestChild {
     process: Box<dyn Child + Send + Sync>,
     writer: PtyWriter,
@@ -591,15 +597,10 @@ impl TerminalTest {
 
     /// Output written while the app exits is read after the exit is observed.
     fn wait_final_output(&self, needle: &str) -> String {
-        self.wait_final_output_since(0, needle)
-    }
-
-    fn wait_final_output_since(&self, offset: usize, needle: &str) -> String {
         let started = Instant::now();
         loop {
             let raw =
-                String::from_utf8_lossy(&self.output.lock().expect("output lock").raw[offset..])
-                    .into_owned();
+                String::from_utf8_lossy(&self.output.lock().expect("output lock").raw).into_owned();
             if raw.contains(needle) {
                 return raw;
             }
@@ -607,6 +608,27 @@ impl TerminalTest {
                 started.elapsed() < WAIT_LIMIT,
                 "missing {needle:?} in final output: {}",
                 tail(&raw, 4000)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn wait_final_rendered_output_since(&self, offset: usize, needle: &str) {
+        // ConPTY can encode blank cells with cursor movement instead of spaces.
+        // Decode only the final interval so earlier screen text cannot satisfy it.
+        let started = Instant::now();
+        loop {
+            let text = {
+                let output = self.output.lock().expect("output lock");
+                let (rows, cols) = output.parser.screen().size();
+                rendered_final_output(&output.raw[offset..], rows.get(), cols.get())
+            };
+            if text.contains(needle) {
+                return;
+            }
+            assert!(
+                started.elapsed() < WAIT_LIMIT,
+                "missing {needle:?} in final rendered output: {text}"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -2434,6 +2456,23 @@ fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
 }
 
 #[test]
+fn final_resume_output_decodes_cursor_spacing_and_requires_the_complete_session() {
+    for (raw, expected) in [
+        (b"\r\nResume this session: claude-rs resume fake-session\r\n".as_slice(), true),
+        (b"\r\nResume this session: claude-rs resume\x1b[1Cfake-session\r\n".as_slice(), true),
+        (b"\r\nResume this session: claude-rs resumefake-session\r\n".as_slice(), false),
+        (b"\r\nResume this session: claude-rs resume other-session\r\n".as_slice(), false),
+        (b"\r\nResume this session: claude-rs resume\x1b[1Cfake-".as_slice(), false),
+    ] {
+        assert_eq!(
+            rendered_final_output(raw, 28, 61).contains("claude-rs resume fake-session"),
+            expected,
+            "{raw:?}"
+        );
+    }
+}
+
+#[test]
 fn captured_regions_preserve_cursor_skipped_spaces_and_unicode_without_neighboring_rows() {
     let mut parser = capture_parser(4, 40);
     parser.process(
@@ -3586,7 +3625,7 @@ impl TerminalTest {
         // The actual session's final resume command follows native restoration.
         // After successful exit it fences every earlier console write without
         // assuming ConPTY EOF or waiting a fixed amount for a reader thread.
-        self.wait_final_output_since(offset, "claude-rs resume fake-session");
+        self.wait_final_rendered_output_since(offset, "claude-rs resume fake-session");
         let output = self.output.lock().expect("output lock");
         assert!(!output.parser.screen().alternate_screen());
         assert!(!output.parser.screen().hide_cursor());
