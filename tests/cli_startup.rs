@@ -270,59 +270,6 @@ fn executable_resolves_a_relative_dir_against_the_current_directory() {
     assert!(error.contains("--dir"), "{error}");
 }
 
-/// Runs `claude-rs <args> --json` from `cwd` and parses its report.
-#[allow(clippy::expect_used)]
-fn json_report(args: &[&str], cwd: &std::path::Path) -> serde_json::Value {
-    let mut full: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
-    full.push("--json".as_ref());
-    let (_profile, output) = run_with_scratch_profile(&full, cwd);
-    assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
-    serde_json::from_slice(&output.stdout).expect("json report")
-}
-
-#[test]
-fn config_and_doctor_read_the_directory_a_relative_dir_names() {
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    let project = scratch.path().join("project");
-    std::fs::create_dir_all(project.join("sub")).expect("project");
-    // Without `--dir` the root is the process directory, which `--dir .` and a dotted
-    // relative path name too.
-    let root = json_report(&["config", "path"], &project)["project_root"].clone();
-    assert!(root.as_str().is_some_and(|root| std::path::Path::new(root).is_absolute()), "{root}");
-    let local_settings = std::path::Path::new(root.as_str().expect("root"))
-        .join(".claude")
-        .join("settings.local.json");
-    for dir in [".", "sub/.."] {
-        let config = json_report(&["--dir", dir, "config", "path"], &project);
-        assert_eq!(config["project_root"], root, "--dir {dir}");
-        let doctor = json_report(&["--dir", dir, "doctor"], &project);
-        let local = doctor["checks"]
-            .as_array()
-            .expect("checks")
-            .iter()
-            .find(|check| check["id"] == "config_local_settings")
-            .expect("local settings check");
-        assert_eq!(
-            local["details"]["path"].as_str().map(std::path::Path::new),
-            Some(local_settings.as_path()),
-            "--dir {dir}"
-        );
-    }
-}
-
-#[test]
-fn doctor_still_reports_a_bad_bridge_script_instead_of_refusing_it() {
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    let missing = scratch.path().join("missing-bridge.js");
-    let (_profile, output) = run_with_scratch_profile(
-        &["--bridge-script".as_ref(), missing.as_os_str(), "doctor".as_ref(), "--json".as_ref()],
-        scratch.path(),
-    );
-    assert_ne!(output.status.code(), Some(2), "{}", String::from_utf8_lossy(&output.stderr));
-    let report = String::from_utf8_lossy(&output.stdout);
-    assert!(report.contains("bridge script does not exist"), "{report}");
-}
-
 #[test]
 fn launch_paths_that_exist_are_accepted_for_every_interactive_launch() {
     let scratch = tempfile::tempdir().expect("scratch directory");

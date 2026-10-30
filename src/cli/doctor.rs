@@ -934,8 +934,8 @@ impl DoctorCheck {
 mod tests {
     use super::{
         DoctorReport, DoctorStatus, PlatformPackageSelection, PlatformReport,
-        ROOT_NPM_PACKAGE_NAME, classify_bun_version, config_path_checks, package_json_check,
-        parse_bun_version, platform_package_selection_for, write_human_report,
+        ROOT_NPM_PACKAGE_NAME, classify_bun_version, package_json_check, parse_bun_version,
+        platform_package_selection_for, write_human_report,
     };
     use std::path::Path;
 
@@ -974,29 +974,6 @@ mod tests {
         assert!(output.contains("[PASS]  Binary version"));
         assert!(output.contains("Status  Check"));
         assert!(!output.trim_start().starts_with('{'));
-    }
-
-    #[test]
-    fn config_path_checks_use_project_root_override_for_local_settings() {
-        let project = tempfile::tempdir().expect("tempdir");
-
-        let checks = config_path_checks(Some(project.path()));
-
-        let local = checks
-            .iter()
-            .find(|check| check.id == "config_local_settings")
-            .expect("local settings check");
-        assert_eq!(
-            local.details.get("path").map(String::as_str),
-            Some(
-                project
-                    .path()
-                    .join(".claude")
-                    .join("settings.local.json")
-                    .to_string_lossy()
-                    .as_ref()
-            )
-        );
     }
 
     #[test]

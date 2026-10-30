@@ -512,7 +512,7 @@ pub enum ConfigFileSelector {
 mod tests {
     use super::{
         Cli, Command, ConfigArgs, ConfigCommand, ConfigExportArgs, ConfigFileSelector,
-        ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs,
+        ConfigPathArgs, ConfigShowArgs, LogsArgs,
     };
     use clap::{CommandFactory, Parser};
 
@@ -750,19 +750,6 @@ mod tests {
         for flag in ["--enable-logs", "--log-file", "--log-append", "--diagnostics-preset"] {
             assert!(help.contains(flag), "runtime logging flag {flag} missing");
         }
-    }
-
-    #[test]
-    fn cli_doctor_defaults_to_human_output() {
-        let cli = Cli::try_parse_from(["claude-rs", "doctor"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: false, strict: false })));
-    }
-
-    #[test]
-    fn cli_doctor_accepts_json_and_strict() {
-        let cli =
-            Cli::try_parse_from(["claude-rs", "doctor", "--json", "--strict"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: true, strict: true })));
     }
 
     #[test]

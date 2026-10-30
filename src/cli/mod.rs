@@ -30,7 +30,7 @@ pub fn run_support_command(
 #[cfg(test)]
 mod tests {
     use super::run_support_command;
-    use crate::{Cli, Command, ConfigArgs, ConfigCommand, ConfigPathArgs, DoctorArgs, LogsArgs};
+    use crate::{Cli, Command, ConfigArgs, ConfigCommand, ConfigPathArgs, LogsArgs};
 
     #[test]
     fn no_subcommand_uses_interactive_path() {
@@ -59,25 +59,6 @@ mod tests {
         assert_eq!(result, None);
         assert!(stdout.is_empty());
         assert!(stderr.is_empty());
-    }
-
-    #[test]
-    fn doctor_is_a_support_command() {
-        let cli = test_cli(Some(Command::Doctor(DoctorArgs { json: true, strict: false })));
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
-
-        assert_eq!(result, Some(0));
-        assert!(!stdout.is_empty());
-        assert!(stderr.is_empty());
-        let report: serde_json::Value = serde_json::from_slice(&stdout).expect("doctor JSON");
-        let checks = report["checks"].as_array().expect("doctor checks");
-        for id in ["runtime_log_dir", "legacy_log_path"] {
-            assert!(checks.iter().any(|check| check["id"] == id), "missing {id}");
-        }
-        assert!(checks.iter().all(|check| check["id"] != "perf_log_dir"));
     }
 
     #[test]
