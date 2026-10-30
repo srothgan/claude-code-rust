@@ -703,11 +703,18 @@ async fn activating_usage_tab_starts_refresh_lifecycle() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let (_dir, mut app) = open_settings_test_app();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.activate_session("usage-session".into());
 
             controller::activate_tab(&mut app, ConfigTab::Usage);
 
             assert_eq!(app.config.active_tab, ConfigTab::Usage);
             assert!(app.usage.in_flight);
+            assert_eq!(
+                commands.try_recv().unwrap().command,
+                BridgeCommand::GetUsage { session_id: "usage-session".into() }
+            );
+            assert!(commands.try_recv().is_err());
         })
         .await;
 }
@@ -717,11 +724,18 @@ async fn usage_tab_r_triggers_manual_refresh() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let (_dir, mut app) = open_settings_test_app();
+            let mut commands = attach_test_connection(&mut app);
+            app.session_runtime.activate_session("usage-session".into());
             app.config.active_tab = ConfigTab::Usage;
 
             handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
 
             assert!(app.usage.in_flight);
+            assert_eq!(
+                commands.try_recv().unwrap().command,
+                BridgeCommand::GetUsage { session_id: "usage-session".into() }
+            );
+            assert!(commands.try_recv().is_err());
         })
         .await;
 }
@@ -1708,7 +1722,7 @@ fn dynamic_mcp_config_remove_uses_sdk_set_servers_and_preserves_other_dynamic_se
         servers.get("keep-dynamic"),
         Some(&crate::agent::types::McpServerConfig::Http {
             url: "https://example.test/mcp".to_owned(),
-            headers: keep_headers,
+            headers: BTreeMap::from([("Authorization".to_owned(), "Bearer token".to_owned())]),
             tools: vec![crate::agent::types::McpServerToolPolicy {
                 name: "search".to_owned(),
                 permission_policy: Some(crate::agent::types::McpServerToolPermissionPolicy::Ask),
@@ -2334,3 +2348,6 @@ async fn elicitation_transport_ack_keeps_the_request_until_sdk_settlement() {
         }))
         .await;
 }
+
+#[path = "command_delivery_tests.rs"]
+mod command_delivery_tests;

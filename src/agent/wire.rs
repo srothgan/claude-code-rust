@@ -1061,20 +1061,6 @@ mod tests {
     }
 
     #[test]
-    fn command_envelope_roundtrip_json() {
-        let env = CommandEnvelope {
-            request_id: Some("req-1".to_owned()),
-            command: BridgeCommand::SetMode {
-                session_id: "s1".to_owned(),
-                mode: "plan".to_owned(),
-            },
-        };
-        let json = serde_json::to_string(&env).expect("serialize");
-        let decoded: CommandEnvelope = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(decoded, env);
-    }
-
-    #[test]
     fn prompt_command_serializes_host_message_uuid() {
         let env = CommandEnvelope {
             request_id: None,
@@ -1247,139 +1233,6 @@ mod tests {
     }
 
     #[test]
-    fn set_effort_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetEffort {
-                session_id: "s1".to_owned(),
-                effort: Some("max".to_owned()),
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_effort",
-                "session_id": "s1",
-                "effort": "max"
-            })
-        );
-    }
-
-    #[test]
-    fn set_agent_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetAgent {
-                session_id: "s1".to_owned(),
-                agent: Some("reviewer".to_owned()),
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_agent",
-                "session_id": "s1",
-                "agent": "reviewer"
-            })
-        );
-    }
-
-    #[test]
-    fn set_agent_reset_serializes_null_agent() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetAgent { session_id: "s1".to_owned(), agent: None },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_agent",
-                "session_id": "s1",
-                "agent": null
-            })
-        );
-    }
-
-    #[test]
-    fn set_fast_mode_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::SetFastMode { session_id: "s1".to_owned(), enabled: true },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "set_fast_mode",
-                "session_id": "s1",
-                "enabled": true
-            })
-        );
-    }
-
-    #[test]
-    fn cancel_turn_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: Some("request-1".to_owned()),
-            command: BridgeCommand::CancelTurn { session_id: "s1".to_owned() },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "request_id": "request-1",
-                "command": "cancel_turn",
-                "session_id": "s1"
-            })
-        );
-    }
-
-    #[test]
-    fn get_rewind_targets_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::GetRewindTargets { session_id: "s1".to_owned() },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "get_rewind_targets",
-                "session_id": "s1"
-            })
-        );
-    }
-
-    #[test]
-    fn reload_skills_and_styles_command_serializes_snake_case() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::ReloadSkillsAndStyles { session_id: "s1".to_owned() },
-        };
-
-        assert_eq!(
-            serde_json::to_value(&env).expect("serialize"),
-            serde_json::json!({ "command": "reload_skills_and_styles", "session_id": "s1" })
-        );
-        assert_eq!(env.command.session_id(), Some("s1"));
-    }
-
-    #[test]
     fn skills_and_styles_reloaded_event_deserializes_bridge_payload() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "skills_and_styles_reloaded",
@@ -1431,23 +1284,6 @@ mod tests {
         assert_eq!(
             decoded,
             types::ReloadOutcome::Failed { message: "style directory unreadable".to_owned() }
-        );
-    }
-
-    #[test]
-    fn export_session_history_command_serializes_with_its_request_id() {
-        let env = CommandEnvelope {
-            request_id: Some("export-1".to_owned()),
-            command: BridgeCommand::ExportSessionHistory { session_id: "s1".to_owned() },
-        };
-
-        assert_eq!(
-            serde_json::to_value(&env).expect("serialize"),
-            serde_json::json!({
-                "request_id": "export-1",
-                "command": "export_session_history",
-                "session_id": "s1"
-            })
         );
     }
 
@@ -1925,56 +1761,6 @@ mod tests {
     }
 
     #[test]
-    fn user_dialog_response_command_serializes_selected_outcome() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::UserDialogResponse {
-                session_id: "s1".to_owned(),
-                request_id: "req-9".to_owned(),
-                outcome: types::UserDialogOutcome::Selected {
-                    option_id: "retry_fallback".to_owned(),
-                },
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "user_dialog_response",
-                "session_id": "s1",
-                "request_id": "req-9",
-                "outcome": { "outcome": "selected", "option_id": "retry_fallback" }
-            })
-        );
-    }
-
-    #[test]
-    fn user_dialog_response_command_serializes_cancelled_outcome() {
-        let env = CommandEnvelope {
-            request_id: None,
-            command: BridgeCommand::UserDialogResponse {
-                session_id: "s1".to_owned(),
-                request_id: "req-9".to_owned(),
-                outcome: types::UserDialogOutcome::Cancelled,
-            },
-        };
-
-        let json = serde_json::to_value(&env).expect("serialize");
-
-        assert_eq!(
-            json,
-            serde_json::json!({
-                "command": "user_dialog_response",
-                "session_id": "s1",
-                "request_id": "req-9",
-                "outcome": { "outcome": "cancelled" }
-            })
-        );
-    }
-
-    #[test]
     fn user_dialog_request_event_deserializes_snake_case_payload() {
         let decoded: EventEnvelope = serde_json::from_value(serde_json::json!({
             "event": "user_dialog_request",
@@ -2198,3 +1984,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "command_wire_tests.rs"]
+mod command_wire_tests;

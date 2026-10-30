@@ -1341,35 +1341,52 @@ fn rewind_with_cached_target_requires_connection() {
 
 #[test]
 fn rewind_with_cached_target_sends_bridge_command() {
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
-        uuid: "user-1".to_owned(),
-        first_text: "first prompt".to_owned(),
-        input_text: "first prompt".to_owned(),
-        index: 0,
-        previous_assistant_uuid: None,
-        resume_anchor_uuid: None,
-    }];
-
-    let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
-
-    assert!(consumed);
-    assert_eq!(app.turn.pending_command_label.as_deref(), Some("Rewinding conversation..."));
-    let envelope = rx.try_recv().expect("rewind command");
-    let crate::agent::wire::BridgeCommand::Rewind {
-        session_id,
-        target_user_message_id,
-        restore_mode,
-        ..
-    } = envelope.command
-    else {
-        panic!("expected rewind command");
-    };
-    assert_eq!(session_id, "session-1");
-    assert_eq!(target_user_message_id, "user-1");
-    assert_eq!(restore_mode, crate::agent::types::RewindRestoreMode::Conversation);
+    use crate::agent::types::RewindRestoreMode;
+    use clap::Parser;
+    for (token, expected) in [
+        ("conversation", RewindRestoreMode::Conversation),
+        ("code", RewindRestoreMode::Code),
+        ("both", RewindRestoreMode::Both),
+    ] {
+        let mut app = App::test_default();
+        let mut rx = attach_test_connection(&mut app);
+        app.session_runtime.activate_session("rewind-session".into());
+        let cli = crate::Cli::try_parse_from([
+            "claude-rs",
+            "--model",
+            "haiku",
+            "--name",
+            "Restored branch",
+        ])
+        .unwrap();
+        app.startup = crate::app::state::StartupState::from_cli(&cli);
+        app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
+            uuid: "selected-user".into(),
+            first_text: "Chosen source".into(),
+            input_text: "Chosen source".into(),
+            index: 0,
+            previous_assistant_uuid: Some("different-assistant".into()),
+            resume_anchor_uuid: Some("different-anchor".into()),
+        }];
+        assert!(try_handle_submit(&mut app, &format!("/rewind selected-user {token}")));
+        let envelope = rx.try_recv().expect("rewind command");
+        let crate::agent::wire::BridgeCommand::Rewind {
+            session_id,
+            target_user_message_id,
+            restore_mode,
+            launch_settings,
+        } = envelope.command
+        else {
+            panic!("rewind")
+        };
+        assert_eq!(session_id, "rewind-session");
+        assert_eq!(target_user_message_id, "selected-user");
+        assert_eq!(restore_mode, expected);
+        assert_eq!(launch_settings.model.as_deref(), Some("haiku"));
+        assert_eq!(launch_settings.name.as_deref(), Some("Restored branch"));
+        assert!(!app.composer_access().can_submit());
+        assert!(rx.try_recv().is_err());
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
