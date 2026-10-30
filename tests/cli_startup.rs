@@ -51,10 +51,9 @@ fn interactive_startup_flags_normalize_to_one_launch() {
 
 #[test]
 fn session_options_support_existing_resume_syntax() {
-    let cli = Cli::try_parse_from([
-        "claude-rs",
-        "resume",
-        "session-1",
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("docs")).unwrap();
+    let options = [
         "--model",
         "opus",
         "--effort",
@@ -63,13 +62,40 @@ fn session_options_support_existing_resume_syntax() {
         "plan",
         "--agent",
         "reviewer",
-    ])
-    .expect("parse options");
-    cli.validate().expect("valid launch");
-    assert_eq!(cli.session_options.model.as_deref(), Some("opus"));
-    assert_eq!(cli.session_options.effort, Some(claude_code_rust::agent::model::EffortLevel::Max));
-    assert_eq!(cli.session_options.permission_mode.unwrap().as_stored(), "plan");
-    assert_eq!(cli.session_options.agent.as_deref(), Some("reviewer"));
+        "--add-dir",
+        "docs",
+        "--name",
+        "Experiment",
+    ];
+    for before in [true, false] {
+        let mut args = vec!["claude-rs", "--dir", project.path().to_str().unwrap()];
+        if before {
+            args.extend(options);
+        }
+        args.extend(["resume", "session-1", "review prompt"]);
+        if !before {
+            args.extend(options);
+        }
+        let cli = Cli::try_parse_from(args).unwrap();
+        cli.validate().unwrap();
+        assert_eq!(
+            cli.startup_launch(),
+            StartupLaunch::ResumeSession { session_id: "session-1".into() }
+        );
+        assert_eq!(cli.initial_prompt(), Some("review prompt"));
+        assert_eq!(cli.session_options.model.as_deref(), Some("opus"));
+        assert_eq!(
+            cli.session_options.effort,
+            Some(claude_code_rust::agent::model::EffortLevel::Max)
+        );
+        assert_eq!(cli.session_options.permission_mode.unwrap().as_stored(), "plan");
+        assert_eq!(cli.session_options.agent.as_deref(), Some("reviewer"));
+        assert_eq!(cli.session_options.name.as_deref(), Some("Experiment"));
+        assert_eq!(
+            cli.resolve_session_config().unwrap().additional_directories,
+            [project.path().join("docs").to_str().unwrap()]
+        );
+    }
 }
 
 #[test]

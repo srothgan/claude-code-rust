@@ -106,6 +106,17 @@ fn write_export_with_home_override(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> anyhow::Result<i32> {
+    write_export_with_io(cli, args, home_override, stdout, stderr, write_export_contents)
+}
+
+fn write_export_with_io(
+    cli: &Cli,
+    args: &ConfigExportArgs,
+    home_override: Option<&Path>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    write_contents: impl FnOnce(&mut fs::File, &Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<i32> {
     let project_root = project_root(cli)?;
     let inspection = inspect_config(&project_root, home_override)?;
     let report = ExportReport::from_inspection(&inspection, &project_root);
@@ -123,7 +134,7 @@ fn write_export_with_home_override(
             writeln!(stderr, "Refusing to overwrite existing file: {}", output.display())?;
             return Ok(1);
         }
-        write_new_file_atomically(output, &text)?;
+        write_new_file_with_io(output, &text, write_contents)?;
         writeln!(stdout, "Exported redacted config: {}", output.display())?;
     } else {
         writeln!(stdout, "{text}")?;
@@ -503,42 +514,37 @@ fn json_text<T: Serialize>(value: &T) -> anyhow::Result<String> {
     Ok(redaction::redact_credentials(&text))
 }
 
-fn write_new_file_atomically(path: &Path, text: &str) -> anyhow::Result<()> {
+fn write_new_file_with_io(
+    path: &Path,
+    text: &str,
+    write_contents: impl FnOnce(&mut fs::File, &Path, &str) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         create_dir_all(parent).with_context(|| {
             format!("failed to create config export directory {}", parent.display())
         })?;
     }
-
-    write_new_file(path, text)
-}
-
-fn write_new_file(path: &Path, text: &str) -> anyhow::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .with_context(|| format!("failed to create config export {}", path.display()))?;
-
-    let write_result = (|| {
-        file.write_all(text.as_bytes())
-            .with_context(|| format!("failed to write config export {}", path.display()))?;
-        file.write_all(b"\n")
-            .with_context(|| format!("failed to finalize config export {}", path.display()))?;
-        file.flush()
-            .with_context(|| format!("failed to flush config export {}", path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("failed to sync config export {}", path.display()))?;
-        Ok(())
-    })();
-
+    let write_result = write_contents(&mut file, path, text);
     drop(file);
-
     if let Err(error) = write_result {
         let _ = fs::remove_file(path);
         return Err(error);
     }
+    Ok(())
+}
 
+fn write_export_contents(file: &mut fs::File, path: &Path, text: &str) -> anyhow::Result<()> {
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("failed to write config export {}", path.display()))?;
+    file.write_all(b"\n")
+        .with_context(|| format!("failed to finalize config export {}", path.display()))?;
+    file.flush().with_context(|| format!("failed to flush config export {}", path.display()))?;
+    file.sync_all().with_context(|| format!("failed to sync config export {}", path.display()))?;
     Ok(())
 }
 
@@ -585,147 +591,12 @@ impl InspectedConfigFileStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        write_export_with_home_override, write_new_file_atomically, write_path_with_home_override,
-        write_show_with_home_override,
-    };
-    use crate::{Cli, ConfigExportArgs, ConfigFileSelector, ConfigPathArgs, ConfigShowArgs};
-    use serde_json::Value;
+    use super::{write_export_contents, write_export_with_home_override, write_new_file_with_io};
+    use crate::{Cli, ConfigExportArgs};
     use std::fs;
     use std::io::Write;
     use std::path::Path;
     use tempfile::tempdir;
-
-    #[test]
-    fn path_output_uses_sections_and_status_rows() {
-        let dir = tempdir().expect("tempdir");
-        let mut stdout = Vec::new();
-
-        let code =
-            write_test_path(dir.path(), &ConfigPathArgs { json: false, which: None }, &mut stdout)
-                .expect("path");
-
-        assert_eq!(code, 0);
-        let output = String::from_utf8(stdout).expect("utf8");
-        assert!(output.contains("claude-rs config"));
-        assert!(output.contains("Summary: 0 files found, 4 missing, 0 invalid"));
-        assert!(output.contains("Locations"));
-        assert!(output.contains("[MISS] Global settings"));
-        assert!(output.contains("Commands"));
-    }
-
-    #[test]
-    fn which_path_output_is_script_friendly() {
-        let dir = tempdir().expect("tempdir");
-        let mut stdout = Vec::new();
-
-        let code = write_test_path(
-            dir.path(),
-            &ConfigPathArgs { json: true, which: Some(ConfigFileSelector::LocalSettings) },
-            &mut stdout,
-        )
-        .expect("path");
-
-        assert_eq!(code, 0);
-        assert_eq!(
-            String::from_utf8(stdout).expect("utf8"),
-            format!("{}\n", dir.path().join(".claude").join("settings.local.json").display())
-        );
-    }
-
-    #[test]
-    fn show_json_redacts_nested_secrets() {
-        let dir = tempdir().expect("tempdir");
-        let settings = dir.path().join(".claude").join("settings.local.json");
-        fs::create_dir_all(settings.parent().expect("settings parent")).expect("settings dir");
-        fs::write(&settings, r#"{"model":"sonnet","env":{"ANTHROPIC_API_KEY":"sk-ant-secret"}}"#)
-            .expect("write settings");
-        let mut stdout = Vec::new();
-
-        let code =
-            write_test_show(dir.path(), &ConfigShowArgs { json: true }, &mut stdout).expect("show");
-
-        assert_eq!(code, 0);
-        let output = String::from_utf8(stdout).expect("utf8");
-        assert!(!output.contains("sk-ant-secret"));
-        assert!(output.contains("[redacted]"));
-        serde_json::from_str::<Value>(&output).expect("json");
-    }
-
-    #[test]
-    fn show_human_prints_small_redacted_documents() {
-        let dir = tempdir().expect("tempdir");
-        let settings = dir.path().join(".claude").join("settings.local.json");
-        fs::create_dir_all(settings.parent().expect("settings parent")).expect("settings dir");
-        fs::write(
-            &settings,
-            r#"{"permissions":{"allow":["mcp__fff__grep"]},"env":{"ANTHROPIC_API_KEY":"sk-ant-secret"}}"#,
-        )
-        .expect("write settings");
-        let mut stdout = Vec::new();
-
-        let code = write_test_show(dir.path(), &ConfigShowArgs { json: false }, &mut stdout)
-            .expect("show");
-
-        assert_eq!(code, 0);
-        let output = String::from_utf8(stdout).expect("utf8");
-        assert!(output.contains("Redacted document:"));
-        assert!(output.contains("mcp__fff__grep"));
-        assert!(!output.contains("sk-ant-secret"));
-    }
-
-    #[test]
-    fn show_human_summarizes_large_documents_without_dumping_contents() {
-        let dir = tempdir().expect("tempdir");
-        let settings = dir.path().join(".claude").join("settings.local.json");
-        fs::create_dir_all(settings.parent().expect("settings parent")).expect("settings dir");
-        let values = (0..40).map(|index| format!(r#""value-{index}""#)).collect::<Vec<_>>();
-        fs::write(
-            &settings,
-            format!(
-                r#"{{"additionalModelOptionsCache":[{}],"anonymousId":"claudecode.v1.example"}}"#,
-                values.join(",")
-            ),
-        )
-        .expect("write settings");
-        let mut stdout = Vec::new();
-
-        let code = write_test_show(dir.path(), &ConfigShowArgs { json: false }, &mut stdout)
-            .expect("show");
-
-        assert_eq!(code, 0);
-        let output = String::from_utf8(stdout).expect("utf8");
-        assert!(output.contains("Top-level keys: 2"));
-        assert!(output.contains("Redacted document:"));
-        assert!(output.contains("hidden from human output"));
-        assert!(output.contains("Full redacted JSON: claude-rs config show --json"));
-        assert!(!output.contains("value-39"));
-        assert!(!output.contains("claudecode.v1.example"));
-    }
-
-    #[test]
-    fn show_malformed_json_returns_failure_without_backup() {
-        let dir = tempdir().expect("tempdir");
-        let local_settings = dir.path().join(".claude").join("settings.local.json");
-        fs::create_dir_all(local_settings.parent().expect("local settings parent"))
-            .expect("local settings dir");
-        fs::write(&local_settings, "{ not-json").expect("write malformed");
-        let mut stdout = Vec::new();
-
-        let code = write_test_show(dir.path(), &ConfigShowArgs { json: false }, &mut stdout)
-            .expect("show");
-
-        assert_eq!(code, 1);
-        let output = String::from_utf8(stdout).expect("utf8");
-        assert!(output.contains("[INVALID] Local settings"));
-        let backups = fs::read_dir(local_settings.parent().expect("local settings parent"))
-            .expect("read dir")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path != &local_settings)
-            .collect::<Vec<_>>();
-        assert!(backups.is_empty());
-    }
 
     #[test]
     fn export_refuses_existing_output_without_overwrite() {
@@ -750,69 +621,16 @@ mod tests {
     }
 
     #[test]
-    fn export_fails_invalid_config_without_partial_file() {
-        let dir = tempdir().expect("tempdir");
-        let local_settings = dir.path().join(".claude").join("settings.local.json");
-        fs::create_dir_all(local_settings.parent().expect("local settings parent"))
-            .expect("local settings dir");
-        fs::write(local_settings, "{ not-json").expect("write malformed");
-        let output_path = dir.path().join("out").join("config.json");
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code = write_test_export(
-            dir.path(),
-            &ConfigExportArgs { output: Some(output_path.clone()) },
-            &mut stdout,
-            &mut stderr,
-        )
-        .expect("export");
-
-        assert_eq!(code, 1);
-        assert!(!output_path.exists());
-        assert!(String::from_utf8(stderr).expect("utf8").contains("Cannot export config"));
-    }
-
-    #[test]
     fn atomic_export_preserves_existing_file_when_create_new_fails() {
         let dir = tempdir().expect("tempdir");
         let output_path = dir.path().join("config.json");
         fs::write(&output_path, "keep").expect("write output");
 
-        let error = write_new_file_atomically(&output_path, "{}").expect_err("existing output");
+        let error = write_new_file_with_io(&output_path, "{}", write_export_contents)
+            .expect_err("existing output");
 
         assert!(error.to_string().contains("failed to create config export"));
         assert_eq!(fs::read_to_string(output_path).expect("read output"), "keep");
-    }
-
-    fn write_test_path(
-        project_root: &Path,
-        args: &ConfigPathArgs,
-        stdout: &mut impl Write,
-    ) -> anyhow::Result<i32> {
-        let cli = test_cli(project_root);
-        write_path_with_home_override(
-            &cli,
-            args,
-            Some(project_root),
-            stdout,
-            super::HumanStyle::new(false),
-        )
-    }
-
-    fn write_test_show(
-        project_root: &Path,
-        args: &ConfigShowArgs,
-        stdout: &mut impl Write,
-    ) -> anyhow::Result<i32> {
-        let cli = test_cli(project_root);
-        write_show_with_home_override(
-            &cli,
-            args,
-            Some(project_root),
-            stdout,
-            super::HumanStyle::new(false),
-        )
     }
 
     fn write_test_export(
@@ -844,3 +662,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "config_audit_tests.rs"]
+mod audit_tests;

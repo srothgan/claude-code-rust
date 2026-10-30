@@ -210,11 +210,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_preferences_live_outside_config_directory() {
-        let paths = ClaudePaths::from_sources(Some(Path::new("profile")), None, None).unwrap();
-        assert_eq!(paths.config_dir, Path::new("profile/.claude"));
-        assert_eq!(paths.preferences, Path::new("profile/.claude.json"));
-        assert_eq!(paths.credentials(), Path::new("profile/.claude/.credentials.json"));
+    fn default_layout_requires_home_for_unset_or_empty_profile() {
+        for override_dir in [None, Some(OsStr::new(""))] {
+            let paths =
+                ClaudePaths::from_sources(Some(Path::new("profile")), override_dir, None).unwrap();
+            assert_eq!(paths.config_dir, Path::new("profile/.claude"));
+            assert_eq!(paths.preferences, Path::new("profile/.claude.json"));
+            assert_eq!(paths.credentials(), Path::new("profile/.claude/.credentials.json"));
+            assert!(ClaudePaths::from_sources(None, override_dir, None).is_none());
+        }
     }
 
     #[test]
@@ -224,15 +228,6 @@ mod tests {
         assert_eq!(paths.config_dir, Path::new("isolated profile"));
         assert_eq!(paths.preferences, Path::new("isolated profile/.claude.json"));
         assert_eq!(paths.credentials(), Path::new("isolated profile/.credentials.json"));
-    }
-
-    #[test]
-    fn empty_override_uses_the_default_layout() {
-        let paths =
-            ClaudePaths::from_sources(Some(Path::new("profile")), Some(OsStr::new("")), None)
-                .unwrap();
-        assert_eq!(paths.preferences, Path::new("profile/.claude.json"));
-        assert!(ClaudePaths::from_sources(None, None, None).is_none());
     }
 
     #[test]
