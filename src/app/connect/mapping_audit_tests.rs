@@ -10,25 +10,18 @@ fn mapped(payload: Value) -> model::SessionUpdate {
 
 #[test]
 fn lifecycle_wire_payloads_retain_their_domain_meaning() {
-    for (token, error) in [
-        ("server_error", model::ApiRetryError::ServerError),
-        ("model_not_found", model::ApiRetryError::ModelNotFound),
-        ("oauth_org_not_allowed", model::ApiRetryError::OauthOrgNotAllowed),
-        ("overloaded", model::ApiRetryError::Overloaded),
-        ("future_error", model::ApiRetryError::Unknown),
-    ] {
-        assert_eq!(
-            mapped(json!({"type":"api_retry_update","attempt":2,"max_retries":5,
-            "retry_delay_ms":1250.5,"error_status":529,"error":token})),
-            model::SessionUpdate::ApiRetryUpdate {
-                attempt: 2,
-                max_retries: 5,
-                retry_delay_ms: 1250.5,
-                error_status: Some(529),
-                error
-            }
-        );
-    }
+    assert_eq!(
+        mapped(
+            json!({"type":"api_retry_update","attempt":2,"max_retries":5,"retry_delay_ms":1250.5,"error_status":529,"error":"server_error"})
+        ),
+        model::SessionUpdate::ApiRetryUpdate {
+            attempt: 2,
+            max_retries: 5,
+            retry_delay_ms: 1250.5,
+            error_status: Some(529),
+            error: model::ApiRetryError::ServerError
+        }
+    );
     for (payload, expected) in [
         (
             json!({"type":"runtime_session_state_update","state":"requires_action"}),
@@ -41,6 +34,10 @@ fn lifecycle_wire_payloads_retain_their_domain_meaning() {
             model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Requesting),
         ),
         (
+            json!({"type":"session_status_update","status":"idle"}),
+            model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Idle),
+        ),
+        (
             json!({"type":"system_notice_update","severity":"warning","message":"Plugin install failed."}),
             model::SessionUpdate::SystemNoticeUpdate {
                 severity: model::SystemNoticeSeverity::Warning,
@@ -51,19 +48,43 @@ fn lifecycle_wire_payloads_retain_their_domain_meaning() {
             json!({"type":"prompt_suggestion_update","suggestion":"Add tests"}),
             model::SessionUpdate::PromptSuggestionUpdate("Add tests".into()),
         ),
-        (
-            json!({"type":"compaction_update","phase":"boundary","trigger":"manual","pre_tokens":123_456,"post_tokens":20000,"duration_ms":1500}),
-            model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
-                model::CompactionBoundary {
-                    trigger: model::CompactionTrigger::Manual,
-                    pre_tokens: 123_456,
-                    post_tokens: Some(20000),
-                    duration_ms: Some(1500),
-                },
-            )),
-        ),
     ] {
         assert_eq!(mapped(payload), expected);
+    }
+}
+
+#[test]
+fn compaction_mapping_preserves_lifecycle_measurements_and_unknown_failures() {
+    for (payload, expected) in [
+        (json!({"type":"compaction_update","phase":"started"}), model::CompactionUpdate::Started),
+        (
+            json!({"type":"compaction_update","phase":"boundary","trigger":"manual","pre_tokens":123_456,"post_tokens":20000,"duration_ms":1500}),
+            model::CompactionUpdate::Boundary(model::CompactionBoundary {
+                trigger: model::CompactionTrigger::Manual,
+                pre_tokens: 123_456,
+                post_tokens: Some(20000),
+                duration_ms: Some(1500),
+            }),
+        ),
+        (
+            json!({"type":"compaction_update","phase":"boundary","trigger":"auto","pre_tokens":9876}),
+            model::CompactionUpdate::Boundary(model::CompactionBoundary {
+                trigger: model::CompactionTrigger::Auto,
+                pre_tokens: 9876,
+                post_tokens: None,
+                duration_ms: None,
+            }),
+        ),
+        (
+            json!({"type":"compaction_update","phase":"finished","result":"success"}),
+            model::CompactionUpdate::Finished {
+                result: model::CompactionResult::Success,
+                error_code: None,
+                error: None,
+            },
+        ),
+    ] {
+        assert_eq!(mapped(payload), model::SessionUpdate::CompactionUpdate(expected));
     }
     for (token, expected) in [
         ("too_few_groups", model::CompactionFailureCode::TooFewGroups),
@@ -98,7 +119,7 @@ fn model_catalog_normalizes_blank_descriptions_without_conflating_capabilities()
     ] {
         let input: types::AvailableModel = serde_json::from_value(json!({
             "id":"advertised","display_name":"Visible model","resolved_model":resolved,"description":description,
-            "supports_effort":true,"supported_effort_levels":["low","max"],
+            "supports_effort":true,"supported_effort_levels":["xhigh","max"],
             "supports_adaptive_thinking":true,"supports_fast_mode":false,"supports_auto_mode":null
         })).expect("model");
         let models = map_available_models(vec![input]);
@@ -107,12 +128,28 @@ fn model_catalog_normalizes_blank_descriptions_without_conflating_capabilities()
         assert_eq!(row.resolved_model.as_deref(), expected_resolved);
         assert_eq!(row.description.as_deref(), expected_description);
         assert!(row.supports_effort);
-        assert_eq!(row.supported_effort_levels, [model::EffortLevel::Low, model::EffortLevel::Max]);
+        assert_eq!(
+            row.supported_effort_levels,
+            [model::EffortLevel::XHigh, model::EffortLevel::Max]
+        );
         assert_eq!(
             (row.supports_adaptive_thinking, row.supports_fast_mode, row.supports_auto_mode),
             (Some(true), Some(false), None)
         );
     }
+    let minimal = map_available_models(vec![
+        serde_json::from_value(
+            json!({"id":"minimal","display_name":"Minimal","supports_effort":false}),
+        )
+        .unwrap(),
+    ]);
+    let row = minimal.iter().find(|m| m.id == "minimal").unwrap();
+    assert!(row.supported_effort_levels.is_empty());
+    assert!(!row.supports_effort);
+    assert_eq!(
+        (row.supports_adaptive_thinking, row.supports_fast_mode, row.supports_auto_mode),
+        (None, None, None)
+    );
 }
 
 #[test]
@@ -186,6 +223,16 @@ fn command_and_agent_hints_preserve_nonblank_values_and_wire_defaults() {
 
 #[test]
 fn task_mapping_preserves_dependency_and_execution_ancestry_by_task_id() {
+    let model::SessionUpdate::TaskStateUpdate(empty) = mapped(
+        json!({"type":"task_state_update","source":"background_tasks","tasks":[],"removed_task_ids":["bg-old"],"is_complete_snapshot":true}),
+    ) else {
+        panic!("background snapshot")
+    };
+    assert_eq!(empty.source, model::TaskUpdateSource::BackgroundTasks);
+    assert!(empty.tasks.is_empty());
+    assert_eq!(empty.removed_task_ids, ["bg-old"]);
+    assert!(empty.is_complete_snapshot);
+
     for (complete, source, expected_source) in [
         (false, "task_update", model::TaskUpdateSource::Update),
         (true, "task_lifecycle", model::TaskUpdateSource::Lifecycle),
@@ -282,6 +329,27 @@ fn message_tool_and_retraction_ids_stay_with_their_payloads() {
     assert_eq!(retraction.reason, model::TranscriptRetractionReason::AssistantSupersedes);
     assert_eq!(retraction.request_id.as_deref(), Some("retry-request"));
     assert_eq!(retraction.scope.as_deref(), Some("local"));
+    let model::SessionUpdate::TranscriptRetraction(fallback) = mapped(
+        json!({"type":"transcript_retraction","message_uuids":["assistant-old","tool-result-old"],"reason":"model_refusal_fallback","request_id":"req1","trigger":"refusal","direction":"retry","original_model":"opus","fallback_model":"sonnet","scope":"local","api_refusal_category":"cyber","api_refusal_explanation":"policy text","content":"retry body"}),
+    ) else {
+        panic!("fallback retraction")
+    };
+    assert_eq!(
+        fallback,
+        model::TranscriptRetraction {
+            message_uuids: vec!["assistant-old".into(), "tool-result-old".into()],
+            reason: model::TranscriptRetractionReason::ModelRefusalFallback,
+            request_id: Some("req1".into()),
+            trigger: Some("refusal".into()),
+            direction: Some("retry".into()),
+            original_model: Some("opus".into()),
+            fallback_model: Some("sonnet".into()),
+            scope: Some("local".into()),
+            api_refusal_category: Some("cyber".into()),
+            api_refusal_explanation: Some("policy text".into()),
+            content: Some("retry body".into())
+        }
+    );
 }
 
 #[test]
@@ -396,7 +464,13 @@ fn tool_metadata_survives_initial_patch_and_interaction_snapshots() {
         )
         .0;
         let question=map_question_request("session",serde_json::from_value(json!({"tool_call":payload,"prompt":{"question":"Proceed?","header":"Gate","multi_select":false,"options":[]},"question_index":1,"total_questions":2})).unwrap()).0;
-        let patch = convert_tool_call_update_fields(serde_json::from_value(payload).unwrap());
+        let model::SessionUpdate::ToolCallUpdate(patch) = mapped(
+            json!({"type":"tool_call_update","tool_call_update":{"tool_call_id":"target-tool","fields":payload}}),
+        ) else {
+            panic!("metadata patch")
+        };
+        assert_eq!(patch.tool_call_id, "target-tool");
+        let patch = patch.fields;
         for fields in [patch, permission.tool_call.fields, question.tool_call.fields] {
             assert_metadata(fields.output_metadata.as_ref(), fields.task_metadata.as_ref(), flag);
             assert_eq!(fields.raw_output, Some(json!("{\"answer\":42}\r\n")));
@@ -431,6 +505,19 @@ fn tool_metadata_survives_initial_patch_and_interaction_snapshots() {
     let read = minimal.read.unwrap();
     assert_eq!(read.file_path, std::path::Path::new("notes.md"));
     assert_eq!(read.start_line, 4);
+    for seeded in [Some(false), None] {
+        let model::SessionUpdate::ToolCallUpdate(update) = mapped(
+            json!({"type":"tool_call_update","tool_call_update":{"tool_call_id":"artifact-target","fields":{"output_metadata":{"web_fetch":{"artifact_read":{"slug":"versionless-dashboard","seeded":seeded}}}}}}),
+        ) else {
+            panic!("artifact patch")
+        };
+        assert_eq!(update.tool_call_id, "artifact-target");
+        let artifact =
+            update.fields.output_metadata.unwrap().web_fetch.unwrap().artifact_read.unwrap();
+        assert_eq!(artifact.slug, "versionless-dashboard");
+        assert_eq!(artifact.ver, None);
+        assert_eq!(artifact.seeded, seeded);
+    }
 }
 #[test]
 fn status_only_tool_patch_preserves_data_while_present_empty_collections_clear() {
@@ -610,5 +697,41 @@ fn read_results_replace_warmed_target_cards_and_preserve_exact_source() {
                 assert_eq!(tc.read_output_metadata().expect("Read metadata").start_line, 60);
             }
         }
+    }
+}
+
+#[test]
+fn retry_projection_presence_survives_wire_mapping_and_application() {
+    let mut app = crate::app::App::test_default();
+    app.session_runtime.activate_session("mapping-session".into());
+    let mut initial = tool_payload(&json!([]));
+    initial["status"] = json!("in_progress");
+    initial["task_metadata"] = json!({"subagent_retry":{"state":"waiting","agent_id":"worker-17","attempt":2,"max_retries":4,"retry_delay_ms":1500,"error_status":429,"error_category":"rate_limit"}});
+    deliver(&mut app, json!({"type":"tool_call","tool_call":initial}));
+    let waiting = Some(model::SubagentRetryUpdate::Waiting {
+        agent_id: Some("worker-17".into()),
+        attempt: 2,
+        max_retries: 4,
+        retry_delay_ms: 1500,
+        error_status: Some(429),
+        error_category: Some("rate_limit".into()),
+    });
+    assert_eq!(tool(&app, "target-tool").task_metadata.as_ref().unwrap().subagent_retry, waiting);
+    for (fields, expected) in [
+        (json!({"status":"in_progress"}), waiting),
+        (json!({"task_metadata":{}}), None),
+        (
+            json!({"task_metadata":{"subagent_retry":{"state":"clear"}}}),
+            Some(model::SubagentRetryUpdate::Clear),
+        ),
+    ] {
+        deliver(
+            &mut app,
+            json!({"type":"tool_call_update","tool_call_update":{"tool_call_id":"target-tool","fields":fields}}),
+        );
+        assert_eq!(
+            tool(&app, "target-tool").task_metadata.as_ref().unwrap().subagent_retry,
+            expected
+        );
     }
 }

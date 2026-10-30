@@ -720,223 +720,9 @@ pub enum McpSnapshotSource {
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountInfo, ApiRetryError, AvailableModel, CompactionFailureCode, CompactionResult,
-        CompactionTrigger, CompactionUpdate, EffortLevel, McpServerOrgMaxPermission,
-        McpServerStatus, McpServerStatusConfig, McpServerToolPermissionPolicy, RateLimitStatus,
-        SessionStatus, SessionUpdate, SubagentRetryUpdate, SystemNoticeSeverity, TaskMetadata,
-        TaskUpdateSource, TerminalReason, TranscriptRetractionReason,
+        McpServerOrgMaxPermission, McpServerStatus, McpServerStatusConfig,
+        McpServerToolPermissionPolicy, TerminalReason,
     };
-
-    #[test]
-    fn available_model_deserializes_new_effort_levels() {
-        let model: AvailableModel = serde_json::from_value(serde_json::json!({
-            "id": "sonnet",
-            "display_name": "Claude Sonnet",
-            "description": null,
-            "supports_effort": true,
-            "supported_effort_levels": ["low", "medium", "high", "xhigh", "max"],
-            "supports_adaptive_thinking": true,
-            "supports_fast_mode": true,
-            "supports_auto_mode": false
-        }))
-        .expect("deserialize available model");
-
-        assert_eq!(
-            model.supported_effort_levels,
-            vec![
-                EffortLevel::Low,
-                EffortLevel::Medium,
-                EffortLevel::High,
-                EffortLevel::XHigh,
-                EffortLevel::Max,
-            ]
-        );
-    }
-
-    #[test]
-    fn account_info_deserializes_gateway_provider() {
-        let account: AccountInfo = serde_json::from_value(serde_json::json!({
-            "email": null,
-            "organization": null,
-            "subscription_type": null,
-            "token_source": null,
-            "api_key_source": null,
-            "api_provider": "gateway"
-        }))
-        .expect("deserialize account info");
-
-        assert_eq!(account.api_provider.as_deref(), Some("gateway"));
-    }
-
-    #[test]
-    fn api_retry_update_deserializes_unknown_error_defensively() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "api_retry_update",
-            "attempt": 1,
-            "max_retries": 4,
-            "retry_delay_ms": 1000,
-            "error_status": null,
-            "error": "transport_timeout"
-        }))
-        .expect("deserialize api retry update");
-
-        assert!(matches!(
-            update,
-            SessionUpdate::ApiRetryUpdate { error: ApiRetryError::Unknown, .. }
-        ));
-    }
-
-    #[test]
-    fn api_retry_update_deserializes_new_known_errors() {
-        for (raw, expected) in [
-            ("account_on_hold", ApiRetryError::AccountOnHold),
-            ("model_not_found", ApiRetryError::ModelNotFound),
-            ("oauth_org_not_allowed", ApiRetryError::OauthOrgNotAllowed),
-            ("overloaded", ApiRetryError::Overloaded),
-        ] {
-            let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-                "type": "api_retry_update",
-                "attempt": 1,
-                "max_retries": 4,
-                "retry_delay_ms": 1000,
-                "error_status": null,
-                "error": raw
-            }))
-            .expect("deserialize api retry update");
-
-            assert!(matches!(
-                update,
-                SessionUpdate::ApiRetryUpdate { error, .. } if error == expected
-            ));
-        }
-    }
-
-    #[test]
-    fn rate_limit_update_deserializes_credits_metadata() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "rate_limit_update",
-            "status": "rejected",
-            "error_code": "credits_required",
-            "can_user_purchase_credits": true,
-            "has_chargeable_saved_payment_method": false
-        }))
-        .expect("deserialize rate limit update");
-
-        assert!(matches!(
-            update,
-            SessionUpdate::RateLimitUpdate {
-                status: RateLimitStatus::Rejected,
-                ref error_code,
-                can_user_purchase_credits: Some(true),
-                has_chargeable_saved_payment_method: Some(false),
-                ..
-            } if error_code.as_deref() == Some("credits_required")
-        ));
-    }
-
-    #[test]
-    fn session_status_update_deserializes_requesting() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "session_status_update",
-            "status": "requesting"
-        }))
-        .expect("deserialize session status update");
-
-        assert!(matches!(
-            update,
-            SessionUpdate::SessionStatusUpdate { status: SessionStatus::Requesting }
-        ));
-    }
-
-    #[test]
-    fn compaction_updates_deserialize_typed_lifecycle_data() {
-        let boundary: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "compaction_update",
-            "phase": "boundary",
-            "trigger": "manual",
-            "pre_tokens": 123_456,
-            "post_tokens": 20_000,
-            "duration_ms": 1_500
-        }))
-        .expect("deserialize compaction boundary");
-
-        assert!(matches!(
-            boundary,
-            SessionUpdate::CompactionUpdate {
-                update: CompactionUpdate::Boundary {
-                    trigger: CompactionTrigger::Manual,
-                    pre_tokens: 123_456,
-                    post_tokens: Some(20_000),
-                    duration_ms: Some(1_500),
-                }
-            }
-        ));
-
-        let finished: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "compaction_update",
-            "phase": "finished",
-            "result": "failed",
-            "error_code": "too_few_groups",
-            "error": "Prompt is too long"
-        }))
-        .expect("deserialize compaction completion");
-
-        assert!(matches!(
-            finished,
-            SessionUpdate::CompactionUpdate {
-                update: CompactionUpdate::Finished {
-                    result: CompactionResult::Failed,
-                    error_code: Some(CompactionFailureCode::TooFewGroups),
-                    ref error,
-                }
-            } if error.as_deref() == Some("Prompt is too long")
-        ));
-    }
-
-    #[test]
-    fn available_commands_update_deserializes_source_and_generation() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "available_commands_update",
-            "commands": [
-                {
-                    "name": "adobe-retouch-portraits",
-                    "description": "Retouch portraits",
-                    "input_hint": "<file>"
-                }
-            ],
-            "source": "commands_changed",
-            "generation": 2
-        }))
-        .expect("deserialize available commands update");
-
-        let SessionUpdate::AvailableCommandsUpdate { commands, source, generation } = update else {
-            panic!("expected available commands update");
-        };
-
-        assert_eq!(source.as_deref(), Some("commands_changed"));
-        assert_eq!(generation, Some(2));
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].name, "adobe-retouch-portraits");
-        assert_eq!(commands[0].input_hint.as_deref(), Some("<file>"));
-    }
-
-    #[test]
-    fn system_notice_update_deserializes() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "system_notice_update",
-            "severity": "warning",
-            "message": "Plugin install failed."
-        }))
-        .expect("deserialize system notice update");
-
-        assert!(matches!(
-            update,
-            SessionUpdate::SystemNoticeUpdate {
-                severity: SystemNoticeSeverity::Warning,
-                ref message,
-            } if message == "Plugin install failed."
-        ));
-    }
 
     #[test]
     fn mcp_status_deserializes_latest_config_fields() {
@@ -945,99 +731,76 @@ mod tests {
             ("connected", McpServerConnectionStatus::Connected),
             ("needs-auth", McpServerConnectionStatus::NeedsAuth),
         ] {
-            let server:McpServerStatus=serde_json::from_value(serde_json::json!({
-                "name":"notion","status":token,"scope":"project","source":".mcp.json",
-                "config":{"type":"http","url":"https://mcp.notion.com/mcp","headers":{"Authorization":"Bearer token"},
-                    "tools":[{"name":"search","permission_policy":"always_ask","org_max_permission":"ask"},{"name":"lookup"},{"name":"write","org_max_permission":"blocked"},{"name":"remove","permission_policy":"always_deny","org_max_permission":"blocked"}],
-                    "timeout":5000,"request_timeout_ms":30000,"always_load":true}
-            })).expect("MCP status");
-            assert_eq!(server.name, "notion");
-            assert_eq!(server.status, status);
-            assert_eq!(serde_json::to_value(server.status).unwrap(), serde_json::json!(token));
-            assert_eq!(server.scope.as_deref(), Some("project"));
-            assert_eq!(server.source.as_deref(), Some(".mcp.json"));
-            assert!(server.tools.is_empty());
-            let Some(McpServerStatusConfig::Http {
-                url,
-                headers,
-                tools,
-                timeout,
-                request_timeout_ms,
-                always_load,
-            }) = server.config
-            else {
-                panic!("HTTP config")
-            };
-            assert_eq!(url, "https://mcp.notion.com/mcp");
-            assert_eq!(headers.get("Authorization").map(String::as_str), Some("Bearer token"));
-            assert_eq!(timeout, Some(5000));
-            assert_eq!(request_timeout_ms, Some(30000));
-            assert_eq!(always_load, Some(true));
-            for (name, policy, ceiling) in [
-                (
-                    "search",
-                    Some(McpServerToolPermissionPolicy::Ask),
-                    Some(McpServerOrgMaxPermission::Ask),
-                ),
-                ("lookup", None, None),
-                ("write", None, Some(McpServerOrgMaxPermission::Blocked)),
-                (
-                    "remove",
-                    Some(McpServerToolPermissionPolicy::Deny),
-                    Some(McpServerOrgMaxPermission::Blocked),
-                ),
-            ] {
-                let tool = tools.iter().find(|tool| tool.name == name).expect("configured tool");
-                assert_eq!(tool.permission_policy, policy, "{name}");
-                assert_eq!(tool.org_max_permission, ceiling, "{name}");
-            }
-        }
-    }
-
-    #[test]
-    fn task_metadata_deserializes_correlation_fields() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "tool_call_update",
-            "tool_call_update": {
-                "tool_call_id": "tool-1",
-                "fields": {
-                    "task_metadata": {
-                        "is_backgrounded": true,
-                        "spawn_depth": 2,
-                        "request_id": "request-1",
-                        "subagent_type": "tester",
-                        "task_description": "Validate the branch",
-                        "task_type": "remote_agent",
-                        "workflow_name": "review-flow",
-                        "prompt": "Validate everything",
-                        "output_file": "C:/tmp/output.md",
-                        "summary": "Validation complete",
-                        "terminal_status": "completed",
-                        "blocked": true,
-                        "parent_agent_id": "agent-parent"
-                    }
+            for load in [Some(true), Some(false), None] {
+                let mut payload = serde_json::json!({
+                    "name":"notion","status":token,"scope":"project","source":".mcp.json",
+                    "config":{"type":"http","url":"https://mcp.notion.com/mcp","headers":{"Authorization":"Bearer token"},
+                        "tools":[{"name":"search","permission_policy":"always_ask","org_max_permission":"ask"},{"name":"lookup"},{"name":"write","org_max_permission":"blocked"},{"name":"remove","permission_policy":"always_deny","org_max_permission":"blocked"}],
+                        "timeout":5000,"request_timeout_ms":30000}
+                });
+                if let Some(load) = load {
+                    payload["config"]["always_load"] = serde_json::json!(load);
+                    payload["tools"] = serde_json::json!([{"name":"runtime-only","description":"Discovered runtime tool","annotations":{"read_only":true,"destructive":false}}]);
+                }
+                let server: McpServerStatus = serde_json::from_value(payload).expect("MCP status");
+                assert_eq!(server.name, "notion");
+                assert_eq!(server.status, status);
+                assert_eq!(serde_json::to_value(server.status).unwrap(), serde_json::json!(token));
+                assert_eq!(server.scope.as_deref(), Some("project"));
+                assert_eq!(server.source.as_deref(), Some(".mcp.json"));
+                if load.is_some() {
+                    let runtime = server
+                        .tools
+                        .iter()
+                        .find(|tool| tool.name == "runtime-only")
+                        .expect("runtime tool");
+                    assert_eq!(runtime.description.as_deref(), Some("Discovered runtime tool"));
+                    let annotations = runtime.annotations.as_ref().unwrap();
+                    assert_eq!(
+                        (annotations.read_only, annotations.destructive, annotations.open_world),
+                        (Some(true), Some(false), None)
+                    );
+                    assert!(!server.tools.iter().any(|tool| tool.name == "search"));
+                } else {
+                    assert!(server.tools.is_empty());
+                }
+                let Some(McpServerStatusConfig::Http {
+                    url,
+                    headers,
+                    tools,
+                    timeout,
+                    request_timeout_ms,
+                    always_load,
+                }) = server.config
+                else {
+                    panic!("HTTP config")
+                };
+                assert_eq!(url, "https://mcp.notion.com/mcp");
+                assert_eq!(headers.get("Authorization").map(String::as_str), Some("Bearer token"));
+                assert_eq!(timeout, Some(5000));
+                assert_eq!(request_timeout_ms, Some(30000));
+                assert_eq!(always_load, load);
+                for (name, policy, ceiling) in [
+                    (
+                        "search",
+                        Some(McpServerToolPermissionPolicy::Ask),
+                        Some(McpServerOrgMaxPermission::Ask),
+                    ),
+                    ("lookup", None, None),
+                    ("write", None, Some(McpServerOrgMaxPermission::Blocked)),
+                    (
+                        "remove",
+                        Some(McpServerToolPermissionPolicy::Deny),
+                        Some(McpServerOrgMaxPermission::Blocked),
+                    ),
+                ] {
+                    let tool =
+                        tools.iter().find(|tool| tool.name == name).expect("configured tool");
+                    assert_eq!(tool.permission_policy, policy, "{name}");
+                    assert_eq!(tool.org_max_permission, ceiling, "{name}");
                 }
             }
-        }))
-        .expect("deserialize task metadata");
-
-        let SessionUpdate::ToolCallUpdate { tool_call_update } = update else {
-            panic!("expected tool call update");
-        };
-        let metadata = tool_call_update.fields.task_metadata.expect("task metadata");
-        assert_eq!(metadata.is_backgrounded, Some(true));
-        assert_eq!(metadata.spawn_depth, Some(2));
-        assert_eq!(metadata.request_id.as_deref(), Some("request-1"));
-        assert_eq!(metadata.subagent_type.as_deref(), Some("tester"));
-        assert_eq!(metadata.task_description.as_deref(), Some("Validate the branch"));
-        assert_eq!(metadata.task_type.as_deref(), Some("remote_agent"));
-        assert_eq!(metadata.workflow_name.as_deref(), Some("review-flow"));
-        assert_eq!(metadata.prompt.as_deref(), Some("Validate everything"));
-        assert_eq!(metadata.output_file.as_deref(), Some("C:/tmp/output.md"));
-        assert_eq!(metadata.summary.as_deref(), Some("Validation complete"));
-        assert_eq!(metadata.terminal_status.as_deref(), Some("completed"));
-        assert_eq!(metadata.blocked, Some(true));
-        assert_eq!(metadata.parent_agent_id.as_deref(), Some("agent-parent"));
+        }
     }
 
     #[test]
@@ -1059,226 +822,8 @@ mod tests {
             assert_eq!(reason.as_stored(), stored);
         }
     }
-
-    #[test]
-    fn background_tasks_source_deserializes() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "task_state_update",
-            "source": "background_tasks",
-            "tasks": [],
-            "removed_task_ids": ["bg-old"],
-            "is_complete_snapshot": true
-        }))
-        .expect("deserialize background task update");
-
-        let SessionUpdate::TaskStateUpdate { update: task_update } = update else {
-            panic!("expected task state update");
-        };
-        assert_eq!(task_update.source, TaskUpdateSource::BackgroundTasks);
-        assert_eq!(task_update.removed_task_ids, vec!["bg-old"]);
-        assert!(task_update.is_complete_snapshot);
-    }
-
-    #[test]
-    fn tool_output_metadata_deserializes_agent_and_artifact_read_fields() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "tool_call_update",
-            "tool_call_update": {
-                "tool_call_id": "tool-1",
-                "fields": {
-                    "output_metadata": {
-                        "agent": {
-                            "resolved_model": "claude-sonnet-4-7",
-                            "models_used": ["claude-opus-4-8", "claude-sonnet-4-7"]
-                        },
-                        "web_fetch": {
-                            "artifact_read": {
-                                "slug": "dashboard",
-                                "ver": "v3"
-                            }
-                        },
-                        "skill": {
-                            "background": true
-                        },
-                        "non_execution": {
-                            "kind": "user-rejected",
-                            "user_feedback": "Use a safer command."
-                        }
-                    }
-                }
-            }
-        }))
-        .expect("deserialize output metadata");
-
-        let SessionUpdate::ToolCallUpdate { tool_call_update } = update else {
-            panic!("expected tool call update");
-        };
-        let metadata = tool_call_update.fields.output_metadata.expect("output metadata");
-        let agent = metadata.agent.expect("agent metadata");
-        let resolved_model = agent.resolved_model;
-        assert_eq!(resolved_model.as_deref(), Some("claude-sonnet-4-7"));
-        assert_eq!(
-            agent.models_used,
-            Some(vec!["claude-opus-4-8".to_owned(), "claude-sonnet-4-7".to_owned()])
-        );
-        let artifact_read = metadata
-            .web_fetch
-            .and_then(|web_fetch| web_fetch.artifact_read)
-            .expect("artifact read metadata");
-        assert_eq!(artifact_read.slug, "dashboard");
-        assert_eq!(artifact_read.ver.as_deref(), Some("v3"));
-        assert_eq!(artifact_read.seeded, None);
-        assert_eq!(metadata.skill.and_then(|skill| skill.background), Some(true));
-        let non_execution = metadata.non_execution.expect("non-execution metadata");
-        assert_eq!(non_execution.kind, "user-rejected");
-        assert_eq!(non_execution.user_feedback.as_deref(), Some("Use a safer command."));
-    }
-
-    #[test]
-    fn web_fetch_metadata_deserializes_versionless_seeded_artifact() {
-        let metadata: super::ToolOutputMetadata = serde_json::from_value(serde_json::json!({
-            "web_fetch": {
-                "artifact_read": {
-                    "slug": "seeded-dashboard",
-                    "seeded": false
-                }
-            }
-        }))
-        .expect("deserialize versionless artifact metadata");
-
-        let artifact = metadata
-            .web_fetch
-            .and_then(|web_fetch| web_fetch.artifact_read)
-            .expect("artifact metadata");
-        assert_eq!(artifact.slug, "seeded-dashboard");
-        assert_eq!(artifact.ver, None);
-        assert_eq!(artifact.seeded, Some(false));
-    }
-
-    #[test]
-    fn external_message_update_deserializes_peer_permission_mode() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "external_message_update",
-            "content": "Peer message",
-            "source_message_uuid": "peer-message",
-            "origin": {
-                "kind": "peer",
-                "from_mode": "bypass"
-            }
-        }))
-        .expect("deserialize peer provenance");
-
-        let SessionUpdate::ExternalMessageUpdate { origin, .. } = update else {
-            panic!("expected external message update");
-        };
-        assert_eq!(origin.from_mode.as_deref(), Some("bypass"));
-    }
-
-    #[test]
-    fn task_metadata_deserializes_subagent_retry_waiting_and_clear_updates() {
-        let waiting: TaskMetadata = serde_json::from_value(serde_json::json!({
-            "subagent_retry": {
-                "state": "waiting",
-                "agent_id": "agent-1",
-                "attempt": 2,
-                "max_retries": 4,
-                "retry_delay_ms": 1500,
-                "error_status": 429,
-                "error_category": "rate_limit"
-            }
-        }))
-        .expect("deserialize waiting retry");
-        assert!(matches!(
-            waiting.subagent_retry,
-            Some(SubagentRetryUpdate::Waiting {
-                attempt: 2,
-                max_retries: 4,
-                retry_delay_ms: 1500,
-                ..
-            })
-        ));
-
-        let clear: TaskMetadata = serde_json::from_value(serde_json::json!({
-            "subagent_retry": { "state": "clear" }
-        }))
-        .expect("deserialize retry clear");
-        assert_eq!(clear.subagent_retry, Some(SubagentRetryUpdate::Clear));
-    }
-
-    #[test]
-    fn transcript_retraction_deserializes_with_metadata() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "transcript_retraction",
-            "message_uuids": ["assistant-old", "tool-result-old"],
-            "reason": "model_refusal_fallback",
-            "request_id": "req-1",
-            "trigger": "refusal",
-            "direction": "retry",
-            "original_model": "claude-opus-4-1",
-            "fallback_model": "claude-sonnet-4-5",
-            "scope": "local",
-            "api_refusal_category": "cyber",
-            "api_refusal_explanation": "policy text",
-            "content": "Retried with fallback model"
-        }))
-        .expect("deserialize transcript retraction");
-
-        let SessionUpdate::TranscriptRetraction { retraction } = update else {
-            panic!("expected transcript retraction");
-        };
-        assert_eq!(retraction.message_uuids, vec!["assistant-old", "tool-result-old"]);
-        assert_eq!(retraction.reason, TranscriptRetractionReason::ModelRefusalFallback);
-        assert_eq!(retraction.request_id.as_deref(), Some("req-1"));
-        assert_eq!(retraction.original_model.as_deref(), Some("claude-opus-4-1"));
-        assert_eq!(retraction.fallback_model.as_deref(), Some("claude-sonnet-4-5"));
-        assert_eq!(retraction.scope.as_deref(), Some("local"));
-    }
-
-    #[test]
-    fn transcript_updates_deserialize_source_message_uuid() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "agent_message_chunk",
-            "source_message_uuid": "assistant-1",
-            "content": { "type": "text", "text": "hello" }
-        }))
-        .expect("deserialize source-tagged chunk");
-
-        let SessionUpdate::AgentMessageChunk { source_message_uuid, .. } = update else {
-            panic!("expected agent message chunk");
-        };
-        assert_eq!(source_message_uuid.as_deref(), Some("assistant-1"));
-    }
-
-    #[test]
-    fn api_retry_update_deserializes_fractional_retry_delay() {
-        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "api_retry_update",
-            "attempt": 1,
-            "max_retries": 10,
-            "retry_delay_ms": 549.888_169_845_942_6,
-            "error_status": null,
-            "error": "unknown"
-        }))
-        .expect("deserialize fractional api retry update");
-
-        let SessionUpdate::ApiRetryUpdate { retry_delay_ms, .. } = update else {
-            panic!("expected api retry update");
-        };
-        assert!((retry_delay_ms - 549.888_169_845_942_6).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn api_retry_update_rejects_negative_retry_delay() {
-        let error = serde_json::from_value::<SessionUpdate>(serde_json::json!({
-            "type": "api_retry_update",
-            "attempt": 1,
-            "max_retries": 10,
-            "retry_delay_ms": -1.0,
-            "error_status": null,
-            "error": "unknown"
-        }))
-        .expect_err("negative retry delay should be rejected");
-
-        assert!(error.to_string().contains("retry_delay_ms must be a finite non-negative number"));
-    }
 }
+
+#[cfg(test)]
+#[path = "retry_wire_tests.rs"]
+mod retry_wire_tests;

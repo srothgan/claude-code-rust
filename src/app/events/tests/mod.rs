@@ -22,6 +22,7 @@ use tokio::sync::oneshot;
 mod assistant_lifecycle;
 mod client_events;
 mod clipboard_paste;
+mod notice_audit;
 mod session_controls;
 mod slash_input;
 
@@ -2200,6 +2201,10 @@ fn rate_limit_warnings_do_not_duplicate_or_turn_into_failures() {
     ));
     assert!(matches!(app.transcript.messages[0].blocks.first(), Some(MessageBlock::Notice(_))));
 
+    let mut allowed = warning_update.clone();
+    allowed.status = model::RateLimitStatus::Allowed;
+    handle_client_event(&mut app, session_update(model::SessionUpdate::RateLimitUpdate(allowed)));
+
     let rejected_update = model::RateLimitUpdate {
         status: model::RateLimitStatus::Rejected,
         overage_status: Some(model::RateLimitStatus::Rejected),
@@ -3752,7 +3757,12 @@ fn session_picker_paste_edits_search_without_changing_the_chat_draft() {
 
 #[test]
 fn api_retry_updates_single_warning_notice() {
-    let mut app = make_test_app();
+    let (mut app, mut commands) = app_with_bridge_connection();
+    app.push_message_tracked(ChatMessage::new(
+        MessageRole::System(Some(SystemSeverity::Info)),
+        vec![MessageBlock::Text(TextBlock::from_complete("unrelated history notice"))],
+        None,
+    ));
     app.transcript.messages.push(user_msg("retry this request"));
     let history = message_snapshots(&app);
     handle_client_event(
@@ -3791,6 +3801,40 @@ fn api_retry_updates_single_warning_notice() {
     assert!(notice.text.text.contains("HTTP 529"));
     assert!(notice.text.text.contains("1.5s"));
     assert!(!notice.text.text.contains("1/4"));
+    for (error, label) in [
+        (model::ApiRetryError::ModelNotFound, "model unavailable"),
+        (model::ApiRetryError::OauthOrgNotAllowed, "account access not allowed"),
+        (model::ApiRetryError::AccountOnHold, "account on hold"),
+        (model::ApiRetryError::Overloaded, "service overloaded"),
+        (model::ApiRetryError::Unknown, "connection error"),
+    ] {
+        handle_client_event(
+            &mut app,
+            session_update(model::SessionUpdate::ApiRetryUpdate {
+                attempt: 3,
+                max_retries: 4,
+                retry_delay_ms: 250.0,
+                error_status: None,
+                error,
+            }),
+        );
+        assert_eq!(&message_snapshots(&app)[..history.len()], history);
+        let [message] = &app.transcript.messages[history.len()..] else {
+            panic!("one retry notice")
+        };
+        assert_eq!(message.id, notice_id);
+        let [MessageBlock::Notice(notice)] = message.blocks.as_slice() else {
+            panic!("retry notice")
+        };
+        assert_eq!(notice.severity, SystemSeverity::Warning);
+        assert!(notice.text.text.contains(label));
+        assert!(notice.text.text.contains("3/4"));
+        assert!(notice.text.text.contains("250ms"));
+        assert!(!notice.text.text.contains("HTTP"));
+        assert!(!notice.text.text.contains("2/4"));
+        assert_ne!(app.status, AppStatus::Error);
+        assert!(commands.try_recv().is_err(), "retry must not submit another prompt");
+    }
 }
 
 #[test]
