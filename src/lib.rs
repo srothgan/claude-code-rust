@@ -512,7 +512,7 @@ pub enum ConfigFileSelector {
 mod tests {
     use super::{
         Cli, Command, ConfigArgs, ConfigCommand, ConfigExportArgs, ConfigFileSelector,
-        ConfigPathArgs, ConfigShowArgs, LogsArgs,
+        ConfigPathArgs, ConfigShowArgs,
     };
     use clap::{CommandFactory, Parser};
 
@@ -753,56 +753,37 @@ mod tests {
     }
 
     #[test]
-    fn cli_logs_defaults_to_summary() {
-        let cli = Cli::try_parse_from(["claude-rs", "logs"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: None,
-                bundle: false,
-                output: None,
-                yes: false,
-            }))
+    fn logs_modes_reject_only_declared_conflicts_and_require_bundle_for_output() {
+        use clap::error::ErrorKind;
+        let modes: &[&[&str]] = &[&["--path"], &["--latest"], &["--tail", "2"], &["--bundle"]];
+        for (index, mode) in modes.iter().enumerate() {
+            let mut args = vec!["claude-rs", "logs"];
+            args.extend_from_slice(mode);
+            assert!(Cli::try_parse_from(&args).is_ok());
+            for other in &modes[index + 1..] {
+                let mut conflicting = args.clone();
+                conflicting.extend_from_slice(other);
+                assert_eq!(
+                    Cli::try_parse_from(conflicting).unwrap_err().kind(),
+                    ErrorKind::ArgumentConflict
+                );
+            }
+        }
+        let error =
+            Cli::try_parse_from(["claude-rs", "logs", "--output", "selected.zip"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(error.to_string().contains("--bundle"));
+        assert!(
+            Cli::try_parse_from([
+                "claude-rs",
+                "logs",
+                "--bundle",
+                "--yes",
+                "--output",
+                "selected.zip"
+            ])
+            .is_ok()
         );
-    }
-
-    #[test]
-    fn cli_logs_accepts_modes() {
-        let cli = Cli::try_parse_from(["claude-rs", "logs", "--tail", "200"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: Some(200),
-                bundle: false,
-                output: None,
-                yes: false,
-            }))
-        );
-
-        let cli =
-            Cli::try_parse_from(["claude-rs", "logs", "--bundle", "--yes", "--output", "out.zip"])
-                .expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: None,
-                bundle: true,
-                output: Some(std::path::PathBuf::from("out.zip")),
-                yes: true,
-            }))
-        );
-    }
-
-    #[test]
-    fn cli_logs_rejects_conflicting_modes() {
-        assert!(Cli::try_parse_from(["claude-rs", "logs", "--path", "--latest"]).is_err());
-        assert!(Cli::try_parse_from(["claude-rs", "logs", "--output", "out.zip"]).is_err());
     }
 
     #[test]

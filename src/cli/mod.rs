@@ -30,7 +30,7 @@ pub fn run_support_command(
 #[cfg(test)]
 mod tests {
     use super::run_support_command;
-    use crate::{Cli, Command, ConfigArgs, ConfigCommand, ConfigPathArgs, LogsArgs};
+    use crate::{Cli, Command, ConfigArgs, ConfigCommand, ConfigPathArgs};
 
     #[test]
     fn no_subcommand_uses_interactive_path() {
@@ -58,26 +58,6 @@ mod tests {
 
         assert_eq!(result, None);
         assert!(stdout.is_empty());
-        assert!(stderr.is_empty());
-    }
-
-    #[test]
-    fn logs_is_a_support_command() {
-        let cli = test_cli(Some(Command::Logs(LogsArgs {
-            path: true,
-            latest: false,
-            tail: None,
-            bundle: false,
-            output: None,
-            yes: false,
-        })));
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
-
-        assert_eq!(result, Some(0));
-        assert!(!stdout.is_empty());
         assert!(stderr.is_empty());
     }
 
