@@ -940,53 +940,58 @@ mod tests {
 
     #[test]
     fn mcp_status_deserializes_latest_config_fields() {
-        let server: McpServerStatus = serde_json::from_value(serde_json::json!({
-            "name": "notion",
-            "status": "connected",
-            "config": {
-                "type": "http",
-                "url": "https://mcp.notion.com/mcp",
-                "headers": { "Authorization": "Bearer token" },
-                "tools": [
-                    {
-                        "name": "search",
-                        "permission_policy": "always_ask",
-                        "org_max_permission": "ask"
-                    },
-                    { "name": "lookup" },
-                    {
-                        "name": "write",
-                        "org_max_permission": "blocked"
-                    }
-                ],
-                "timeout": 5000,
-                "request_timeout_ms": 30000,
-                "always_load": true
-            },
-            "tools": []
-        }))
-        .expect("deserialize MCP server status");
-
-        let Some(McpServerStatusConfig::Http {
-            tools,
-            timeout,
-            request_timeout_ms,
-            always_load,
-            ..
-        }) = server.config
-        else {
-            panic!("expected http MCP config");
-        };
-        assert_eq!(timeout, Some(5000));
-        assert_eq!(request_timeout_ms, Some(30000));
-        assert_eq!(always_load, Some(true));
-        assert_eq!(tools.len(), 3);
-        assert_eq!(tools[0].permission_policy, Some(McpServerToolPermissionPolicy::Ask));
-        assert_eq!(tools[0].org_max_permission, Some(McpServerOrgMaxPermission::Ask));
-        assert_eq!(tools[1].permission_policy, None);
-        assert_eq!(tools[1].org_max_permission, None);
-        assert_eq!(tools[2].permission_policy, None);
-        assert_eq!(tools[2].org_max_permission, Some(McpServerOrgMaxPermission::Blocked));
+        use crate::agent::model::McpServerConnectionStatus;
+        for (token, status) in [
+            ("connected", McpServerConnectionStatus::Connected),
+            ("needs-auth", McpServerConnectionStatus::NeedsAuth),
+        ] {
+            let server:McpServerStatus=serde_json::from_value(serde_json::json!({
+                "name":"notion","status":token,"scope":"project","source":".mcp.json",
+                "config":{"type":"http","url":"https://mcp.notion.com/mcp","headers":{"Authorization":"Bearer token"},
+                    "tools":[{"name":"search","permission_policy":"always_ask","org_max_permission":"ask"},{"name":"lookup"},{"name":"write","org_max_permission":"blocked"},{"name":"remove","permission_policy":"always_deny","org_max_permission":"blocked"}],
+                    "timeout":5000,"request_timeout_ms":30000,"always_load":true}
+            })).expect("MCP status");
+            assert_eq!(server.name, "notion");
+            assert_eq!(server.status, status);
+            assert_eq!(serde_json::to_value(server.status).unwrap(), serde_json::json!(token));
+            assert_eq!(server.scope.as_deref(), Some("project"));
+            assert_eq!(server.source.as_deref(), Some(".mcp.json"));
+            assert!(server.tools.is_empty());
+            let Some(McpServerStatusConfig::Http {
+                url,
+                headers,
+                tools,
+                timeout,
+                request_timeout_ms,
+                always_load,
+            }) = server.config
+            else {
+                panic!("HTTP config")
+            };
+            assert_eq!(url, "https://mcp.notion.com/mcp");
+            assert_eq!(headers.get("Authorization").map(String::as_str), Some("Bearer token"));
+            assert_eq!(timeout, Some(5000));
+            assert_eq!(request_timeout_ms, Some(30000));
+            assert_eq!(always_load, Some(true));
+            for (name, policy, ceiling) in [
+                (
+                    "search",
+                    Some(McpServerToolPermissionPolicy::Ask),
+                    Some(McpServerOrgMaxPermission::Ask),
+                ),
+                ("lookup", None, None),
+                ("write", None, Some(McpServerOrgMaxPermission::Blocked)),
+                (
+                    "remove",
+                    Some(McpServerToolPermissionPolicy::Deny),
+                    Some(McpServerOrgMaxPermission::Blocked),
+                ),
+            ] {
+                let tool = tools.iter().find(|tool| tool.name == name).expect("configured tool");
+                assert_eq!(tool.permission_policy, policy, "{name}");
+                assert_eq!(tool.org_max_permission, ceiling, "{name}");
+            }
+        }
     }
 
     #[test]

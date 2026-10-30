@@ -77,6 +77,41 @@ fn assert_blocked(app: &mut App) {
 
 #[test]
 fn saved_trust_controls_read_only_startup_admission_and_launch_intent() {
+    for approved in [false, true] {
+        use clap::Parser;
+        let fixture = Fixture::new();
+        fixture.write(&json!({"account":"keep","projects":{&fixture.key:{"hasTrustDialogAccepted":approved}}}));
+        let before = std::fs::read(&fixture.preferences).unwrap();
+        let cli = crate::Cli::try_parse_from([
+            std::ffi::OsStr::new("claude-rs"),
+            std::ffi::OsStr::new("--no-update-check"),
+            std::ffi::OsStr::new("--dir"),
+            fixture.project.as_os_str(),
+        ])
+        .unwrap();
+        let mut app = crate::app::connect::create_app_with_settings_and_home(
+            &cli,
+            crate::app::settings::LoadedAppSettings {
+                path: Some(fixture.directory.path().join("app-settings.json")),
+                settings: crate::app::settings::AppSettings::default(),
+            },
+            Some(fixture.preferences.parent().unwrap().to_path_buf()),
+        );
+        assert_eq!(app.trust.project_key, fixture.key);
+        assert_eq!(app.trust.preferences_path.as_ref(), Some(&fixture.preferences));
+        if approved {
+            assert!(app.is_project_trusted());
+            assert!(app.startup.mark_connection_started());
+            assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        } else {
+            assert_blocked(&mut app);
+            let rendered = prompt(&mut app);
+            let (_, shown) = path_region(&rendered);
+            assert!(shown.contains("Client Projects"), "trust prompt identifies project: {shown}");
+        }
+        assert_eq!(std::fs::read(&fixture.preferences).unwrap(), before);
+    }
+
     for kind in 0..3 {
         for approved in [false, true] {
             let fixture = Fixture::new();

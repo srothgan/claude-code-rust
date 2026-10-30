@@ -1389,32 +1389,28 @@ fn current_model_update_updates_state_and_clears_pending_when_expected() {
     assert!(app.turn.pending_command_ack.is_none());
 }
 
-#[test]
-fn non_matching_config_option_update_keeps_pending() {
-    let mut app = make_test_app();
-    app.status = AppStatus::CommandPending;
-    app.turn.pending_command_label = Some("Switching model...".into());
-    app.turn.pending_command_ack =
-        Some(PendingCommandAck::ConfigOption { option_id: "model".to_owned() });
-
-    handle_client_event(
-        &mut app,
-        session_update(model::SessionUpdate::ConfigOptionUpdate(model::ConfigOptionUpdate {
-            option_id: "max_thinking_tokens".to_owned(),
-            value: serde_json::json!(2048),
-        })),
-    );
-
-    assert!(matches!(app.status, AppStatus::CommandPending));
-    assert_eq!(
-        app.session_runtime.config_options.get("max_thinking_tokens"),
-        Some(&serde_json::json!(2048))
-    );
-    assert_eq!(app.turn.pending_command_label.as_deref(), Some("Switching model..."));
-    assert!(matches!(
-        app.turn.pending_command_ack.as_ref(),
-        Some(PendingCommandAck::ConfigOption { option_id }) if option_id == "model"
-    ));
+#[tokio::test(flavor = "current_thread")]
+async fn non_matching_config_option_update_keeps_pending() {
+    Box::pin(tokio::task::LocalSet::new().run_until(async {
+        let (mut app,mut commands)=crate::app::test_support::app_with_connection();app.status=AppStatus::Ready;
+        assert!(crate::app::slash::try_handle_submit(&mut app,"/effort high"));
+        let command=tokio::time::timeout(Duration::from_secs(3),commands.recv_envelope()).await.unwrap().unwrap();
+        assert!(matches!(command.command,crate::agent::wire::BridgeCommand::SetEffort {session_id,effort} if session_id=="session-1" && effort.as_deref()==Some("high")));
+        for (option,value,matching) in [("max_thinking_tokens",serde_json::json!(2048),false),("effortLevel",serde_json::json!("high"),true)] {
+            let event=crate::app::connect::dispatch_test_event(serde_json::json!({"event":"session_update","session_id":"session-1","update":{"type":"config_option_update","option_id":option,"value":value}})).await;
+            handle_client_event(&mut app,event);
+            assert_eq!(app.session_runtime.config_options.get(option),Some(&value));
+            if matching {assert_eq!(app.status,AppStatus::Ready);assert!(app.turn.pending_command_ack.is_none());}
+            else {assert_eq!(app.status,AppStatus::CommandPending);assert!(matches!(app.turn.pending_command_ack.as_ref(),Some(PendingCommandAck::ConfigOption {option_id}) if option_id=="effortLevel"));}
+            app.input.set_text("follow-up draft");crate::app::test_support::press(&mut app,KeyCode::Enter);
+            if matching {
+                let command=tokio::time::timeout(Duration::from_secs(3),commands.recv_envelope()).await.unwrap().unwrap();
+                assert!(matches!(command.command,crate::agent::wire::BridgeCommand::Prompt {session_id,..} if session_id=="session-1"));
+                assert!(app.input.text().is_empty());
+            } else {assert_eq!(app.input.text(),"follow-up draft");assert!(commands.try_recv().is_err());}
+        }
+        assert_eq!(app.session_runtime.config_options.get("max_thinking_tokens"),Some(&serde_json::json!(2048)));
+    })).await;
 }
 
 #[test]

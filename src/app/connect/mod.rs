@@ -31,18 +31,6 @@ use crate::error::AppError;
 use std::rc::Rc;
 use tokio::sync::{mpsc, oneshot};
 
-/// Shorten cwd for display: use `~` for the home directory prefix.
-fn shorten_cwd(cwd: &std::path::Path) -> String {
-    let cwd_str = cwd.to_string_lossy().to_string();
-    if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy().to_string();
-        if cwd_str.starts_with(&home_str) {
-            return format!("~{}", &cwd_str[home_str.len()..]);
-        }
-    }
-    cwd_str
-}
-
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {
     err.chain().find_map(|cause| cause.downcast_ref::<AppError>().cloned())
 }
@@ -89,10 +77,18 @@ pub fn create_app(cli: &Cli, session_config: crate::agent::wire::SessionConfig) 
     app
 }
 
-#[allow(clippy::too_many_lines)]
 pub(super) fn create_app_with_settings(
     cli: &Cli,
     loaded_settings: settings::LoadedAppSettings,
+) -> App {
+    create_app_with_settings_and_home(cli, loaded_settings, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub(in crate::app) fn create_app_with_settings_and_home(
+    cli: &Cli,
+    loaded_settings: settings::LoadedAppSettings,
+    home_override: Option<std::path::PathBuf>,
 ) -> App {
     let cwd = cli.startup_cwd();
     let (event_tx, event_rx) = mpsc::channel(CLIENT_EVENT_QUEUE_CAPACITY);
@@ -116,7 +112,8 @@ pub(super) fn create_app_with_settings(
             )
         };
 
-    let cwd_display = shorten_cwd(&cwd);
+    let home = home_override.clone().or_else(dirs::home_dir);
+    let cwd_display = super::cwd::display(&cwd, home.as_deref());
     let mut app = App {
         surface_mode: SurfaceMode::Chat,
         terminal_lifecycle: TerminalLifecycleState::Bootstrapping,
@@ -126,7 +123,7 @@ pub(super) fn create_app_with_settings(
         global_settings: loaded_settings.settings,
         global_settings_path: loaded_settings.path,
         trust: trust::TrustState::default(),
-        settings_home_override: None,
+        settings_home_override: home_override,
         transcript: Transcript::new(vec![super::ChatMessage::welcome(
             env!("CARGO_PKG_VERSION"),
             "-",
@@ -305,3 +302,23 @@ fn log_bridge_task_join_result(result: Result<(), tokio::task::JoinError>) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "connection_audit_tests.rs"]
+mod audit_tests;
+
+#[cfg(test)]
+pub(crate) async fn dispatch_test_event(payload: serde_json::Value) -> ClientEvent {
+    let (connection, _commands) = AgentConnection::test_channel();
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut connected = true;
+    event_dispatch::handle_bridge_event(
+        &tx,
+        &connection,
+        &mut connected,
+        false,
+        serde_json::from_value(payload).expect("wire event"),
+    )
+    .await;
+    rx.try_recv().expect("dispatched event")
+}

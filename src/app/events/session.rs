@@ -678,23 +678,14 @@ fn push_connection_error_message(app: &mut App, error: &str) {
     push_system_message_with_severity(app, None, &message);
 }
 
-fn shorten_cwd_display(cwd_raw: &str) -> String {
-    if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if cwd_raw.starts_with(home_str.as_ref()) {
-            return format!("~{}", &cwd_raw[home_str.len()..]);
-        }
-    }
-    cwd_raw.to_owned()
-}
-
 fn sync_welcome_cwd(app: &mut App) {
     app.sync_welcome_snapshot();
 }
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.cwd_raw = cwd_raw;
-    app.cwd = shorten_cwd_display(&app.cwd_raw);
+    let home = app.settings_home_override.clone().or_else(dirs::home_dir);
+    app.cwd = super::super::cwd::display(std::path::Path::new(&app.cwd_raw), home.as_deref());
     app.sync_git_context();
     sync_welcome_cwd(app);
     app.reconcile_trust_state_from_preferences_and_cwd();

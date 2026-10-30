@@ -11,6 +11,7 @@ pub(crate) mod clipboard_image;
 pub(crate) mod config;
 mod connect;
 pub(crate) mod copy;
+mod cwd;
 mod dialog;
 pub(crate) mod diff_view;
 mod events;
