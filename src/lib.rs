@@ -622,3 +622,6 @@ mod tests {
 
 #[cfg(test)]
 mod cli_launch_audit_tests;
+
+#[cfg(test)]
+mod diagnostics_test_support;

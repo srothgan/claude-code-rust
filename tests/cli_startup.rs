@@ -463,3 +463,114 @@ fn startup_and_doctor_judge_an_unusable_bridge_script_alike() {
         assert!(error.contains("--bridge-script") && error.contains(verdict), "{error}");
     }
 }
+
+#[tokio::test]
+async fn explicit_logging_failure_exits_one_before_bridge_startup_and_preserves_input() {
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("inert bridge.js");
+    std::fs::write(&script, b"throw new Error('must never run');").unwrap();
+    let blocker = root.path().join("blocker");
+    std::fs::write(&blocker, b"keep blocker").unwrap();
+    let target = blocker.join("explicit.log");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_claude-rs"));
+    command
+        .current_dir(root.path())
+        .arg("--bridge-script")
+        .arg(&script)
+        .arg("--log-file")
+        .arg(&target)
+        .arg("--no-update-check")
+        .env_remove("RUST_LOG")
+        .env("CLAUDE_CONFIG_DIR", root.path().join("profile"))
+        .env("CLAUDE_RS_CONFIG_DIR", root.path().join("app-profile"))
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("failed to create log directory"));
+    assert!(error.contains(blocker.to_str().unwrap()));
+    assert!(!error.contains("claude-rs resume"));
+    assert_eq!(std::fs::read(blocker).unwrap(), b"keep blocker");
+    assert_eq!(std::fs::read(script).unwrap(), b"throw new Error('must never run');");
+    assert!(!root.path().join("app-profile").exists());
+    assert!(!root.path().join("profile").exists());
+}
+
+// Default diagnostics lookup honors XDG_DATA_HOME on Linux. Other platforms must
+// use an independently verified native data-directory isolation mechanism.
+#[cfg(all(target_os = "linux", debug_assertions))]
+#[tokio::test]
+async fn wrapped_startup_errors_keep_their_typed_exit_and_report_without_starting_a_session() {
+    for (missing_runtime, code, category) in
+        [(true, 20, "environment"), (false, 21, "bridge_spawn")]
+    {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let script = root.path().join("inert bridge.js");
+        std::fs::write(&script, b"throw new Error('must never run');").unwrap();
+        let missing =
+            root.path().join(if missing_runtime { "missing-runtime" } else { "missing-script.js" });
+        let mut probe = tokio::process::Command::new(env!("CARGO_BIN_EXE_claude-rs"));
+        probe
+            .args(["logs", "--path"])
+            .current_dir(&project)
+            .env("XDG_DATA_HOME", &data)
+            .env("HOME", root.path().join("home"))
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let selected = tokio::time::timeout(std::time::Duration::from_secs(20), probe.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(selected.status.success());
+        assert_eq!(
+            String::from_utf8(selected.stdout).unwrap(),
+            format!("{}\n", data.join("claude-code-rust/logs/runtime").display())
+        );
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_claude-rs"));
+        command
+            .current_dir(&project)
+            .args(["--no-update-check", "--log-file"])
+            .arg(root.path().join("explicit.log"))
+            .env("XDG_DATA_HOME", &data)
+            .env("XDG_CACHE_HOME", root.path().join("cache"))
+            .env("HOME", root.path().join("home"))
+            .env("CLAUDE_CONFIG_DIR", root.path().join("profile"))
+            .env("CLAUDE_RS_CONFIG_DIR", root.path().join("app-profile"))
+            .env_remove("RUST_LOG")
+            .env_remove("CLAUDE_RS_AGENT_BRIDGE")
+            .env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", &missing)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        if missing_runtime {
+            command.arg("--bridge-script").arg(&script);
+        } else {
+            command.env("CLAUDE_RS_AGENT_BRIDGE", &missing);
+        }
+        let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(code));
+        assert!(output.stdout.is_empty());
+        let text = String::from_utf8(output.stderr).unwrap();
+        let field = |name: &str| {
+            text.lines().find_map(|line| line.trim().strip_prefix(&format!("{name}: ")))
+        };
+        assert_eq!(field("category"), Some(category));
+        assert_eq!(field("exit_code"), Some(code.to_string().as_str()));
+        assert_eq!(field("next_step"), Some("claude-rs doctor --strict"));
+        assert!(field("detail").unwrap().contains(missing.to_str().unwrap()));
+        assert!(!text.contains("claude-rs resume"));
+        assert!(!root.path().join("app-profile").exists());
+        assert!(!root.path().join("profile").exists());
+        assert_eq!(std::fs::read(script).unwrap(), b"throw new Error('must never run');");
+    }
+}

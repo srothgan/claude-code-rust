@@ -35,13 +35,23 @@ struct PlatformMetadata {
 }
 
 pub fn install_panic_hook() {
-    std::panic::set_hook(Box::new(|panic_info| {
+    install_panic_hook_with_paths(crate::logging::default_diagnostics_paths);
+}
+
+fn install_panic_hook_with_paths(
+    resolve_paths: impl Fn() -> anyhow::Result<crate::logging::DiagnosticsPaths> + Send + Sync + 'static,
+) {
+    std::panic::set_hook(Box::new(move |panic_info| {
         if !should_report_panic() {
             return;
         }
 
-        let metadata = CrashMetadata::from_panic_info(panic_info);
-        if let Err(error) = write_last_crash_metadata(&metadata) {
+        let paths = resolve_paths();
+        let metadata = CrashMetadata::from_panic_info(
+            panic_info,
+            latest_log_path_display(paths.as_ref().ok()),
+        );
+        if let Err(error) = paths.and_then(|paths| write_last_crash_metadata(&metadata, &paths)) {
             tracing::warn!(
                 target: crate::logging::targets::APP_LIFECYCLE,
                 event_name = "last_crash_metadata_write_failed",
@@ -64,19 +74,26 @@ where
     panic::catch_unwind(AssertUnwindSafe(operation))
 }
 
-pub fn write_app_error_report(
-    writer: &mut impl std::io::Write,
-    error: &AppError,
-) -> std::io::Result<()> {
-    write_app_error_report_with_detail(writer, error, None)
-}
-
 pub fn write_app_error_report_with_detail(
     writer: &mut impl std::io::Write,
     error: &AppError,
     detail: Option<&str>,
 ) -> std::io::Result<()> {
-    let latest_log = latest_log_path_display();
+    write_app_error_report_with_paths(
+        writer,
+        error,
+        detail,
+        crate::logging::default_diagnostics_paths,
+    )
+}
+
+fn write_app_error_report_with_paths(
+    writer: &mut impl std::io::Write,
+    error: &AppError,
+    detail: Option<&str>,
+    resolve_paths: impl FnOnce() -> anyhow::Result<crate::logging::DiagnosticsPaths>,
+) -> std::io::Result<()> {
+    let latest_log = latest_log_path_display(resolve_paths().ok().as_ref());
     writeln!(writer, "{}", error.report_title())?;
     writeln!(writer, "  category: {}", error.category_tag())?;
     writeln!(writer, "  message: {}", error.user_message())?;
@@ -99,10 +116,6 @@ pub fn write_app_error_report_with_detail(
 
 pub fn last_crash_metadata_path(paths: &crate::logging::DiagnosticsPaths) -> PathBuf {
     paths.root_dir.join(LAST_CRASH_FILE_NAME)
-}
-
-pub fn read_last_crash_metadata(paths: &crate::logging::DiagnosticsPaths) -> Option<String> {
-    read_last_crash_metadata_from_path(&last_crash_metadata_path(paths))
 }
 
 pub fn read_last_crash_metadata_from_path(path: &Path) -> Option<String> {
@@ -131,10 +144,12 @@ fn write_panic_report(
     writeln!(writer, "  issue_guidance: paste this report and the redacted debug bundle")
 }
 
-fn write_last_crash_metadata(metadata: &CrashMetadata) -> anyhow::Result<()> {
-    let paths = crate::logging::default_diagnostics_paths()?;
+fn write_last_crash_metadata(
+    metadata: &CrashMetadata,
+    paths: &crate::logging::DiagnosticsPaths,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(&paths.root_dir)?;
-    let path = last_crash_metadata_path(&paths);
+    let path = last_crash_metadata_path(paths);
     write_last_crash_metadata_to(metadata, &path)
 }
 
@@ -168,12 +183,16 @@ impl Drop for ExpectedPanicGuard {
     }
 }
 
-fn latest_log_path_display() -> Option<String> {
-    crate::logging::latest_default_log_path().ok().flatten().map(|path| path.display().to_string())
+fn latest_log_path_display(paths: Option<&crate::logging::DiagnosticsPaths>) -> Option<String> {
+    let paths = paths?;
+    crate::logging::latest_log_path_in(&paths.runtime_dir, &paths.legacy_log_path)
+        .ok()
+        .flatten()
+        .map(|path| path.display().to_string())
 }
 
 impl CrashMetadata {
-    fn from_panic_info(panic_info: &PanicHookInfo<'_>) -> Self {
+    fn from_panic_info(panic_info: &PanicHookInfo<'_>, latest_log_path: Option<String>) -> Self {
         Self {
             schema: "claude-rs-crash/v1",
             kind: "panic",
@@ -184,7 +203,7 @@ impl CrashMetadata {
             location: panic_info.location().map(|location| {
                 format!("{}:{}:{}", location.file(), location.line(), location.column())
             }),
-            latest_log_path: latest_log_path_display(),
+            latest_log_path,
             diagnostics_bundle_command: "claude-rs logs --bundle --yes",
         }
     }
@@ -207,88 +226,5 @@ fn timestamp_now() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        CrashMetadata, PlatformMetadata, catch_expected_panic, should_report_panic,
-        write_app_error_report_with_detail, write_last_crash_metadata_to,
-    };
-    use crate::error::AppError;
-    use std::panic;
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static PANIC_HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn app_error_report_is_issue_friendly() {
-        let mut output = Vec::new();
-
-        write_app_error_report_with_detail(
-            &mut output,
-            &AppError::BridgeTimeout,
-            Some("ANTHROPIC_API_KEY=sk-ant-secret"),
-        )
-        .expect("write report");
-
-        let text = String::from_utf8(output).expect("utf8");
-        assert!(text.contains("Bridge initialization timeout"));
-        assert!(text.contains("category: bridge_timeout"));
-        assert!(text.contains("claude-rs doctor --strict"));
-        assert!(text.contains("version:"));
-        assert!(text.contains("platform:"));
-        assert!(text.contains("[redacted]"));
-        assert!(!text.contains("sk-ant-secret"));
-    }
-
-    #[test]
-    fn crash_metadata_file_redacts_secret_payloads() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("last-crash.json");
-        let metadata = CrashMetadata {
-            schema: "claude-rs-crash/v1",
-            kind: "panic",
-            created_at: "2026-07-03T00:00:00Z".to_owned(),
-            version: "0",
-            platform: PlatformMetadata { os: "test", arch: "test" },
-            message: crate::cli::redaction::redact_line("ANTHROPIC_API_KEY=sk-ant-secret"),
-            location: Some("src/main.rs:1:1".to_owned()),
-            latest_log_path: None,
-            diagnostics_bundle_command: "claude-rs logs --bundle --yes",
-        };
-
-        write_last_crash_metadata_to(&metadata, &path).expect("write metadata");
-
-        let text = std::fs::read_to_string(path).expect("read metadata");
-        assert!(!text.contains("sk-ant-secret"));
-        assert!(text.contains("[redacted]"));
-    }
-
-    #[test]
-    fn expected_caught_panics_do_not_count_as_reportable_crashes() {
-        let _guard = PANIC_HOOK_TEST_LOCK.lock().expect("lock panic hook test");
-        let original = panic::take_hook();
-        let reportable_panic_calls = Arc::new(AtomicUsize::new(0));
-        let reportable_panic_calls_for_hook = Arc::clone(&reportable_panic_calls);
-        panic::set_hook(Box::new(move |_panic_info| {
-            if should_report_panic() {
-                reportable_panic_calls_for_hook.fetch_add(1, Ordering::SeqCst);
-            }
-        }));
-
-        let expected = catch_expected_panic(|| {
-            panic!("expected renderer panic");
-        });
-        assert!(expected.is_err());
-        assert_eq!(reportable_panic_calls.load(Ordering::SeqCst), 0);
-
-        let unexpected = panic::catch_unwind(|| {
-            panic!("unexpected panic");
-        });
-        assert!(unexpected.is_err());
-        assert_eq!(reportable_panic_calls.load(Ordering::SeqCst), 1);
-
-        let _installed = panic::take_hook();
-        panic::set_hook(original);
-    }
-}
+#[path = "failure_audit_tests.rs"]
+mod audit_tests;
