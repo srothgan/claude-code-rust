@@ -106,10 +106,21 @@ pub(super) fn handle(app: &mut App, event: ClientEvent) {
 }
 
 fn apply_history_export_chunk(app: &mut App, chunk: crate::agent::events::HistoryChunk) {
-    use crate::app::PendingCommandAck;
-    use crate::app::export::{ExportProgress, apply_chunk};
+    apply_history_export_chunk_with(app, chunk, crate::app::export::apply_chunk);
+}
 
-    let (severity, message) = match apply_chunk(app, chunk) {
+fn apply_history_export_chunk_with(
+    app: &mut App,
+    chunk: crate::agent::events::HistoryChunk,
+    apply: impl FnOnce(
+        &mut App,
+        crate::agent::events::HistoryChunk,
+    ) -> crate::app::export::ExportProgress,
+) {
+    use crate::app::PendingCommandAck;
+    use crate::app::export::ExportProgress;
+
+    let (severity, message) = match apply(app, chunk) {
         ExportProgress::Ignored | ExportProgress::Collecting => return,
         ExportProgress::Failed(message) => (SystemSeverity::Error, message),
         ExportProgress::Written(path) => {
@@ -197,3 +208,7 @@ fn apply_status_snapshot(
         api_provider = ?api_provider,
     );
 }
+
+#[cfg(test)]
+#[path = "export_audit_tests.rs"]
+mod export_audit_tests;

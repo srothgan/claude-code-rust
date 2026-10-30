@@ -244,17 +244,19 @@ fn closes_fence(line: &str, fence: &Fence) -> bool {
 /// A raw HTML block (or comment) that a Markdown parser keeps open until its end
 /// marker, however many lines later: `CommonMark` HTML block types 1-5.
 struct RawBlock {
-    ends: &'static [&'static str],
+    end: &'static str,
     /// Closing tags match without regard to case.
     ignore_case: bool,
 }
 
-const COMMENT: RawBlock = RawBlock { ends: &["-->"], ignore_case: false };
-const RAW_TEXT: RawBlock =
-    RawBlock { ends: &["</pre>", "</script>", "</style>", "</textarea>"], ignore_case: true };
-const PROCESSING: RawBlock = RawBlock { ends: &["?>"], ignore_case: false };
-const DECLARATION: RawBlock = RawBlock { ends: &[">"], ignore_case: false };
-const CDATA: RawBlock = RawBlock { ends: &["]]>"], ignore_case: false };
+const COMMENT: RawBlock = RawBlock { end: "-->", ignore_case: false };
+const PRE: RawBlock = RawBlock { end: "</pre>", ignore_case: true };
+const SCRIPT: RawBlock = RawBlock { end: "</script>", ignore_case: true };
+const STYLE: RawBlock = RawBlock { end: "</style>", ignore_case: true };
+const TEXTAREA: RawBlock = RawBlock { end: "</textarea>", ignore_case: true };
+const PROCESSING: RawBlock = RawBlock { end: "?>", ignore_case: false };
+const DECLARATION: RawBlock = RawBlock { end: ">", ignore_case: false };
+const CDATA: RawBlock = RawBlock { end: "]]>", ignore_case: false };
 
 /// The raw block a line opens at its start (up to three spaces of indent), and how
 /// many bytes of the opener cannot count toward the end marker (`<?>` is not closed).
@@ -279,14 +281,23 @@ fn block_start(line: &str) -> Option<(&'static RawBlock, usize)> {
     let tag = lower.strip_prefix('<')?;
     let name_end = tag.find(|ch: char| !ch.is_ascii_alphanumeric()).unwrap_or(tag.len());
     let ends_name = tag[name_end..].starts_with([' ', '\t', '>']) || name_end == tag.len();
-    (ends_name && matches!(&tag[..name_end], "pre" | "script" | "style" | "textarea"))
-        .then_some((&RAW_TEXT, 0))
+    if !ends_name {
+        return None;
+    }
+    let block = match &tag[..name_end] {
+        "pre" => &PRE,
+        "script" => &SCRIPT,
+        "style" => &STYLE,
+        "textarea" => &TEXTAREA,
+        _ => return None,
+    };
+    Some((block, 0))
 }
 
 /// Offset just past the first end marker of `block` in `text`.
 fn block_end(block: &RawBlock, text: &str) -> Option<usize> {
     let haystack = if block.ignore_case { text.to_ascii_lowercase() } else { text.to_owned() };
-    block.ends.iter().filter_map(|end| haystack.find(end).map(|at| at + end.len())).min()
+    haystack.find(block.end).map(|at| at + block.end.len())
 }
 
 /// Offset just past the first `<!--` outside an inline code span.
@@ -393,7 +404,7 @@ fn contain_message(text: &str) -> String {
     }
     if let Some(block) = raw {
         out.push('\n');
-        out.push_str(block.ends[0]);
+        out.push_str(block.end);
     }
     out
 }

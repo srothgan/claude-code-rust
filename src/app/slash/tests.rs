@@ -2317,6 +2317,33 @@ async fn export_requests_the_history_under_a_request_id_and_blocks_input() {
             );
             let request_id = envelope.request_id.expect("request id");
 
+            // Both envelope session and request must match before the input lock is released.
+            for (session_id, id) in
+                [("stale-session", request_id.as_str()), ("sess-1", "other-request")]
+            {
+                crate::app::handle_client_event(
+                    &mut app,
+                    crate::agent::events::ClientEvent::SessionHistoryChunk {
+                        session_id: session_id.to_owned(),
+                        chunk: crate::agent::events::HistoryChunk {
+                            request_id: Some(id.to_owned()),
+                            updates: vec![model::SessionUpdate::UserMessageChunk(
+                                model::ContentChunk::new(model::ContentBlock::Text(
+                                    model::TextContent::new("foreign content"),
+                                )),
+                            )],
+                            last: true,
+                            omitted_updates: 0,
+                            unmapped_updates: 0,
+                            error: None,
+                        },
+                    },
+                );
+                assert!(!dir.path().join("notes for review.md").exists());
+                assert_eq!(app.status, AppStatus::CommandPending);
+                assert!(app.history_export.is_some());
+            }
+
             // The chunk that answers it writes the file at the spelled path.
             crate::app::handle_client_event(
                 &mut app,
@@ -2334,6 +2361,19 @@ async fn export_requests_the_history_under_a_request_id_and_blocks_input() {
             );
             assert_eq!(app.status, AppStatus::Ready);
             assert!(dir.path().join("notes for review.md").is_file());
+            assert!(
+                !std::fs::read_to_string(dir.path().join("notes for review.md"))
+                    .expect("export")
+                    .contains("foreign content")
+            );
+            crate::app::events::handle_terminal_event(
+                &mut app,
+                crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char('r'),
+                    crossterm::event::KeyModifiers::NONE,
+                )),
+            );
+            assert_eq!(app.input.text(), "r");
         })
         .await;
 }
