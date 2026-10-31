@@ -61,7 +61,7 @@ pub enum SessionTranscriptState {
     CheckFailed(String),
 }
 
-/// Rendered-line navigation bounds for the read-only Status and Usage panes.
+/// Rendered-line navigation bounds for read-only content.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ReadOnlyViewport {
     offset: u16,
@@ -108,6 +108,7 @@ pub struct ConfigState {
     pub(crate) footer: Box<crate::app::footer::FooterPreferences>,
     pub active_tab: ConfigTab,
     pub(crate) read_only: ReadOnlyViewport,
+    pub(crate) overlay_read_only: ReadOnlyViewport,
     pub settings: Box<super::SettingsBrowse>,
     pub mcp_selected_server_index: usize,
     pub help_section: ConfigHelpSection,
@@ -134,6 +135,7 @@ impl Default for ConfigState {
             footer: Box::default(),
             active_tab: ConfigTab::Settings,
             read_only: ReadOnlyViewport::default(),
+            overlay_read_only: ReadOnlyViewport::default(),
             settings: Box::default(),
             mcp_selected_server_index: 0,
             help_section: ConfigHelpSection::default(),
@@ -240,11 +242,13 @@ impl ConfigState {
     pub fn replace_overlay(&mut self, overlay: ConfigOverlayState) {
         self.overlay = Some(overlay);
         self.overlay_message = None;
+        self.overlay_read_only.reset();
     }
 
     pub fn clear_overlay(&mut self) {
         self.overlay = None;
         self.overlay_message = None;
+        self.overlay_read_only.reset();
     }
 
     pub fn invalidate_session(&mut self, path: Option<&std::path::Path>) {
