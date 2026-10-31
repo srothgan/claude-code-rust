@@ -2,7 +2,11 @@
 
 use clap::Parser;
 use claude_code_rust::{Cli, StartupLaunch};
+#[cfg(unix)]
 use std::process::Command;
+
+#[path = "support/startup_audit.rs"]
+mod audit_tests;
 
 #[test]
 fn interactive_startup_flags_normalize_to_one_launch() {
@@ -98,122 +102,8 @@ fn session_options_support_existing_resume_syntax() {
     }
 }
 
-#[test]
-fn contradictory_or_invalid_startup_arguments_are_rejected() {
-    for args in [
-        vec!["claude-rs", "--continue", "--resume", "session-1"],
-        vec!["claude-rs", "--resume", "session-1", "resume"],
-        vec!["claude-rs", "--continue", "doctor"],
-        vec!["claude-rs", "doctor", "--model", "opus"],
-        vec!["claude-rs", "--effort", "invalid"],
-        vec!["claude-rs", "--permission-mode", "invalid"],
-        vec!["claude-rs", "--model", ""],
-        vec!["claude-rs", "--agent", ""],
-        vec!["claude-rs", "--name", ""],
-        vec!["claude-rs", "--fork-session"],
-        vec!["claude-rs", "--fork-session", "explain this project"],
-        vec!["claude-rs", "doctor", "--add-dir", "src"],
-        vec!["claude-rs", "doctor", "--system-prompt", "a"],
-        vec!["claude-rs", "--system-prompt", "a", "--system-prompt-file", "prompt.md"],
-        vec!["claude-rs", "--append-system-prompt", "a", "--append-system-prompt-file", "a.md"],
-    ] {
-        assert!(
-            Cli::try_parse_from(&args).and_then(|cli| cli.validate()).is_err(),
-            "accepted {args:?}"
-        );
-    }
-}
-
-#[test]
-fn executable_generates_every_shell_without_a_bridge() {
-    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
-            .args(["--bridge-script", "missing-bridge.js", "completions", shell])
-            .output()
-            .expect("run completions");
-        assert!(output.status.success(), "{shell}: {}", String::from_utf8_lossy(&output.stderr));
-        let script = String::from_utf8(output.stdout).expect("UTF-8 script");
-        assert!(script.contains("claude-rs"), "{shell}");
-        assert!(script.contains("permission-mode"), "{shell}");
-        assert!(script.contains("model"), "{shell}");
-    }
-}
-
-#[test]
-fn executable_rejects_startup_conflicts_before_resolving_the_bridge() {
-    for args in [
-        vec!["--continue", "--resume", "session-1"],
-        vec!["doctor", "--model", "opus"],
-        vec!["--effort", "invalid"],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
-            .args(["--bridge-script", "missing-bridge.js"])
-            .args(&args)
-            .output()
-            .expect("run invalid arguments");
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
-        assert!(output.stdout.is_empty());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("error:"), "{error}");
-        assert!(!error.contains("missing-bridge.js"), "runtime resolved the bridge: {error}");
-    }
-}
-
-#[test]
-fn executable_rejects_unusable_launch_configuration_before_anything_starts() {
-    let project = tempfile::tempdir().expect("project");
-    std::fs::write(project.path().join("broken.json"), "{ \"a\": ").expect("broken settings");
-    std::fs::write(project.path().join("empty.md"), "").expect("empty prompt");
-    // A usable script, so the up-front `--bridge-script` check passes and each flag below
-    // is the only thing wrong; the absent log shows nothing started.
-    let bridge = project.path().join("bridge.js");
-    std::fs::write(&bridge, "").expect("bridge script");
-    let log = project.path().join("runtime.log");
-    for (args, expected) in [
-        (vec!["--add-dir", "not-there"], "--add-dir: "),
-        (vec!["--settings", "missing.json"], "--settings: cannot read "),
-        (vec!["--settings", "broken.json"], "is not valid JSON"),
-        (vec!["--mcp-config", "{\"servers\":{}}"], "must contain an \"mcpServers\" object"),
-        (vec!["--system-prompt-file", "empty.md"], "--system-prompt-file: "),
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
-            .arg("--bridge-script")
-            .arg(&bridge)
-            .arg("--log-file")
-            .arg(&log)
-            .arg("-C")
-            .arg(project.path())
-            .args(&args)
-            .output()
-            .expect("run with an unusable flag");
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
-        assert!(output.stdout.is_empty());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains(expected), "{args:?}: {error}");
-        assert!(!log.exists(), "{args:?}: the launch started logging");
-    }
-}
-
-#[test]
-fn executable_generates_manuals_without_a_bridge() {
-    let dir = tempfile::tempdir().expect("manual directory");
-    let output_dir = dir.path().join("nested/man1");
-    let output = Command::new(env!("CARGO_BIN_EXE_claude-rs"))
-        .args(["--bridge-script", "missing-bridge.js", "man"])
-        .arg(&output_dir)
-        .output()
-        .expect("run man generator");
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let manual = std::fs::read_to_string(output_dir.join("claude-rs.1")).expect("root manual");
-    for flag in ["model", "effort", "permission", "continue", "resume"] {
-        assert!(manual.contains(flag), "missing {flag}");
-    }
-    assert!(output_dir.join("claude-rs-config-show.1").is_file());
-    assert!(output_dir.join("claude-rs-completions.1").is_file());
-    assert!(!output_dir.join("claude-rs-man.1").exists());
-}
-
 /// Runs the real binary with a scratch profile and returns it with its output.
+#[cfg(unix)]
 #[allow(clippy::expect_used)]
 fn run_with_scratch_profile(
     args: &[&std::ffi::OsStr],
@@ -227,73 +117,6 @@ fn run_with_scratch_profile(
         .output()
         .expect("run claude-rs");
     (profile, output)
-}
-
-#[test]
-fn executable_refuses_a_bad_dir_or_bridge_script_before_startup() {
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    let file = scratch.path().join("notes.txt");
-    std::fs::write(&file, "").expect("file");
-    let missing_dir = scratch.path().join("missing-dir");
-    let missing_script = scratch.path().join("missing-bridge.js");
-    let scratch_dir = scratch.path().to_path_buf();
-    let cases = [
-        ("--dir", &missing_dir, "directory does not exist"),
-        ("--dir", &file, "not a directory"),
-        ("--bridge-script", &missing_script, "bridge script does not exist"),
-        ("--bridge-script", &scratch_dir, "bridge script is not a file"),
-    ];
-    for (flag, path, reason) in cases {
-        let (profile, output) =
-            run_with_scratch_profile(&[flag.as_ref(), path.as_os_str()], scratch.path());
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "{flag} {}: {error}", path.display());
-        assert!(output.stdout.is_empty(), "{flag}: {}", String::from_utf8_lossy(&output.stdout));
-        assert!(error.contains(flag), "{error}");
-        assert!(error.contains(&path.display().to_string()), "{error}");
-        assert!(error.contains(reason), "{error}");
-        // The trust prompt and settings are never reached.
-        let saved = std::fs::read_dir(profile.path()).expect("profile").count();
-        assert_eq!(saved, 0, "{flag} left files in the profile");
-    }
-}
-
-#[test]
-fn resume_with_a_bad_path_is_refused_like_a_plain_launch() {
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    let missing_dir = scratch.path().join("missing-dir");
-    let missing_script = scratch.path().join("missing-bridge.js");
-    for (flag, path) in [("--dir", &missing_dir), ("--bridge-script", &missing_script)] {
-        let (profile, output) = run_with_scratch_profile(
-            &[flag.as_ref(), path.as_os_str(), "resume".as_ref(), "session-1".as_ref()],
-            scratch.path(),
-        );
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "{flag}: {error}");
-        assert!(error.contains(flag) && error.contains(&path.display().to_string()), "{error}");
-        assert_eq!(std::fs::read_dir(profile.path()).expect("profile").count(), 0, "{flag}");
-    }
-}
-
-#[test]
-fn executable_resolves_a_relative_dir_against_the_current_directory() {
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    std::fs::create_dir(scratch.path().join("project")).expect("project");
-    // `project` exists next to the working directory, so only the script is wrong.
-    let (_profile, output) = run_with_scratch_profile(
-        &["-C".as_ref(), "project".as_ref(), "--bridge-script".as_ref(), "missing.js".as_ref()],
-        scratch.path(),
-    );
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(2), "{error}");
-    assert!(error.contains("--bridge-script"), "{error}");
-    assert!(!error.contains("--dir"), "{error}");
-
-    let (_profile, output) =
-        run_with_scratch_profile(&["-C".as_ref(), "elsewhere".as_ref()], scratch.path());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(2), "{error}");
-    assert!(error.contains("--dir"), "{error}");
 }
 
 #[test]
@@ -409,59 +232,6 @@ fn a_dir_behind_an_unsearchable_parent_is_reported_as_inaccessible_not_missing()
         .to_string();
     assert!(error.contains("cannot be accessed"), "{error}");
     assert!(!error.contains("does not exist"), "{error}");
-}
-
-/// The `bridge_script` check of `claude-rs [--bridge-script <script>] doctor --json`.
-#[cfg(unix)]
-#[allow(clippy::expect_used)]
-fn doctor_bridge_script_check(
-    script: &std::path::Path,
-    cwd: &std::path::Path,
-) -> serde_json::Value {
-    let (_profile, output) = run_with_scratch_profile(
-        &["--bridge-script".as_ref(), script.as_os_str(), "doctor".as_ref(), "--json".as_ref()],
-        cwd,
-    );
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("doctor json");
-    report["checks"]
-        .as_array()
-        .expect("checks")
-        .iter()
-        .find(|check| check["id"] == "bridge_script")
-        .cloned()
-        .expect("bridge_script check")
-}
-
-#[cfg(unix)]
-#[test]
-fn startup_and_doctor_judge_an_unusable_bridge_script_alike() {
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    let unreadable = scratch.path().join("unreadable.js");
-    std::fs::write(&unreadable, "").expect("script");
-    let parent = scratch.path().join("locked-parent");
-    std::fs::create_dir(&parent).expect("parent");
-    let behind_parent = parent.join("bridge.js");
-    std::fs::write(&behind_parent, "").expect("script behind parent");
-    let _guards = [ModeGuard::set(&unreadable, 0o000), ModeGuard::set(&parent, 0o000)];
-    if !permissions_enforced(&behind_parent) {
-        return;
-    }
-    for (script, reason) in
-        [(&unreadable, "cannot be read"), (&behind_parent, "cannot be accessed")]
-    {
-        let check = doctor_bridge_script_check(script, scratch.path());
-        let verdict = check["message"].as_str().expect("doctor message");
-        assert_eq!(check["status"], "fail", "{}: {check}", script.display());
-        assert!(verdict.contains(reason) && !verdict.contains("does not exist"), "{verdict}");
-
-        let (_profile, output) = run_with_scratch_profile(
-            &["--bridge-script".as_ref(), script.as_os_str()],
-            scratch.path(),
-        );
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert_eq!(output.status.code(), Some(2), "{}: {error}", script.display());
-        assert!(error.contains("--bridge-script") && error.contains(verdict), "{error}");
-    }
 }
 
 #[tokio::test]

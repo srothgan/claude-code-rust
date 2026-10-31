@@ -18,6 +18,10 @@ use super::{ConnectionSlot, StartConnectionParams, extract_app_error};
 
 const BRIDGE_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(test)]
+#[path = "bridge_lifecycle_audit_tests.rs"]
+mod audit_tests;
+
 pub(super) async fn run_connection_task(
     params: StartConnectionParams,
     conn_slot_writer: Rc<std::cell::RefCell<Option<ConnectionSlot>>>,
@@ -104,7 +108,7 @@ async fn drive_bridge_connection(
     if !send_initialize_command(params, bridge).await {
         return;
     }
-    if let Err(app_error) = wait_for_bridge_initialized(
+    match wait_for_bridge_initialized(
         bridge,
         &params.event_tx,
         &connection,
@@ -113,13 +117,29 @@ async fn drive_bridge_connection(
     )
     .await
     {
-        emit_connection_failed(
-            &params.event_tx,
-            "Bridge did not complete initialization".to_owned(),
-            app_error,
-        )
-        .await;
-        return;
+        Ok(()) => {}
+        Err(InitializationFailure::Rejected(envelope)) => {
+            // A terminal SDK rejection belongs to the existing event reporter. Do not
+            // follow it with a second, generic initialization failure.
+            handle_bridge_event(
+                &params.event_tx,
+                &connection,
+                &mut connected_once,
+                params.launch.resume_requested(),
+                *envelope,
+            )
+            .await;
+            return;
+        }
+        Err(InitializationFailure::Transport(app_error)) => {
+            emit_connection_failed(
+                &params.event_tx,
+                "Bridge did not complete initialization".to_owned(),
+                app_error,
+            )
+            .await;
+            return;
+        }
     }
     if !send_session_command(params, bridge).await {
         return;
@@ -366,13 +386,19 @@ pub(super) async fn emit_connection_failed(
     let _ = event_tx.send(ClientEvent::FatalError(app_error)).await;
 }
 
-pub(super) async fn wait_for_bridge_initialized(
+#[derive(Debug)]
+enum InitializationFailure {
+    Transport(AppError),
+    Rejected(Box<crate::agent::wire::EventEnvelope>),
+}
+
+async fn wait_for_bridge_initialized(
     bridge: &mut BridgeClient,
     event_tx: &mpsc::Sender<ClientEvent>,
     connection: &AgentConnection,
     connected_once: &mut bool,
     resume_requested: bool,
-) -> Result<(), AppError> {
+) -> Result<(), InitializationFailure> {
     wait_for_bridge_initialized_with_timeout(
         bridge,
         event_tx,
@@ -391,7 +417,7 @@ async fn wait_for_bridge_initialized_with_timeout(
     connected_once: &mut bool,
     resume_requested: bool,
     timeout: Duration,
-) -> Result<(), AppError> {
+) -> Result<(), InitializationFailure> {
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
     let initialize_span = info_span!(
         target: crate::logging::targets::BRIDGE_LIFECYCLE,
@@ -400,38 +426,17 @@ async fn wait_for_bridge_initialized_with_timeout(
         timeout_ms,
     );
 
-    async {
-        let started = tokio::time::Instant::now();
+    // The budget covers both protocol reads and forwarding pre-ready events. A
+    // full application queue must not turn a finite handshake into an infinite wait.
+    let result = tokio::time::timeout(timeout, async {
         loop {
-            let elapsed = tokio::time::Instant::now().saturating_duration_since(started);
-            let remaining = timeout.saturating_sub(elapsed);
-            if remaining.is_zero() {
-                tracing::error!(
-                    target: crate::logging::targets::BRIDGE_LIFECYCLE,
-                    event_name = "bridge_initialize_timed_out",
-                    message = "bridge initialization timed out",
-                    outcome = "timeout",
-                    timeout_ms,
-                );
-                return Err(AppError::BridgeTimeout);
-            }
-
-            let event = tokio::time::timeout(remaining, bridge.recv()).await;
-            match event {
-                Ok(Ok(Some(envelope))) => {
+            match bridge.recv().await {
+                Ok(Some(envelope)) => {
                     if matches!(envelope.event, BridgeEvent::Initialized { .. }) {
                         return Ok(());
                     }
                     if matches!(envelope.event, BridgeEvent::ConnectionFailed { .. }) {
-                        handle_bridge_event(
-                            event_tx,
-                            connection,
-                            connected_once,
-                            resume_requested,
-                            envelope,
-                        )
-                        .await;
-                        return Err(AppError::BridgeInitializationFailed);
+                        return Err(InitializationFailure::Rejected(Box::new(envelope)));
                     }
                     handle_bridge_event(
                         event_tx,
@@ -442,30 +447,37 @@ async fn wait_for_bridge_initialized_with_timeout(
                     )
                     .await;
                 }
-                Ok(Ok(None)) => return Err(AppError::BridgeStdoutClosed),
-                Ok(Err(_)) => return Err(AppError::BridgeSdkFailure),
-                Err(_) => return Err(AppError::BridgeTimeout),
+                Ok(None) => {
+                    return Err(InitializationFailure::Transport(AppError::BridgeStdoutClosed));
+                }
+                Err(_) => return Err(InitializationFailure::Transport(AppError::BridgeSdkFailure)),
             }
         }
-    }
+    })
     .instrument(initialize_span)
-    .await
+    .await;
+    result.unwrap_or_else(|_| {
+        tracing::error!(
+            target: crate::logging::targets::BRIDGE_LIFECYCLE,
+            event_name = "bridge_initialize_timed_out",
+            message = "bridge initialization timed out",
+            outcome = "timeout",
+            timeout_ms,
+        );
+        Err(InitializationFailure::Transport(AppError::BridgeTimeout))
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ConnectionSlot, StartConnectionParams, bridge_event_loop, handle_bridge_event,
-        run_connection_task, wait_for_bridge_initialized_with_timeout,
-    };
+    use super::{StartConnectionParams, bridge_event_loop};
     use crate::agent::bridge::BridgeLauncher;
-    use crate::agent::client::{BridgeClient, BridgeShutdownOutcome};
+    use crate::agent::client::BridgeClient;
     use crate::agent::events::ClientEvent;
-    use crate::agent::wire::{BridgeEvent, EventEnvelope, SessionLaunchSettings};
+    use crate::agent::wire::{BridgeEvent, SessionLaunchSettings};
     use crate::error::AppError;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::rc::Rc;
     use std::time::Duration;
     use tempfile::TempDir;
 
@@ -525,89 +537,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bridge_shutdown_exits_and_reaps_without_force_kill() {
-        let fixture = RuntimeFixture::new(exit_on_shutdown_script()).expect("runtime fixture");
-        let bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-
-        let outcome =
-            bridge.shutdown_and_wait(Duration::from_secs(1)).await.expect("graceful shutdown");
-
-        let BridgeShutdownOutcome::Graceful(status) = outcome else {
-            panic!("bridge should exit without force-kill");
-        };
-        assert!(status.success());
-    }
-
-    #[tokio::test]
-    async fn bridge_shutdown_force_kills_and_reaps_unresponsive_process() {
-        let fixture = RuntimeFixture::new(ignore_shutdown_script()).expect("runtime fixture");
-        let bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-
-        let outcome =
-            bridge.shutdown_and_wait(Duration::from_millis(50)).await.expect("forced shutdown");
-
-        assert!(matches!(outcome, BridgeShutdownOutcome::Forced(_)));
-    }
-
-    #[tokio::test]
-    async fn bridge_shutdown_deadline_covers_a_blocked_stdin_writer() {
-        let fixture = RuntimeFixture::new(delayed_no_output_script()).expect("runtime fixture");
-        let bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-        let connection = bridge.connection();
-        connection
-            .prompt_text("session-1".to_owned(), "x".repeat(8 * 1024 * 1024))
-            .expect("queue oversized prompt");
-        let started = tokio::time::Instant::now();
-
-        let outcome =
-            bridge.shutdown_and_wait(Duration::from_millis(50)).await.expect("forced shutdown");
-
-        assert!(matches!(outcome, BridgeShutdownOutcome::Forced(_)));
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "shutdown must not wait for the blocked stdin write"
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn shutdown_interrupts_error_reporting_to_a_full_event_queue() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let fixture_dir = tempfile::tempdir().expect("fixture directory");
-                let missing_bridge = fixture_dir.path().join("missing-bridge.js");
-                let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
-                event_tx.send(ClientEvent::LogoutCompleted).await.expect("prefill event queue");
-                let params = StartConnectionParams {
-                    event_tx,
-                    cwd_raw: fixture_dir.path().display().to_string(),
-                    bridge_script: Some(missing_bridge),
-                    launch: crate::StartupLaunch::NewSession,
-                    session_launch_settings: SessionLaunchSettings::default(),
-                };
-                let connection_slot: Rc<std::cell::RefCell<Option<ConnectionSlot>>> =
-                    Rc::new(std::cell::RefCell::new(None));
-                let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-                let task = tokio::task::spawn_local(run_connection_task(
-                    params,
-                    Rc::clone(&connection_slot),
-                    shutdown_rx,
-                ));
-
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                shutdown_tx.send(()).expect("signal shutdown");
-                tokio::time::timeout(Duration::from_secs(1), task)
-                    .await
-                    .expect(
-                        "connection task must observe shutdown while event reporting is blocked",
-                    )
-                    .expect("connection task should not panic");
-
-                assert!(connection_slot.borrow().is_none());
-            })
-            .await;
-    }
-
-    #[tokio::test]
     async fn bridge_client_recv_reports_malformed_event_json() {
         let fixture = RuntimeFixture::new(malformed_stdout_script()).expect("runtime fixture");
         let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
@@ -637,240 +566,6 @@ mod tests {
         assert!(status.success());
     }
 
-    #[tokio::test]
-    async fn bridge_initialization_fails_when_process_exits_before_protocol_ready() {
-        let fixture = RuntimeFixture::new(exit_failure_script()).expect("runtime fixture");
-        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-        let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<ClientEvent>(1);
-        let connection = bridge.connection();
-        let mut connected_once = false;
-
-        let err = wait_for_bridge_initialized_with_timeout(
-            &mut bridge,
-            &event_tx,
-            &connection,
-            &mut connected_once,
-            false,
-            Duration::from_secs(1),
-        )
-        .await
-        .expect_err("closed stdout should fail initialization");
-
-        assert_eq!(err, AppError::BridgeStdoutClosed);
-        let status = bridge.wait().await.expect("wait for bridge");
-        assert!(!status.success());
-    }
-
-    #[tokio::test]
-    async fn bridge_initialization_timeout_is_deterministic() {
-        let fixture = RuntimeFixture::new(delayed_no_output_script()).expect("runtime fixture");
-        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-        let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<ClientEvent>(1);
-        let connection = bridge.connection();
-        let mut connected_once = false;
-
-        let err = wait_for_bridge_initialized_with_timeout(
-            &mut bridge,
-            &event_tx,
-            &connection,
-            &mut connected_once,
-            false,
-            Duration::from_millis(50),
-        )
-        .await
-        .expect_err("missing initialized event should time out");
-
-        assert_eq!(err, AppError::BridgeTimeout);
-        let _ = bridge.wait().await;
-    }
-
-    #[tokio::test]
-    async fn bridge_initialization_succeeds_after_initialized_event() {
-        let fixture = RuntimeFixture::new(initialized_stdout_script()).expect("runtime fixture");
-        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-        let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<ClientEvent>(1);
-        let connection = bridge.connection();
-        let mut connected_once = false;
-
-        wait_for_bridge_initialized_with_timeout(
-            &mut bridge,
-            &event_tx,
-            &connection,
-            &mut connected_once,
-            false,
-            Duration::from_secs(1),
-        )
-        .await
-        .expect("initialized event should complete handshake");
-
-        let status = bridge.wait().await.expect("wait for bridge");
-        assert!(status.success());
-    }
-
-    #[tokio::test]
-    async fn control_commands_are_forwarded_while_event_dispatch_waits_for_capacity() {
-        let marker_dir = tempfile::tempdir().expect("marker directory");
-        let marker_path = marker_dir.path().join("command.json");
-        let fixture =
-            RuntimeFixture::new(capture_one_command_script(&marker_path)).expect("runtime fixture");
-        let bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ClientEvent>(1);
-        event_tx.send(ClientEvent::LogoutCompleted).await.expect("prefill event queue");
-        let connection = bridge.connection();
-        connection.cancel("session-1".to_owned()).expect("queue cancel command");
-        let mut connected_once = false;
-        let envelope = EventEnvelope {
-            request_id: None,
-            event: BridgeEvent::AuthRequired {
-                method_name: "test".to_owned(),
-                method_description: "test".to_owned(),
-            },
-        };
-
-        {
-            let dispatch =
-                handle_bridge_event(&event_tx, &connection, &mut connected_once, false, envelope);
-            tokio::pin!(dispatch);
-            let marker = wait_for_nonempty_file(&marker_path);
-            tokio::pin!(marker);
-
-            tokio::select! {
-                result = &mut dispatch => panic!("event dispatch should remain backpressured: {result:?}"),
-                contents = &mut marker => {
-                    let contents = contents.expect("child should capture command");
-                    assert!(contents.contains(r#""command":"cancel_turn""#), "{contents}");
-                    assert!(contents.contains(r#""session_id":"session-1""#), "{contents}");
-                }
-            }
-
-            assert!(matches!(event_rx.recv().await, Some(ClientEvent::LogoutCompleted)));
-            dispatch.await;
-            assert!(matches!(event_rx.recv().await, Some(ClientEvent::AuthRequired { .. })));
-        }
-        let status = bridge.wait().await.expect("wait for bridge");
-        assert!(status.success());
-    }
-
-    #[tokio::test]
-    async fn btw_workflow_crosses_real_process_ndjson_and_advances_only_after_host_finalization() {
-        use crate::agent::model;
-        use crate::app::{App, AppStatus, MessageBlock};
-
-        let marker_dir = tempfile::tempdir().expect("marker directory");
-        let marker_path = marker_dir.path().join("btw-commands.ndjson");
-        let fixture = RuntimeFixture::new(side_question_workflow_script(&marker_path))
-            .expect("runtime fixture");
-        let mut bridge = BridgeClient::spawn(&fixture.launcher()).expect("spawn bridge");
-        let connection = bridge.connection();
-        let mut app = App::test_default();
-        app.session_runtime.conn = Some(Rc::new(connection.clone()));
-        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        app.status = AppStatus::Running;
-        let stream_text = |app: &mut App, text: &str| {
-            crate::app::events::handle_client_event(
-                app,
-                ClientEvent::SessionUpdate {
-                    session_id: "session-1".to_owned(),
-                    update: model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                        model::ContentBlock::Text(model::TextContent::new(text)),
-                    )),
-                },
-            );
-        };
-        stream_text(&mut app, "Before the process response.");
-        let owner_id = app.transcript.messages[0].id;
-        let question = "Why  two spaces?\nAnd Unicode: 日本語?";
-        for _ in 0..2 {
-            app.input.set_text(&format!("/btw   {question}  "));
-            crate::app::input_submit::submit_input(&mut app);
-        }
-        let first_capture =
-            wait_for_nonempty_file(&marker_path).await.expect("first command reaches child");
-        assert_eq!(
-            first_capture.lines().count(),
-            1,
-            "Rust must retain the waiting item until processing a terminal event"
-        );
-        let first_command: serde_json::Value =
-            serde_json::from_str(first_capture.trim()).expect("command NDJSON");
-        assert_eq!(first_command["command"], "side_question");
-        assert_eq!(first_command["question"], question);
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert_eq!(app.transcript.messages[0].blocks.len(), 1);
-
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
-        let mut connected_once = true;
-        for expected_event in ["btw_failed", "btw_result"] {
-            let envelope = tokio::time::timeout(Duration::from_secs(5), bridge.recv())
-                .await
-                .expect("child response deadline")
-                .expect("read NDJSON")
-                .expect("terminal event");
-            assert_eq!(envelope.event.event_name(), expected_event);
-            handle_bridge_event(&event_tx, &connection, &mut connected_once, false, envelope).await;
-            let event = event_rx.recv().await.expect("mapped application event");
-            crate::app::events::handle_client_event(&mut app, event);
-            if expected_event == "btw_failed" {
-                assert_eq!(
-                    app.transcript.messages[0].blocks.len(),
-                    1,
-                    "failure must not insert a card"
-                );
-                assert!(app.btw.has_active(), "failure must dispatch the next item");
-            }
-        }
-        let captured = fs::read_to_string(&marker_path).expect("captured commands");
-        let commands = captured
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("command JSON"))
-            .collect::<Vec<_>>();
-        assert_eq!(commands.len(), 2);
-        assert_ne!(commands[0]["btw_id"], commands[1]["btw_id"]);
-        assert_eq!(commands[1]["question"], question);
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert!(
-            matches!(app.transcript.messages[0].blocks.get(1), Some(MessageBlock::BtwExchange(exchange)) if exchange.question == question && exchange.answer == "answer from child")
-        );
-        assert_eq!(app.transcript.messages[0].id, owner_id);
-        stream_text(&mut app, "After the process response.");
-        assert_eq!(app.transcript.messages[0].blocks.len(), 3);
-        let serialized = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
-            &mut app,
-            80,
-            &std::collections::BTreeSet::new(),
-            None,
-        );
-        let rendered =
-            serialized.rows().iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-        let before = rendered.find("Before the process response.").expect("preceding text");
-        let card = rendered.find("Claude · BTW").expect("process answer card");
-        let after = rendered.find("After the process response.").expect("subsequent text");
-        assert!(
-            before < card && card < after,
-            "the process-backed result must enter the streaming transcript at its arrival point"
-        );
-        assert!(!app.btw.has_active());
-        assert!(app.pending_user_messages.is_empty());
-        assert!(matches!(app.status, AppStatus::Running));
-        assert!(bridge.wait().await.expect("child exit").success());
-    }
-
-    #[cfg(windows)]
-    fn side_question_workflow_script(marker_path: &Path) -> String {
-        let marker = marker_path.display().to_string().replace('\'', "''");
-        format!(
-            "@echo off\r\npowershell -NoProfile -Command \"[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $count=0; while ($count -lt 2) {{ $line=[Console]::ReadLine(); if ($null -eq $line) {{ exit 1 }}; [IO.File]::AppendAllText('{marker}', $line + [Environment]::NewLine); $item=ConvertFrom-Json $line; $event=@{{ session_id=$item.session_id; btw_id=$item.btw_id; question=$item.question }}; if ($count -eq 0) {{ $event.event='btw_failed'; $event.error='test SDK failure' }} else {{ $event.event='btw_result'; $event.answer='answer from child'; $event.metadata=@{{ synthetic=$false }} }}; [Console]::WriteLine(($event | ConvertTo-Json -Compress)); $count++ }}\"\r\n"
-        )
-    }
-
-    #[cfg(not(windows))]
-    fn side_question_workflow_script(marker_path: &Path) -> String {
-        let marker = marker_path.display().to_string().replace('\'', "'\\''");
-        format!(
-            "#!/bin/sh\ncount=0\nwhile [ \"$count\" -lt 2 ]; do\nIFS= read -r line || exit 1\nprintf '%s\\n' \"$line\" >> '{marker}'\nif [ \"$count\" -eq 0 ]; then\nprintf '%s\\n' \"$line\" | sed 's/\"command\":\"side_question\"/\"event\":\"btw_failed\"/;s/}}$/,\"error\":\"test SDK failure\"}}/'\nelse\nprintf '%s\\n' \"$line\" | sed 's/\"command\":\"side_question\"/\"event\":\"btw_result\"/;s/}}$/,\"answer\":\"answer from child\",\"metadata\":{{\"synthetic\":false}}}}/'\nfi\ncount=$((count + 1))\ndone\n"
-        )
-    }
-
     struct RuntimeFixture {
         _dir: TempDir,
         runtime_path: PathBuf,
@@ -896,25 +591,6 @@ mod tests {
         r#"{"event":"initialized","result":{"agent_name":"test","agent_version":"0","auth_methods":[],"capabilities":{"prompt_image":false,"prompt_embedded_context":false,"supports_session_listing":false,"supports_resume_session":false}}}"#
     }
 
-    async fn wait_for_nonempty_file(path: &Path) -> std::io::Result<String> {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                match fs::read_to_string(path) {
-                    Ok(contents) if !contents.is_empty() => return Ok(contents),
-                    Ok(_) => {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
-                    Err(err) => return Err(err),
-                }
-            }
-        })
-        .await
-        .map_err(std::io::Error::other)?
-    }
-
     #[cfg(windows)]
     fn runtime_name() -> &'static str {
         "fake_bridge.cmd"
@@ -936,52 +612,6 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn exit_failure_script() -> &'static str {
-        "@echo off\r\nexit /b 7\r\n"
-    }
-
-    #[cfg(not(windows))]
-    fn exit_failure_script() -> &'static str {
-        "#!/bin/sh\nexit 7\n"
-    }
-
-    #[cfg(windows)]
-    fn exit_on_shutdown_script() -> &'static str {
-        "@echo off\r\nset /p line=\r\nexit /b 0\r\n"
-    }
-
-    #[cfg(not(windows))]
-    fn exit_on_shutdown_script() -> &'static str {
-        "#!/bin/sh\nIFS= read -r line\nexit 0\n"
-    }
-
-    #[cfg(windows)]
-    fn capture_one_command_script(marker_path: &Path) -> String {
-        format!(
-            "@echo off\r\nset /p line=\r\n> \"{}\" echo %line%\r\nexit /b 0\r\n",
-            marker_path.display()
-        )
-    }
-
-    #[cfg(not(windows))]
-    fn capture_one_command_script(marker_path: &Path) -> String {
-        let marker_path = marker_path.display().to_string().replace('\'', "'\\''");
-        format!(
-            "#!/bin/sh\nIFS= read -r line\nprintf '%s\\n' \"$line\" > '{marker_path}'\nexit 0\n"
-        )
-    }
-
-    #[cfg(windows)]
-    fn ignore_shutdown_script() -> &'static str {
-        "@echo off\r\n:read\r\nset \"line=\"\r\nset /p line=\r\ngoto read\r\n"
-    }
-
-    #[cfg(not(windows))]
-    fn ignore_shutdown_script() -> &'static str {
-        "#!/bin/sh\nwhile IFS= read -r line; do :; done\n"
-    }
-
-    #[cfg(windows)]
     fn malformed_stdout_script() -> String {
         "@echo off\r\necho not-json\r\n".to_owned()
     }
@@ -989,16 +619,6 @@ mod tests {
     #[cfg(not(windows))]
     fn malformed_stdout_script() -> String {
         "#!/bin/sh\nprintf 'not-json\\n'\n".to_owned()
-    }
-
-    #[cfg(windows)]
-    fn initialized_stdout_script() -> String {
-        format!("@echo off\r\necho {}\r\n", initialized_event_json())
-    }
-
-    #[cfg(not(windows))]
-    fn initialized_stdout_script() -> String {
-        format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", initialized_event_json())
     }
 
     #[cfg(windows)]
@@ -1012,16 +632,6 @@ mod tests {
             "#!/bin/sh\nprintf 'bridge diagnostic\\n' >&2\nprintf '%s\\n' '{}'\n",
             initialized_event_json()
         )
-    }
-
-    #[cfg(windows)]
-    fn delayed_no_output_script() -> &'static str {
-        "@echo off\r\npowershell -NoProfile -Command \"Start-Sleep -Milliseconds 500\"\r\n"
-    }
-
-    #[cfg(not(windows))]
-    fn delayed_no_output_script() -> &'static str {
-        "#!/bin/sh\nsleep 0.5\n"
     }
 
     /// Stage the fake bridge and return the `(runtime, script)` pair to launch it with.
