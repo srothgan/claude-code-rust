@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
-use super::common::{render_message, wrapped_height};
+use super::common::{message, wrapped_height};
 use super::theme;
 use crate::app::usage;
 use crate::app::{
     App, ExtraUsage, SessionUsageSummary, UsageActivitySummary, UsageActivityWindow, UsageWindow,
 };
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Gauge, Paragraph, Widget, Wrap};
 
-pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
-    let content_area = area;
-    if content_area.width == 0 || content_area.height == 0 {
+pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    if area.is_empty() {
         return;
     }
+    let content = content(app, area.width);
+    super::viewport::present(frame, area, &content, &mut app.config);
+}
 
+fn content(app: &App, width: u16) -> Buffer {
     let windows = app.usage.snapshot.as_ref().map_or_else(Vec::new, usage::visible_windows);
 
     let mut constraints = vec![Constraint::Length(u16::from(app.usage.snapshot.is_some()))];
@@ -27,30 +31,41 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
         || snapshot.and_then(|snapshot| snapshot.activity.as_ref()).is_some();
     if has_snapshot_content {
         for window in &windows {
-            constraints.push(Constraint::Length(window_height(window, content_area.width)));
+            constraints.push(Constraint::Length(window_height(window, width)));
             constraints.push(Constraint::Length(1));
         }
         if let Some(extra_usage) = snapshot.and_then(|snapshot| snapshot.extra_usage.as_ref()) {
-            constraints
-                .push(Constraint::Length(extra_usage_height(extra_usage, content_area.width)));
+            constraints.push(Constraint::Length(extra_usage_height(extra_usage, width)));
             constraints.push(Constraint::Length(1));
         }
         if let Some(session) = snapshot.and_then(|snapshot| snapshot.session.as_ref()) {
-            constraints.push(Constraint::Length(session_usage_height(session, content_area.width)));
+            constraints.push(Constraint::Length(session_usage_height(session, width)));
             constraints.push(Constraint::Length(1));
         }
         if let Some(activity) = snapshot.and_then(|snapshot| snapshot.activity.as_ref()) {
-            constraints.push(Constraint::Length(activity_height(activity, content_area.width)));
+            constraints.push(Constraint::Length(activity_height(activity, width)));
             constraints.push(Constraint::Length(1));
         }
         if let Some(error) = app.usage.last_error.as_deref() {
-            constraints.push(Constraint::Length(error_height(error, content_area.width)));
+            constraints.push(Constraint::Length(error_height(error, width)));
         }
-        constraints.push(Constraint::Min(0));
     } else {
-        constraints.push(Constraint::Min(3));
+        let (title, body) = empty_message(app);
+        constraints.push(Constraint::Length(
+            u16::try_from(message(title, body).line_count(width)).unwrap_or(u16::MAX),
+        ));
     }
 
+    let height = constraints.iter().fold(0u16, |height, constraint| {
+        if let Constraint::Length(length) = constraint {
+            height.saturating_add(*length)
+        } else {
+            height
+        }
+    });
+    let content_area = Rect::new(0, 0, width, height);
+    let mut content = Buffer::empty(content_area);
+    let buffer = &mut content;
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -62,68 +77,75 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
             .as_deref()
             .map(|value| format!("Plan: {value}"))
             .unwrap_or_default();
-        frame.render_widget(
-            Paragraph::new(plan).style(Style::default().fg(theme::DIM)),
-            sections[0],
-        );
+        draw(buffer, Paragraph::new(plan).style(Style::default().fg(theme::DIM)), sections[0]);
     } else {
-        render_spacer(frame, sections[0]);
+        render_spacer(buffer, sections[0]);
     }
 
     if !has_snapshot_content {
-        render_empty_state(frame, sections[1], app);
-        return;
+        let (title, body) = empty_message(app);
+        message(title, body).render(sections[1], buffer);
+        return content;
     }
 
     let Some(snapshot) = app.usage.snapshot.as_ref() else {
-        return;
+        return content;
     };
     let mut section_index = 1usize;
     for window in &windows {
-        render_window(frame, sections[section_index], window);
-        render_spacer(frame, sections[section_index + 1]);
+        render_window(buffer, sections[section_index], window);
+        render_spacer(buffer, sections[section_index + 1]);
         section_index += 2;
     }
 
     if let Some(extra_usage) = snapshot.extra_usage.as_ref() {
-        render_extra_usage(frame, sections[section_index], extra_usage);
-        render_spacer(frame, sections[section_index + 1]);
+        render_extra_usage(buffer, sections[section_index], extra_usage);
+        render_spacer(buffer, sections[section_index + 1]);
         section_index += 2;
     }
 
     if let Some(session) = snapshot.session.as_ref() {
-        render_session_usage(frame, sections[section_index], session);
-        render_spacer(frame, sections[section_index + 1]);
+        render_session_usage(buffer, sections[section_index], session);
+        render_spacer(buffer, sections[section_index + 1]);
         section_index += 2;
     }
 
     if let Some(activity) = snapshot.activity.as_ref() {
-        render_activity(frame, sections[section_index], activity);
-        render_spacer(frame, sections[section_index + 1]);
+        render_activity(buffer, sections[section_index], activity);
+        render_spacer(buffer, sections[section_index + 1]);
         section_index += 2;
     }
 
     if let Some(error) = app.usage.last_error.as_deref() {
-        render_error(frame, sections[section_index], error);
+        render_error(buffer, sections[section_index], error);
     }
+    content
 }
 
-fn render_spacer(frame: &mut Frame, area: Rect) {
-    frame.render_widget(Paragraph::new(Line::default()), area);
+fn draw(buffer: &mut Buffer, widget: impl Widget, area: Rect) {
+    widget.render(area, buffer);
 }
 
-fn render_empty_state(frame: &mut Frame, area: Rect, app: &App) {
-    let (title, body) = if app.usage.in_flight {
+fn render_spacer(buffer: &mut Buffer, area: Rect) {
+    draw(buffer, Paragraph::new(Line::default()), area);
+}
+
+fn empty_message(app: &App) -> (&str, &str) {
+    if app.usage.in_flight {
         ("Loading usage data", "Waiting for the current account's usage snapshot.")
     } else if let Some(error) = app.usage.last_error.as_deref() {
         ("Unable to load usage", error)
+    } else if app.usage.snapshot.is_some() {
+        (
+            "No usage metrics reported",
+            "The current account returned no usage metrics. Press r to refresh.",
+        )
     } else {
         ("No usage snapshot yet", "Press r to fetch Claude usage for the current account.")
-    };
-    render_message(frame, area, title, body);
+    }
 }
 
-fn render_window(frame: &mut Frame, area: Rect, window: &UsageWindow) {
+fn render_window(buffer: &mut Buffer, area: Rect, window: &UsageWindow) {
     let label_line = Line::from(vec![
         Span::styled(window.label.clone(), Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(format!("   {}", window_detail_text(window)), Style::default().fg(theme::DIM)),
@@ -145,11 +167,12 @@ fn render_window(frame: &mut Frame, area: Rect, window: &UsageWindow) {
             Constraint::Length(reset_height),
         ])
         .split(area);
-    frame.render_widget(Paragraph::new(label_line).wrap(Wrap { trim: false }), sections[0]);
+    draw(buffer, Paragraph::new(label_line).wrap(Wrap { trim: false }), sections[0]);
 
     let gauge_area = sections[1];
     let gauge_style = gauge_style(window.utilization);
-    frame.render_widget(
+    draw(
+        buffer,
         Gauge::default()
             .gauge_style(gauge_style)
             .label("")
@@ -157,55 +180,59 @@ fn render_window(frame: &mut Frame, area: Rect, window: &UsageWindow) {
         gauge_area,
     );
 
-    frame.render_widget(
+    draw(
+        buffer,
         Paragraph::new(Line::from(Span::styled(reset_line, Style::default().fg(theme::DIM))))
             .wrap(Wrap { trim: false }),
         sections[2],
     );
 }
 
-fn render_extra_usage(frame: &mut Frame, area: Rect, extra_usage: &ExtraUsage) {
+fn render_extra_usage(buffer: &mut Buffer, area: Rect, extra_usage: &ExtraUsage) {
     let detail = format_extra_usage(extra_usage);
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Extra credits")
         .border_style(Style::default().fg(theme::DIM));
-    frame.render_widget(block.clone(), area);
+    draw(buffer, block.clone(), area);
     let inner = area.inner(Margin { vertical: 1, horizontal: 2 });
-    frame.render_widget(
+    draw(
+        buffer,
         Paragraph::new(Line::from(Span::styled(detail, Style::default().fg(Color::White))))
             .wrap(Wrap { trim: false }),
         inner,
     );
 }
 
-fn render_session_usage(frame: &mut Frame, area: Rect, session: &SessionUsageSummary) {
-    render_detail_card(frame, area, "Current session totals", &format_session_usage(session));
+fn render_session_usage(buffer: &mut Buffer, area: Rect, session: &SessionUsageSummary) {
+    render_detail_card(buffer, area, "Current session totals", &format_session_usage(session));
 }
 
-fn render_activity(frame: &mut Frame, area: Rect, activity: &UsageActivitySummary) {
-    render_detail_card(frame, area, "Approximate local activity", &format_activity(activity));
+fn render_activity(buffer: &mut Buffer, area: Rect, activity: &UsageActivitySummary) {
+    render_detail_card(buffer, area, "Approximate local activity", &format_activity(activity));
 }
 
-fn render_detail_card(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
+fn render_detail_card(buffer: &mut Buffer, area: Rect, title: &str, detail: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
         .border_style(Style::default().fg(theme::DIM));
-    frame.render_widget(block.clone(), area);
-    frame.render_widget(
+    draw(buffer, block.clone(), area);
+    draw(
+        buffer,
         Paragraph::new(detail.to_owned()).wrap(Wrap { trim: false }),
         area.inner(Margin { vertical: 1, horizontal: 2 }),
     );
 }
 
-fn render_error(frame: &mut Frame, area: Rect, error: &str) {
+fn render_error(buffer: &mut Buffer, area: Rect, error: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Latest refresh error")
         .border_style(Style::default().fg(theme::STATUS_ERROR));
-    frame.render_widget(block.clone(), area);
-    frame.render_widget(
+    draw(buffer, block.clone(), area);
+    draw(
+        buffer,
         Paragraph::new(error).wrap(Wrap { trim: false }),
         area.inner(Margin { vertical: 1, horizontal: 2 }),
     );
@@ -234,7 +261,7 @@ fn format_extra_usage(extra_usage: &ExtraUsage) -> String {
         (None, Some(limit)) => format!("{limit:.2} {currency} limit"),
         (None, None) => match extra_usage.utilization {
             Some(utilization) => format!("{utilization:.0}% of monthly budget"),
-            None => "Usage available".to_owned(),
+            None => "No credit usage reported.".to_owned(),
         },
     }
 }
@@ -250,12 +277,11 @@ fn format_session_usage(session: &SessionUsageSummary) -> String {
     if let Some(duration) = session.total_api_duration_ms {
         details.push(format!("{} API time", format_duration_ms(duration)));
     }
-    if session.total_lines_added.is_some() || session.total_lines_removed.is_some() {
-        details.push(format!(
-            "+{:.0} / -{:.0} lines",
-            session.total_lines_added.unwrap_or(0.0),
-            session.total_lines_removed.unwrap_or(0.0)
-        ));
+    match (session.total_lines_added, session.total_lines_removed) {
+        (Some(added), Some(removed)) => details.push(format!("+{added:.0} / -{removed:.0} lines")),
+        (Some(added), None) => details.push(format!("+{added:.0} lines added")),
+        (None, Some(removed)) => details.push(format!("-{removed:.0} lines removed")),
+        (None, None) => {}
     }
     if let Some(model_count) = session.model_count {
         details
@@ -390,17 +416,19 @@ fn error_height(error: &str, width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{UsageSnapshot, UsageSourceKind, UsageState};
+    use crate::app::UsageState;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::time::SystemTime;
 
     fn render_usage_rows(app: &App, width: u16, height: u16) -> Vec<String> {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|frame| {
-                super::render(frame, frame.area(), app);
+                let area = frame.area();
+                let content = content(app, area.width);
+                let mut state = app.config.clone();
+                super::super::viewport::present(frame, area, &content, &mut state);
             })
             .expect("draw");
         let buffer = terminal.backend().buffer().clone();
@@ -409,10 +437,6 @@ mod tests {
             .chunks(usize::from(buffer.area.width))
             .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
             .collect()
-    }
-
-    fn render_usage(app: &App) -> String {
-        render_usage_rows(app, 100, 24).join("\n")
     }
 
     fn usage_app() -> App {
@@ -424,106 +448,6 @@ mod tests {
             last_attempted_source: None,
         };
         app
-    }
-
-    #[test]
-    fn renders_idle_state() {
-        let app = usage_app();
-        let rendered = render_usage(&app);
-        assert!(rendered.contains("No usage snapshot yet"));
-    }
-
-    #[test]
-    fn renders_loading_state() {
-        let mut app = usage_app();
-        app.usage.in_flight = true;
-        let rendered = render_usage(&app);
-        assert!(rendered.contains("Loading usage data"));
-    }
-
-    #[test]
-    fn renders_snapshot_with_extra_usage_and_error() {
-        let mut app = usage_app();
-        app.usage.snapshot = Some(UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: SystemTime::now(),
-            subscription_type: None,
-            five_hour: Some(UsageWindow {
-                label: "5-hour".to_owned(),
-                utilization: 47.0,
-                resets_at: None,
-                reset_description: Some("resets in 2h 14m".to_owned()),
-            }),
-            seven_day: Some(UsageWindow {
-                label: "7-day".to_owned(),
-                utilization: 62.0,
-                resets_at: None,
-                reset_description: Some("resets in 4d 11h".to_owned()),
-            }),
-            seven_day_oauth_apps: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            model_scoped: Vec::new(),
-            extra_usage: Some(ExtraUsage {
-                monthly_limit: Some(20.0),
-                used_credits: Some(12.4),
-                utilization: Some(62.0),
-                currency: Some("USD".to_owned()),
-            }),
-            session: None,
-            activity: None,
-        });
-        app.usage.last_error = Some("Network timeout while refreshing cached data.".to_owned());
-
-        let rendered = render_usage(&app);
-        assert!(rendered.contains("5-hour"));
-        assert_eq!(rendered.matches("47%").count(), 1);
-        assert!(rendered.contains("12.40"));
-        assert!(rendered.contains("20.00"));
-        assert!(rendered.contains("USD"));
-        assert!(rendered.contains("Extra credits"));
-        assert!(rendered.contains("Latest refresh error"));
-        let rendered_lines = rendered.lines().collect::<Vec<_>>();
-        let first_reset_index = rendered_lines
-            .iter()
-            .position(|line| line.contains("resets in 2h 14m"))
-            .expect("reset line");
-        assert!(rendered_lines[first_reset_index + 1].trim().is_empty());
-    }
-
-    #[test]
-    fn extra_usage_wraps_inside_card_on_narrow_widths() {
-        let mut app = usage_app();
-        app.usage.snapshot = Some(UsageSnapshot {
-            source: UsageSourceKind::Oauth,
-            fetched_at: SystemTime::now(),
-            subscription_type: None,
-            five_hour: Some(UsageWindow {
-                label: "5-hour".to_owned(),
-                utilization: 47.0,
-                resets_at: None,
-                reset_description: Some("resets soon".to_owned()),
-            }),
-            seven_day: None,
-            seven_day_oauth_apps: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            model_scoped: Vec::new(),
-            extra_usage: Some(ExtraUsage {
-                monthly_limit: Some(100.0),
-                used_credits: Some(99.99),
-                utilization: Some(99.0),
-                currency: Some("USD".to_owned()),
-            }),
-            session: None,
-            activity: None,
-        });
-
-        let rows = render_usage_rows(&app, 20, 18);
-        assert!(rows.iter().any(|row| row.contains("Extra credits")));
-        assert!(rows.iter().any(|row| row.contains("99.99")));
-        assert!(rows.iter().any(|row| row.contains("USD")));
-        assert!(rows.iter().any(|row| row.contains("used")));
     }
 
     #[test]
@@ -585,61 +509,5 @@ mod tests {
             );
             assert_eq!(activity.week.as_ref().unwrap().behaviors.last().unwrap().count, 12);
         }
-    }
-
-    #[test]
-    fn renders_structured_session_totals_and_approximate_activity_without_plan_windows() {
-        let mut app = usage_app();
-        app.usage.snapshot = Some(UsageSnapshot {
-            source: UsageSourceKind::Sdk,
-            fetched_at: SystemTime::now(),
-            subscription_type: Some("max".to_owned()),
-            five_hour: None,
-            seven_day: None,
-            seven_day_oauth_apps: None,
-            seven_day_opus: None,
-            seven_day_sonnet: None,
-            model_scoped: Vec::new(),
-            extra_usage: None,
-            session: Some(SessionUsageSummary {
-                total_cost_usd: Some(0.125),
-                total_api_duration_ms: Some(1_500.0),
-                total_duration_ms: Some(2_000.0),
-                total_lines_added: Some(12.0),
-                total_lines_removed: Some(3.0),
-                model_count: Some(2),
-            }),
-            activity: Some(UsageActivitySummary {
-                day: Some(UsageActivityWindow {
-                    request_count: 4,
-                    session_count: 2,
-                    behaviors: vec![crate::app::UsageBehaviorAttribution {
-                        key: "long_context".to_owned(),
-                        pct: 25.0,
-                        count: 1,
-                    }],
-                    agents: vec![crate::app::UsageNamedAttribution {
-                        name: "Explore".to_owned(),
-                        pct: 40.0,
-                    }],
-                    skills: Vec::new(),
-                    plugins: Vec::new(),
-                    mcp_servers: Vec::new(),
-                }),
-                week: None,
-            }),
-        });
-
-        let rendered = render_usage_rows(&app, 100, 24).join("\n");
-        assert!(rendered.contains("Current session totals"));
-        assert!(rendered.contains("Plan: max"));
-        assert!(rendered.contains("$0.1250 cost"));
-        assert!(rendered.contains("+12 / -3 lines"));
-        assert!(rendered.contains("Approximate local activity"));
-        assert!(rendered.contains("Last 24 hours: 4 requests across 2 sessions"));
-        assert!(rendered.contains("Behaviors: long context 25% (1 request)"));
-        assert!(rendered.contains("Agents: Explore 40%"));
-        assert!(rendered.contains("behavior categories overlap"));
-        assert!(rendered.contains("claude.ai"));
     }
 }

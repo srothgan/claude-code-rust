@@ -15,6 +15,10 @@ mod settings_form;
 mod settings_overlay;
 mod status;
 mod usage;
+mod viewport;
+
+#[cfg(test)]
+mod status_usage_tests;
 
 use crate::app::{App, ConfigTab};
 use ratatui::Frame;
@@ -151,7 +155,9 @@ fn config_help_text(app: &App, width: u16) -> String {
                 hints
             }
         }
-        ConfigTab::Usage => vec!["r refresh", "Tab/Shift+Tab tabs", "Enter close"],
+        ConfigTab::Usage => {
+            vec!["r refresh", "Up/Down scroll", "Tab/Shift+Tab tabs", "Enter close"]
+        }
         ConfigTab::Mcp => {
             vec!["Enter actions", "Up/Down select", "Tab/Shift+Tab tabs", "r refresh"]
         }
@@ -159,7 +165,7 @@ fn config_help_text(app: &App, width: u16) -> String {
             vec!["Up/Down select", "Tab/Shift+Tab tabs", "Left/Right switch section", "Enter close"]
         }
         ConfigTab::Status => {
-            let mut hints = vec!["Tab/Shift+Tab tabs"];
+            let mut hints = vec!["Tab/Shift+Tab tabs", "Up/Down scroll"];
             if app.session_runtime.session_id.is_some() {
                 hints.extend(["g generate", "r rename"]);
             }

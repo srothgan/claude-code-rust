@@ -23,6 +23,7 @@ pub(crate) fn open_tab(app: &mut App, tab: ConfigTab) -> Result<(), String> {
     app.config.status_message = None;
     app.config.last_error = None;
     app.config.active_tab = tab;
+    app.config.read_only.reset();
     view::set_fullscreen_view(app, FullscreenView::Config);
     request_active_tab_side_effects(app);
     Ok(())
@@ -48,6 +49,7 @@ pub fn close(app: &mut App) {
 
 pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {
     app.config.active_tab = tab;
+    app.config.read_only.reset();
     app.config.status_message = None;
     app.config.last_error = None;
     request_active_tab_side_effects(app);
@@ -77,6 +79,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    if matches!(app.config.active_tab, ConfigTab::Status | ConfigTab::Usage)
+        && key.modifiers.is_empty()
+        && app.config.read_only.handle_key(key.code)
+    {
+        return;
+    }
+    handle_tab_action(app, key);
+}
+
+fn handle_tab_action(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Char(ch), modifiers)
             if app.config.active_tab == ConfigTab::Status

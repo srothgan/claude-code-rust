@@ -3,14 +3,21 @@
 use super::common::{detail_kv, section_heading};
 use crate::app::App;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::text::Line;
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 
-pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
+pub(super) fn render(frame: &mut Frame, area: Rect, app: &mut App) {
+    if area.is_empty() {
+        return;
+    }
     let lines = status_lines(app);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+    let height = super::common::wrapped_height(lines.clone(), area.width);
+    let mut content = Buffer::empty(Rect::new(0, 0, area.width, height));
+    Paragraph::new(lines).wrap(Wrap { trim: false }).render(content.area, &mut content);
+    super::viewport::present(frame, area, &content, &mut app.config);
 }
 
 pub(crate) fn status_lines(app: &App) -> Vec<Line<'static>> {
@@ -124,6 +131,9 @@ fn setting_sources(app: &App) -> String {
     app.config.snapshot.as_ref().map_or_else(
         || "(not inspected)".to_owned(),
         |snapshot| {
+            if snapshot.sources.is_empty() {
+                return "(no sources reported)".to_owned();
+            }
             snapshot
                 .sources
                 .iter()
@@ -137,105 +147,6 @@ fn setting_sources(app: &App) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn status_lines_contains_version() {
-        let app = App::test_default();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains(env!("CARGO_PKG_VERSION")));
-    }
-
-    #[test]
-    fn memory_row_finds_claude_codes_project_folder() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let project = dir.path().join("project");
-        std::fs::create_dir(&project).expect("project");
-        let mut app = App::test_default();
-        app.settings_home_override = Some(dir.path().join("home"));
-        app.cwd_raw = project.to_string_lossy().into_owned();
-        // Claude Code's folder: the resolved path with every non-alphanumeric
-        // character as `-`, leading separator included (the fixture is ASCII).
-        let folder: String = std::fs::canonicalize(&project)
-            .expect("resolved project")
-            .to_string_lossy()
-            // Node's realpath omits Rust's Windows verbatim prefix.
-            .trim_start_matches(r"\\?\")
-            .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-            .collect();
-        let memory = dir
-            .path()
-            .join("home")
-            .join(".claude")
-            .join("projects")
-            .join(folder)
-            .join("memory")
-            .join("MEMORY.md");
-        std::fs::create_dir_all(memory.parent().expect("memory folder")).expect("memory folder");
-        std::fs::write(&memory, "notes").expect("memory file");
-
-        crate::app::config::open_tab(&mut app, crate::app::config::ConfigTab::Status)
-            .expect("status tab");
-
-        let row = status_lines(&app)
-            .into_iter()
-            .map(|line| line.to_string())
-            .find(|line| line.starts_with("Memory:"))
-            .expect("memory row");
-        assert_eq!(row, format!("Memory: auto memory ({})", memory.display()));
-    }
-
-    #[test]
-    fn status_lines_shows_cwd() {
-        let mut app = App::test_default();
-        app.cwd = "/test/project".to_owned();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("/test/project"));
-    }
-
-    #[test]
-    fn status_lines_shows_model() {
-        let mut app = App::test_default();
-        app.session_runtime.current_model = Some(
-            crate::agent::model::CurrentModel::new("claude-sonnet-4-7", "Sonnet", "Sonnet 4.7")
-                .authoritative(true),
-        );
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("Sonnet 4.7"));
-    }
-
-    #[test]
-    fn status_lines_unnamed_session_fallback() {
-        let app = App::test_default();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("(unnamed session)"));
-    }
-
-    #[test]
-    fn status_lines_name_the_session_by_its_live_title() {
-        let mut app = App::test_default();
-        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("test-sess-1"));
-        app.recent_sessions = vec![crate::app::RecentSessionInfo {
-            session_id: "test-sess-1".to_owned(),
-            summary: "Listed summary".to_owned(),
-            last_modified_ms: 0,
-            file_size_bytes: 0,
-            cwd: None,
-            git_branch: None,
-            custom_title: Some("Stale listed title".to_owned()),
-            first_prompt: None,
-        }];
-        let name_row = |app: &App| {
-            status_lines(app)
-                .iter()
-                .map(std::string::ToString::to_string)
-                .find(|line| line.contains("Session name"))
-                .expect("session name row")
-        };
-        assert!(name_row(&app).contains("Stale listed title"));
-        app.session_runtime.session_title = Some("probe-e2e".to_owned());
-        assert!(name_row(&app).contains("probe-e2e"));
-    }
 
     #[test]
     fn status_name_shows_only_a_title_of_the_active_session() {
@@ -266,65 +177,5 @@ mod tests {
         assert_eq!(name_row(&app), format!("Session name: {unicode}"));
         app.recent_sessions[0].session_id = "other".to_owned();
         assert_eq!(name_row(&app), "Session name: (unnamed session)");
-    }
-
-    #[test]
-    fn section_headers_present() {
-        let app = App::test_default();
-        let text = lines_to_string(&status_lines(&app));
-        assert!(text.contains("Session"));
-        assert!(text.contains("Model"));
-        assert!(text.contains("Settings"));
-    }
-
-    #[test]
-    fn login_method_maps_oauth() {
-        let account = crate::agent::model::AccountInfo {
-            api_key_source: Some("oauth".to_owned()),
-            ..Default::default()
-        };
-        assert_eq!(login_method_label(&account), "Claude Max Account");
-    }
-
-    #[test]
-    fn login_method_maps_user_key() {
-        let account = crate::agent::model::AccountInfo {
-            api_key_source: Some("user".to_owned()),
-            ..Default::default()
-        };
-        assert_eq!(login_method_label(&account), "User API key");
-    }
-
-    #[test]
-    fn login_method_maps_external_provider() {
-        let account = crate::agent::model::AccountInfo {
-            api_provider: Some(crate::agent::model::AccountApiProvider::Bedrock),
-            ..Default::default()
-        };
-        assert_eq!(login_method_label(&account), "External provider");
-    }
-
-    #[test]
-    fn status_lines_render_api_provider() {
-        let mut app = App::test_default();
-        app.session_runtime.account_info = Some(crate::agent::model::AccountInfo {
-            api_provider: Some(crate::agent::model::AccountApiProvider::Gateway),
-            ..Default::default()
-        });
-
-        let text = lines_to_string(&status_lines(&app));
-
-        assert!(text.contains("API provider"));
-        assert!(text.contains("Gateway"));
-    }
-
-    #[test]
-    fn login_method_falls_back_to_unknown() {
-        let account = crate::agent::model::AccountInfo::default();
-        assert_eq!(login_method_label(&account), "Unknown");
-    }
-
-    fn lines_to_string(lines: &[Line<'_>]) -> String {
-        lines.iter().map(std::string::ToString::to_string).collect::<Vec<_>>().join("\n")
     }
 }
