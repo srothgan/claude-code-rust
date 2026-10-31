@@ -390,7 +390,7 @@ fn error_height(error: &str, width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState};
+    use crate::app::{UsageSnapshot, UsageSourceKind, UsageState};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::time::SystemTime;
@@ -421,7 +421,6 @@ mod tests {
             snapshot: None,
             in_flight: false,
             last_error: None,
-            active_source: UsageSourceMode::Auto,
             last_attempted_source: None,
         };
         app

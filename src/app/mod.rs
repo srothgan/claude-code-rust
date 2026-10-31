@@ -87,9 +87,9 @@ pub use state::{
     SubagentPermissionContext, SystemSeverity, TerminalSize, TerminalSizeChange, TextBlock,
     TextBlockSpacing, ToolCallInfo, ToolCallScope, TurnNoticeLocation, TurnNoticeRef,
     UpdatePromptAction, UpdatePromptState, UsageActivitySummary, UsageActivityWindow,
-    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageState, UsageWindow, UserDialogBlock, WelcomeBlock,
-    hash_text_block_content, hash_welcome_block_content,
+    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind, UsageState,
+    UsageWindow, UserDialogBlock, WelcomeBlock, hash_text_block_content,
+    hash_welcome_block_content,
 };
 pub(crate) use state::{
     BtwRequestState, BtwRequests, PendingUserMessage, PendingUserMessageInsertError,

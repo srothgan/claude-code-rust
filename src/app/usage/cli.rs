@@ -5,38 +5,74 @@ use std::time::{Duration, SystemTime};
 
 const CLI_USAGE_TIMEOUT: Duration = Duration::from_secs(15);
 
-pub(super) async fn fetch_snapshot(cwd_raw: String) -> Result<UsageSnapshot, String> {
-    let claude_path = resolve_claude_path()?;
-    let output = tokio::time::timeout(
-        CLI_USAGE_TIMEOUT,
-        tokio::process::Command::new(&claude_path)
+#[cfg(test)]
+#[path = "cli_audit_tests.rs"]
+mod audit_tests;
+
+#[derive(Clone)]
+pub(super) struct Probe {
+    pub(super) executable: Option<PathBuf>,
+    pub(super) timeout: Duration,
+}
+
+impl Probe {
+    pub(super) fn system() -> Self {
+        Self { executable: None, timeout: CLI_USAGE_TIMEOUT }
+    }
+
+    pub(super) async fn fetch_snapshot(&self, cwd_raw: String) -> Result<UsageSnapshot, String> {
+        let claude_path = self.executable.clone().map_or_else(resolve_claude_path, Ok)?;
+        let mut child = tokio::process::Command::new(&claude_path)
             .args(["/usage", "--allowed-tools", ""])
             .current_dir(cwd_raw)
-            .output(),
-    )
-    .await
-    .map_err(|_| "Claude CLI usage probe timed out.".to_owned())?
-    .map_err(|error| format!("Failed to run `claude /usage`: {error}"))?;
-
-    let combined = combine_output(&output.stdout, &output.stderr);
-    if let Ok(snapshot) = parse_usage_output(&combined) {
-        return Ok(snapshot);
-    }
-
-    if !output.status.success() {
-        let exit_code =
-            output.status.code().map_or_else(|| "unknown".to_owned(), |code| code.to_string());
-        let detail = combined.trim();
-        if detail.is_empty() {
-            return Err(format!("`claude /usage` failed with exit code {exit_code}."));
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                format!("Failed to run `claude /usage` ({}): {error}", claude_path.display())
+            })?;
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let result = tokio::time::timeout(self.timeout, async {
+            tokio::try_join!(child.wait(), read_pipe(stdout), read_pipe(stderr))
+        })
+        .await
+        .map_err(|_| "Claude CLI usage probe timed out.".to_owned())
+        .and_then(|result| {
+            result.map_err(|error| format!("Failed to read Claude CLI usage output: {error}"))
+        });
+        let (status, stdout, stderr) = match result {
+            Ok(output) => output,
+            Err(message) => {
+                // Keep ownership through cancellation: kill() also waits for the child.
+                child
+                    .kill()
+                    .await
+                    .map_err(|error| format!("Failed to reap Claude CLI usage probe: {error}"))?;
+                return Err(message);
+            }
+        };
+        let combined = combine_output(&stdout, &stderr);
+        if !status.success() {
+            let code = status.code().map_or_else(|| "unknown".into(), |code| code.to_string());
+            return Err(format!(
+                "`claude /usage` failed with exit code {code}: {}",
+                combined.trim().replace('\n', " ")
+            ));
         }
-        return Err(format!(
-            "`claude /usage` failed with exit code {exit_code}: {}",
-            detail.replace('\n', " ")
-        ));
+        parse_usage_output(&combined)
     }
+}
 
-    parse_usage_output(&combined)
+async fn read_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut bytes).await?;
+    }
+    Ok(bytes)
 }
 
 fn resolve_claude_path() -> Result<PathBuf, String> {
@@ -61,11 +97,11 @@ fn parse_usage_output(text: &str) -> Result<UsageSnapshot, String> {
     if trimmed.is_empty() {
         return Err("Claude CLI usage output was empty.".to_owned());
     }
-    if let Some(error) = extract_usage_error(trimmed) {
+    let panel = trim_to_latest_usage_panel(trimmed).unwrap_or(trimmed);
+    if let Some(error) = extract_usage_error(panel) {
         return Err(error);
     }
 
-    let panel = trim_to_latest_usage_panel(trimmed).unwrap_or(trimmed);
     let five_hour = extract_window(panel, &["Current session"], "5-hour")
         .ok_or_else(|| "Could not parse Claude usage: missing Current session.".to_owned())?;
     let seven_day = extract_window(panel, &["Current week (all models)"], "7-day");
@@ -99,11 +135,16 @@ fn extract_window(text: &str, labels: &[&str], window_label: &str) -> Option<Usa
 
     for (index, line) in lines.iter().enumerate() {
         let normalized_line = normalized_for_label_search(line);
-        if !normalized_labels.iter().any(|label| normalized_line.contains(label)) {
+        if !normalized_labels.contains(&normalized_line) {
             continue;
         }
 
-        let window = lines.iter().skip(index).take(12).copied().collect::<Vec<_>>();
+        let window = lines
+            .iter()
+            .skip(index + 1)
+            .copied()
+            .take_while(|line| !is_window_heading(line))
+            .collect::<Vec<_>>();
         let utilization = window.iter().find_map(|candidate| percent_used_from_line(candidate))?;
         let reset_description = window.iter().find_map(|candidate| {
             let normalized = normalized_for_label_search(candidate);
@@ -124,6 +165,17 @@ fn extract_window(text: &str, labels: &[&str], window_label: &str) -> Option<Usa
     }
 
     None
+}
+
+fn is_window_heading(line: &str) -> bool {
+    matches!(
+        normalized_for_label_search(line).as_str(),
+        "currentsession"
+            | "currentweekallmodels"
+            | "currentweeksonnetonly"
+            | "currentweeksonnet"
+            | "currentweekopus"
+    )
 }
 
 fn percent_used_from_line(line: &str) -> Option<f64> {
@@ -252,60 +304,4 @@ fn strip_ansi(text: &str) -> String {
     }
 
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_cli_usage_panel() {
-        let sample = r"
-        Settings: Status   Config   Usage
-        Current session
-        15% used
-        Resets Feb 12 at 1:30pm (Asia/Calcutta)
-
-        Current week (all models)
-        3% used
-        Resets Feb 12 at 1:30pm (Asia/Calcutta)
-
-        Current week (Sonnet only)
-        1% used
-        Resets Feb 12 at 1:30pm (Asia/Calcutta)
-        ";
-
-        let snapshot = parse_usage_output(sample).expect("snapshot");
-        assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(15.0));
-        assert_eq!(snapshot.seven_day.as_ref().map(|window| window.utilization), Some(3.0));
-        assert_eq!(snapshot.seven_day_sonnet.as_ref().map(|window| window.utilization), Some(1.0));
-    }
-
-    #[test]
-    fn ignores_status_bar_percentage_noise() {
-        let sample = r"
-        Claude Code v2.1.32
-        01:07 |  | Opus 4.7 | default | 0% left
-        Current session
-        10% used
-        Current week (all models)
-        20% used
-        ";
-
-        let snapshot = parse_usage_output(sample).expect("snapshot");
-        assert_eq!(snapshot.five_hour.as_ref().map(|window| window.utilization), Some(10.0));
-        assert_eq!(snapshot.seven_day.as_ref().map(|window| window.utilization), Some(20.0));
-    }
-
-    #[test]
-    fn reports_loading_error() {
-        let sample = "Settings: Status Config Usage\nLoading usage data...";
-        let error = parse_usage_output(sample).expect_err("parse should fail");
-        assert!(error.contains("missing Current session") || error.contains("usage"));
-    }
-
-    #[test]
-    fn converts_remaining_percent_to_used_percent() {
-        assert_eq!(percent_used_from_line("85% left"), Some(15.0));
-    }
 }

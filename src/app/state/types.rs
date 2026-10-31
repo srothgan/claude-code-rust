@@ -109,14 +109,6 @@ pub struct MessageUsage {
     pub cache_write_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageSourceMode {
-    #[default]
-    Auto,
-    Oauth,
-    Cli,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageSourceKind {
     Sdk,
@@ -201,7 +193,6 @@ pub struct UsageState {
     pub snapshot: Option<UsageSnapshot>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub active_source: UsageSourceMode,
     pub last_attempted_source: Option<UsageSourceKind>,
 }
 

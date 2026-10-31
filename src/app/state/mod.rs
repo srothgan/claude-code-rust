@@ -65,7 +65,7 @@ pub use types::{
     RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
     SessionUsageSummary, ShutdownState, ToolCallScope, UpdatePromptAction, UpdatePromptState,
     UsageActivitySummary, UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution,
-    UsageSnapshot, UsageSourceKind, UsageSourceMode, UsageState, UsageWindow,
+    UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
 };
 
 mod prelude {

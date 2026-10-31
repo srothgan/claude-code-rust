@@ -9,6 +9,7 @@ pub mod agent;
 pub mod app;
 mod claude_paths;
 pub mod cli;
+mod epoch_time;
 pub mod error;
 pub mod failure;
 pub mod install_method;

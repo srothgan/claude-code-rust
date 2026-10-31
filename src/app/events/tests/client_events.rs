@@ -941,35 +941,6 @@ fn removed_config_mcp_guard_stays_after_matching_source_snapshot_error() {
 }
 
 #[test]
-fn stale_usage_refresh_result_for_old_epoch_is_ignored() {
-    let mut app = make_test_app();
-    app.session_runtime.session_scope_epoch = 5;
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::UsageSnapshotReceived {
-            epoch: 4,
-            snapshot: UsageSnapshot {
-                source: UsageSourceKind::Oauth,
-                fetched_at: std::time::SystemTime::now(),
-                subscription_type: None,
-                five_hour: None,
-                seven_day: None,
-                seven_day_oauth_apps: None,
-                seven_day_opus: None,
-                seven_day_sonnet: None,
-                model_scoped: Vec::new(),
-                extra_usage: None,
-                session: None,
-                activity: None,
-            },
-        },
-    );
-
-    assert!(app.usage.snapshot.is_none());
-}
-
-#[test]
 fn stale_plugin_inventory_result_for_old_cwd_is_ignored() {
     let mut app = make_test_app();
     app.cwd_raw = "/current".into();
