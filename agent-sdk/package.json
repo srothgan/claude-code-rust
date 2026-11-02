@@ -23,9 +23,9 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.311"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.2",
-    "@types/node": "26.6.5",
-    "knip": "6.43.0",
+    "@biomejs/biome": "2.6.4",
+    "@types/node": "26.6.6",
+    "knip": "6.44.0",
     "typescript": "7.0.2"
   }
 }
