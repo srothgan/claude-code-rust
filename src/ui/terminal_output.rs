@@ -10,6 +10,18 @@ use ratatui::text::{Line, Span};
 use std::iter::Peekable;
 use std::str::CharIndices;
 
+/// Encode plain text inside a terminal OSC payload without embedded controls.
+pub(crate) fn sanitize_osc_payload(message: &str) -> String {
+    message
+        .chars()
+        .filter_map(|ch| match ch {
+            '\r' | '\n' | '\t' => Some(' '),
+            _ if ch.is_control() => None,
+            _ => Some(ch),
+        })
+        .collect()
+}
+
 enum Event<'a> {
     Char(char),
     Newline,

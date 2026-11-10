@@ -619,7 +619,7 @@ fn handle_runtime_session_state_update(app: &mut App, state: model::RuntimeSessi
                 app.status = AppStatus::Running;
             }
             if matches!(app.status, AppStatus::Running | AppStatus::Thinking) {
-                app.begin_turn_activity(std::time::Instant::now());
+                app.begin_turn_activity(crate::app::activity::now());
                 app.session_runtime.runtime_session_state = Some(state);
             }
         }

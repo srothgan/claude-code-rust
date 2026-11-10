@@ -15,7 +15,7 @@ pub(super) fn handle_update(app: &mut App, update: model::CompactionUpdate) {
 
 fn handle_started(app: &mut App) {
     let was_active = app.turn.compaction.is_active();
-    app.begin_turn_activity(std::time::Instant::now());
+    app.begin_turn_activity(crate::app::activity::now());
     app.turn.compaction.begin();
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,

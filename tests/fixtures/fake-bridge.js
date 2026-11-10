@@ -15,6 +15,7 @@ const INTERVAL_MS = Number(process.env.FAKE_BRIDGE_INTERVAL_MS ?? 15);
 const SCENARIO = process.env.FAKE_BRIDGE_SCENARIO ?? 'stream';
 const resizeCodeScenario = SCENARIO === 'resize-code';
 const activityScenario = SCENARIO.startsWith('hold-activity');
+const titleScenario = SCENARIO.startsWith('hold-title');
 const RELEASE_FILE = process.env.FAKE_BRIDGE_RELEASE_FILE;
 const JOURNAL = process.env.FAKE_BRIDGE_JOURNAL;
 let replyNumber = 0;
@@ -52,6 +53,25 @@ if (activityScenario) {
   const setting = settingsUiFixture.catalog.find(setting => setting.id === 'spinnerTipsEnabled');
   settingDefinitions.push([setting.id, setting.label, setting.description, setting.kind, setting.key_path]);
 }
+if (titleScenario) {
+  Object.assign(preferences, { prefersReducedMotion: false, 'presentation.showStatusInTerminalTab': true });
+  fs.writeFileSync(path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify(preferences));
+  settingDefinitions.push(['prefersReducedMotion', 'Reduce motion', 'Reduce title animation', 'boolean', ['prefersReducedMotion']], ['presentation.showStatusInTerminalTab', 'Show terminal status', 'Show activity in the terminal title', 'boolean', ['presentation', 'showStatusInTerminalTab']]);
+}
+let sideQuestionNumber = 0;
+function sideQuestion(message) {
+  const number = ++sideQuestionNumber;
+  const answer = () => send({ event: 'btw_result', session_id: SESSION, btw_id: message.btw_id, question: message.question, answer: `ANSWER_${message.question}`, metadata: { synthetic: false } });
+  if (number <= 2) {
+    const timer = setInterval(() => {
+      const expected = number === 1 ? 'fail' : 'answer';
+      if (!fs.existsSync(RELEASE_FILE) || fs.readFileSync(RELEASE_FILE, 'utf8') !== expected) return;
+      clearInterval(timer);
+      if (number === 1) send({ event: 'btw_failed', session_id: SESSION, btw_id: message.btw_id, question: message.question, error: 'EXPIRING_CAUSE' });
+      else answer();
+    }, INTERVAL_MS);
+  } else answer();
+}
 const hooksScenario = SCENARIO === 'hold-hooks';
 if (hooksScenario) {
   preferences.hooks = { Stop: [{ hooks: [{ type: 'command', command: 'keep-original', future: 'keep' }] }] };
@@ -83,7 +103,7 @@ function settingsSnapshot() {
       category: id === 'hooks' ? 'hooks' : id.startsWith('permissions.') ? 'permissions' : 'general', id, label, description, kind, key_path, options: kind === 'boolean' ? [true, false] : id === 'preferredNotifChannel' ? ['auto', 'iterm2', 'terminal_bell', 'iterm2_with_bell', 'kitty', 'ghostty', 'notifications_disabled'] : [],
       ...(settingsUiFixture.catalog.find(setting => setting.id === id)?.editor ? { editor: settingsUiFixture.catalog.find(setting => setting.id === id).editor } : {}),
       allows_custom: kind !== 'boolean' && id !== 'preferredNotifChannel', writable_scopes: ['user'],
-      reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario || activityScenario ? 'host' : 'next_session',
+      reset: 'Reset removes the saved value here', application: presentationScenario || notificationScenario || activityScenario || titleScenario ? 'host' : 'next_session',
     })).sort((a, b) => a.label.localeCompare(b.label)),
     sources: [{ scope: 'user', path: path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json'), status: 'valid',
       values: Object.entries(preferences).map(([id, value]) => ({ id, value, revision: String(settingsRevision) })) }],
@@ -306,7 +326,7 @@ function streamReply(messageUuid) {
         return;
       }
       if (resizeCodeScenario && replyNumber === 2) send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '```\n' }, source_message_uuid: null } });
-      finish(SCENARIO === 'hold-error'
+      finish((SCENARIO === 'hold-error' || SCENARIO === 'hold-title-error')
         ? { event: 'turn_error', session_id: SESSION, message: 'Fixture service unavailable', error_kind: 'transient_service' }
         : { event: 'turn_complete', session_id: SESSION });
       return;
@@ -573,6 +593,10 @@ readline
         send({ event: 'subagent_stop_result', session_id: SESSION, task_id: message.task_id, run_id: message.expected_run_id, request_id: message.request_id });
         sendTasks([agentTask(message.task_id, 'Review parser', 'completed', 'killed')]);
         break;
+      case 'side_question':
+        if (SCENARIO !== 'btw-quiet-expiry') throw new Error('Unexpected side question');
+        sideQuestion(message);
+        break;
       case 'prompt':
         if (SCENARIO === 'elicitation') {
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
@@ -667,7 +691,7 @@ readline
         fs.writeFileSync(file, JSON.stringify(document));
         settingsRevision++;
         send({ event: 'settings_result', session_id: SESSION, request_id: message.request_id, result: {
-          persistence: 'saved', application: presentationScenario || notificationScenario || activityScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
+          persistence: 'saved', application: presentationScenario || notificationScenario || activityScenario || titleScenario ? 'host' : 'next_session', snapshot: settingsSnapshot(),
         } });
         break;
       }

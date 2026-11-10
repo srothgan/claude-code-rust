@@ -123,7 +123,7 @@ impl App {
         if !matches!(self.status, AppStatus::Thinking | AppStatus::Running) {
             self.status = AppStatus::Running;
         }
-        self.begin_turn_activity(std::time::Instant::now());
+        self.begin_turn_activity(crate::app::activity::now());
         self.enforce_history_retention_tracked();
     }
 

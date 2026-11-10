@@ -161,28 +161,6 @@ mod tests {
     }
 
     #[test]
-    fn history_log_is_rate_limited_after_initial_fire() {
-        let mut m = CacheMetrics::default();
-        let stats = make_history_stats(2000, 0);
-        let policy = HistoryRetentionPolicy::default();
-
-        assert!(m.record_history_enforcement(&stats, policy));
-        assert!(!m.record_history_enforcement(&stats, policy));
-
-        let mut fired_again = false;
-        for _ in 0..HISTORY_LOG_INTERVAL {
-            if m.record_history_enforcement(&stats, policy) {
-                fired_again = true;
-                break;
-            }
-        }
-
-        assert!(fired_again, "history log should fire again after some delay");
-        assert!(!m.record_history_enforcement(&stats, policy));
-        assert!(m.enforcement_count >= 3);
-    }
-
-    #[test]
     fn history_peak_bytes_tracks_maximum() {
         let mut m = CacheMetrics::default();
         let policy = HistoryRetentionPolicy::default();
@@ -205,12 +183,8 @@ mod tests {
         assert!((snap.utilization_pct - 75.0).abs() < 0.01);
         assert_eq!(snap.dropped_messages_this_pass, 1);
     }
-
-    #[test]
-    fn snapshot_zero_budget_no_panic() {
-        let policy = HistoryRetentionPolicy { max_bytes: 0 };
-        let metrics = CacheMetrics::default();
-        let snap = build_snapshot(&HistoryRetentionStats::default(), policy, &metrics, 0);
-        assert!(snap.utilization_pct.abs() < f32::EPSILON);
-    }
 }
+
+#[cfg(test)]
+#[path = "cache_metrics_audit_tests.rs"]
+mod audit_tests;

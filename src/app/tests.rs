@@ -635,6 +635,44 @@ fn paste_chunks_cross_the_character_threshold_without_losing_source_or_surroundi
 }
 
 #[test]
+fn timing_detected_unicode_pastes_cross_the_placeholder_boundary_without_losing_source() {
+    use super::test_support::{EventClock, press};
+    for (char_count, collapsed) in [(999, false), (1000, false), (1001, true)] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        let suffix = format!(" EDGE_{char_count}");
+        let prefix = "Unicode 界 🦀 ";
+        let fixed_chars = prefix.chars().count() + suffix.chars().count();
+        let source = format!("{prefix}{}{suffix}", "x".repeat(char_count - fixed_chars));
+
+        for ch in source.chars() {
+            clock.at_millis(0);
+            press(&mut app, KeyCode::Char(ch));
+        }
+        drain_typing(&mut app, clock.at_millis(1000));
+
+        if collapsed {
+            let pastes = app.input.inline_pastes();
+            assert_eq!(pastes.len(), 1);
+            assert_eq!(pastes[0], source);
+            assert!(
+                app.input.lines().join("\n").contains("[Pasted Text 1 - 1001 chars]"),
+                "draft lines after threshold paste: {:?}",
+                app.input.lines()
+            );
+        } else {
+            assert!(app.input.inline_pastes().is_empty());
+            assert_eq!(app.input.text(), source);
+        }
+        assert!(commands.try_recv().is_err());
+        clock.at_millis(2000);
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, &source);
+    }
+}
+
+#[test]
 fn paste_continuation_and_deleted_atoms_cannot_capture_an_independent_paste() {
     use super::test_support::press;
     let first = format!("FIRST{}END", "a".repeat(1000));

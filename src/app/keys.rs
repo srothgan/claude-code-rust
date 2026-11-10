@@ -806,17 +806,19 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
             // Character absorbed into burst buffer. Don't insert.
             return false;
         }
-        CharAction::RetroCapture(delete_count) => {
+        CharAction::RetroCapture(requested_prefix_count) => {
             // Burst confirmation retro-captured already-inserted leading chars.
-            for _ in 0..delete_count {
-                let _ = delete_input_char_before(app);
-            }
+            let removed_prefix_count =
+                (0..requested_prefix_count).take_while(|_| delete_input_char_before(app)).count();
+            let outcome =
+                if removed_prefix_count == requested_prefix_count { "success" } else { "partial" };
             tracing::debug!(
                 target: crate::logging::targets::APP_PASTE,
                 event_name = "paste_retro_capture_applied",
-                message = "retro-captured leaked characters from a confirmed paste burst",
-                outcome = "success",
-                delete_count,
+                message = "paste burst retro-capture attempted to remove its inserted prefix",
+                outcome,
+                requested_count = requested_prefix_count,
+                removed_count = removed_prefix_count,
             );
             return true;
         }

@@ -710,7 +710,7 @@ impl<I: TerminalIo> ChatTerminalSession<I> {
 
     fn build_composer_surface(app: &mut App, width: u16) -> ComposerSurface {
         let activity_rows =
-            crate::ui::activity_rows::build_activity_rows(app, width, std::time::Instant::now());
+            crate::ui::activity_rows::build_activity_rows(app, width, crate::app::activity::now());
         let activity_row_count = u16::try_from(activity_rows.len()).unwrap_or(u16::MAX);
         let mut hint_rows = wrapped_composer_hint_rows(app, width);
         if app.chat_render.viewport.is_reading() {

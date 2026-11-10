@@ -237,7 +237,11 @@ impl TerminalTest {
     ) -> Self {
         let temp = tempfile::tempdir().expect("tempdir");
         let profile = temp.path().join("profile");
-        let project = temp.path().join("project");
+        let project = temp.path().join(if scenario.starts_with("hold-title") {
+            "Orbital Lab"
+        } else {
+            "project"
+        });
         let journal = temp.path().join("commands.jsonl");
         let release_file = temp.path().join("release");
         let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_claude-rs"));
@@ -293,6 +297,7 @@ impl TerminalTest {
             command.arg(arg);
         }
         command.cwd(&project);
+        live_feedback::configure_home(&mut command, scenario, &project);
         command.env("CLAUDE_RS_AGENT_BRIDGE", &bridge);
         command.env("CLAUDE_RS_AGENT_BRIDGE_RUNTIME", runtime);
         command.env("FAKE_BRIDGE_LINES", lines.to_string());
@@ -2395,9 +2400,14 @@ fn unicode_pastes_cross_the_placeholder_boundary_without_payload_loss() {
                 test.send(&[*byte]);
             }
         }
+        let inline_marker = format!("EDGE_{chars}");
         let visible =
-            if chars > 1000 { "[Pasted Text".to_owned() } else { format!("EDGE_{chars}") };
-        test.wait_screen(&visible);
+            test.wait_for("completed paste rendered inline or as a placeholder", |test| {
+                let screen = test.screen();
+                (screen.contains("[Pasted Text") || screen.contains(&inline_marker))
+                    .then_some(screen)
+            });
+        let collapsed = visible.contains("[Pasted Text");
         test.resize(25, 61);
         test.resize(38, 87);
         test.submit_draft();
@@ -2408,8 +2418,8 @@ fn unicode_pastes_cross_the_placeholder_boundary_without_payload_loss() {
         test.assert_prompts(&texts);
         let prompts = test.prompts();
         let pastes = prompts.last().expect("prompt recorded")["inline_pastes"].as_array();
-        assert_eq!(pastes.map_or(0, Vec::len), usize::from(chars > 1000));
-        if chars > 1000 {
+        assert_eq!(pastes.map_or(0, Vec::len), usize::from(collapsed));
+        if collapsed {
             assert_eq!(
                 pastes.expect("folded paste")[0].as_str(),
                 expected.last().map(String::as_str)
@@ -4006,3 +4016,6 @@ mod mcp_actions;
 
 #[path = "support/terminal_plugin_actions.rs"]
 mod plugin_actions;
+
+#[path = "support/terminal_live_feedback.rs"]
+mod live_feedback;

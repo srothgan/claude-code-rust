@@ -384,7 +384,7 @@ fn suspend_tui_process(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) -> anyhow::Result<()> {
-    tab_title::restore_tab_title(&app.cwd);
+    tab_title::restore_tab_title(&app.cwd_raw);
     terminal_runtime.restore(app);
 
     #[cfg(unix)]
@@ -509,7 +509,7 @@ fn restore_terminal_after_shutdown(
     app: &mut App,
     terminal_runtime: &mut terminal_runtime::TerminalRuntime,
 ) {
-    tab_title::restore_tab_title(&app.cwd);
+    tab_title::restore_tab_title(&app.cwd_raw);
     terminal_runtime.restore(app);
 }
 

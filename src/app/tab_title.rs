@@ -18,13 +18,21 @@ fn folder_name(cwd: &str) -> &str {
 }
 
 /// Write an OSC 2 (set window title) escape sequence to stdout.
-fn write_osc2_title(title: &str) {
+fn write_osc2_title(title: &str, writer: &mut impl Write) {
     let mut buf = Vec::with_capacity(title.len() + 6);
     buf.extend_from_slice(b"\x1b]2;");
-    buf.extend_from_slice(title.as_bytes());
+    buf.extend_from_slice(crate::ui::terminal_output::sanitize_osc_payload(title).as_bytes());
     buf.extend_from_slice(b"\x07");
-    let _ = std::io::stdout().write_all(&buf);
-    let _ = std::io::stdout().flush();
+    let _ = writer.write_all(&buf);
+    let _ = writer.flush();
+}
+
+fn update_to(app: &super::App, writer: &mut impl Write) {
+    write_osc2_title(&title(app), writer);
+}
+
+fn restore_to(cwd: &str, writer: &mut impl Write) {
+    write_osc2_title(folder_name(cwd), writer);
 }
 
 /// Update the terminal tab title to reflect the current app status.
@@ -32,7 +40,7 @@ fn write_osc2_title(title: &str) {
 /// Called every frame tick during animating states, and on state transitions
 /// for static states (Ready, Error).
 pub fn update_tab_title(app: &super::App) {
-    write_osc2_title(&title(app));
+    update_to(app, &mut std::io::stdout().lock());
 }
 
 fn title(app: &super::App) -> String {
@@ -66,64 +74,9 @@ fn pulse_char(spinner_frame: usize) -> char {
 ///
 /// Called on graceful shutdown.
 pub fn restore_tab_title(cwd: &str) {
-    write_osc2_title(folder_name(cwd));
+    restore_to(cwd, &mut std::io::stdout().lock());
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn acknowledged_preferences_control_activity_and_reduced_motion_in_the_title() {
-        let mut app = super::super::App::test_default();
-        app.status = AppStatus::Running;
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "presentation.showStatusInTerminalTab",
-            serde_json::json!(false),
-        ));
-        assert_eq!(title(&app), "test");
-        let mut snapshot = crate::agent::settings::SettingsSnapshot::test_value(
-            "prefersReducedMotion",
-            serde_json::json!(true),
-        );
-        snapshot.values.extend(
-            crate::agent::settings::SettingsSnapshot::test_value(
-                "presentation.showStatusInTerminalTab",
-                serde_json::json!(true),
-            )
-            .values,
-        );
-        app.config.snapshot = Some(snapshot);
-        for frame in [0, 10, 100] {
-            app.spinner_frame = frame;
-            assert_eq!(title(&app), "◆ test");
-        }
-        app.status = AppStatus::Ready;
-        assert_eq!(title(&app), "○ test");
-    }
-
-    #[test]
-    fn folder_name_extracts_last_component() {
-        assert_eq!(folder_name("/home/user/projects/claude_rust"), "claude_rust");
-        assert_eq!(folder_name("C:\\Users\\Simon\\Desktop\\claude_rust"), "claude_rust");
-        assert_eq!(folder_name("claude_rust"), "claude_rust");
-    }
-
-    #[test]
-    fn folder_name_falls_back_for_empty_or_root() {
-        // Path::file_name returns None for root paths or empty strings
-        assert_eq!(folder_name(""), "claude_rust");
-    }
-
-    #[test]
-    fn pulse_char_cycles_between_distinct_active_frames_and_idle_is_separate() {
-        let first = pulse_char(0);
-        let same_window = pulse_char(PULSE_FRAME_DIVISOR - 1);
-        let next = pulse_char(PULSE_FRAME_DIVISOR);
-
-        assert_eq!(first, same_window);
-        assert_ne!(first, next);
-        assert_ne!(IDLE_CHAR, first);
-        assert_ne!(IDLE_CHAR, next);
-    }
-}
+#[path = "tab_title_audit_tests.rs"]
+mod audit_tests;

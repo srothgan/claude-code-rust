@@ -146,50 +146,8 @@ impl BtwRequests {
 
 #[cfg(test)]
 mod tests {
-    use super::{BtwRequestState, BtwRequests, FAILED_TTL};
+    use super::BtwRequests;
     use std::time::Instant;
-
-    #[test]
-    fn duplicate_questions_keep_distinct_fifo_identity() {
-        let mut requests = BtwRequests::default();
-        requests.try_push("a".to_owned(), "same".to_owned()).expect("first");
-        requests.try_push("b".to_owned(), "same".to_owned()).expect("second");
-        assert_eq!(requests.take_next().expect("dispatch first").id, "a");
-        assert!(requests.take_next().is_none());
-
-        assert!(matches!(requests.get("a").map(|item| &item.state), Some(BtwRequestState::Active)));
-        assert!(matches!(
-            requests.get("b").map(|item| &item.state),
-            Some(BtwRequestState::Waiting)
-        ));
-
-        let completed = requests.complete("a").expect("known request");
-        assert_eq!(completed.question, "same");
-        assert_eq!(requests.take_next().expect("dispatch second").id, "b");
-        assert!(matches!(requests.get("b").map(|item| &item.state), Some(BtwRequestState::Active)));
-    }
-
-    #[test]
-    fn failures_free_capacity_but_remain_visible_until_their_deadline() {
-        let now = Instant::now();
-        let mut requests = BtwRequests::default();
-        requests.try_push("a".to_owned(), "question".to_owned()).expect("insert");
-        requests.take_next().expect("dispatch");
-        assert!(requests.fail("a", "failed".to_owned(), now));
-        assert_eq!(requests.len(), 1);
-        for index in 0..BtwRequests::CAPACITY {
-            requests
-                .try_push(format!("next-{index}"), "question".to_owned())
-                .expect("failure does not occupy admission capacity");
-        }
-        assert!(requests.is_full());
-        let before_deadline = FAILED_TTL
-            .checked_sub(std::time::Duration::from_millis(1))
-            .expect("failure TTL exceeds one millisecond");
-        assert!(!requests.expire_failed(now + before_deadline));
-        assert!(requests.expire_failed(now + FAILED_TTL));
-        assert_eq!(requests.len(), BtwRequests::CAPACITY);
-    }
 
     #[test]
     fn status_priority_is_active_then_newest_failures_then_waiting() {
@@ -210,22 +168,8 @@ mod tests {
             ["active", "new-failure", "old-failure", "waiting"]
         );
     }
-
-    #[test]
-    fn repeated_failures_have_an_independent_bounded_display_lifetime() {
-        let mut requests = BtwRequests::default();
-        let now = Instant::now();
-        for index in 0..30 {
-            let id = format!("failure-{index}");
-            requests.try_push(id.clone(), "question".to_owned()).expect("free admission");
-            requests.take_next().expect("dispatch");
-            assert!(requests.fail(&id, "failed".to_owned(), now));
-        }
-        assert_eq!(requests.len(), BtwRequests::MAX_FAILED_ROWS);
-        assert!(!requests.is_full());
-        assert!(requests.get("failure-19").is_none());
-        assert!(requests.get("failure-20").is_some());
-        assert!(requests.expire_failed(now + FAILED_TTL));
-        assert_eq!(requests.len(), 0);
-    }
 }
+
+#[cfg(test)]
+#[path = "btw_audit_tests.rs"]
+mod audit_tests;

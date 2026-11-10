@@ -870,3 +870,6 @@ fn unicode_composer_cursor_follows_focus_and_recovers_from_clipped_text() {
     restored.assert_caret_after("TAIL");
     assert!(restored.draft().contains("α界"));
 }
+
+#[path = "live_feedback_audit_tests.rs"]
+mod live_feedback;
