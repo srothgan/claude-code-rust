@@ -2,12 +2,15 @@
 use super::*;
 use crate::agent::model::{McpServerConnectionStatus, McpServerStatus, McpServerStatusConfig};
 use crate::agent::wire::BridgeCommand;
-use crate::app::{App, AppStatus, FullscreenView, SurfaceMode};
+use crate::app::{App, FullscreenView, SurfaceMode};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use tempfile::TempDir;
+
+#[path = "shell_audit_tests.rs"]
+mod shell_audit;
 
 fn attach_test_connection(app: &mut App) -> crate::agent::client::CommandReceiver {
     let (connection, receiver) = crate::agent::client::AgentConnection::test_channel();
@@ -160,121 +163,6 @@ fn notion_mcp_server_status() -> McpServerStatus {
 }
 
 #[test]
-fn open_does_not_force_stop_active_turn() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.cwd_raw = dir.path().to_string_lossy().to_string();
-    app.status = AppStatus::Running;
-
-    open(&mut app).expect("open");
-
-    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
-    assert!(matches!(app.status, AppStatus::Running));
-    assert!(!app.turn.cancel_requested);
-}
-
-#[test]
-fn activate_tab_clears_status_and_error_feedback() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.status_message = Some("saved".into());
-    app.config.last_error = Some("failed".into());
-
-    controller::activate_tab(&mut app, ConfigTab::Plugins);
-
-    assert!(app.config.status_message.is_none());
-    assert!(app.config.last_error.is_none());
-}
-
-#[test]
-fn reopen_clears_feedback_filter_scroll_and_selection_in_current_and_new_sessions() {
-    use crate::agent::{
-        events::ClientEvent,
-        settings::{SettingsApplication, SettingsPersistence, SettingsResult},
-    };
-    for new_session in [false, true] {
-        let (_directory, mut app) = open_settings_test_app();
-        let _commands = attach_test_connection(&mut app);
-        app.session_runtime.session_id = Some("session-1".into());
-        app.config.load_footer(app.global_settings_path.as_deref());
-        let catalog: serde_json::Value =
-            serde_json::from_str(include_str!("../../../tests/fixtures/settings-ui-catalog.json"))
-                .expect("catalog");
-        app.config.snapshot.as_mut().expect("snapshot").catalog.push(
-            serde_json::from_value(
-                catalog["catalog"]
-                    .as_array()
-                    .expect("catalog")
-                    .iter()
-                    .find(|entry| entry["id"] == "model")
-                    .expect("Default model control")
-                    .clone(),
-            )
-            .expect("descriptor"),
-        );
-        app.config.project_footer(app.global_settings_path.as_deref());
-        let mut incoming = app.config.snapshot.clone().expect("loaded settings");
-        incoming.cwd.clone_from(&app.cwd_raw);
-        app.config.settings.select(crate::app::footer::SETTING_ID.into());
-        app.config.settings.position_mut().scroll = 20;
-        app.config.settings.query = "Footer".into();
-        app.config.settings.cursor = 6;
-        app.config.last_error = Some("stale error".into());
-        app.config.status_message = Some("stale status".into());
-        controller::close(&mut app);
-        if new_session {
-            app.bump_session_scope_epoch();
-            app.session_runtime.session_id = Some("session-2".into());
-        }
-        app.input.set_text("/config");
-        crate::app::input_submit::submit_input(&mut app);
-        let request_id = app
-            .config
-            .pending_settings_request
-            .as_ref()
-            .expect("inspection")
-            .request_id()
-            .to_owned();
-        let session_id = app.session_runtime.session_id.as_ref().expect("session").to_string();
-        crate::app::handle_client_event(
-            &mut app,
-            ClientEvent::SettingsResultReceived {
-                session_id,
-                request_id: Some(request_id),
-                result: SettingsResult {
-                    persistence: SettingsPersistence::NotRequested,
-                    application: SettingsApplication::Host,
-                    snapshot: Some(incoming),
-                    error: None,
-                },
-            },
-        );
-        assert!(app.config.last_error.is_none());
-        assert_ne!(app.config.status_message.as_deref(), Some("stale status"));
-        assert!(app.config.settings.query.is_empty());
-        assert_eq!(app.config.settings.focus, SettingsFocus::Content);
-        assert_eq!(app.config.selected_setting().expect("top control").id, "model");
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
-        terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let row = |buffer: &ratatui::buffer::Buffer, y: u16| -> String {
-            (0..100).map(|x| buffer[(x, y)].symbol()).collect()
-        };
-        let find_row = |buffer: &ratatui::buffer::Buffer, label: &str| {
-            (0..30).find(|&y| row(buffer, y).contains(label)).unwrap()
-        };
-        let top = find_row(buffer, "Default model");
-        let text = row(buffer, top);
-        assert!(text.contains('›'));
-        let x = u16::try_from(text.chars().position(|ch| ch == 'D').expect("control label"))
-            .expect("column");
-        assert_eq!(buffer[(x, top)].bg, crate::ui::theme::USER_MSG_BG);
-        assert_eq!(app.config.settings.position().map_or(0, |position| position.scroll), 0);
-    }
-}
-
-#[test]
 fn open_rejects_untrusted_projects() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
@@ -289,92 +177,6 @@ fn open_rejects_untrusted_projects() {
 }
 
 #[test]
-fn tab_navigation_wraps_and_clears_status_message() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.status_message = Some("saved".to_owned());
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
-
-    assert_eq!(app.config.active_tab, ConfigTab::Help);
-    assert!(app.config.status_message.is_none());
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-    assert_eq!(app.config.active_tab, ConfigTab::Mcp);
-}
-
-#[test]
-fn help_tab_left_right_switches_help_sections() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Help;
-    app.config.help_section = ConfigHelpSection::Shortcuts;
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(app.config.help_section, ConfigHelpSection::Commands);
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    assert_eq!(app.config.help_section, ConfigHelpSection::Subagents);
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-    assert_eq!(app.config.help_section, ConfigHelpSection::Commands);
-}
-
-#[test]
-fn plugins_tab_uses_arrow_keys_for_inner_navigation() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Plugins;
-    app.config.settings.select("remembered-setting".into());
-    app.plugins.installed = vec![
-        installed_plugin_entry("frontend-design@claude-plugins-official"),
-        installed_plugin_entry("rust-analyzer-lsp@claude-plugins-official"),
-    ];
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-
-    assert_eq!(
-        app.config.settings.position().expect("position").selected.as_deref(),
-        Some("remembered-setting")
-    );
-    assert_eq!(app.config.active_tab, ConfigTab::Plugins);
-    assert_eq!(app.plugins.installed_selected_index, 1);
-    assert_eq!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Plugins);
-    assert_eq!(app.plugins.installed_search_query, "");
-    assert_eq!(app.plugins.plugins_search_query, "");
-    assert!(app.config.overlay.is_none());
-    // Cross both wrap boundaries and use the content reached after navigation.
-    app.plugins.session_plugins = vec![crate::agent::types::SessionPlugin {
-        name: "local-tools".into(),
-        path: "session-folder".into(),
-        source: None,
-        version: None,
-    }];
-    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // Installed
-    handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // Session
-    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(
-        app.config.plugin_source_input_overlay().expect("session folder action").draft,
-        "session-folder"
-    );
-    handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // Installed
-    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(
-        app.config
-            .installed_plugin_actions_overlay()
-            .expect("remembered installed target")
-            .plugin_id,
-        "rust-analyzer-lsp@claude-plugins-official"
-    );
-}
-
-#[test]
 fn plugins_inner_tab_switch_does_not_trigger_refresh() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Plugins;
@@ -385,41 +187,6 @@ fn plugins_inner_tab_switch_does_not_trigger_refresh() {
 
     assert_eq!(app.plugins.active_tab, crate::app::plugins::PluginsViewTab::Plugins);
     assert!(!app.plugins.loading);
-}
-
-#[test]
-fn installed_plugin_enter_opens_actions_overlay() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Plugins;
-    app.cwd_raw = "C:\\work\\project-a".to_owned();
-    app.plugins.installed = vec![installed_plugin_entry_with_scope(
-        "frontend-design@claude-plugins-official",
-        "local",
-        Some("C:\\work\\project-a"),
-    )];
-    app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
-        plugin_id: "frontend-design@claude-plugins-official".to_owned(),
-        name: "frontend-design".to_owned(),
-        description: Some("Create distinctive interfaces".to_owned()),
-        marketplace_name: Some("claude-plugins-official".to_owned()),
-        version: Some("1.0.0".to_owned()),
-        install_count: Some(42),
-        source: None,
-    }];
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let overlay = app.config.installed_plugin_actions_overlay().expect("installed actions overlay");
-    assert_eq!(overlay.title, "Frontend Design From Claude Plugins Official");
-    assert_eq!(overlay.description, "Create distinctive interfaces");
-    assert_eq!(
-        overlay.actions,
-        vec![
-            InstalledPluginActionKind::Disable,
-            InstalledPluginActionKind::Update,
-            InstalledPluginActionKind::Uninstall,
-        ]
-    );
 }
 
 #[test]
@@ -450,36 +217,6 @@ fn installed_plugin_overlay_uses_up_down_and_escape() {
 }
 
 #[test]
-fn plugin_enter_opens_install_overlay() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Plugins;
-    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
-    app.plugins.marketplace = vec![crate::app::plugins::MarketplaceEntry {
-        plugin_id: "frontend-design@claude-plugins-official".to_owned(),
-        name: "frontend-design".to_owned(),
-        description: Some("Create distinctive interfaces".to_owned()),
-        marketplace_name: Some("claude-plugins-official".to_owned()),
-        version: Some("1.0.0".to_owned()),
-        install_count: Some(42),
-        source: None,
-    }];
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let overlay = app.config.plugin_install_overlay().expect("Plugin install overlay");
-    assert_eq!(overlay.title, "Frontend Design");
-    assert_eq!(overlay.description, "Create distinctive interfaces");
-    assert_eq!(
-        overlay.actions,
-        vec![
-            PluginInstallActionKind::User,
-            PluginInstallActionKind::Project,
-            PluginInstallActionKind::Local,
-        ]
-    );
-}
-
-#[test]
 fn plugin_install_overlay_uses_up_down_and_escape() {
     let (_dir, mut app) = open_settings_test_app();
     app.config.active_tab = ConfigTab::Plugins;
@@ -506,32 +243,6 @@ fn plugin_install_overlay_uses_up_down_and_escape() {
     handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert!(app.config.overlay.is_none());
-}
-
-#[test]
-fn marketplace_enter_opens_actions_overlay_for_configured_marketplace() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Plugins;
-    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Marketplace;
-    app.plugins.marketplaces = vec![crate::app::plugins::MarketplaceSourceEntry {
-        name: "claude-plugins-official".to_owned(),
-        source: Some("github".to_owned()),
-        repo: Some("anthropics/claude-plugins-official".to_owned()),
-    }];
-
-    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    let overlay = app.config.marketplace_actions_overlay().expect("marketplace actions overlay");
-    assert_eq!(overlay.title, "Claude Plugins Official");
-    assert!(overlay.description.contains("Source: github"));
-    assert!(overlay.description.contains("Repo: anthropics/claude-plugins-official"));
-    assert_eq!(
-        overlay.actions,
-        vec![
-            crate::app::config::MarketplaceActionKind::Update,
-            crate::app::config::MarketplaceActionKind::Remove,
-        ]
-    );
 }
 
 #[test]
@@ -656,21 +367,6 @@ fn marketplace_remove_requires_confirmation_and_escape_restores_previous_overlay
 
     let restored = app.config.marketplace_actions_overlay().expect("restored marketplace overlay");
     assert_eq!(restored.selected_index, 1);
-}
-
-#[test]
-fn plugins_search_accepts_paste_when_focused() {
-    let (_dir, mut app) = open_settings_test_app();
-    app.config.active_tab = ConfigTab::Plugins;
-    app.plugins.active_tab = crate::app::plugins::PluginsViewTab::Plugins;
-    app.plugins.search_focused = true;
-
-    crate::app::events::handle_terminal_event(
-        &mut app,
-        Event::Paste("frontend-design\nsupabase".into()),
-    );
-
-    assert_eq!(app.plugins.plugins_search_query, "frontend-design supabase");
 }
 
 fn press(app: &mut App, code: KeyCode) {
@@ -1796,19 +1492,6 @@ fn refresh_mcp_snapshot_clears_existing_servers_before_request() {
     );
     assert!(app.mcp.servers.is_empty());
     assert!(app.mcp.in_flight);
-}
-
-#[test]
-fn refresh_mcp_snapshot_if_needed_skips_outside_mcp_tab() {
-    let (_dir, mut app) = open_settings_test_app();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-    app.config.active_tab = ConfigTab::Status;
-
-    super::mcp::refresh_mcp_snapshot_if_needed(&mut app);
-
-    assert!(rx.try_recv().is_err());
-    assert!(!app.mcp.in_flight);
 }
 
 #[test]
