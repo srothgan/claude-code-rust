@@ -596,7 +596,20 @@ readline
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
         } else streamReply(message.message_uuid);
         break;
+      case 'get_mcp_snapshot':
+        if (SCENARIO.startsWith('mcp-remove-')) sendMcpRemovalSnapshot('mcp_status');
+        break;
       case 'reload_plugins': {
+        if (SCENARIO.startsWith('mcp-remove-')) {
+          const confirmation = setInterval(() => {
+            if (!fs.existsSync(RELEASE_FILE) || fs.readFileSync(RELEASE_FILE, 'utf8') !== 'mcp-confirm') return;
+            clearInterval(confirmation);
+            sendMcpRemovalSnapshot('reload_plugins');
+            send({ event: 'runtime_reload_completed', session_id: SESSION, request_id: message.request_id, error_count: 0 });
+          }, 20);
+          break;
+        }
+
         if (SCENARIO === 'hold-local-plugin' && !message.force) {
           send({ event: 'runtime_reload_held', session_id: SESSION, request_id: message.request_id, error_count: 0,
             cache_impact: { mcp_servers_added: ['plugin:local-fixture:inspect'], mcp_servers_removed: [], invalid_server_name_count: 0 } });
@@ -707,3 +720,15 @@ readline
     }
   })
   .on('close', () => process.exit(0));
+
+// Each scope has an independent document, so a wrong CLI scope cannot pass by
+// mutating the only fixture. Conflicting legacy scope exercises source precedence.
+function sendMcpRemovalSnapshot(source) {
+  const scope = SCENARIO.split('-')[2];
+  const file = scope === 'user' ? path.join(process.env.CLAUDE_CONFIG_DIR, 'user-mcp.json')
+    : path.join(cwd, scope === 'project' ? '.mcp.json' : 'local-mcp.json');
+  const document = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const servers = Object.keys(document.mcpServers).map(name => ({ name, status: source === 'reload_plugins' ? 'disabled' : 'connected', source: scope,
+    scope: scope === 'user' ? 'project' : 'user', config: { type: 'stdio', command: document.mcpServers[name].command }, tools: [] }));
+  send({ event: 'mcp_snapshot', session_id: SESSION, source, servers, auth_capabilities: { authenticate: false, clear_auth: false, submit_oauth_callback_url: false } });
+}

@@ -28,8 +28,7 @@ pub(crate) use overlays::{
 };
 pub(crate) use runtime_mcp::{
     installed_mcp_plugin_for_runtime_server, is_plugin_mcp_runtime_server_name,
-    is_stale_plugin_mcp_runtime_server, open_plugin_for_mcp_server,
-    session_mcp_plugin_for_runtime_server,
+    open_plugin_for_mcp_server, session_mcp_plugin_for_runtime_server,
 };
 pub(crate) use selection::{
     clamp_selection, filtered_marketplace_plugins, ordered_installed, search_enabled,

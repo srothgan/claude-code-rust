@@ -167,6 +167,7 @@ fn execute_mcp_server_action(app: &mut App, server_name: &str, action: McpServer
                 return;
             };
             remove_mcp_server_from_config(app, server_name, scope);
+            return;
         }
     }
 

@@ -2455,3 +2455,58 @@ fn picker_list_and_reader_activation_carry_the_selected_user_and_launch_options(
         assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
     }
 }
+
+#[test]
+fn reported_dynamic_removal_is_reversed_by_a_contradictory_authoritative_snapshot() {
+    use crate::agent::types::{McpSetServersResult, McpSnapshotSource};
+    use crate::app::config::mcp::{McpConfigScope, remove_mcp_server_from_config};
+    let mut app = make_test_app();
+    app.session_runtime.session_id = Some("guard-session".into());
+    let (conn, mut rx) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(conn));
+    let target = model::McpServerStatus {
+        name: "chosen".into(),
+        status: model::McpServerConnectionStatus::Connected,
+        server_info: None,
+        error: None,
+        config: None,
+        scope: Some("user".into()),
+        source: Some("dynamic".into()),
+        tools: vec![],
+    };
+    app.mcp.servers = vec![target.clone()];
+    remove_mcp_server_from_config(&mut app, "chosen", McpConfigScope::Dynamic);
+    assert!(matches!(
+        rx.try_recv().unwrap().command,
+        crate::agent::wire::BridgeCommand::McpSetServers { .. }
+    ));
+    handle_client_event(
+        &mut app,
+        ClientEvent::McpSetServersResult {
+            session_id: "guard-session".into(),
+            result: McpSetServersResult { removed: vec!["chosen".into()], ..Default::default() },
+        },
+    );
+    assert!(app.mcp.servers.is_empty());
+    for (session, source, expected_present) in [
+        ("stale-session", McpSnapshotSource::McpSetServers, false),
+        ("guard-session", McpSnapshotSource::McpStatus, false),
+        ("guard-session", McpSnapshotSource::McpSetServers, true),
+    ] {
+        handle_client_event(
+            &mut app,
+            ClientEvent::McpSnapshotReceived {
+                session_id: session.into(),
+                servers: vec![target.clone()],
+                auth_capabilities: model::McpAuthCapabilities::default(),
+                source: Some(source),
+                error: None,
+            },
+        );
+        assert_eq!(app.mcp.servers.contains(&target), expected_present);
+        assert_eq!(app.mcp.removed_config_servers.is_empty(), expected_present);
+    }
+    let error = app.mcp.last_error.as_ref().unwrap();
+    assert!(error.contains("chosen") && error.contains("confirming"));
+    assert!(rx.try_recv().is_err());
+}

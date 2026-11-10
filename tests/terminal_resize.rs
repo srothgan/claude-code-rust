@@ -253,6 +253,18 @@ impl TerminalTest {
         if has_initial_prompt {
             std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}"#).expect("saved settings");
         }
+        if scenario.starts_with("mcp-remove-") {
+            for file in [
+                profile.join("user-mcp.json"),
+                project.join(".mcp.json"),
+                project.join("local-mcp.json"),
+            ] {
+                std::fs::write(file, r#"{"mcpServers":{"target":{"command":"fixture-target"},"sibling":{"command":"fixture-sibling"}},"unrelated":"preserve"}"#).expect("isolated MCP fixture");
+            }
+            if scenario.ends_with("failure") {
+                std::fs::write(profile.join("mcp-fail"), "deny").expect("CLI failure control");
+            }
+        }
         let bridge = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-bridge.js");
         let runtime = which::which("bun")
             .or_else(|_| which::which("node"))
@@ -3969,3 +3981,6 @@ fn initial_connection_preserves_draft_without_purge_and_replacement_replays_only
     assert_eq!(test.prompts()[1]["session_id"], "replacement-session");
     test.shutdown();
 }
+
+#[path = "support/terminal_mcp_actions.rs"]
+mod mcp_actions;

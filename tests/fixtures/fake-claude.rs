@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// A native fake `claude auth login` executable. Never uses real credentials.
+// A native fake CLI for isolated auth, plugin inventory, and MCP removal tests.
 
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -22,6 +22,36 @@ fn main() -> io::Result<()> {
             "{}",
             if args.iter().any(|arg| arg == "--available") { r#"{"available":[]}"# } else { "[]" }
         );
+        return Ok(());
+    }
+    if std::env::var("FAKE_AUTH_MODE").is_ok_and(|mode| mode.starts_with("mcp-")) {
+        let profile =
+            PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").expect("isolated profile"));
+        let cwd = std::env::current_dir()?;
+        let mut journal = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(profile.join("mcp-cli-calls"))?;
+        writeln!(journal, "{}\n{}", args.join("\t"), cwd.display())?;
+        assert_eq!(&args[..3], &["mcp", "remove", "--scope"]);
+        assert_eq!(args.len(), 5);
+        assert_eq!(args[4], "target");
+        let file = match args[3].as_str() {
+            "user" => profile.join("user-mcp.json"),
+            "project" => cwd.join(".mcp.json"),
+            "local" => cwd.join("local-mcp.json"),
+            scope => panic!("unexpected scope {scope}"),
+        };
+        if profile.join("mcp-fail").exists() {
+            eprintln!("FIXTURE_MCP_WRITE_DENIED");
+            std::process::exit(7);
+        }
+        // Deliberately independent, minimal fixture mutation: the CLI owns these
+        // documents; the app may only pass the exact scope/name and working directory.
+        let before = std::fs::read_to_string(&file)?;
+        let entry = r#""target":{"command":"fixture-target"},"#;
+        assert!(before.contains(entry), "target must exist in chosen scope");
+        std::fs::write(file, before.replacen(entry, "", 1))?;
         return Ok(());
     }
     assert_eq!(args, ["auth", "login"]);

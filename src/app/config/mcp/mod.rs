@@ -36,8 +36,6 @@ pub(crate) use removal::{
     apply_pending_dynamic_mcp_removal_confirmation, handle_mcp_set_servers_result,
     pending_dynamic_mcp_removal_confirmation_from_snapshot, remove_mcp_server_from_config,
 };
-#[cfg(test)]
-pub(crate) use snapshot::request_mcp_snapshot;
 pub(crate) use snapshot::{
     apply_removed_config_mcp_server_confirmation_failures, filter_removed_config_mcp_servers,
     filter_stale_plugin_mcp_servers, reconcile_removed_config_mcp_server_guards,

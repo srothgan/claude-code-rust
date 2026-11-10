@@ -319,3 +319,44 @@ fn mcp_details_follow_the_chosen_server_and_keep_enabled_and_disabled_actions_di
     let lines = rows(&b, boxed(&b, "chosen-server"));
     selected(&lines, "Reconnect server");
 }
+
+#[test]
+fn auth_availability_badges_stay_associated_with_their_action_rows() {
+    for bits in 0..8 {
+        for proxy in [false, true] {
+            let mut app = app(ConfigTab::Mcp);
+            app.mcp.auth_capabilities = model::McpAuthCapabilities {
+                authenticate: bits & 1 != 0,
+                submit_oauth_callback_url: bits & 2 != 0,
+                clear_auth: bits & 4 != 0,
+            };
+            app.mcp.servers = vec![model::McpServerStatus {
+                name: "chosen-auth-server".into(),
+                status: model::McpServerConnectionStatus::NeedsAuth,
+                server_info: None,
+                error: None,
+                scope: Some("session".into()),
+                source: None,
+                tools: vec![],
+                config: if proxy {
+                    Some(model::McpServerStatusConfig::ClaudeaiProxy {
+                        url: "https://proxy.invalid".into(),
+                        id: "proxy".into(),
+                        timeout: None,
+                    })
+                } else {
+                    None
+                },
+            }];
+            key(&mut app, KeyCode::Enter);
+            let b = draw(&mut app, 100, 32);
+            let lines = rows(&b, boxed(&b, "chosen-auth-server"));
+            assert_eq!(
+                lines[find(&lines, "Authenticate")].contains("not available"),
+                bits & 3 != 3 || proxy
+            );
+            assert_eq!(lines[find(&lines, "Clear auth")].contains("not available"), bits & 4 == 0);
+            assert!(!lines[find(&lines, "Reconnect server")].contains("not available"));
+        }
+    }
+}

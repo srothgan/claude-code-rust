@@ -44,13 +44,6 @@ pub(crate) fn installed_mcp_plugin_for_runtime_server<'a>(
         .find(|entry| plugin_entry_matches_runtime_name(entry, runtime_name.plugin_name))
 }
 
-pub(crate) fn is_stale_plugin_mcp_runtime_server(app: &App, server_name: &str) -> bool {
-    is_plugin_mcp_runtime_server_name(server_name)
-        && app.plugins.last_inventory_refresh_at.is_some()
-        && installed_mcp_plugin_for_runtime_server(app, server_name).is_none()
-        && session_mcp_plugin_for_runtime_server(app, server_name).is_none()
-}
-
 pub(crate) fn session_mcp_plugin_for_runtime_server<'a>(
     app: &'a App,
     server_name: &str,
