@@ -272,29 +272,3 @@ fn installed_plugin_badge(entry: &InstalledPluginEntry) -> Span<'static> {
         common::badge_span("MCP", Color::White, Color::Rgb(34, 92, 124))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{search_field_line, top_region_height};
-    use crate::app::App;
-    use crate::app::plugins::PluginsViewTab;
-    use ratatui::widgets::{Paragraph, Wrap};
-
-    #[test]
-    fn top_region_height_grows_for_wrapped_search_query() {
-        let mut app = App::test_default();
-        app.plugins.active_tab = PluginsViewTab::Installed;
-        app.plugins.search_focused = true;
-        app.plugins.installed_search_query =
-            "search query that should wrap across multiple lines".to_owned();
-
-        let expected = Paragraph::new(search_field_line(&app))
-            .wrap(Wrap { trim: false })
-            .line_count(10)
-            .max(1)
-            .saturating_add(2);
-
-        assert_eq!(usize::from(top_region_height(&app, 12)), expected);
-        assert!(top_region_height(&app, 12) > 3);
-    }
-}

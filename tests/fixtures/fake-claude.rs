@@ -7,6 +7,14 @@ use std::time::Duration;
 
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if std::env::var("FAKE_AUTH_MODE").as_deref() == Ok("persistent-plugins") {
+        let runtime = std::env::var_os("FAKE_PLUGIN_RUNTIME").expect("fixture runtime");
+        let status = std::process::Command::new(runtime)
+            .arg(std::env::var_os("FAKE_PLUGIN_SCRIPT").expect("fixture script"))
+            .args(&args)
+            .status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
     if std::env::var("FAKE_AUTH_MODE").as_deref() == Ok("plugin-inventory") {
         assert!(
             [

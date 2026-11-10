@@ -250,8 +250,16 @@ impl TerminalTest {
                 .expect("app preferences fixture");
         }
         std::fs::create_dir_all(&project).expect("project");
+        let project = if auth_mode == Some("persistent-plugins") {
+            plugin_actions::fixture_project(&project)
+        } else {
+            project
+        };
         if has_initial_prompt {
             std::fs::write(profile.join("settings.json"), r#"{"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}"#).expect("saved settings");
+        }
+        if auth_mode == Some("persistent-plugins") {
+            plugin_actions::setup(&profile, &project);
         }
         if scenario.starts_with("mcp-remove-") {
             for file in [
@@ -386,6 +394,17 @@ impl TerminalTest {
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
         command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
         command.env("FAKE_AUTH_MODE", mode);
+        if mode == "persistent-plugins" {
+            command.env(
+                "FAKE_PLUGIN_RUNTIME",
+                which::which("node").or_else(|_| which::which("bun")).expect("fixture runtime"),
+            );
+            command.env(
+                "FAKE_PLUGIN_SCRIPT",
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/persistent-plugin-cli.cjs"),
+            );
+        }
         #[cfg(windows)]
         if mode == "spawn-error" {
             use std::os::windows::fs::OpenOptionsExt;
@@ -3984,3 +4003,6 @@ fn initial_connection_preserves_draft_without_purge_and_replacement_replays_only
 
 #[path = "support/terminal_mcp_actions.rs"]
 mod mcp_actions;
+
+#[path = "support/terminal_plugin_actions.rs"]
+mod plugin_actions;

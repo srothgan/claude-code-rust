@@ -725,3 +725,6 @@ fn hold_persisted_runtime(app: &mut App, request: &str) {
         assert!(body.lines().any(|line| line.contains(label) && line.contains(value)), "{body}");
     }
 }
+
+#[path = "persistent_audit_tests.rs"]
+mod persistent_audit;

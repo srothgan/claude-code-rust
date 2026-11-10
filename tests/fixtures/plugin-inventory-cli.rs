@@ -33,6 +33,10 @@ fn main() -> ExitCode {
             fs::copy("installed-after.json", "installed.json").unwrap();
             return ExitCode::SUCCESS;
         }
+        ["plugin", "marketplace", "add", "team/new-market", "--scope", "user"] => {
+            fs::copy("sources-after.json", "sources.json").unwrap();
+            return ExitCode::SUCCESS;
+        }
         _ => {
             eprintln!("unexpected fixture command: {args:?}");
             return ExitCode::from(25);
