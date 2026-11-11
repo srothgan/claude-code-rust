@@ -268,6 +268,48 @@ fn stop_is_sent_for_a_running_subagent_and_only_the_lifecycle_reports_it_stopped
 }
 
 #[test]
+fn ctrl_c_closes_the_saved_agent_reader_without_stopping_or_submitting() {
+    let (mut app, mut commands) = connected_app();
+    app.status = crate::app::AppStatus::Ready;
+    app.input.set_text("agents draft 界");
+    lifecycle(&mut app, vec![completed("target")]);
+    super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
+    listed(&mut app, &["target"]);
+    let request = expect_read(&mut commands, "target");
+    handle_client_event(&mut app, answer("target", &request, vec![reply("AGENT_READER_CEDAR")]));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.agents.transcript.is_some());
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert!(app.agents.transcript.is_none());
+    assert_eq!(status(&app, "target"), SubagentStatus::Completed);
+    assert!(!app.shutdown_requested());
+    assert_eq!(app.input.text(), "agents draft 界");
+    expect_commands(&mut commands, &[]);
+    super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
+    assert!(app.agents.transcript.is_none(), "reopen must show the list, not the cancelled reader");
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    handle_terminal_event(&mut app, Event::Paste("!".into()));
+    crate::app::finalize_pending_paste_event(&mut app);
+    crate::app::test_support::press(&mut app, KeyCode::Enter);
+    crate::app::test_support::expect_session_prompt(
+        &mut commands,
+        SESSION,
+        "agents draft 界!",
+        &[],
+        &[],
+    );
+}
+
+#[test]
 fn only_a_listed_id_has_a_transcript_and_reading_it_leaves_status_alone() {
     for completed_first in [false, true] {
         let (mut app, mut commands) = connected_app();

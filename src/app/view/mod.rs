@@ -37,6 +37,8 @@ pub fn set_surface_mode(app: &mut App, next: SurfaceMode) {
 
     let previous_surface = app.surface_mode;
     super::flush_held_input(app);
+    // Accepted paste belongs to the draft even when the detector held no input.
+    super::finalize_pending_paste_event(app);
     clear_transient_view_state(app);
     app.surface_mode = next;
     app.surface_dirty.mark_view_transition(previous_surface, next);

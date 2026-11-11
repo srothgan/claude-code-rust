@@ -858,6 +858,10 @@ fn unicode_composer_cursor_follows_focus_and_recovers_from_clipped_text() {
         let blocked = paint_composer_fixture(&mut app, &mut terminal, area);
         assert!(!blocked.backend.cursor_visible());
         assert_eq!(app.input.text(), draft);
+        crate::app::config::open_tab(&mut app, crate::app::ConfigTab::Help).unwrap();
+        crate::app::handle_terminal_event(&mut app, crossterm::event::Event::Key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Esc, crossterm::event::KeyModifiers::NONE)));
+        let still_focused = paint_composer_fixture(&mut app, &mut terminal, area);
+        assert!(!still_focused.backend.cursor_visible(), "view return must preserve real interaction focus");
         resolve_composer_permission(&mut app);
         let restored = paint_composer_fixture(&mut app, &mut terminal, area);
         assert_eq!(restored.backend.cursor_position(), position);
@@ -869,6 +873,19 @@ fn unicode_composer_cursor_follows_focus_and_recovers_from_clipped_text() {
     let restored = draw_composer_fixture(&mut app, 60, 18);
     restored.assert_caret_after("TAIL");
     assert!(restored.draft().contains("α界"));
+
+    let mut input_owned = App::test_default();
+    input_owned.input.set_text("round trip 界 TAIL");
+    let mut pending = request_composer_permission(&mut input_owned);
+    input_owned.release_focus_target(FocusTarget::Permission);
+    crate::app::config::open_tab(&mut input_owned, crate::app::ConfigTab::Help).unwrap();
+    crate::app::handle_terminal_event(&mut input_owned, crossterm::event::Event::Key(crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Esc, crossterm::event::KeyModifiers::NONE)));
+    draw_composer_fixture(&mut input_owned, 80, 18).assert_caret_after("TAIL");
+    crate::app::handle_terminal_event(&mut input_owned, crossterm::event::Event::Paste("!".into()));
+    crate::app::finalize_pending_paste_event(&mut input_owned);
+    assert_eq!(input_owned.input.text(), "round trip 界 TAIL!");
+    draw_composer_fixture(&mut input_owned, 80, 18).assert_caret_after("TAIL!");
+    crate::app::test_support::assert_pending(&mut pending);
 }
 
 #[path = "live_feedback_audit_tests.rs"]

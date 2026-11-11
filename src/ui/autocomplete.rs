@@ -350,6 +350,31 @@ mod tests {
             depth: path.matches('/').count(),
         }
     }
+
+    fn wait_for_mention(app: &mut App, expected: &[&str]) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            file_index::drain_events(app);
+            let mention = app.mention.as_ref().expect("active mention");
+            let ready = if expected.is_empty() {
+                mention.candidates.is_empty()
+            } else {
+                mention.candidates.len() == expected.len()
+                    && expected.iter().all(|path| {
+                        mention.candidates.iter().any(|candidate| candidate.rel_path == *path)
+                    })
+            };
+            if ready {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mention result did not arrive: {:?}, expected {expected:?}",
+                mention.placeholder_message()
+            );
+            std::thread::yield_now();
+        }
+    }
     fn paint_hints(
         app: &App,
         terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
@@ -501,6 +526,49 @@ mod tests {
         assert!(!rows[0].contains("alpha") && !rows[0].contains("beta"));
         mention::deactivate(&mut app);
         assert!(paint_hints(&app, &mut terminal).is_empty());
+
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["cedar.rs", "elm.rs"] {
+            std::fs::write(directory.path().join(name), "fixture").unwrap();
+        }
+        let mut app = App::test_default();
+        app.cwd_raw = directory.path().to_string_lossy().into_owned();
+        app.status = crate::app::AppStatus::Ready;
+        file_index::restart(&mut app);
+        app.input.set_text("open @rs keep suffix");
+        app.input.set_cursor(0, 8);
+        mention::sync_with_cursor(&mut app);
+        wait_for_mention(&mut app, &["cedar.rs", "elm.rs"]);
+        let initially_cedar =
+            paint_hints(&app, &mut terminal).iter().any(|row| row.contains("> cedar.rs"));
+        mention::move_down(&mut app);
+        let selected_before_clear = paint_hints(&app, &mut terminal);
+        let nonfirst = if initially_cedar { "> elm.rs" } else { "> cedar.rs" };
+        assert!(selected_before_clear.iter().any(|row| row.contains(nonfirst)));
+        app.input.set_text("open @not-a-match keep suffix");
+        app.input.set_cursor(0, 17);
+        mention::sync_with_cursor(&mut app);
+        wait_for_mention(&mut app, &[]);
+        let empty = paint_hints(&app, &mut terminal);
+        assert!(empty.iter().all(|row| !row.contains("> ")
+            && !row.contains("cedar.rs")
+            && !row.contains("elm.rs")));
+        mention::confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "open @not-a-match keep suffix");
+        app.input.set_text("open @rs keep suffix");
+        app.input.set_cursor(0, 8);
+        mention::sync_with_cursor(&mut app);
+        wait_for_mention(&mut app, &["cedar.rs", "elm.rs"]);
+        for _ in 0..2 {
+            if paint_hints(&app, &mut terminal).iter().any(|row| row.contains("> cedar.rs")) {
+                break;
+            }
+            mention::move_down(&mut app);
+        }
+        assert!(paint_hints(&app, &mut terminal).iter().any(|row| row.contains("> cedar.rs")));
+        mention::confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "open @'cedar.rs' keep suffix");
+        assert!(app.pending_submit.is_none());
     }
     #[test]
     fn completion_window_follows_navigation_and_confirms_the_displayed_target() {
@@ -568,6 +636,55 @@ mod tests {
         slash::confirm_selection(&mut app);
         assert_eq!(app.input.text(), format!("{} ", names[last]));
         assert!(app.pending_submit.is_none());
+
+        assert_wrapped_completion_targets(&names, &mut terminal);
+    }
+    fn assert_wrapped_completion_targets(
+        names: &[String],
+        terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) {
+        for reverse in [false, true] {
+            let mut app = App::test_default();
+            app.input.set_text("/");
+            slash::sync_with_cursor(&mut app);
+            app.slash.visible_mut().unwrap().candidates = names
+                .iter()
+                .map(|name| slash::SlashCandidate {
+                    insert_value: name.clone(),
+                    primary: name.clone(),
+                    secondary: None,
+                })
+                .collect();
+            let expected = if reverse {
+                slash::move_up(&mut app);
+                names.last().unwrap()
+            } else {
+                for _ in 1..names.len() {
+                    slash::move_down(&mut app);
+                }
+                assert!(
+                    paint_hints(&app, terminal)
+                        .iter()
+                        .any(|row| row.contains(&format!("> {}", names.last().unwrap())))
+                );
+                slash::move_down(&mut app);
+                &names[0]
+            };
+            let rows = paint_hints(&app, terminal);
+            assert!(
+                rows.iter().any(|row| row.contains(&format!("> {expected}"))),
+                "wrapped selection invisible: {rows:?}"
+            );
+            let neighbor = if reverse { &names[names.len() - 2] } else { &names[1] };
+            assert!(
+                rows.iter().any(|row| row.contains(neighbor)),
+                "selection lost its neighboring rows: {rows:?}"
+            );
+            assert!(rows.len() <= AUTOCOMPLETE_VISIBLE_ROWS);
+            slash::confirm_selection(&mut app);
+            assert_eq!(app.input.text(), format!("{expected} "));
+            assert!(app.pending_submit.is_none());
+        }
     }
     fn assert_candidate_emphasis(
         line: &ratatui::text::Line<'_>,

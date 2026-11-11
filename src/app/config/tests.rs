@@ -87,6 +87,37 @@ fn rename_commands(rx: &mut crate::agent::client::CommandReceiver) -> Vec<Bridge
         .collect()
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn leaving_config_discards_unsaved_rename_and_reopens_the_current_title() {
+    tokio::task::LocalSet::new().run_until(async {
+        let (dir, mut app, mut commands) = app_with_status_connection();
+        let transcript = save_transcript(&dir, "session-1");
+        let before = std::fs::read(&transcript).unwrap();
+        app.input.set_text("unsent rename-neighbor 界");
+        open_tab(&mut app, ConfigTab::Status).unwrap();
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.config.session_rename_overlay().unwrap().draft, "Current custom title");
+        assert!(handle_paste(&mut app, " UNSAVED_ORCHID"));
+        assert_eq!(app.config.session_rename_overlay().unwrap().draft, "Current custom title UNSAVED_ORCHID");
+        crate::app::handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        assert!(rename_commands(&mut commands).is_empty());
+        assert_eq!(std::fs::read(&transcript).unwrap(), before);
+        assert_eq!(app.active_session_custom_title(), Some("Current custom title"));
+        assert_eq!(app.input.text(), "unsent rename-neighbor 界");
+        open_tab(&mut app, ConfigTab::Status).unwrap();
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.config.session_rename_overlay().unwrap().draft, "Current custom title");
+        assert!(app.config.last_error.is_none());
+        assert!(app.config.overlay_message.is_none());
+        assert!(handle_paste(&mut app, "!"));
+        press(&mut app, KeyCode::Enter);
+        let sent = rename_commands(&mut commands);
+        assert!(matches!(&sent[..], [BridgeCommand::RenameSession { session_id, title }] if session_id == "session-1" && title == "Current custom title!"), "{sent:?}");
+        assert_eq!(app.input.text(), "unsent rename-neighbor 界");
+    }).await;
+}
+
 fn connected_mcp_server_status(
     name: &str,
     scope: &str,
