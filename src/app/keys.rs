@@ -169,6 +169,16 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
     !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) || ctrl_alt
 }
 
+/// Raw character/Return records may still be one clipboard burst. Its cursor
+/// relationship decides continuation once the detector publishes the payload.
+pub(super) fn can_extend_paste_burst(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(ch) => !ch.is_control() && is_printable_text_modifiers(key.modifiers),
+        KeyCode::Enter => key.modifiers.is_empty(),
+        _ => false,
+    }
+}
+
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
     let input_version_before = app.input.version;
 
@@ -259,6 +269,10 @@ fn handle_chat_input_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 }
 
 fn execute_key_action(app: &mut App, action: KeyAction, key: KeyEvent) -> KeyOutcome {
+    // A character mapped to an action is an intentional key, not burst text.
+    if matches!(key.code, KeyCode::Char(_)) {
+        app.paste.clear_active_session();
+    }
     if action == KeyAction::Input(InputAction::MoveCharLeft)
         && key.code == KeyCode::Left
         && open_agents_from_empty_composer(app)
@@ -627,6 +641,7 @@ fn handle_submit(app: &mut App) -> bool {
         return true;
     }
 
+    app.paste.clear_active_session();
     if !slash::prepare_submit(app) {
         return true;
     }
@@ -800,7 +815,7 @@ fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     }
     reclaim_input_from_inline_prompt_if_needed(app);
 
-    let now = super::input_event_now();
+    let now = super::input_clock::received_at();
     match app.paste.burst.on_char(c, now) {
         CharAction::Consumed => {
             // Character absorbed into burst buffer. Don't insert.

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Deliver an OS resize event without changing the tested terminal's dimensions.
+// Deliver an OS resize event or native Windows keyboard records to an owned child.
 // This executable has no application dependency or test protocol endpoint.
 use std::io;
 use std::path::PathBuf;
@@ -15,14 +15,18 @@ fn main() -> io::Result<()> {
         .next()
         .map(PathBuf::from)
         .ok_or_else(|| io::Error::other("expected delivery report path"))?;
-    let details = deliver(pid)?;
+    let keys = args.next().map(PathBuf::from);
+    let details = deliver(pid, keys.as_deref())?;
     // AttachConsole may replace standard handles. Use a file so fixture
     // diagnostics can never become application terminal content or NDJSON.
     std::fs::write(report, details)
 }
 
 #[cfg(unix)]
-fn deliver(pid: u32) -> io::Result<String> {
+fn deliver(pid: u32, keys: Option<&std::path::Path>) -> io::Result<String> {
+    if keys.is_some() {
+        return Err(io::Error::other("Unix keyboard tests use the PTY byte stream"));
+    }
     unsafe extern "C" {
         fn kill(pid: i32, signal: i32) -> i32;
     }
@@ -41,7 +45,7 @@ fn deliver(pid: u32) -> io::Result<String> {
 }
 
 #[cfg(windows)]
-fn deliver(pid: u32) -> io::Result<String> {
+fn deliver(pid: u32, keys: Option<&std::path::Path>) -> io::Result<String> {
     use std::ffi::c_void;
     use std::os::windows::io::AsRawHandle;
 
@@ -69,8 +73,19 @@ fn deliver(pid: u32) -> io::Result<String> {
         maximum: Coord,
     }
     #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct KeyRecord {
+        down: i32,
+        repeat: u16,
+        virtual_key: u16,
+        scan: u16,
+        unicode: u16,
+        modifiers: u32,
+    }
+    #[repr(C)]
     union EventData {
         size: Coord,
+        key: KeyRecord,
         storage: [u32; 4],
     }
     #[repr(C)]
@@ -122,21 +137,81 @@ fn deliver(pid: u32) -> io::Result<String> {
     if unsafe { GetConsoleScreenBufferInfo(output.as_raw_handle(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    let mut event = InputRecord { kind: 0x0004, event: EventData { storage: [0; 4] } };
-    event.event.size = info.size;
+    let events = if let Some(path) = keys {
+        // Encode physical keys rather than sending unsupported CSI sequences
+        // through ConPTY. A logical CRLF line break is one native Return key.
+        let source = std::fs::read_to_string(path)?;
+        let mut remaining = source.as_str();
+        let mut events = Vec::new();
+        while !remaining.is_empty() {
+            let specials: &[(&str, u16, u16, u32)] = &[
+                ("\x1b[13;2u", 0x0d, 0x0d, 0x10),
+                ("\x1b[D", 0x25, 0, 0),
+                ("\x1b[C", 0x27, 0, 0),
+                ("\x1b[A", 0x26, 0, 0),
+                ("\x1b[B", 0x28, 0, 0),
+                ("\x1b[H", 0x24, 0, 0),
+                ("\x1b[F", 0x23, 0, 0),
+                ("\x1b[3~", 0x2e, 0, 0),
+                ("\x7f", 0x08, 0x08, 0),
+                ("\r\n", 0x0d, 0x0d, 0),
+                ("\r", 0x0d, 0x0d, 0),
+                ("\n", 0x0d, 0x0d, 0),
+            ];
+            let mut append = |virtual_key, unicode, modifiers| {
+                events.push(InputRecord {
+                    kind: 0x0001,
+                    event: EventData {
+                        key: KeyRecord {
+                            down: 1,
+                            repeat: 1,
+                            virtual_key,
+                            scan: 0,
+                            unicode,
+                            modifiers,
+                        },
+                    },
+                })
+            };
+            if let Some((prefix, key, unicode, modifiers)) =
+                specials.iter().find(|(prefix, ..)| remaining.starts_with(prefix))
+            {
+                append(*key, *unicode, *modifiers);
+                remaining = &remaining[prefix.len()..];
+            } else {
+                let ch = remaining.chars().next().ok_or_else(|| io::Error::other("missing key"))?;
+                if ch.is_control() {
+                    return Err(io::Error::other("unsupported fixture key encoding"));
+                }
+                for unit in ch.encode_utf16(&mut [0; 2]) {
+                    append(0xe7, *unit, 0);
+                }
+                remaining = &remaining[ch.len_utf8()..];
+            }
+        }
+        events
+    } else {
+        let mut event = InputRecord { kind: 0x0004, event: EventData { storage: [0; 4] } };
+        event.event.size = info.size;
+        vec![event]
+    };
+    let count = u32::try_from(events.len()).map_err(io::Error::other)?;
     let mut written = 0;
     // SAFETY: the initialized INPUT_RECORD has the Windows union size/alignment,
-    // a WINDOW_BUFFER_SIZE_EVENT tag and actual current console dimensions.
-    // Both pointers remain valid throughout the synchronous one-record write.
-    if unsafe { WriteConsoleInputW(input.as_raw_handle(), &event, 1, &mut written) } == 0 {
+    // the matching event tag and actual console dimensions or explicit keys.
+    // Both pointers remain valid throughout the synchronous write.
+    if unsafe { WriteConsoleInputW(input.as_raw_handle(), events.as_ptr(), count, &mut written) }
+        == 0
+    {
         return Err(io::Error::last_os_error());
     }
-    if written != 1 {
-        return Err(io::Error::other("native resize record was not enqueued"));
+    if written != count {
+        return Err(io::Error::other("native input records were not enqueued"));
     }
     Ok(format!(
-        r#"{{"injector_pid":{},"target_pid":{pid},"event":"WINDOW_BUFFER_SIZE_EVENT","written":1,"buffer_width":{},"buffer_height":{},"visible_width":{},"visible_height":{}}}"#,
+        r#"{{"injector_pid":{},"target_pid":{pid},"event":"{}","written":{written},"buffer_width":{},"buffer_height":{},"visible_width":{},"visible_height":{}}}"#,
         std::process::id(),
+        if keys.is_some() { "KEY_EVENT" } else { "WINDOW_BUFFER_SIZE_EVENT" },
         info.size.x,
         info.size.y,
         info.window.right - info.window.left + 1,

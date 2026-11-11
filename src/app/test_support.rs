@@ -138,24 +138,16 @@ pub(crate) fn set_tool_scope(app: &mut super::App, id: &str, scope: super::ToolC
     }
 }
 
-thread_local! {
-    static EVENT_CLOCK: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
-}
-
-pub(crate) fn event_clock_now() -> Option<std::time::Instant> {
-    EVENT_CLOCK.with(std::cell::Cell::get)
-}
-
 pub(crate) struct EventClock {
     start: std::time::Instant,
-    previous: Option<std::time::Instant>,
+    _scope: super::input_clock::EventTime,
 }
 
 impl EventClock {
     pub(crate) fn new() -> Self {
         let start = std::time::Instant::now();
-        let previous = EVENT_CLOCK.with(|clock| clock.replace(Some(start)));
-        Self { start, previous }
+        let scope = super::input_clock::EventTime::enter(start, start);
+        Self { start, _scope: scope }
     }
 
     pub(crate) fn at(&self, seconds: u64) -> std::time::Instant {
@@ -164,14 +156,8 @@ impl EventClock {
 
     pub(crate) fn at_millis(&self, millis: u64) -> std::time::Instant {
         let now = self.start + std::time::Duration::from_millis(millis);
-        EVENT_CLOCK.with(|clock| clock.set(Some(now)));
+        super::input_clock::EventTime::set(now);
         now
-    }
-}
-
-impl Drop for EventClock {
-    fn drop(&mut self) {
-        EVENT_CLOCK.with(|clock| clock.set(self.previous));
     }
 }
 

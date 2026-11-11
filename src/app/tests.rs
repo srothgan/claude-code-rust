@@ -1,5 +1,74 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::*;
+
+#[test]
+fn queued_key_bursts_use_capture_time_instead_of_render_delayed_dispatch_time() {
+    use super::test_support::EventClock;
+    let clock = EventClock::new();
+    let captured_start = clock.at(0);
+    let (mut app, mut commands) = app_with_connection();
+    let first = format!("FIRST{}", "a".repeat(1001));
+    handle_terminal_event(&mut app, Event::Paste(first.clone()));
+    finalize_pending_paste_event(&mut app);
+    for (index, ch) in "SECOND".chars().enumerate() {
+        clock.at(10 + u64::try_from(index).unwrap());
+        let processing_time = input_event_now();
+        handle_terminal_input(
+            &mut app,
+            terminal_runtime::CapturedTerminalEvent {
+                event: Event::Key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                received_at: captured_start + Duration::from_millis(u64::try_from(index).unwrap()),
+            },
+        );
+        assert_eq!(input_event_now(), processing_time, "dispatch must restore its outer clock");
+    }
+    drain_typing(&mut app, clock.at(30));
+    let expected = format!("{first}SECOND");
+    assert_eq!(app.input.text(), expected);
+    assert_eq!(app.input.inline_pastes(), std::slice::from_ref(&expected));
+    clock.at(31);
+    // This Enter was queued after a real pause but dispatched after the flush.
+    // Arrival time must not be compared with a processing-time suppression deadline.
+    handle_terminal_input(
+        &mut app,
+        terminal_runtime::CapturedTerminalEvent {
+            event: Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            received_at: captured_start + Duration::from_secs(1),
+        },
+    );
+    finalize_deferred_submit(&mut app);
+    assert_paste_prompt(&mut commands, &expected);
+}
+
+#[test]
+fn detected_key_bursts_continue_pastes_but_routed_navigation_ends_continuation() {
+    use super::test_support::{EventClock, press};
+    for navigate in [false, true] {
+        let clock = EventClock::new();
+        let (mut app, mut commands) = app_with_connection();
+        let first = format!("FIRST{}", "a".repeat(1001));
+        handle_terminal_event(&mut app, Event::Paste(first.clone()));
+        finalize_pending_paste_event(&mut app);
+        if navigate {
+            press(&mut app, KeyCode::Left);
+            press(&mut app, KeyCode::Right);
+        }
+        for (index, ch) in "SECOND".chars().enumerate() {
+            clock.at_millis(u64::try_from(index).unwrap());
+            press(&mut app, KeyCode::Char(ch));
+        }
+        drain_typing(&mut app, clock.at(1));
+        let expected = format!("{first}SECOND");
+        assert_eq!(app.input.text(), expected);
+        assert_eq!(
+            app.input.inline_pastes(),
+            if navigate { vec![first] } else { vec![expected.clone()] }
+        );
+        clock.at(2);
+        press(&mut app, KeyCode::Enter);
+        assert_paste_prompt(&mut commands, &expected);
+    }
+}
 use crate::agent::model;
 use crate::agent::wire::BridgeCommand;
 use crate::app::{MessageBlock, MessageRole};

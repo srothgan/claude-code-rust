@@ -248,7 +248,9 @@ fn dispatch_key_by_view(app: &mut App, key: crossterm::event::KeyEvent) -> Termi
 
     match app.surface_mode {
         SurfaceMode::Chat => {
-            app.paste.clear_active_session();
+            if !super::keys::can_extend_paste_burst(key) {
+                app.paste.clear_active_session();
+            }
             TerminalEventOutcome::from_key_outcome(super::keys::dispatch_key_by_focus(app, key))
         }
         SurfaceMode::Fullscreen(FullscreenView::Copy) => {

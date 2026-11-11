@@ -14,7 +14,7 @@ pub(crate) mod viewport;
 use self::chat_session::{ChatTerminalSeed, ChatTerminalSeedProvenance, ChatTerminalSession};
 use self::chat_terminal::NativeTerminalIo;
 use self::fullscreen_session::FullscreenTerminalSession;
-pub(super) use self::input::TerminalInput;
+pub(super) use self::input::{CapturedTerminalEvent, TerminalInput};
 use self::modes::{ModeIo, TerminalModes, chat_startup_actions, enter_fullscreen_actions};
 use self::panic_hook::PanicRestoreHook;
 use crate::app::{App, FullscreenView, SurfaceMode, TerminalLifecycleState};

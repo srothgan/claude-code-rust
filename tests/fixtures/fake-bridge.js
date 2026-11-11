@@ -138,6 +138,11 @@ const model = {
 function streamReply(messageUuid) {
   send({ event: 'user_message_started', session_id: SESSION, message_uuid: messageUuid, source: 'command_lifecycle' });
   replyNumber++;
+  if (SCENARIO === 'input-audit') {
+    send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+    record({ type: 'barrier', name: 'input-acknowledged', message_uuid: messageUuid });
+    return;
+  }
   if (SCENARIO === 'background-replies') {
     const update = update => send({ event: 'session_update', session_id: SESSION, update });
     const text = text => update({ type: 'agent_message_chunk', content: { type: 'text', text } });

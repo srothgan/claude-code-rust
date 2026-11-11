@@ -19,6 +19,14 @@ fn assistant_body(row: &str) -> &str {
     text.strip_prefix("\u{25cf} ").unwrap_or(text)
 }
 
+fn terminal_log_filter(scenario: &str) -> &'static str {
+    if scenario == "input-audit" {
+        "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug,app.paste=debug,app.input=debug"
+    } else {
+        "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug"
+    }
+}
+
 const COLS: u16 = 87;
 const SHORT_ROWS: u16 = 38;
 const TALL_ROWS: u16 = 55;
@@ -286,7 +294,7 @@ impl TerminalTest {
         command.arg("--no-update-check");
         command.arg("--log-file");
         command.arg(temp.path().join("runtime.log"));
-        command.env("RUST_LOG", "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug");
+        command.env("RUST_LOG", terminal_log_filter(scenario));
         // The app starts in `project`; a test that passes its own `--dir` is resolved
         // against it.
         if !args.contains(&"--dir") {
@@ -794,29 +802,24 @@ impl TerminalTest {
         self.submit_draft();
     }
 
+    fn composer_rows_since(&self, log_offset: usize) -> Option<Vec<String>> {
+        let draw = self
+            .runtime_records_since(log_offset)
+            .into_iter()
+            .rev()
+            .find(|record| record["event_name"] == "inline_chat_viewport_draw")?;
+        let top = usize::try_from(draw["editor_top"].as_u64()?).ok()?;
+        let height = usize::try_from(draw["editor_height"].as_u64()?).ok()?;
+        Some(self.screen_rows().into_iter().skip(top).take(height).collect())
+    }
+
     fn wait_composer_text(&mut self, log_offset: usize, visible: &str) {
         // The overview, tips, and transcript can already mention the command.
         // Check the editor region from a subsequent draw. ConPTY's native cursor
         // can remain on the spinner instead of the editor.
         self.wait_until(&format!("composer contains {visible:?}"), |test| {
-            let Some(draw) = test
-                .runtime_records_since(log_offset)
-                .into_iter()
-                .rev()
-                .find(|record| record["event_name"] == "inline_chat_viewport_draw")
-            else {
-                return false;
-            };
-            let Some(top) = draw["editor_top"].as_u64().and_then(|top| usize::try_from(top).ok())
-            else {
-                return false;
-            };
-            let Some(height) =
-                draw["editor_height"].as_u64().and_then(|height| usize::try_from(height).ok())
-            else {
-                return false;
-            };
-            test.screen_rows().iter().skip(top).take(height).any(|line| line.contains(visible))
+            test.composer_rows_since(log_offset)
+                .is_some_and(|rows| rows.iter().any(|line| line.contains(visible)))
         });
     }
 
@@ -3436,50 +3439,57 @@ impl TerminalTest {
             std::thread::sleep(Duration::from_millis(20));
         }
         if !received(self) {
-            let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-            let source = root.join("tests/fixtures/terminal-resize-event.rs");
-            let target = std::env::var_os("CARGO_TARGET_DIR")
-                .map_or_else(|| root.join("target"), PathBuf::from);
-            let helper = target.join(if cfg!(windows) {
-                "terminal-resize-event.exe"
-            } else {
-                "terminal-resize-event"
-            });
-            let stale = std::fs::metadata(&helper).and_then(|m| m.modified()).ok()
-                < std::fs::metadata(&source).and_then(|m| m.modified()).ok();
-            if stale {
-                let compiled = std::process::Command::new("rustc")
-                    .args(["--edition=2024", "-Dwarnings"])
-                    .arg(&source)
-                    .arg("-o")
-                    .arg(&helper)
-                    .output()
-                    .expect("compile native resize fixture");
-                assert!(
-                    compiled.status.success(),
-                    "native fixture compile: {}",
-                    String::from_utf8_lossy(&compiled.stderr)
-                );
-            }
-            let report = self.temp.path().join("native-resize-delivery.json");
-            let mut command = std::process::Command::new(&helper);
-            command
-                .arg(self.child.process.process_id().expect("owned app PID").to_string())
-                .arg(&report);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                command.creation_flags(0x0800_0000); // No extra console window.
-            }
-            let result = command.output().expect("deliver native resize event");
-            assert!(
-                result.status.success(),
-                "native resize fixture failed: {}",
-                String::from_utf8_lossy(&result.stderr)
-            );
-            assert!(report.exists(), "native fixture must record actual delivery");
+            self.deliver_native_event(None, "native-resize-delivery.json");
         }
         self.wait_until("actual same-size native resize reached the application", received);
+    }
+
+    fn deliver_native_event(&mut self, keys: Option<&Path>, report_name: &str) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source = root.join("tests/fixtures/terminal-resize-event.rs");
+        let target =
+            std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
+        let helper = target.join(if cfg!(windows) {
+            "terminal-resize-event.exe"
+        } else {
+            "terminal-resize-event"
+        });
+        let stale = std::fs::metadata(&helper).and_then(|m| m.modified()).ok()
+            < std::fs::metadata(&source).and_then(|m| m.modified()).ok();
+        if stale {
+            let compiled = std::process::Command::new("rustc")
+                .args(["--edition=2024", "-Dwarnings"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&helper)
+                .output()
+                .expect("compile native resize fixture");
+            assert!(
+                compiled.status.success(),
+                "native fixture compile: {}",
+                String::from_utf8_lossy(&compiled.stderr)
+            );
+        }
+        let report = self.temp.path().join(report_name);
+        let mut command = std::process::Command::new(&helper);
+        command
+            .arg(self.child.process.process_id().expect("owned app PID").to_string())
+            .arg(&report);
+        if let Some(keys) = keys {
+            command.arg(keys);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // No extra console window.
+        }
+        let result = command.output().expect("deliver native resize event");
+        assert!(
+            result.status.success(),
+            "native input fixture failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(report.exists(), "native fixture must record actual delivery");
     }
 
     fn raw_offset(&self) -> usize {
@@ -4019,3 +4029,6 @@ mod plugin_actions;
 
 #[path = "support/terminal_live_feedback.rs"]
 mod live_feedback;
+
+#[path = "support/terminal_input_audit.rs"]
+mod input_audit;

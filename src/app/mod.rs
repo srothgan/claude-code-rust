@@ -23,6 +23,7 @@ mod git_context;
 mod inline_interactions;
 pub(crate) mod input;
 pub(crate) mod input_atoms;
+mod input_clock;
 mod input_submit;
 pub mod keymap;
 mod keys;
@@ -161,7 +162,7 @@ async fn run_tui_loop(
         // Phase 1: wait for at least one event or the next frame tick
         tokio::select! {
             Some(Ok(event)) = next_terminal_event(&mut events) => {
-                let outcome = events::handle_terminal_event(app, event);
+                let outcome = handle_terminal_input(app, event);
                 handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
             }
             Some(event) = app.event_rx.recv() => {
@@ -198,7 +199,7 @@ async fn run_tui_loop(
             if let Some(Some(terminal_event)) = next_terminal_event(&mut events).now_or_never() {
                 handled_ready_event = true;
                 if let Ok(event) = terminal_event {
-                    let outcome = events::handle_terminal_event(app, event);
+                    let outcome = handle_terminal_input(app, event);
                     handle_runtime_command(app, terminal_runtime, outcome.runtime_command())?;
                 }
             }
@@ -235,6 +236,7 @@ async fn run_tui_loop(
         // EmitPaste feeds the accumulated burst into the paste queue.
         if !app.shutdown_requested()
             && app.surface_mode == SurfaceMode::Chat
+            && !events.as_ref().is_some_and(TerminalInput::has_pending_input)
             && let Some(action) = app.paste.burst.tick(now)
         {
             apply_paste_burst_flush(app, action);
@@ -339,7 +341,7 @@ async fn finish_shutdown_render(
         }
         tokio::select! {
             Some(Ok(event)) = next_terminal_event(events) => {
-                let _ = events::handle_terminal_event(app, event);
+                let _ = handle_terminal_input(app, event);
             }
             signal = &mut os_shutdown => {
                 match signal {
@@ -373,7 +375,7 @@ fn handle_runtime_command(
 
 async fn next_terminal_event(
     events: &mut Option<TerminalInput>,
-) -> Option<std::io::Result<crossterm::event::Event>> {
+) -> Option<std::io::Result<terminal_runtime::CapturedTerminalEvent>> {
     match events.as_mut() {
         Some(events) => events.next().await,
         None => std::future::pending().await,
@@ -531,7 +533,7 @@ async fn shutdown_connection_with_interrupts(app: &mut App, events: &mut Termina
             event = events.next(), if terminal_events_open => {
                 match event {
                     Some(Ok(event)) => {
-                        let _ = events::handle_terminal_event(app, event);
+                        let _ = handle_terminal_input(app, event);
                     }
                     Some(Err(err)) => {
                         tracing::warn!(
@@ -637,11 +639,15 @@ async fn wait_for_shutdown_signal() -> std::io::Result<()> {
 
 /// Read one monotonic time source for routed input and interaction activity.
 fn input_event_now() -> Instant {
-    #[cfg(test)]
-    if let Some(now) = test_support::event_clock_now() {
-        return now;
-    }
-    Instant::now()
+    input_clock::now()
+}
+
+fn handle_terminal_input(
+    app: &mut App,
+    captured: terminal_runtime::CapturedTerminalEvent,
+) -> events::TerminalEventOutcome {
+    let _time = input_clock::EventTime::enter(captured.received_at, input_event_now());
+    events::handle_terminal_event(app, captured.event)
 }
 
 /// Finish detector-held source at its original cursor before an action preserves the draft.
