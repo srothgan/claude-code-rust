@@ -140,6 +140,9 @@ const STARTUP_REASONS = {
   worktree_unverified: true,
   cli_version_too_old: true,
   bypass_root: true,
+  sandbox_required_unavailable: true,
+  initialize_not_first: true,
+  config_file_invalid: true,
 } satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
 
 test("startup result reasons remain structured, correlated, and exclusive", () => {
@@ -527,6 +530,37 @@ test("closeSession waits for owned query lifecycle tasks", async () => {
   finishConsumer?.();
   await closePromise;
   assert.equal(closeResolved, true);
+});
+
+test("closing drains an available write-loss frame after the final result without changing success", async () => {
+  const session = makeSessionState();
+  session.connected = true;
+  let closeQuery!: () => void;
+  let reachedFinalResult!: () => void;
+  let initialize!: (value: object) => void;
+  const closed = new Promise<void>(resolve => { closeQuery = resolve; });
+  const resultDelivered = new Promise<void>(resolve => { reachedFinalResult = resolve; });
+  const initialization = new Promise<object>(resolve => { initialize = resolve; });
+  session.query = {
+    initializationResult: () => initialization,
+    close: () => { closeQuery(); initialize({}); },
+    async *[Symbol.asyncIterator]() {
+      yield { type: "result", subtype: "success", is_error: false, result: "Valid answer" };
+      reachedFinalResult();
+      await closed;
+      yield { type: "system", subtype: "session_writes_lost", uuid: "close-loss", error_code: "ENOSPC", lost: ["transcript"], transcript_session_ids: ["saved-before-clear"] };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const events = await captureBridgeEventsAsync(async () => {
+    startSessionTasks(session);
+    await resultDelivered;
+    await closeSession(session);
+  });
+  const complete = events.findIndex(event => event.event === "turn_complete");
+  const warning = events.findIndex(event => (event.update as { type?: string })?.type === "system_notice_update");
+  assert.ok(complete >= 0 && warning > complete);
+  assert.match(String((events[warning].update as { message: string }).message), /saved-before-clear/);
+  assert.equal(events.some(event => event.event === "turn_error" || event.event === "connection_failed"), false);
 });
 
 test("closeAllSessions waits for tracked stale-session cleanup", async () => {
@@ -4971,8 +5005,7 @@ test("TaskCreate output emits task state and links lifecycle task id", () => {
     | Record<string, unknown>
     | undefined;
   assert.equal(resultFields?.status, "completed");
-  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
-  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+  assert.match(String(resultFields?.raw_output), /Check task reducer/);
 
   const taskUpdate = updates.find(
     (update) => update.type === "task_state_update",
@@ -5052,8 +5085,7 @@ test("TaskCreate transcript toolUseResult object emits typed task state", () => 
   })?.tool_call_update as Record<string, unknown> | undefined;
   const resultFields = result?.fields as Record<string, unknown> | undefined;
   assert.equal(resultFields?.status, "completed");
-  assert.equal(Object.hasOwn(resultFields ?? {}, "content"), false);
-  assert.equal(Object.hasOwn(resultFields ?? {}, "raw_output"), false);
+  assert.match(String(resultFields?.raw_output), /Run create-next-app/);
 
   assert.deepEqual(
     updates.find((update) => update.type === "task_state_update"),
@@ -6464,7 +6496,7 @@ test("question workflow uses trusted timing, preserves selected answers and skip
       assert.equal(result.behavior, "allow");
       if (result.behavior !== "allow") throw new Error("expected answered questions");
       assert.ok(result.updatedInput);
-      assert.deepEqual(result.updatedInput.answers, { "Choose target": "Production" });
+      assert.deepEqual(result.updatedInput.answers, { "Choose target": "Production", "Choose region": "Skipped" });
       assert.deepEqual(result.updatedInput.annotations, { "Choose target": { notes: "Use production" } });
       assert.equal(session.pendingQuestions.size, 0);
     });
@@ -6473,6 +6505,35 @@ test("question workflow uses trusted timing, preserves selected answers and skip
     assert.equal(requests.length, 2);
     for (const event of requests) {
       assert.equal((event.request as { idle_timeout_ms?: number }).idle_timeout_ms, timeout);
+    }
+  }
+});
+
+test("note-only answers stay free text while blank answers use the advertised skip protocol", async () => {
+  for (const advertised of [true, false]) {
+    for (const notes of ["  Use the canary deployment instead  ", "  "]) {
+      const session = makeSessionState();
+      session.sdkCapabilities = new Set(advertised ? ["ask_user_question_unanswered_v1"] : []);
+      session.query = { getSettings: async () => ({ sources: [] }) } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+      const input = { questions: [{ question: "Where?", header: "Target", multiSelect: false, options: [{ label: "Production", description: "", preview: "Production preview" }, { label: "Staging", description: "" }] }] };
+      const base = createToolCall("note-question", "AskUserQuestion", input);
+      const events = await captureBridgeEventsAsync(async () => {
+        const pending = requestAskUserQuestionAnswers(session, base.tool_call_id, input, base);
+        await new Promise(resolve => setImmediate(resolve));
+        session.pendingQuestions.get(base.tool_call_id)?.onOutcome({ outcome: "answered", selected_option_ids: [], annotation: { notes } });
+        const result = await pending;
+        assert.equal(result.behavior, "allow");
+        if (result.behavior !== "allow") throw new Error("expected answer");
+        assert.deepEqual(result.updatedInput?.answers, { "Where?": notes.trim() || "Skipped" });
+        assert.deepEqual(result.updatedInput?.annotations, notes.trim()
+          ? { "Where?": { notes: notes.trim() } }
+          : advertised ? { "Where?": { unanswered: "skipped" } } : undefined);
+      });
+      const completed = events.map(event => event.update as { tool_call_update?: { fields?: { status?: string; raw_input?: { question_results?: Array<{ selected_options: unknown[]; annotation?: unknown }> } } } })
+        .find(update => update?.tool_call_update?.fields?.status === "completed")?.tool_call_update?.fields;
+      assert.deepEqual(completed?.raw_input?.question_results?.[0]?.selected_options, []);
+      assert.deepEqual(completed?.raw_input?.question_results?.[0]?.annotation, notes.trim()
+        ? { notes: notes.trim() } : advertised ? { unanswered: "skipped" } : undefined);
     }
   }
 });
@@ -9078,7 +9139,7 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.311");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.322");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 
@@ -11096,10 +11157,10 @@ test("tool progress elapsed time survives a final result without becoming turn e
 
 
 test("live and replayed proactive tool results carry structured intent and upstream delivery reports", () => {
-  for (const replay of [false, true]) {
+  for (const status of [undefined, "proactive"]) for (const replay of [false, true]) {
     const session = makeSessionState();
     const events = captureBridgeEvents(() => {
-      emitToolCall(session, "push-1", "PushNotification", { status: "proactive", message: "Review is ready" });
+      emitToolCall(session, "push-1", "PushNotification", { ...(status === undefined ? {} : { status }), message: "Review is ready" });
       handleSdkMessage(session, {
         type: "user", session_id: session.sessionId, uuid: "result-1", isReplay: replay,
         message: { role: "user", content: [{ type: "tool_result", tool_use_id: "push-1", content: "Review is ready" }] },
@@ -11139,9 +11200,10 @@ test("historical SDK notices retain metadata in the replay projection", () => {
 
 
 test("failed proactive tool execution remains failed output instead of a local alert request", () => {
+  for (const status of [undefined, "proactive"]) {
   const session = makeSessionState();
   const events = captureBridgeEvents(() => {
-    emitToolCall(session, "push-failed", "PushNotification", { status: "proactive", message: "Review is ready" });
+    emitToolCall(session, "push-failed", "PushNotification", { ...(status === undefined ? {} : { status }), message: "Review is ready" });
     handleSdkMessage(session, {
       type: "user", session_id: session.sessionId, uuid: "failed-result",
       message: { role: "user", content: [{ type: "tool_result", tool_use_id: "push-failed", content: "Send failed", is_error: true }] },
@@ -11152,6 +11214,20 @@ test("failed proactive tool execution remains failed output instead of a local a
   assert.equal(result.type, "tool_call_update");
   assert.equal(result.tool_call_update?.fields?.status, "failed");
   assert.equal(events.length, 2);
+  }
+});
+
+test("incompatible notification status and nonexecuted calls cannot request alerts", () => {
+  for (const nonexecuted of [false, true]) {
+    const input = { ...(nonexecuted ? {} : { status: "future-status" }), message: "No alert" };
+    const result = { message: "No alert", localSent: false };
+    const session = makeSessionState();
+    const events = captureBridgeEvents(() => {
+      emitToolCall(session, "no-alert", "PushNotification", input);
+      emitToolResultUpdate(session, "no-alert", false, result, result, undefined, nonexecuted ? { kind: "interrupted" } : undefined);
+    });
+    assert.equal(events.some(event => (event.update as { type?: string })?.type === "notification_update"), false);
+  }
 });
 
 function elicitationHandlerForTest(): NonNullable<Options["onElicitation"]> {

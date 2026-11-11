@@ -3,6 +3,7 @@ import { asRecordOrNull } from "./shared.js";
 import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
 import {
   isTaskToolName,
+  taskCreateResult,
   taskToolResultText,
   taskToolTitle,
   taskUpdateSucceeded,
@@ -735,11 +736,14 @@ function extractToolOutputMetadata(
       const backgroundCwdHint = nonEmptyString(candidate.backgroundCwdHint);
       const hasBackgroundEndsWithFinalResponse =
         typeof candidate.backgroundEndsWithFinalResponse === "boolean";
+      const hasBackgroundWakesOwner =
+        typeof candidate.backgroundWakesOwner === "boolean";
       if (
         hasAssistantAutoBackgrounded ||
         timedOutAfterMs !== undefined ||
         backgroundCwdHint ||
-        hasBackgroundEndsWithFinalResponse
+        hasBackgroundEndsWithFinalResponse ||
+        hasBackgroundWakesOwner
       ) {
         const bashMetadata: import("../types.js").BashOutputMetadata = {};
         if (hasAssistantAutoBackgrounded) {
@@ -755,6 +759,9 @@ function extractToolOutputMetadata(
         if (hasBackgroundEndsWithFinalResponse) {
           bashMetadata.background_ends_with_final_response =
             candidate.backgroundEndsWithFinalResponse as boolean;
+        }
+        if (hasBackgroundWakesOwner) {
+          bashMetadata.background_wakes_owner = candidate.backgroundWakesOwner as boolean;
         }
         metadata.bash = bashMetadata;
         break;
@@ -1474,7 +1481,7 @@ function globResultText(record: Record<string, unknown>): string | undefined {
   const lines: string[] = [];
 
   if (numFiles === 0 && filenames.length === 0) {
-    lines.push("No files found");
+    lines.push(record.timedOut === true ? "No files found before the search timed out" : "No files found");
   } else {
     lines.push(
       `${numFiles} ${pluralize(numFiles, "file")} found${truncated ? " (truncated)" : ""}`,
@@ -1488,6 +1495,8 @@ function globResultText(record: Record<string, unknown>): string | undefined {
       lines.push(`... ${hidden} more ${pluralize(hidden, "file")} hidden`);
     }
   }
+
+  if (record.timedOut === true) lines.push("Search timed out; results may be incomplete.");
 
   const durationMs = recordNumber(record, "durationMs");
   if (durationMs !== undefined) {
@@ -1525,8 +1534,10 @@ function grepResultText(record: Record<string, unknown>): string | undefined {
       lines.push(`... ${hidden} more ${pluralize(hidden, "file")} hidden`);
     }
   } else {
-    lines.push("No matches found");
+    lines.push(record.timedOut === true ? "No matches found before the search timed out" : "No matches found");
   }
+
+  if (record.timedOut === true) lines.push("Search timed out; results may be incomplete.");
 
   const summaryParts: string[] = [];
   if (numFiles !== undefined) {
@@ -2042,7 +2053,10 @@ function cronResultPresentation(
   }
   if (toolName === "CronDelete")
     return typeof candidate.id === "string"
-      ? { sections: [{ fields: [resultField("Schedule ID", candidate.id)] }] }
+      ? { sections: [{ fields: [
+        resultField("Schedule ID", candidate.id),
+        ...(candidate.endedLoopWakeup === true ? [resultField("Loop wakeup ended", "yes")] : []),
+      ] }] }
       : undefined;
   if (toolName !== "CronList" || !Array.isArray(candidate.jobs))
     return undefined;
@@ -2999,6 +3013,21 @@ export function buildToolResultFields(
   );
   if (outputMetadata) {
     fields.output_metadata = outputMetadata;
+  }
+  if (!isError && toolName === "TaskCreate") {
+    const task = taskCreateResult(rawResult, rawContent, base?.raw_input, base?.tool_call_id ?? "");
+    if (task) {
+      const taskFields: ResultSection["fields"] = [];
+      if (task.description) taskFields.push(resultField("Description", task.description));
+      const metadata = compactJson(task.metadata);
+      if (metadata) taskFields.push(resultField("Metadata", metadata));
+      const presentation = { sections: [{ fields: taskFields }] };
+      fields.output_metadata = { ...fields.output_metadata, presentation };
+      const output = resultPresentationText(presentation, false);
+      fields.raw_output = output;
+      fields.content = output ? [{ type: "content", content: { type: "text", text: output } }] : [];
+      return fields;
+    }
   }
   const skillResult = !isError
     ? parseSkillResult(toolName, rawResult, rawContent)

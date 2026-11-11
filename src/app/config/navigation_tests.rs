@@ -477,7 +477,8 @@ async fn idle_compaction_shows_saved_preference_and_resets_the_selected_scope() 
     let text = render(&mut app, 100, 32);
     let (row, details) = settings_regions(&text, "Idle compaction");
     assert!(row.contains("Off"), "{row}");
-    assert!(details.contains("does not enable"), "{details}");
+    assert!(details.contains("when available"), "{details}");
+    assert!(details.contains("Default: On"), "{details}");
     assert!(details.contains("next session"), "{details}");
     key(&mut app, KeyCode::Right);
     let save = commands.recv_envelope().await.expect("save");

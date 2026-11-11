@@ -208,6 +208,7 @@ export interface BashOutputMetadata {
   timed_out_after_ms?: number;
   background_cwd_hint?: string;
   background_ends_with_final_response?: boolean;
+  background_wakes_owner?: boolean;
 }
 
 export interface AgentOutputMetadata {

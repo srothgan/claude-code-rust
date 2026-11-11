@@ -17,7 +17,8 @@ export function nativeNotification(message: Record<string, unknown>): SdkNotific
 
 export function proactiveNotification(sessionId: string, toolName: string, tool: ToolCall, rawResult: unknown, rawContent: unknown): SdkNotification | undefined {
   const input = asRecordOrNull(tool.raw_input);
-  if (toolName !== "PushNotification" || input?.status !== "proactive") return undefined;
+  if (toolName !== "PushNotification" || !input ||
+      (input.status !== undefined && input.status !== "proactive")) return undefined;
   const output = pushNotificationOutput(rawResult, rawContent);
   if (!output || typeof output.message !== "string" || !output.message.trim()) return undefined;
   return {

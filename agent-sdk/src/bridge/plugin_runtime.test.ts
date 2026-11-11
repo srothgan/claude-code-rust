@@ -19,7 +19,7 @@ test("native plugin attachment, partial application, held Apply and explicit res
     windowsHide: true,
   });
   const result = JSON.parse(stdout);
-  assert.equal(result.sdk, "0.3.311");
+  assert.equal(result.sdk, "0.3.322");
   type Observation = {
     name: string;
     held?: boolean;

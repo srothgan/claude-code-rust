@@ -21,6 +21,65 @@ function taskScenario(run: (session: SessionState, emit: (message: Record<string
   finally { restore(); }
 }
 
+test("init replaces question capabilities so a previous advertisement cannot leak into a new init", async () => {
+  const session = makeSession();
+  session.query = { supportedCommands: async () => [], supportedAgents: async () => [] } as unknown as SessionState["query"];
+  const restore = replaceProtocolEventWriter(() => {});
+  try {
+    for (const capabilities of [["ask_user_question_unanswered_v1", 17], undefined]) {
+      handleSdkMessage(session, { type: "system", subtype: "init", session_id: session.sessionId, capabilities } as unknown as SDKMessage);
+      assert.deepEqual([...session.sdkCapabilities ?? []], capabilities ? ["ask_user_question_unanswered_v1"] : []);
+      await new Promise(resolve => setImmediate(resolve));
+    }
+  } finally { restore(); }
+});
+
+test("session write loss warns once without invalidating a delivered result or pending shutdown", () => {
+  for (const [error_code, lost] of [["ENOSPC", ["transcript"]], ["EDQUOT", ["global_config"]], ["ENOSPC", ["transcript", "global_config"]]] as Array<[string, string[]]>) {
+    taskScenario((session, emit, writes) => {
+      emit({ type: "result", subtype: "success", is_error: false, result: "Valid result" });
+      emit({ type: "system", subtype: "worker_shutting_down" });
+      const shutdown = session.pendingWorkerShutdown;
+      assert.ok(shutdown);
+      const frame = { type: "system", subtype: "session_writes_lost", uuid: "loss-warning", error_code, lost, transcript_session_ids: ["before-clear", "after-clear"] };
+      emit(frame);
+      emit(frame);
+      const events = writes.map(line => JSON.parse(line));
+      const warnings = events.filter(event => event.update?.type === "system_notice_update");
+      assert.equal(warnings.length, 1, JSON.stringify(events));
+      const warning = warnings[0].update;
+      assert.equal(warning.severity, "warning");
+      assert.match(warning.message, error_code === "EDQUOT" ? /quota/ : /disk is full/);
+      assert.equal(warning.message.includes("before-clear, after-clear"), lost.includes("transcript"));
+      assert.equal(warning.message.includes("Global configuration"), lost.includes("global_config"));
+      assert.equal(events.filter(event => event.event === "turn_complete").length, 1);
+      assert.equal(events.some(event => event.event === "turn_error"), false);
+      assert.equal(session.pendingWorkerShutdown, shutdown);
+    });
+  }
+});
+
+test("TaskCreate saved descriptions own both the live card and task state, including an empty saved description", () => {
+  for (const description of ["Saved by the SDK", "", undefined]) taskScenario((session, emit) => {
+    emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "create-task", name: "TaskCreate", input: { subject: "Review", description: "Original input" } }] } });
+    emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "create-task", content: "Task created" }] }, toolUseResult: { task: { id: "saved-task", subject: "Review", ...(description === undefined ? {} : { description }) } } });
+    const expected = description ?? "Original input";
+    assert.equal(session.tasksById.get("saved-task")?.description, expected);
+    const card = session.toolCalls.get("create-task");
+    assert.deepEqual(card?.raw_input, { subject: "Review", description: "Original input" }, "input provenance remains intact");
+    const fields = card?.output_metadata?.presentation?.sections.flatMap(section => section.fields ?? []);
+    assert.deepEqual(fields?.filter(field => field.label === "Description").map(field => field.value), expected ? [{ type: "text", value: expected }] : []);
+  });
+});
+
+test("failed TaskCreate results do not publish saved task state or successful result presentation", () => taskScenario((session, emit) => {
+  emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "failed-create", name: "TaskCreate", input: { subject: "Review", description: "Original request" } }] } });
+  emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "failed-create", content: "Create denied", is_error: true }] }, toolUseResult: { task: { id: "not-saved", subject: "Review", description: "Not saved" } } });
+  assert.equal(session.tasksById.size, 0);
+  assert.equal(session.toolCalls.get("failed-create")?.status, "failed");
+  assert.equal(session.toolCalls.get("failed-create")?.output_metadata?.presentation, undefined);
+}));
+
 test("each API-rejected send reports its error even when only the first emits a rate limit update", () => taskScenario((session, emit, writes) => {
   const errorText = "You've hit your session limit · resets 1:30pm (Europe/Berlin)";
   for (const [index, prompt] of ["hello", "okay", "hello"].entries()) {

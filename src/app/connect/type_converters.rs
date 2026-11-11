@@ -1402,6 +1402,7 @@ mod tests {
                     timed_out_after_ms: Some(10_000),
                     background_cwd_hint: Some("session cwd unchanged".to_owned()),
                     background_ends_with_final_response: Some(true),
+                    background_wakes_owner: Some(true),
                 }),
                 agent: Some(types::AgentOutputMetadata {
                     resolved_model: Some("claude-sonnet-4-7".to_owned()),
@@ -1440,7 +1441,8 @@ mod tests {
                             .assistant_auto_backgrounded(Some(true))
                             .timed_out_after_ms(Some(10_000))
                             .background_cwd_hint(Some("session cwd unchanged".to_owned()))
-                            .background_ends_with_final_response(Some(true)),
+                            .background_ends_with_final_response(Some(true))
+                            .background_wakes_owner(Some(true)),
                     ))
                     .agent(Some(
                         model::AgentOutputMetadata::new()
