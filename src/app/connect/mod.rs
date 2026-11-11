@@ -16,8 +16,8 @@ use super::config::ConfigState;
 use super::plugins::PluginsState;
 use super::settings;
 use super::state::{
-    CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, RenderCacheBudget,
-    SdkInventoryState, SessionPickerState, SessionRuntimeState, StartupState, Transcript,
+    CacheMetrics, HistoryRetentionPolicy, HistoryRetentionStats, SdkInventoryState,
+    SessionPickerState, SessionRuntimeState, StartupState, Transcript,
 };
 use super::trust;
 use super::view::SurfaceMode;
@@ -179,7 +179,6 @@ pub(in crate::app) fn create_app_with_settings_and_home(
         usage: super::UsageState::default(),
         mcp: super::McpState::default(),
         notifications: super::notify::NotificationManager::new(),
-        render_cache_budget: RenderCacheBudget::default(),
         history_retention: HistoryRetentionPolicy::default(),
         history_retention_stats: HistoryRetentionStats::default(),
         cache_metrics: CacheMetrics::default(),
@@ -189,7 +188,6 @@ pub(in crate::app) fn create_app_with_settings_and_home(
 
     app.config.load_footer(app.global_settings_path.as_deref());
     app.rebuild_history_retention_accounting();
-    app.rebuild_render_cache_accounting();
     trust::initialize(&mut app);
     app.sync_git_context();
     app

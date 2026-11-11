@@ -3416,6 +3416,18 @@ fn permission_ctrl_n_does_not_bypass_mention_focus() {
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
     ));
     assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
+
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert!(!app.slash.is_visible());
+    assert_eq!(app.focus_owner(), FocusOwner::Permission);
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)));
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    let response =
+        response_rx.try_recv().expect("released menu returns input to the same permission");
+    assert_eq!(
+        response.outcome,
+        model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new("deny"))
+    );
 }
 
 #[test]

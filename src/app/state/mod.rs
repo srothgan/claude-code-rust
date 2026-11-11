@@ -6,7 +6,6 @@ pub mod cache_metrics;
 pub mod chat_render;
 mod history_retention;
 pub mod messages;
-mod render_budget;
 pub mod tool_call_info;
 pub mod types;
 
@@ -62,10 +61,10 @@ pub(crate) use types::ComposerBlockReason;
 pub use types::{
     AppStatus, ExtraUsage, HistoryRetentionPolicy, HistoryRetentionStats, LoginHint, McpState,
     MessageUsage, ModeInfo, ModeState, PasteSessionState, PendingCommandAck, PostExitAction,
-    RecentSessionInfo, RenderCacheBudget, SelectionPoint, SessionPickerState, SessionUsageState,
-    SessionUsageSummary, ShutdownState, ToolCallScope, UpdatePromptAction, UpdatePromptState,
-    UsageActivitySummary, UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution,
-    UsageSnapshot, UsageSourceKind, UsageState, UsageWindow,
+    RecentSessionInfo, SelectionPoint, SessionPickerState, SessionUsageState, SessionUsageSummary,
+    ShutdownState, ToolCallScope, UpdatePromptAction, UpdatePromptState, UsageActivitySummary,
+    UsageActivityWindow, UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot,
+    UsageSourceKind, UsageState, UsageWindow,
 };
 
 mod prelude {
@@ -87,8 +86,8 @@ mod prelude {
     pub(super) use super::types::{
         AppStatus, ComposerAccess, ComposerBlockReason, HistoryRetentionPolicy,
         HistoryRetentionStats, McpState, PasteSessionState, PendingCommandAck, RecentSessionInfo,
-        RenderCacheBudget, SelectionPoint, SessionPickerState, ShutdownState, ToolCallScope,
-        UpdatePromptState, UsageState,
+        SelectionPoint, SessionPickerState, ShutdownState, ToolCallScope, UpdatePromptState,
+        UsageState,
     };
     pub(super) use crate::agent::events::ClientEvent;
     pub(super) use crate::agent::model;

@@ -250,7 +250,7 @@ pub(super) fn handle_permission_request_event(
     }
 
     if layout_dirty {
-        app.finish_block_change(mi, bi);
+        app.sync_after_message_blocks_changed(mi);
         app.request_chat_mutable_rebuild();
     }
 }
@@ -461,7 +461,7 @@ pub(super) fn handle_question_request_event(
     }
 
     if layout_dirty {
-        app.finish_block_change(mi, bi);
+        app.sync_after_message_blocks_changed(mi);
         app.request_chat_mutable_rebuild();
     }
 }
@@ -513,7 +513,7 @@ pub(super) fn handle_user_dialog_request_event(
         &session_id,
         Some(&request_id),
     );
-    app.finish_block_change(mi, bi);
+    app.sync_after_message_blocks_changed(mi);
     app.request_chat_mutable_rebuild();
     tracing::info!(
         target: crate::logging::targets::APP_PERMISSION,

@@ -104,8 +104,6 @@ pub struct App {
 
     /// Central notification manager (bell + desktop toast when unfocused).
     pub(crate) notifications: notify::NotificationManager,
-    /// Global in-memory budget for rendered block and message caches.
-    pub(crate) render_cache_budget: RenderCacheBudget,
     /// Byte budget for source conversation history retained in memory.
     pub(crate) history_retention: HistoryRetentionPolicy,
     /// Last history-retention enforcement statistics.
@@ -303,7 +301,6 @@ impl App {
             usage: UsageState::default(),
             mcp: McpState::default(),
             notifications: notify::NotificationManager::new(),
-            render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
             cache_metrics: CacheMetrics::default(),

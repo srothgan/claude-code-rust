@@ -237,26 +237,7 @@ pub struct RemovedMcpServerGuard {
     pub expected_source: crate::agent::types::McpSnapshotSource,
 }
 
-pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderCacheBudget {
-    pub max_bytes: usize,
-    pub last_total_bytes: usize,
-    pub last_evicted_bytes: usize,
-    pub total_evictions: usize,
-}
-
-impl Default for RenderCacheBudget {
-    fn default() -> Self {
-        Self {
-            max_bytes: DEFAULT_RENDER_CACHE_BUDGET_BYTES,
-            last_total_bytes: 0,
-            last_evicted_bytes: 0,
-            total_evictions: 0,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryRetentionPolicy {
@@ -277,16 +258,6 @@ pub struct HistoryRetentionStats {
     pub dropped_bytes: usize,
     pub total_dropped_messages: usize,
     pub total_dropped_bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CacheBudgetEnforceStats {
-    pub total_before_bytes: usize,
-    pub total_after_bytes: usize,
-    pub evicted_bytes: usize,
-    pub evicted_blocks: usize,
-    /// Bytes in protected (non-evictable) blocks excluded from the budget comparison.
-    pub protected_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

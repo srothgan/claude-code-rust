@@ -85,7 +85,7 @@ fn move_dialog_selection(app: &mut App, delta: i32) {
         }
     }
     if changed {
-        app.finish_block_change(mi, bi);
+        app.sync_after_message_blocks_changed(mi);
         app.request_chat_mutable_rebuild();
     }
 }
@@ -143,7 +143,7 @@ fn respond_dialog(app: &mut App, resolution: DialogResolution) {
         };
         dialog.resolve(outcome.clone());
         let _ = response_tx.send(model::RequestUserDialogResponse::new(outcome));
-        app.finish_block_change(mi, bi);
+        app.sync_after_message_blocks_changed(mi);
         app.request_chat_mutable_rebuild();
     }
 

@@ -18,7 +18,7 @@ pub(super) fn handle_tool_call(app: &mut App, tc: model::ToolCall, source: Trans
     changed |= app.sync_tool_call_history(mi, bi);
     changed |= crate::app::tasks::refresh_task_tool_display_at(app, mi, bi);
     if changed {
-        app.finish_block_change(mi, bi);
+        app.sync_after_message_blocks_changed(mi);
     }
 }
 

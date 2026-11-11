@@ -33,19 +33,12 @@ impl App {
         let tool = self.tool_call_at_mut(mi, bi)?;
         let result = mutate(tool)?;
         tool.invalidate_render_cache();
-        self.finish_block_change(mi, bi);
+        self.sync_after_message_blocks_changed(mi);
         Some(result)
     }
 
-    /// Complete a content change after the block's own render cache is invalidated.
-    pub(crate) fn finish_block_change(&mut self, mi: usize, bi: usize) {
-        self.sync_render_cache_slot(mi, bi);
-        self.recompute_message_retained_bytes(mi);
-        self.invalidate_layout(InvalidationLevel::MessageChanged(mi));
-    }
-
-    /// Returns whether the tool block changed; the caller syncs its cache slot,
-    /// retained bytes, and layout once together with its own changes.
+    /// Returns whether the tool block changed; the caller syncs retained bytes
+    /// and layout once together with its own changes.
     pub(crate) fn sync_tool_call_history(&mut self, mi: usize, bi: usize) -> bool {
         let Some(tool) = self.tool_call_at_mut(mi, bi) else {
             return false;
@@ -105,9 +98,8 @@ impl App {
         self.transcript.tool_call_index.len()
     }
 
+    /// Complete content changes after the affected blocks invalidate their own caches.
     pub(crate) fn sync_after_message_blocks_changed(&mut self, msg_idx: usize) {
-        self.note_render_cache_structure_changed();
-        self.sync_render_cache_message(msg_idx);
         self.recompute_message_retained_bytes(msg_idx);
         self.invalidate_layout(InvalidationLevel::MessageChanged(msg_idx));
     }
@@ -183,7 +175,6 @@ impl App {
 
         for (msg_idx, block_idx) in changed_slots {
             self.sync_tool_call_history(msg_idx, block_idx);
-            self.sync_render_cache_slot(msg_idx, block_idx);
         }
 
         for msg_idx in changed_message_indices.iter().copied() {
@@ -211,10 +202,9 @@ impl App {
     ) -> usize {
         let mut changed = 0usize;
         let mut changed_message_indices = Vec::new();
-        let mut changed_slots = Vec::new();
 
         for (msg_idx, msg) in self.transcript.messages.iter_mut().enumerate() {
-            for (block_idx, block) in msg.blocks.iter_mut().enumerate() {
+            for block in &mut msg.blocks {
                 let MessageBlock::ToolCall(tc) = block else {
                     continue;
                 };
@@ -233,16 +223,11 @@ impl App {
                     continue;
                 }
                 tc.invalidate_render_cache();
-                changed_slots.push((msg_idx, block_idx));
                 if changed_message_indices.last().copied() != Some(msg_idx) {
                     changed_message_indices.push(msg_idx);
                 }
                 changed += 1;
             }
-        }
-
-        for (msg_idx, block_idx) in changed_slots {
-            self.sync_render_cache_slot(msg_idx, block_idx);
         }
 
         for msg_idx in changed_message_indices.iter().copied() {

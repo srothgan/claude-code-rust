@@ -29,7 +29,7 @@ pub(super) fn handle_tool_call_update_session(app: &mut App, tcu: &model::ToolCa
     let history_changed = app.sync_tool_call_history(mi, bi);
     let task_display_changed = crate::app::tasks::refresh_task_tool_display_at(app, mi, bi);
     if changed || history_changed || task_display_changed {
-        app.finish_block_change(mi, bi);
+        app.sync_after_message_blocks_changed(mi);
     }
     let Some(tc) = app.tool_call_at(mi, bi) else {
         return;

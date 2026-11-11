@@ -71,7 +71,7 @@ fn is_sdk_background_task(task: &model::TaskItem) -> bool {
 }
 
 /// Re-derive one task tool row after its own tool event. Returns whether the
-/// block changed; the caller owns the cache-slot and layout sync.
+/// block changed; the caller owns retained-byte and layout updates.
 pub(super) fn refresh_task_tool_display_at(app: &mut App, mi: usize, bi: usize) -> bool {
     let current_tasks = &app.sdk_inventory.tasks;
     let Some(MessageBlock::ToolCall(tool_call)) =
@@ -91,29 +91,24 @@ fn refresh_task_tool_displays_with_previous(
     previous_tasks: &[model::TaskItem],
 ) -> bool {
     let current_tasks = &app.sdk_inventory.tasks;
-    let mut dirty_blocks = Vec::new();
+    let mut dirty_messages = BTreeSet::new();
 
     for (message_idx, message) in app.transcript.messages.iter_mut().enumerate() {
-        for (block_idx, block) in message.blocks.iter_mut().enumerate() {
+        for block in &mut message.blocks {
             let MessageBlock::ToolCall(tool_call) = block else {
                 continue;
             };
             if refresh_task_tool_display(tool_call.as_mut(), current_tasks, previous_tasks) {
                 tool_call.invalidate_render_cache();
-                dirty_blocks.push((message_idx, block_idx));
+                dirty_messages.insert(message_idx);
             }
         }
     }
 
-    if dirty_blocks.is_empty() {
+    if dirty_messages.is_empty() {
         return false;
     }
 
-    let mut dirty_messages = BTreeSet::new();
-    for (message_idx, block_idx) in dirty_blocks {
-        app.sync_render_cache_slot(message_idx, block_idx);
-        dirty_messages.insert(message_idx);
-    }
     for message_idx in dirty_messages {
         app.recompute_message_retained_bytes(message_idx);
         app.invalidate_layout(InvalidationLevel::MessageChanged(message_idx));

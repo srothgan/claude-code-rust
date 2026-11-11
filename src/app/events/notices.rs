@@ -172,7 +172,7 @@ fn update_inline_notice(
     }
     notice.severity = severity;
     notice.replace_text(message);
-    app.finish_block_change(msg_idx, block_idx);
+    app.sync_after_message_blocks_changed(msg_idx);
     true
 }
 
@@ -198,7 +198,7 @@ fn update_standalone_notice(
     msg.role = MessageRole::System(Some(severity));
     notice.severity = severity;
     notice.replace_text(message);
-    app.finish_block_change(msg_idx, 0);
+    app.sync_after_message_blocks_changed(msg_idx);
     true
 }
 

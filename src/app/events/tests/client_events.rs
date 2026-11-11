@@ -751,27 +751,37 @@ fn status_snapshot_updates_welcome_subscription() {
         "session-1",
     ));
     app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::StatusSnapshotReceived {
-            session_id: "session-1".into(),
-            account: crate::agent::model::AccountInfo {
-                email: None,
-                organization: None,
-                subscription_type: Some("Claude Max".into()),
-                token_source: None,
-                api_key_source: None,
-                api_provider: None,
+    let welcome_id = app.transcript.messages[0].id;
+    for subscription in ["Claude Max", "Pro"] {
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "session-1".into(),
+                account: crate::agent::model::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some(subscription.into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
             },
-        },
-    );
+        );
 
-    let Some(MessageBlock::Welcome(welcome)) = app.transcript.messages[0].blocks.first() else {
-        panic!("expected welcome block");
-    };
-    assert_eq!(welcome.subscription, "Claude Max");
-    assert!(session_overview_has_welcome(&app));
+        let welcome_messages: Vec<_> = app
+            .transcript
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, MessageRole::Welcome))
+            .collect();
+        assert_eq!(welcome_messages.len(), 1, "account updates retain one canonical welcome");
+        assert_eq!(welcome_messages[0].id, welcome_id);
+        let Some(MessageBlock::Welcome(welcome)) = welcome_messages[0].blocks.first() else {
+            panic!("expected welcome block");
+        };
+        assert_eq!(welcome.subscription, subscription);
+        assert!(session_overview_has_welcome(&app));
+    }
 }
 
 #[test]
@@ -2311,6 +2321,17 @@ fn replacement_closes_old_permission_and_new_session_input_remains_usable() {
     use crate::app::test_support::*;
     let directory = tempfile::tempdir().unwrap();
     let (mut app, mut rx) = app_with_connection();
+    app.session_runtime.activate_session(model::SessionId::new("session-1"));
+    deliver_update(
+        &mut app,
+        model::SessionUpdate::ConversationReset {
+            new_conversation_id: "old-conversation".into(),
+            trigger: None,
+            timestamp: None,
+            user_message_uuid: None,
+        },
+    );
+    assert_eq!(app.session_runtime.conversation_id.as_deref(), Some("old-conversation"));
     app.input.set_text("Old permission turn");
     crate::app::input_submit::submit_input(&mut app);
     expect_session_prompt(&mut rx, "session-1", "Old permission turn", &[], &[]);
@@ -2336,6 +2357,27 @@ fn replacement_closes_old_permission_and_new_session_input_remains_usable() {
         session_replacement("replacement", directory.path(), vec![], None),
     );
     drain_session_refreshes(&mut rx, "replacement");
+    assert_eq!(
+        app.session_runtime.session_id.as_ref().map(model::SessionId::as_str),
+        Some("replacement")
+    );
+    assert!(app.session_runtime.conversation_id.is_none());
+    handle_client_event(
+        &mut app,
+        ClientEvent::SessionUpdate {
+            session_id: "session-1".into(),
+            update: model::SessionUpdate::ConversationReset {
+                new_conversation_id: "stale-conversation".into(),
+                trigger: None,
+                timestamp: None,
+                user_message_uuid: None,
+            },
+        },
+    );
+    assert!(
+        app.session_runtime.conversation_id.is_none(),
+        "old session cannot reintroduce its conversation"
+    );
     assert!(matches!(response.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)));
     assert!(app.lookup_tool_call("old-tool").is_none());
     press(&mut app, KeyCode::Char('x'));

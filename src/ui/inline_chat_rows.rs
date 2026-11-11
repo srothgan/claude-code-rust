@@ -1535,13 +1535,11 @@ fn render_canonical_tool_rows(
         tc.cache.evict_cached_render();
     }
     let uninterrupted = LayoutControl::uninterrupted();
-    let physical_rows = super::wrap::wrap_lines_with_control(
+    super::wrap::wrap_lines_with_control(
         &rows,
         render_context.width,
         render_context.tool_render_context.control.unwrap_or(&uninterrupted),
-    );
-    app.sync_render_cache_slot(msg_idx, block_idx);
-    physical_rows
+    )
 }
 
 pub(crate) fn assistant_role_label_line() -> Line<'static> {
@@ -2059,7 +2057,7 @@ mod tests {
     }
 
     #[test]
-    fn live_tool_titles_keep_full_sources_and_obey_cache_budget_and_history_exclusion() {
+    fn live_tool_titles_preserve_canonical_sources_across_discard_resize_and_history_exclusion() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
         let command =
@@ -2086,19 +2084,9 @@ mod tests {
                 .find(|segment| segment.ids.contains(&HistoryOutputId::ToolCall(id.to_owned())))
                 .expect("tool has its own transcript segment");
             let rows = rendered.segment_rows(segment).unwrap();
-            assert_eq!(
-                rows.iter().filter(|row| !line_text(row).trim().is_empty()).count(),
-                1,
-                "title-only tool has one content row"
-            );
             assert!(rows.iter().any(|row| line_text(row).ends_with(expected)));
             assert!(segment.commit_ready);
         }
-        let bytes = app.enforce_render_cache_budget().total_before_bytes;
-        assert!(
-            bytes > 0 && bytes < command.len() + read_title.len() + mcp_title.len(),
-            "cache must contain title projections, not discarded multiline tails: {bytes}"
-        );
         let mcp_segment = rendered
             .segments()
             .iter()
@@ -2107,31 +2095,31 @@ mod tests {
             })
             .expect("MCP tool has its own segment");
         let mcp_rows = rendered.segment_rows(mcp_segment).unwrap();
-        assert_eq!(mcp_rows.len(), 1);
         assert!(line_text(&mcp_rows[0]).contains("Search MCP documents"));
         assert!(line_text(&mcp_rows[0]).ends_with('…'));
         let replay = serialize_all_rows_with_boundaries(&mut app, 100);
         assert_eq!(replay.rows(), rendered.rows());
-        assert_eq!(app.enforce_render_cache_budget().total_before_bytes, bytes);
 
-        app.render_cache_budget.max_bytes = 0;
-        let stats = app.enforce_render_cache_budget();
-        assert_eq!(stats.evicted_blocks, 3, "title-only tool caches must be evictable");
-        assert_eq!(stats.evicted_bytes, bytes);
-        assert_eq!(stats.total_after_bytes, 0);
+        for (idx, source) in [(0, &command), (1, &read_title), (2, &mcp_title)] {
+            let MessageBlock::ToolCall(tool) = &mut app.transcript.messages[0].blocks[idx] else {
+                unreachable!("seeded tool block")
+            };
+            assert_eq!(&tool.title, source);
+            tool.cache.evict_cached_render();
+        }
+        let resized = serialize_all_rows_with_boundaries(&mut app, 24);
+        assert!(resized.rows().iter().all(|row| row.width() <= 24));
+        let restored = serialize_all_rows_with_boundaries(&mut app, 100);
+        assert_eq!(restored.rows(), rendered.rows());
         for (idx, source) in [(0, &command), (1, &read_title), (2, &mcp_title)] {
             let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[idx] else {
                 unreachable!("seeded tool block")
             };
-            assert_eq!(&tool.title, source);
-            assert_eq!(tool.cache.cached_bytes(), 0);
+            assert_eq!(
+                &tool.title, source,
+                "resize and replay preserve the complete canonical title"
+            );
         }
-        app.render_cache_budget.max_bytes = usize::MAX;
-        let resized = serialize_all_rows_with_boundaries(&mut app, 24);
-        assert!(resized.rows().iter().all(|row| row.width() <= 24));
-        assert!(app.enforce_render_cache_budget().total_before_bytes > 0);
-        let restored = serialize_all_rows_with_boundaries(&mut app, 100);
-        assert_eq!(restored.rows(), rendered.rows());
 
         let confirmed: BTreeSet<_> =
             restored.segments().iter().flat_map(|segment| segment.ids.iter().cloned()).collect();

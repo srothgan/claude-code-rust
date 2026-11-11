@@ -270,7 +270,6 @@ impl super::App {
         self.transcript.message_retained_bytes.push(bytes);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_add(bytes);
-        self.rebuild_render_cache_accounting();
         self.invalidate_tail_transition(
             previous_tail,
             self.transcript.messages.len().checked_sub(1),
@@ -294,7 +293,6 @@ impl super::App {
         self.transcript.message_retained_bytes.insert(insert_idx, bytes);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_add(bytes);
-        self.rebuild_render_cache_accounting();
         if appended_at_tail {
             let new_tail = self.transcript.messages.len().checked_sub(1);
             self.invalidate_tail_transition(
@@ -321,7 +319,6 @@ impl super::App {
         let removed_bytes = self.transcript.message_retained_bytes.remove(idx);
         self.transcript.retained_history_bytes =
             self.transcript.retained_history_bytes.saturating_sub(removed_bytes);
-        self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices();
         if removed_tail {
             self.invalidate_tail_transition(None, self.transcript.messages.len().checked_sub(1));
@@ -339,7 +336,6 @@ impl super::App {
         self.transcript.retained_history_bytes = 0;
         self.clear_active_turn_assistant();
         self.clear_turn_notice_refs();
-        self.rebuild_render_cache_accounting();
         self.rebuild_tool_indices();
         self.request_chat_repaint();
     }
@@ -478,7 +474,6 @@ impl super::App {
             {
                 block.text.clone_from(&marker_text);
                 block.cache.invalidate();
-                self.sync_render_cache_slot(idx, 0);
                 self.recompute_message_retained_bytes(idx);
                 self.invalidate_layout(InvalidationLevel::MessagesFrom(idx));
             }

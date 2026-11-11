@@ -40,8 +40,8 @@ pub(super) fn invalidate_if_changed(
     dirty_idx: Option<(usize, usize)>,
     changed: bool,
 ) {
-    if changed && let Some((mi, bi)) = dirty_idx {
-        app.finish_block_change(mi, bi);
+    if changed && let Some((mi, _)) = dirty_idx {
+        app.sync_after_message_blocks_changed(mi);
     }
 }
 
@@ -86,7 +86,6 @@ pub(super) fn set_interaction_focused(app: &mut App, queue_index: usize, focused
         }
     }
     if invalidated {
-        app.sync_render_cache_slot(mi, bi);
         app.invalidate_layout(InvalidationLevel::MessageChanged(mi));
         app.request_chat_mutable_rebuild();
     }
@@ -131,7 +130,7 @@ pub(crate) fn cancel_pending_interaction(app: &mut App, id: &str) {
         _ => return,
     }
     app.pending_interaction_ids.retain(|pending| pending != id);
-    app.finish_block_change(mi, bi);
+    app.sync_after_message_blocks_changed(mi);
     app.request_chat_mutable_rebuild();
     focus_next_inline_interaction(app);
 }
@@ -191,7 +190,7 @@ pub(super) fn clear_inline_interaction_focus(app: &mut App) {
                 _ => {}
             }
             if interaction_changed {
-                app.finish_block_change(mi, bi);
+                app.sync_after_message_blocks_changed(mi);
                 app.request_chat_mutable_rebuild();
                 changed = true;
             }
