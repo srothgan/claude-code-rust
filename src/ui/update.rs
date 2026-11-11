@@ -35,14 +35,41 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let error_height = prompt.last_error.as_deref().map_or(0, |error| {
         wrapped_line_count(Text::from(Line::from(error.to_owned())), inner.width)
     });
+    let (actions, selected_line) = action_lines(app);
+    let selected_start = actions[..selected_line].iter().fold(0_u16, |height, line| {
+        height.saturating_add(wrapped_line_count(Text::from(line.clone()), inner.width))
+    });
+    let selected_height =
+        wrapped_line_count(Text::from(actions[selected_line].clone()), inner.width);
+    let help = "Enter select | Esc skip now | Ctrl+Q quit";
+
+    // Keep the selected action and its controls reachable before allocating
+    // the remaining space to metadata and a potentially long failure.
+    let mut available = inner.height;
+    let action_total = wrapped_line_count(Text::from(actions.clone()), inner.width);
+    let mut action_height = selected_height.min(available);
+    available -= action_height;
+    let help_height = wrapped_line_count(Text::from(help), inner.width).min(available);
+    available -= help_height;
+    let minimum_error = error_height.min(1).min(available);
+    available -= minimum_error;
+    let detail_height = wrapped_line_count(Text::from(detail.clone()), inner.width).min(available);
+    available -= detail_height;
+    let title_height = wrapped_line_count(Text::from(title.clone()), inner.width).min(available);
+    available -= title_height;
+    let extra_actions = action_total.saturating_sub(action_height).min(available);
+    action_height += extra_actions;
+    available -= extra_actions;
+    let error_height = minimum_error + error_height.saturating_sub(minimum_error).min(available);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Length(4),
+            Constraint::Length(title_height),
+            Constraint::Length(detail_height),
             Constraint::Length(error_height),
-            Constraint::Min(4),
-            Constraint::Length(1),
+            Constraint::Length(action_height),
+            Constraint::Min(0),
+            Constraint::Length(help_height),
         ])
         .split(inner);
 
@@ -58,22 +85,27 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         );
     }
 
-    frame.render_widget(Paragraph::new(action_lines(app)).wrap(Wrap { trim: false }), chunks[3]);
+    let scroll = selected_start
+        .saturating_add(selected_height.min(action_height))
+        .saturating_sub(action_height);
     frame.render_widget(
-        Paragraph::new("Enter select | Esc skip now | Ctrl+Q quit")
-            .style(Style::default().fg(theme::DIM)),
-        chunks[4],
+        Paragraph::new(actions).wrap(Wrap { trim: false }).scroll((scroll, 0)),
+        chunks[3],
+    );
+    frame.render_widget(
+        Paragraph::new(help).wrap(Wrap { trim: false }).style(Style::default().fg(theme::DIM)),
+        chunks[5],
     );
 }
 
-fn action_lines(app: &App) -> Vec<Line<'static>> {
+fn action_lines(app: &App) -> (Vec<Line<'static>>, usize) {
     let Some(prompt) = app.update_prompt.as_ref() else {
-        return Vec::new();
+        return (Vec::new(), 0);
     };
-    crate::app::update_prompt_actions(&prompt.install_method)
-        .iter()
-        .copied()
-        .map(|action| {
+    let mut lines = Vec::new();
+    let mut selected_line = 0;
+    for (action, label) in
+        crate::app::update_prompt_actions(&prompt.install_method).iter().copied().map(|action| {
             let label = match action {
                 UpdatePromptAction::Install => "Install update".to_owned(),
                 UpdatePromptAction::InstallScript => "Install update with script".to_owned(),
@@ -86,15 +118,16 @@ fn action_lines(app: &App) -> Vec<Line<'static>> {
             };
             (action, label)
         })
-        .flat_map(|(action, label)| {
-            let mut lines = Vec::with_capacity(2);
-            if action == UpdatePromptAction::ReleaseNotes {
-                lines.push(Line::default());
-            }
-            lines.push(action_line(&label, prompt.selected == action));
-            lines
-        })
-        .collect()
+    {
+        if action == UpdatePromptAction::ReleaseNotes {
+            lines.push(Line::default());
+        }
+        if prompt.selected == action {
+            selected_line = lines.len();
+        }
+        lines.push(action_line(&label, prompt.selected == action));
+    }
+    (lines, selected_line)
 }
 
 fn action_line(label: &str, selected: bool) -> Line<'static> {
@@ -122,58 +155,83 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    fn draw_text(app: &mut App) -> String {
-        let backend = TestBackend::new(80, 14);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal.draw(|frame| render(frame, app)).expect("draw");
-        terminal
-            .backend()
-            .buffer()
-            .content
-            .chunks(80)
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     #[test]
-    fn update_view_renders_versions_command_and_release_notes() {
-        let mut app = App::test_default();
-        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Update);
-        app.update_prompt = Some(UpdatePromptState {
-            current_version: "0.13.4".to_owned(),
-            latest_version: "0.14.0".to_owned(),
-            release_url: "https://example.invalid".to_owned(),
-            install_method: crate::install_method::InstallMethod::Npm,
-            selected: UpdatePromptAction::Install,
-            last_error: None,
-        });
-
-        let text = draw_text(&mut app);
-
-        assert!(text.contains("Update Available!"));
-        assert!(text.contains("Current version: v0.13.4"));
-        assert!(text.contains("Latest version:  v0.14.0"));
-        assert!(text.contains("Install method:  npm"));
-        assert!(text.contains("Read release notes for v0.14.0 (on GitHub)"));
-    }
-
-    #[test]
-    fn unknown_install_method_renders_both_install_options() {
-        let mut app = App::test_default();
-        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Update);
-        app.update_prompt = Some(UpdatePromptState {
-            current_version: "0.13.4".to_owned(),
-            latest_version: "0.14.0".to_owned(),
-            release_url: "https://example.invalid".to_owned(),
-            install_method: crate::install_method::InstallMethod::Unknown,
-            selected: UpdatePromptAction::InstallScript,
-            last_error: None,
-        });
-
-        let text = draw_text(&mut app);
-
-        assert!(text.contains("Install update with script"));
-        assert!(text.contains("Install update with npm"));
+    fn update_fields_and_selection_follow_the_install_method_and_real_keys() {
+        use crate::install_method::InstallMethod;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        for (method, expected_method, next_label) in [
+            (InstallMethod::Npm, "npm", "Skip now"),
+            (InstallMethod::Script { install_dir: None }, "install script", "Skip now"),
+            (InstallMethod::Unknown, "unknown", "Install update with npm"),
+        ] {
+            let unknown = method == InstallMethod::Unknown;
+            let mut app = App::test_default();
+            app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Update);
+            app.update_prompt = Some(UpdatePromptState {
+                current_version: "7.2.1".into(),
+                latest_version: "9.4.8".into(),
+                release_url: "https://example.invalid/release-948".into(),
+                install_method: method,
+                selected: if unknown {
+                    UpdatePromptAction::InstallScript
+                } else {
+                    UpdatePromptAction::Install
+                },
+                last_error: None,
+            });
+            let mut terminal = Terminal::new(TestBackend::new(80, 18)).unwrap();
+            for (code, selected) in [
+                (None, if unknown { "Install update with script" } else { "Install update" }),
+                (Some(KeyCode::Down), next_label),
+                (
+                    Some(KeyCode::Up),
+                    if unknown { "Install update with script" } else { "Install update" },
+                ),
+            ] {
+                if let Some(code) = code {
+                    crate::app::handle_terminal_event(
+                        &mut app,
+                        crossterm::event::Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                    );
+                }
+                terminal.draw(|frame| render(frame, &mut app)).unwrap();
+                let rows = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .chunks(80)
+                    .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+                    .collect::<Vec<_>>();
+                for (label, value) in [
+                    ("Current version:", "7.2.1"),
+                    ("Latest version:", "9.4.8"),
+                    ("Install method:", expected_method),
+                ] {
+                    assert!(
+                        rows.iter().any(|row| row.contains(label) && row.contains(value)),
+                        "{rows:?}"
+                    );
+                }
+                let selected_rows =
+                    rows.iter().filter(|row| row.contains("> ")).collect::<Vec<_>>();
+                assert_eq!(selected_rows.len(), 1, "selection must mark one action: {rows:?}");
+                assert!(selected_rows[0].contains(selected), "{rows:?}");
+                assert!(
+                    rows.iter().any(|row| row.contains("release notes") && row.contains("9.4.8"))
+                );
+                if unknown {
+                    for label in ["Install update with script", "Install update with npm"] {
+                        assert!(rows.iter().any(|row| row.contains(label)));
+                    }
+                    assert!(
+                        !rows.iter().any(|row| row
+                            .trim_matches([' ', '│'])
+                            .trim_start_matches('>')
+                            .trim()
+                            == "Install update")
+                    );
+                }
+            }
+        }
     }
 }

@@ -3484,6 +3484,23 @@ mod tests {
         let last_instant = rows_at(&mut app, clock.at(1_199));
         assert_eq!(crab_rows(last_instant.rows()), REST_CRAB, "the hello ends at rest");
         assert_eq!(last_instant.stable_row_count(), 0, "still held inside the window");
+
+        let metadata = |rows: &[Line<'_>]| {
+            let text = line_texts(rows);
+            ["1.2.3", "Pro", "/workspace/demo", "session-123"].map(|value| {
+                let row = text.iter().position(|line| line.contains(value)).expect("welcome field");
+                let byte = text[row].find(value).unwrap();
+                (value.to_owned(), row, unicode_width::UnicodeWidthStr::width(&text[row][..byte]))
+            })
+        };
+        let baseline = metadata(serialized.rows());
+        for millis in [240, 720, 1_199, 1_200] {
+            let frame = rows_at(&mut app, clock.at(millis));
+            assert_eq!(metadata(frame.rows()), baseline, "metadata moved with pose at {millis}");
+            if millis == 1_200 {
+                assert_eq!(frame.stable_row_count(), frame.rows().len());
+            }
+        }
     }
 
     #[test]

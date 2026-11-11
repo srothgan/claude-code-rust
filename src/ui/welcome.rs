@@ -314,131 +314,112 @@ pub(crate) fn selected_tip(block: &WelcomeBlock) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CONNECTING_FRAMES, FERRIS_REST, FerrisPhase, HELLO_FRAMES, HOST_TIPS, Line, ferris_frame,
-        overview_lines,
-    };
+    use super::{FERRIS_REST, HOST_TIPS, Line, overview_lines};
     use crate::app::{ChatMessage, MessageBlock};
-    use crate::ui::wrap::{display_width, line_display_width};
-    use std::time::Duration;
-
-    /// The static crab claude-rs drew before the animation, written out so
-    /// the rest pose cannot drift from it.
-    const STATIC_CRAB: [&str; 4] =
-        [r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
+    use crate::ui::wrap::line_display_width;
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
+    fn field_region(rows: &[String], label: &str) -> (usize, Vec<String>) {
+        let labels = ["Version:", "Subscription:", "Cwd:", "Session ID:", "Tips:"];
+        let start = rows.iter().position(|row| row.contains(label)).expect("field label");
+        let column = rows[start].find(label).unwrap();
+        let end = rows[start + 1..]
+            .iter()
+            .position(|row| labels.iter().any(|next| row.contains(next)))
+            .map_or(rows.len(), |offset| start + 1 + offset);
+        let mut region = vec![rows[start][column + label.len()..].to_owned()];
+        region.extend(
+            rows[start + 1..end].iter().map(|row| row.get(column..).unwrap_or_default().to_owned()),
+        );
+        (column, region)
+    }
+
+    fn assert_field_source(region: &[String], expected: &str) {
+        let expected = expected.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut remaining = expected.as_str();
+        for piece in region.iter().map(|row| row.trim()).filter(|row| !row.is_empty()) {
+            remaining = remaining.strip_prefix(' ').unwrap_or(remaining);
+            assert!(
+                remaining.starts_with(piece),
+                "field changed source text: {region:?}, expected {expected:?}"
+            );
+            remaining = &remaining[piece.len()..];
+        }
+        assert!(remaining.is_empty(), "field lost source text: {region:?}, missing {remaining:?}");
+    }
+
     #[test]
-    fn every_crab_frame_keeps_the_rest_pose_geometry() {
-        assert_eq!(FERRIS_REST, STATIC_CRAB);
-        for frame in CONNECTING_FRAMES.iter().chain(HELLO_FRAMES.iter()) {
-            for (row, rest_row) in frame.iter().zip(STATIC_CRAB) {
-                assert!(row.is_ascii(), "{row:?}");
-                assert_eq!(display_width(row), 16, "{row:?}");
-                assert_eq!(display_width(row), display_width(rest_row), "{row:?}");
+    fn overview_fields_keep_their_own_resolved_or_loading_values() {
+        for (subscription, session, cause, expected_subscription, expected_session) in [
+            (
+                "Enterprise fixture",
+                "session-saffron",
+                Some("WAIT_PROFILE"),
+                "Enterprise fixture",
+                "session-saffron",
+            ),
+            ("-", "session-saffron", Some("WAIT_PROFILE"), "WAIT_PROFILE", "session-saffron"),
+            (
+                "Enterprise fixture",
+                "  ",
+                Some("WAIT_SESSION"),
+                "Enterprise fixture",
+                "WAIT_SESSION",
+            ),
+            ("", "-", None, "Loading", "Loading"),
+        ] {
+            let message = ChatMessage::welcome("8.7.6", subscription, "/workspace/cedar", session);
+            let MessageBlock::Welcome(block) = &message.blocks[0] else { panic!("welcome block") };
+            let rows = overview_lines(block, cause, &FERRIS_REST, 120)
+                .iter()
+                .map(line_text)
+                .collect::<Vec<_>>();
+            for (label, expected) in [
+                ("Version:", "8.7.6"),
+                ("Subscription:", expected_subscription),
+                ("Cwd:", "/workspace/cedar"),
+                ("Session ID:", expected_session),
+            ] {
+                let (_, region) = field_region(&rows, label);
+                if cause.is_none() && expected == "Loading" {
+                    assert!(region.iter().any(|row| row.contains("Loading")), "{label}: {rows:?}");
+                } else {
+                    assert_field_source(&region, expected);
+                }
             }
         }
-        assert_eq!(HELLO_FRAMES.last(), Some(&FERRIS_REST), "the hello ends at rest");
     }
 
     #[test]
-    fn frames_follow_the_spinner_and_the_hello_clock() {
-        let at = |ms| Duration::from_millis(ms);
-        let connecting = |frame| ferris_frame(FerrisPhase::Connecting { spinner_frame: frame });
-        let hello = |ms| ferris_frame(FerrisPhase::Hello { elapsed: at(ms) });
-
-        assert_eq!(connecting(0)[1], r"\) / o o   \ (/ ");
-        assert_eq!(connecting(5)[1], r"\) / o o   \ (/ ");
-        assert_eq!(connecting(6)[3], r"  \ '-----' /   ");
-        assert_eq!(connecting(12)[1], r"\) /   o o \ (/ ");
-        assert_eq!(connecting(24), connecting(0), "the loop repeats after four poses");
-        assert_eq!(hello(0)[0], r"\)  _~^~^~_  (/ ");
-        assert_eq!(hello(240)[1], r" \ /  - -  \ /  ");
-        assert_eq!(hello(720)[1], r"\) /  - -  \ (/ ");
-        assert_eq!(*hello(960), STATIC_CRAB);
-        assert_eq!(*hello(60_000), STATIC_CRAB);
-        assert_eq!(*ferris_frame(FerrisPhase::Rest), STATIC_CRAB);
-    }
-
-    #[test]
-    fn overview_lines_render_expected_fields() {
-        let mut message = ChatMessage::welcome(env!("CARGO_PKG_VERSION"), "-", "/cwd", "-");
-        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
-            panic!("expected welcome block");
-        };
-        block.tip_seed = 16;
-        let lines: Vec<String> = overview_lines(block, None, &FERRIS_REST, 120)
-            .into_iter()
-            .map(|line| line.spans.into_iter().map(|s| s.content).collect())
-            .collect();
-        assert!(lines.iter().any(|line| line.contains("_~^~^~_")));
-        assert!(!lines.iter().any(|line| line.contains("Welcome back to Claude, in Rust!")));
-        assert!(lines.iter().any(|line| line.contains("Version:")));
-        assert!(lines.iter().any(|line| line.contains("Subscription: Loading")));
-        assert!(lines.iter().any(|line| line.contains("Cwd: /cwd")));
-        assert!(lines.iter().any(|line| line.contains("Session ID: Loading")));
-        assert!(lines.iter().any(|line| line.contains("Tips: ")));
-        assert!(
-            HOST_TIPS.iter().any(|tip| lines.iter().any(|line| line.contains(tip))),
-            "expected one welcome tip to be rendered"
-        );
-    }
-
-    #[test]
-    fn wide_overview_wraps_tip_below_its_value() {
-        let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
-        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
-            panic!("expected welcome block");
-        };
-        block.tip_seed = 7;
-
-        let lines = overview_lines(block, None, &FERRIS_REST, 110);
-        let text = lines.iter().map(line_text).collect::<Vec<_>>();
-        let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
-
-        assert_eq!(text[tip_row].find("Tips:"), Some(20));
-        assert_eq!(text[tip_row + 1].find("noise"), Some(26));
-        assert!(lines.iter().all(|line| line_display_width(line) <= 110));
-    }
-
-    #[test]
-    fn wide_overview_wraps_long_metadata_below_its_value() {
-        let mut message = ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda",
-            "session-123",
-        );
-        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
-            panic!("expected welcome block");
-        };
-
-        let text =
-            overview_lines(block, None, &FERRIS_REST, 70).iter().map(line_text).collect::<Vec<_>>();
-        let cwd_row = text.iter().position(|line| line.contains("Cwd: alpha")).expect("cwd row");
-
-        assert_eq!(text[cwd_row].find("Cwd:"), Some(20));
-        assert_eq!(text[cwd_row + 1].find("iota"), Some(25));
-    }
-
-    #[test]
-    fn narrow_overview_hides_ferris_and_keeps_hanging_indent() {
-        let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
-        let MessageBlock::Welcome(block) = &mut message.blocks[0] else {
-            panic!("expected welcome block");
-        };
-        block.tip_seed = 7;
-
-        let lines = overview_lines(block, None, &FERRIS_REST, 36);
-        let text = lines.iter().map(line_text).collect::<Vec<_>>();
-        let tip_row =
-            text.iter().position(|line| line.starts_with("Tips: Start")).expect("tip row");
-
-        assert!(!text.iter().any(|line| line.contains("_~^~^~_")));
-        assert_eq!(text[tip_row + 1].find(|ch: char| !ch.is_whitespace()), Some(6));
-        assert!(lines.iter().all(|line| line_display_width(line) <= 36));
+    fn welcome_fields_preserve_unicode_content_and_relative_wrapping() {
+        let cwd =
+            "/workspace/雪 cedar/e\u{301}clair wide directory/amber cobalt saffron/final-file";
+        let session = "session-orchid-782";
+        let mut message = ChatMessage::welcome("8.7.6", "Enterprise fixture", cwd, session);
+        let MessageBlock::Welcome(block) = &mut message.blocks[0] else { panic!("welcome block") };
+        let (index, tip) = HOST_TIPS.iter().enumerate().max_by_key(|(_, tip)| tip.len()).unwrap();
+        block.tip_seed = u64::try_from(index).unwrap();
+        for width in [100, 46, 24, 14] {
+            let lines = overview_lines(block, None, &FERRIS_REST, width);
+            assert!(lines.iter().all(|line| line_display_width(line) <= usize::from(width)));
+            let rows = lines.iter().map(line_text).collect::<Vec<_>>();
+            for (label, expected) in [("Cwd:", cwd), ("Session ID:", session), ("Tips:", *tip)] {
+                let (_, region) = field_region(&rows, label);
+                assert_field_source(&region, expected);
+                if !region[0].trim().is_empty() {
+                    let value_start = label.len() + region[0].len() - region[0].trim_start().len();
+                    for continuation in region.iter().skip(1).filter(|row| !row.trim().is_empty()) {
+                        let indent = continuation.len() - continuation.trim_start().len();
+                        assert_eq!(
+                            indent, value_start,
+                            "continuation escaped its field: {region:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

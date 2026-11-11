@@ -185,3 +185,98 @@ fn release_notes_open_the_selected_url_and_recover_without_leaving_the_prompt() 
     }
     assert_eq!(observed, vec!["https://example.invalid/selected"; 2]);
 }
+
+#[test]
+fn update_failure_keeps_selected_actions_visible_through_resize_and_retry() {
+    use ratatui::{Terminal, backend::TestBackend};
+    let (_dir, mut app) = fixture(false);
+    let url = "https://example.invalid/releases/selected-99-cedar";
+    app.update_prompt.as_mut().unwrap().release_url = url.into();
+    select(&mut app, UpdatePromptAction::ReleaseNotes);
+    handle_key_with_opener(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), |seen| {
+        assert_eq!(seen, url);
+        Err(format!("CAUSE_DENIED 雪 {}", "cedar e\u{301}clair permission refused; ".repeat(5)))
+    });
+    let mut terminal = Terminal::new(TestBackend::new(86, 28)).unwrap();
+    for (width, height) in [(86, 28), (42, 14), (18, 7), (86, 28)] {
+        terminal.backend_mut().resize(width, height);
+        terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).unwrap();
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+            .collect::<Vec<_>>();
+        for cells in terminal.backend().buffer().content.chunks(usize::from(width)) {
+            let mut column = 0;
+            while column < cells.len() {
+                let occupied = unicode_width::UnicodeWidthStr::width(cells[column].symbol()).max(1);
+                assert!(column + occupied <= cells.len(), "wide character crossed the frame edge");
+                column += occupied;
+            }
+        }
+        if width >= 42 {
+            assert!(
+                rows.iter().any(|row| row.contains("CAUSE_DENIED")),
+                "failure cause hidden: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|row| row.contains("> Read release notes")),
+                "selected action hidden: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|row| row.contains("Enter") && row.contains("Esc")),
+                "controls hidden: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|row| row.contains("Current version:") && row.contains("1.0.0")),
+                "{rows:?}"
+            );
+            assert!(
+                rows.iter().any(|row| row.contains("Latest version:") && row.contains("99.0.0")),
+                "{rows:?}"
+            );
+            let row_of = |needle: &str| rows.iter().position(|row| row.contains(needle)).unwrap();
+            assert!(row_of("Latest version:") < row_of("CAUSE_DENIED"));
+            assert!(row_of("CAUSE_DENIED") < row_of("> Read release notes"));
+            assert!(row_of("> Read release notes") < row_of("Enter select"));
+        }
+        if width == 86 {
+            assert!(rows.join("\n").contains(url), "error target hidden: {rows:?}");
+        }
+        assert_eq!(app.update_prompt.as_ref().unwrap().selected, UpdatePromptAction::ReleaseNotes);
+    }
+    terminal.backend_mut().resize(42, 14);
+    key(&mut app, KeyCode::Up);
+    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).unwrap();
+    let selected = terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(42)
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+        .collect::<Vec<_>>();
+    assert!(
+        selected.iter().any(|row| row.contains("> Skip this version")),
+        "new selection hidden: {selected:?}"
+    );
+    key(&mut app, KeyCode::Down);
+    handle_key_with_opener(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), |seen| {
+        assert_eq!(seen, url);
+        Ok(())
+    });
+    terminal.backend_mut().resize(86, 28);
+    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app)).unwrap();
+    let cleared = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect::<String>();
+    assert!(!cleared.contains("CAUSE_DENIED"));
+    assert!(!cleared.contains("permission refused"));
+    assert!(cleared.contains("> Read release notes"));
+    assert_eq!(app.update_prompt.as_ref().unwrap().last_error, None);
+}
