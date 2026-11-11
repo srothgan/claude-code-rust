@@ -4,6 +4,150 @@ use super::super::chat_terminal::test_io::TestIo;
 use crate::ui::layout_control::LayoutControl;
 use std::fmt::Write as _;
 
+fn alignment_fixture(
+    tool_first: bool,
+) -> (App, crate::app::HistoryOutputId, crate::app::ChatMessageId, crate::app::HistoryOutputId) {
+    use crate::app::{
+        ChatMessage, HistoryOutputId, ImageAttachmentBlock, MessageBlock, MessageRole, TextBlock,
+    };
+    let mut app = App::test_default();
+    app.input.set_text("DRAFT_ALIGNMENT");
+    let user = ChatMessage::new(
+        MessageRole::User,
+        vec![
+            MessageBlock::Text(TextBlock::from_complete("ALPHA_PARAGRAPH\n\nOMEGA_PARAGRAPH")),
+            MessageBlock::ImageAttachment(ImageAttachmentBlock::new(2)),
+        ],
+        None,
+    );
+    let user_id = HistoryOutputId::Message(user.id);
+    app.push_message_tracked(user);
+    let mut tool = crate::app::test_support::named_tool_call_info(
+        "aligned-tool",
+        "Bash",
+        crate::agent::model::ToolCallStatus::Completed,
+    );
+    tool.title = "TOOL_ALIGNMENT".into();
+    let mut blocks = vec![
+        MessageBlock::Text(TextBlock::from_complete("ASSISTANT_ALIGNMENT")),
+        MessageBlock::ToolCall(Box::new(tool)),
+    ];
+    if tool_first {
+        blocks.reverse();
+    }
+    let assistant = ChatMessage::new(MessageRole::Assistant, blocks, None);
+    let assistant_id = assistant.id;
+    app.push_message_tracked(assistant);
+    let neighbor = ChatMessage::new(
+        MessageRole::System(Some(crate::app::SystemSeverity::Info)),
+        vec![MessageBlock::Text(TextBlock::from_complete("STATIC_ALIGNMENT"))],
+        None,
+    );
+    let neighbor_id = HistoryOutputId::Message(neighbor.id);
+    app.push_message_tracked(neighbor);
+    (app, user_id, assistant_id, neighbor_id)
+}
+
+fn alignment_position(buffer: &ratatui::buffer::Buffer, region: Rect, needle: &str) -> (u16, u16) {
+    let hits: Vec<_> = (region.y..region.bottom())
+        .filter_map(|y| {
+            let rendered_row =
+                (region.x..region.right()).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+            rendered_row.find(needle).map(|x| {
+                (
+                    region.x
+                        + u16::try_from(unicode_width::UnicodeWidthStr::width(&rendered_row[..x]))
+                            .unwrap(),
+                    y,
+                )
+            })
+        })
+        .collect();
+    assert_eq!(hits.len(), 1, "{needle} must appear once in its actual region");
+    hits[0]
+}
+
+#[test]
+fn submitted_and_assistant_regions_align_with_the_actual_composer_without_background_leaks() {
+    use crate::app::HistoryOutputId;
+    use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
+    for width in [38, 80] {
+        for tool_first in [false, true] {
+            let (mut app, user_id, assistant_id, neighbor_id) = alignment_fixture(tool_first);
+            let serialized = serialize_live_rows_with_boundaries_excluding(
+                &mut app,
+                width,
+                &BTreeSet::new(),
+                None,
+            );
+            let live = serialized.rows();
+            let surface = ChatTerminalSession::build_composer_surface(&mut app, width);
+            let plan = MutableLayoutPlan::new(live, &surface, 64);
+            let area = Rect::new(0, 0, width, 64);
+            let (la, _, _, _, ea, _) = plan.areas(area);
+            let visible = plan.live_visible_rows(live).to_vec();
+            assert_eq!(visible, live, "fixture must keep every target visible");
+            let mut terminal = Terminal::new(TestBackend::new(width, 64)).unwrap();
+            terminal
+                .draw(|frame| {
+                    super::render_mutable_frame(frame, &mut app, &surface, plan, &visible, area);
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let locate = |region, needle| alignment_position(buffer, region, needle);
+            let (composer_x, composer_y) = locate(ea, "DRAFT_ALIGNMENT");
+            let background = buffer[(composer_x, composer_y)].bg;
+            assert_ne!(background, ratatui::style::Color::Reset);
+            let segments = |id: &HistoryOutputId| {
+                serialized.segments().iter().filter(|s| s.ids.contains(id)).collect::<Vec<_>>()
+            };
+            let user_segments = segments(&user_id);
+            assert!(!user_segments.is_empty());
+            for needle in ["ALPHA_PARAGRAPH", "OMEGA_PARAGRAPH", "[img] 2 images attached"] {
+                let (x, y) = locate(la, needle);
+                assert_eq!(x, composer_x);
+                assert!(
+                    user_segments.iter().any(|s| y >= la.y + u16::try_from(s.start_row).unwrap()
+                        && y < la.y + u16::try_from(s.end_row).unwrap())
+                );
+            }
+            for segment in &user_segments {
+                for y in segment.start_row..segment.end_row {
+                    for x in 0..width {
+                        assert_eq!(buffer[(x, la.y + u16::try_from(y).unwrap())].bg, background);
+                    }
+                }
+            }
+            let (assistant_x, assistant_y) = locate(la, "ASSISTANT_ALIGNMENT");
+            assert_eq!(assistant_x, composer_x);
+            assert_ne!(buffer[(assistant_x, assistant_y)].bg, background);
+            let (_, tool_y) = locate(la, "TOOL_ALIGNMENT");
+            let status_x =
+                (0..width).find(|x| !buffer[(*x, tool_y)].symbol().trim().is_empty()).unwrap();
+            // In a tool-first response the speaker marker precedes the status; the tool's
+            // own framed content still begins at the composer column.
+            let tool_row = live[usize::from(tool_y - la.y)].to_string();
+            let status = tool_row.trim_start_matches([' ', '\u{25cf}']).chars().next().unwrap();
+            let actual_status_x = (status_x..width)
+                .find(|x| buffer[(*x, tool_y)].symbol() == status.to_string())
+                .unwrap();
+            assert_eq!(actual_status_x, composer_x);
+            let labels = segments(&HistoryOutputId::AssistantLabel(assistant_id));
+            assert!(!labels.is_empty());
+            assert_eq!(
+                (la.y..la.bottom())
+                    .flat_map(|y| (0..width).map(move |x| (x, y)))
+                    .filter(|&(x, y)| buffer[(x, y)].symbol() == "\u{25cf}")
+                    .count(),
+                1
+            );
+            let (nx, ny) = locate(la, "STATIC_ALIGNMENT");
+            assert_ne!(buffer[(nx, ny)].bg, background);
+            assert!(!segments(&neighbor_id).is_empty());
+        }
+    }
+}
+
 struct SessionFixture {
     session: super::ChatTerminalSession<TestIo>,
     io: TestIo,

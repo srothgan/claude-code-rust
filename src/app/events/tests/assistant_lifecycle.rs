@@ -963,8 +963,27 @@ fn list_rendering_survives_sdk_chunks_cache_splits_and_scrollback_commits() {
                 let owner = app.active_turn_assistant_idx().unwrap();
                 let mut excluded = BTreeSet::new();
                 let mut committed = Vec::new();
+                let mut streamed_source = String::new();
                 for chunk in chars.chunks(size) {
-                    update(&mut app, text(&chunk.iter().collect::<String>()));
+                    let piece = chunk.iter().collect::<String>();
+                    streamed_source.push_str(&piece);
+                    update(&mut app, text(&piece));
+                    let visible =
+                        take_owner_text_rows(&mut app, owner, &mut excluded.clone(), width, false);
+                    let visible_text = visible.join("\n");
+                    for (source_token, rendered_token) in [
+                        (format!("9{marker} Parent item."), "9. Parent item."),
+                        ("Child with".into(), "Child with"),
+                        ("Child continuation.".into(), "Child continuation."),
+                        (format!("10{marker} Next item."), "10. Next item."),
+                    ] {
+                        if streamed_source.contains(&source_token) {
+                            assert!(
+                                visible_text.contains(rendered_token),
+                                "received list content must remain visible before commitment: {rendered_token}"
+                            );
+                        }
+                    }
                     committed.extend(take_owner_text_rows(
                         &mut app,
                         owner,
