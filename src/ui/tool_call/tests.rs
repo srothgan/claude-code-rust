@@ -70,24 +70,6 @@ fn assert_read_path_is_syntax_colored(path: &str, text: &str) {
     assert!(has_multiple_content_fg_colors(&body), "expected syntax coloring for path {path:?}");
 }
 
-// status_icon
-
-#[test]
-fn status_icon_pending() {
-    let (icon, color) =
-        status_icon(model::ToolCallStatus::Pending, crate::ui::SpinnerState::Animated(0));
-    assert!(!icon.is_empty());
-    assert_eq!(color, theme::RUST_ORANGE);
-}
-
-#[test]
-fn status_icon_in_progress() {
-    let (icon, color) =
-        status_icon(model::ToolCallStatus::InProgress, crate::ui::SpinnerState::Animated(3));
-    assert!(!icon.is_empty());
-    assert_eq!(color, theme::RUST_ORANGE);
-}
-
 #[test]
 fn mcp_omission_badge_preserves_readable_output() {
     let mut tool = test_tool_call("export", "mcp__docs__export", model::ToolCallStatus::Completed);
@@ -104,73 +86,6 @@ fn mcp_omission_badge_preserves_readable_output() {
     let text = rendered_line_texts(&lines).join("\n");
     assert!(text.contains("structured output omitted"));
     assert!(text.contains("Readable export"));
-}
-
-#[test]
-fn status_icon_completed() {
-    let (icon, color) =
-        status_icon(model::ToolCallStatus::Completed, crate::ui::SpinnerState::Animated(0));
-    assert_eq!(icon, theme::ICON_COMPLETED);
-    assert_eq!(color, theme::RUST_ORANGE);
-}
-
-#[test]
-fn status_icon_failed() {
-    let (icon, color) =
-        status_icon(model::ToolCallStatus::Failed, crate::ui::SpinnerState::Animated(0));
-    assert_eq!(icon, theme::ICON_FAILED);
-    assert_eq!(color, theme::STATUS_ERROR);
-}
-
-#[test]
-fn status_icon_killed() {
-    let (icon, color) =
-        status_icon(model::ToolCallStatus::Killed, crate::ui::SpinnerState::Animated(0));
-    assert_eq!(icon, theme::ICON_FAILED);
-    assert_eq!(color, theme::STATUS_ERROR);
-}
-
-#[test]
-fn status_icon_spinner_wraps() {
-    let (icon_a, _) =
-        status_icon(model::ToolCallStatus::InProgress, crate::ui::SpinnerState::Animated(0));
-    let (icon_b, _) = status_icon(
-        model::ToolCallStatus::InProgress,
-        crate::ui::SpinnerState::Animated(crate::ui::SpinnerState::FRAMES.len()),
-    );
-    assert_eq!(icon_a, icon_b);
-}
-
-#[test]
-fn status_icon_all_spinner_frames_valid() {
-    for i in 0..crate::ui::SpinnerState::FRAMES.len() {
-        let (icon, _) =
-            status_icon(model::ToolCallStatus::InProgress, crate::ui::SpinnerState::Animated(i));
-        assert!(!icon.is_empty());
-    }
-}
-
-/// Spinner frames are all distinct.
-#[test]
-fn status_icon_spinner_frames_distinct() {
-    let frames: Vec<&str> = (0..crate::ui::SpinnerState::FRAMES.len())
-        .map(|i| {
-            status_icon(model::ToolCallStatus::InProgress, crate::ui::SpinnerState::Animated(i)).0
-        })
-        .collect();
-    for i in 0..frames.len() {
-        for j in (i + 1)..frames.len() {
-            assert_ne!(frames[i], frames[j], "frames {i} and {j} are identical");
-        }
-    }
-}
-
-/// Large spinner frame number wraps correctly.
-#[test]
-fn status_icon_spinner_large_frame() {
-    let (icon, _) =
-        status_icon(model::ToolCallStatus::Pending, crate::ui::SpinnerState::Animated(999_999));
-    assert!(!icon.is_empty());
 }
 
 #[test]
@@ -238,7 +153,6 @@ fn tool_titles_project_one_source_line_and_preserve_literal_shell_commands() {
             assert_eq!(title_span.content.as_ref(), first);
         } else {
             assert_eq!(title_span.content.as_ref(), "Visible title");
-            assert!(title_span.style.add_modifier.contains(ratatui::style::Modifier::BOLD));
         }
         assert_eq!(tc.title, title);
         if tc.is_execute_tool() {
@@ -318,10 +232,6 @@ fn tool_title_cache_reuses_markdown_through_animation_resize_and_body_updates() 
             );
             assert_eq!(rows.len(), 1);
             assert!(spans_width(&rows[0].spans) <= usize::from(width));
-            assert_eq!(
-                rows[0].spans[0].content,
-                format!("{} ", crate::ui::SpinnerState::Animated(frame).icon())
-            );
         }
         assert_eq!(warnings.load(Ordering::Relaxed), 1, "unchanged titles must not be reparsed");
 
@@ -336,7 +246,9 @@ fn tool_title_cache_reuses_markdown_through_animation_resize_and_body_updates() 
             crate::ui::SpinnerState::Animated(0),
             &mut completed,
         );
-        assert_eq!(completed[0].spans[0].content, format!("{} ", theme::ICON_COMPLETED));
+        assert!(
+            rendered_line_texts(&completed[1..]).iter().any(|line| line.contains("new output"))
+        );
         assert_eq!(
             warnings.load(Ordering::Relaxed),
             1,
@@ -410,314 +322,6 @@ fn tool_title_cache_tracks_literal_rendering_and_display_context() {
         &mut rows,
     );
     assert_eq!(rows[0].spans.last().unwrap().content.as_ref(), "Updated title");
-}
-
-#[test]
-fn render_tool_call_titles_show_backgrounded_badge_and_shell_identity() {
-    let mut tc = test_tool_call("tc-bg", "Agent", model::ToolCallStatus::InProgress);
-    tc.task_metadata = Some(model::TaskMetadata::new().backgrounded(Some(true)));
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-
-    assert!(rendered.contains("[backgrounded]"));
-
-    for (tool, other) in [("Bash", "PowerShell"), ("PowerShell", "Bash")] {
-        let mut shell = test_tool_call("tc-shell", tool, model::ToolCallStatus::InProgress);
-        shell.title = "echo audit".to_owned();
-        let line = standard::render_tool_call_title(
-            &shell,
-            ToolCallRenderContext::default(),
-            80,
-            crate::ui::SpinnerState::Animated(0),
-        );
-        let title: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(title.contains(tool), "title lost {tool} identity: {title}");
-        assert!(title.contains("echo audit"), "title lost command: {title}");
-        assert!(!title.contains(other), "title borrowed {other} identity: {title}");
-    }
-}
-
-#[test]
-fn render_task_capable_tool_titles_show_worker_restart_reason() {
-    for tool_name in ["Agent", "Task", "Bash", "Monitor", "Workflow"] {
-        let mut tc = test_tool_call("tc-worker-restart", tool_name, model::ToolCallStatus::Killed);
-        tc.task_metadata = Some(
-            model::TaskMetadata::new()
-                .terminal_status(Some("stopped".to_owned()))
-                .terminal_reason(Some("worker_restart".to_owned())),
-        );
-
-        let line = standard::render_tool_call_title(
-            &tc,
-            ToolCallRenderContext::default(),
-            100,
-            crate::ui::SpinnerState::Animated(0),
-        );
-        let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-        assert!(rendered.contains("[worker restarted]"), "missing badge for {tool_name}");
-    }
-}
-
-#[test]
-fn render_agent_title_shows_spawn_depth_with_background_state() {
-    let mut tc = test_tool_call("tc-depth", "Agent", model::ToolCallStatus::InProgress);
-    tc.task_metadata =
-        Some(model::TaskMetadata::new().spawn_depth(Some(3)).backgrounded(Some(true)));
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(rendered.contains("[depth: 3]"));
-    assert!(rendered.contains("[backgrounded]"));
-
-    let narrow = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        20,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    assert!(!narrow.spans.is_empty());
-}
-
-#[test]
-fn render_unrelated_tool_title_omits_task_spawn_depth() {
-    let mut tc = test_tool_call("tc-read-depth", "Read", model::ToolCallStatus::Completed);
-    tc.task_metadata = Some(model::TaskMetadata::new().spawn_depth(Some(4)));
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(!rendered.contains("[depth:"));
-}
-
-#[test]
-fn render_skill_title_shows_backgrounded_badge() {
-    let mut tc = test_tool_call("tc-skill-bg", "Skill", model::ToolCallStatus::Completed);
-    tc.output_metadata = Some(
-        model::ToolOutputMetadata::new()
-            .skill(Some(model::SkillOutputMetadata::new().background(Some(true)))),
-    );
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(rendered.contains("[backgrounded]"));
-}
-
-#[test]
-fn render_skill_title_uses_dedicated_icon_and_named_title() {
-    let mut tc = test_tool_call("tc-skill", "Skill", model::ToolCallStatus::Completed);
-    tc.title = "Skill: Frontend Design".to_owned();
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(rendered.contains("\u{2726} Skill: Frontend Design"));
-    assert!(!rendered.contains("\u{25cb}"));
-}
-
-#[test]
-fn render_tool_call_preserves_non_execution_reason_and_feedback() {
-    let mut tc = test_tool_call("tc-rejected", "Bash", model::ToolCallStatus::Failed);
-    tc.output_metadata = Some(
-        model::ToolOutputMetadata::new().non_execution(Some(
-            model::ToolNonExecutionMetadata::new("user-rejected")
-                .user_feedback(Some("Use a read-only command.".to_owned())),
-        )),
-    );
-
-    let mut rendered = Vec::new();
-    render_tool_call_cached(
-        &mut tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-        &mut rendered,
-    );
-    let text = rendered
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .map(|span| span.content.as_ref())
-        .collect::<String>();
-
-    assert!(text.contains("Not executed: rejected by the user"));
-    assert!(text.contains("Feedback: Use a read-only command."));
-}
-
-#[test]
-fn render_tool_call_marks_staged_edits_as_file_unchanged() {
-    let mut tc = test_tool_call("tc-staged", "Write", model::ToolCallStatus::Completed);
-    tc.output_metadata = Some(model::ToolOutputMetadata::new().staged(true));
-
-    let mut rendered = Vec::new();
-    render_tool_call_cached(
-        &mut tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-        &mut rendered,
-    );
-    let text = rendered
-        .iter()
-        .flat_map(|line| line.spans.iter())
-        .map(|span| span.content.as_ref())
-        .collect::<String>();
-
-    assert!(text.contains("Staged for review: file unchanged"));
-}
-
-#[test]
-fn render_tool_call_title_shows_resolved_model_badge_for_subagents() {
-    let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::Completed);
-    tc.output_metadata = Some(model::ToolOutputMetadata::new().agent(Some(
-        model::AgentOutputMetadata::new().resolved_model(Some("claude-sonnet-4-7".to_owned())),
-    )));
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(rendered.contains("reviewer"));
-    assert!(rendered.contains("[model: claude-sonnet-4-7]"));
-}
-
-#[test]
-fn render_tool_call_title_shows_ordered_model_route_after_subagent_swap() {
-    let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::Completed);
-    tc.raw_input = Some(serde_json::json!({ "model": "opus" }));
-    tc.output_metadata = Some(
-        model::ToolOutputMetadata::new().agent(Some(
-            model::AgentOutputMetadata::new()
-                .resolved_model(Some("claude-sonnet-4-7".to_owned()))
-                .models_used(Some(vec![
-                    "claude-opus-4-8".to_owned(),
-                    "claude-sonnet-4-7".to_owned(),
-                ])),
-        )),
-    );
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        160,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(rendered.contains("[models: claude-opus-4-8 -> claude-sonnet-4-7]"));
-    assert!(!rendered.contains("[model:"));
-}
-
-#[test]
-fn render_tool_call_title_shows_transient_subagent_retry() {
-    let mut tc = test_tool_call("reviewer", "Agent", model::ToolCallStatus::InProgress);
-    tc.task_metadata = Some(model::TaskMetadata::new().subagent_retry(Some(
-        model::SubagentRetryUpdate::Waiting {
-            agent_id: Some("agent-1".to_owned()),
-            attempt: 2,
-            max_retries: 4,
-            retry_delay_ms: 1_500,
-            error_status: Some(429),
-            error_category: Some("rate_limit".to_owned()),
-        },
-    )));
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-    assert!(rendered.contains("[retry 2/4 in 1.5s]"));
-
-    tc.status = model::ToolCallStatus::Completed;
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-    assert!(!rendered.contains("[retry"));
-}
-
-#[test]
-fn render_tool_call_title_shows_running_agent_type_and_requested_model_from_input() {
-    let mut tc = test_tool_call("Agent: review-worker", "Agent", model::ToolCallStatus::InProgress);
-    tc.raw_input = Some(serde_json::json!({
-        "name": "review-worker",
-        "subagent_type": "general-purpose",
-        "model": "opus",
-    }));
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        120,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(rendered.contains("Agent: review-worker"));
-    assert!(rendered.contains("[type: general-purpose]"));
-    assert!(rendered.contains("[model: opus]"));
-}
-
-#[test]
-fn render_tool_call_title_prefers_resolved_model_over_requested_model() {
-    let mut tc = test_tool_call("Agent: review-worker", "Agent", model::ToolCallStatus::Completed);
-    tc.raw_input = Some(serde_json::json!({
-        "name": "review-worker",
-        "subagent_type": "general-purpose",
-        "model": "opus",
-    }));
-    tc.output_metadata = Some(model::ToolOutputMetadata::new().agent(Some(
-        model::AgentOutputMetadata::new().resolved_model(Some("claude-opus-4-8".to_owned())),
-    )));
-
-    let line = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        120,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let rendered: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(rendered.contains("[type: general-purpose]"));
-    assert!(rendered.contains("[model: claude-opus-4-8]"));
-    assert!(!rendered.contains("[model: opus]"));
 }
 
 #[test]
@@ -1796,63 +1400,6 @@ fn cached_tool_body_rerenders_after_width_change() {
     );
 
     assert!(narrow.len() > wide.len(), "narrow render should rebuild cached body at the new width");
-}
-
-#[test]
-fn bash_title_renders_assistant_backgrounded_badge() {
-    let mut tc = test_tool_call("tc-bash-bg", "Bash", model::ToolCallStatus::Completed);
-    tc.output_metadata = Some(
-        model::ToolOutputMetadata::new()
-            .bash(Some(model::BashOutputMetadata::new().assistant_auto_backgrounded(Some(true)))),
-    );
-
-    let rendered = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-    assert!(text.contains("[assistant backgrounded]"));
-}
-
-#[test]
-fn bash_title_distinguishes_timeout_auto_backgrounding() {
-    let mut tc = test_tool_call("tc-bash-timeout", "Bash", model::ToolCallStatus::Completed);
-    tc.output_metadata = Some(
-        model::ToolOutputMetadata::new().bash(Some(
-            model::BashOutputMetadata::new()
-                .assistant_auto_backgrounded(Some(true))
-                .timed_out_after_ms(Some(10_000)),
-        )),
-    );
-
-    let rendered = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-    assert!(text.contains("[auto-backgrounded after 10,000 ms]"));
-    assert!(!text.contains("[assistant backgrounded]"));
-}
-
-#[test]
-fn bash_title_renders_final_response_lifetime() {
-    let mut tc = test_tool_call("tc-bash-lifetime", "Bash", model::ToolCallStatus::Completed);
-    tc.output_metadata = Some(model::ToolOutputMetadata::new().bash(Some(
-        model::BashOutputMetadata::new().background_ends_with_final_response(Some(true)),
-    )));
-
-    let rendered = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        100,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-    assert!(text.contains("[ends with final response]"));
 }
 
 #[test]

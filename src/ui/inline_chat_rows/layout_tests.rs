@@ -171,7 +171,7 @@ fn reduced_motion_stabilizes_only_the_running_tool_region() {
 
 #[test]
 fn wrapped_code_preserves_indentation_and_internal_spaces_inside_the_message_column() {
-    let code = "    ALPHA  BETA  GAMMA  DELTA  EPSILON  ZETA";
+    let code = "    let phrase = \"ALPHA  BETA  GAMMA  DELTA  EPSILON\";";
     let mut app = App::test_default();
     let block = TextBlock::from_complete(&format!("```text\n{code}\n```"));
     let id = HistoryOutputId::Block(block.id);
