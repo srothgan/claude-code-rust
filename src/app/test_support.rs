@@ -161,6 +161,69 @@ impl EventClock {
     }
 }
 
+pub(crate) fn welcome_lifecycle_app(
+    now: std::time::Instant,
+    ready: bool,
+    motion: Option<bool>,
+) -> (super::App, super::HistoryOutputId) {
+    use super::{App, AppStatus, ChatMessage, HistoryOutputId, MessageBlock};
+    let mut app = App::test_default();
+    app.status = if ready { AppStatus::Ready } else { AppStatus::Connecting };
+    app.terminal_lifecycle = super::TerminalLifecycleState::Running(super::SurfaceMode::Chat);
+    app.chat_render.observe_terminal_size(120, 34);
+    if ready {
+        app.startup.mark_connected(now);
+    }
+    app.config.snapshot = motion.map(|reduced| {
+        crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(reduced),
+        )
+    });
+    let message = ChatMessage::welcome(
+        "8.6.4",
+        if ready { "Orchid" } else { "-" },
+        "/garden",
+        if ready { "sid-47" } else { "-" },
+    );
+    let MessageBlock::Welcome(block) = &message.blocks[0] else {
+        panic!("welcome fixture");
+    };
+    let id = HistoryOutputId::Block(block.id);
+    app.push_message_tracked(message);
+    (app, id)
+}
+
+pub(crate) fn output_region<'a>(
+    rows: &'a crate::ui::inline_chat_rows::SerializedLiveRows,
+    id: &super::HistoryOutputId,
+) -> (&'a crate::ui::inline_chat_rows::LiveRowSegment, Vec<String>) {
+    let segment = rows
+        .segments()
+        .iter()
+        .find(|segment| segment.ids.contains(id))
+        .expect("target output identity");
+    let text = rows
+        .segment_rows(segment)
+        .expect("target output region")
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    (segment, text)
+}
+
+/// Compare the artwork independently of metadata and without fixing its glyphs.
+pub(crate) fn welcome_art(region: &[String]) -> Vec<String> {
+    let start = region.iter().position(|row| row.contains("Version:")).expect("version field");
+    let column = region[start].find("Version:").expect("version label");
+    region[start..]
+        .iter()
+        .map(|row| row.chars().take(column).collect::<String>())
+        .map(|row| row.trim_end().to_owned())
+        .filter(|row| !row.is_empty())
+        .collect()
+}
+
 /// Deterministic incompressible RGBA fixture shared by the size-policy and error/retry owners.
 pub(crate) fn clipboard_noise(width: usize, height: usize) -> Vec<u8> {
     let mut state = 0x9E37_79B9_u32;

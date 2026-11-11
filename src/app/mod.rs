@@ -847,3 +847,6 @@ fn finalize_deferred_submit(app: &mut App) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod lifecycle_audit_tests;

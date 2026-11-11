@@ -141,27 +141,6 @@ fn connected_updates_cwd_and_clears_resuming_marker() {
 }
 
 #[test]
-fn the_first_connection_of_the_process_is_recorded_for_the_welcome_hello() {
-    let mut app = make_test_app();
-    assert!(app.startup.first_connected_at().is_none());
-
-    handle_client_event(&mut app, connected_event("claude-first"));
-
-    assert!(app.startup.first_connected_at().is_some());
-}
-
-#[test]
-fn a_later_connection_leaves_the_recorded_first_connection_unchanged() {
-    let mut app = make_test_app();
-    let first = std::time::Instant::now();
-    app.startup.mark_connected(first);
-
-    handle_client_event(&mut app, connected_event("claude-later"));
-
-    assert_eq!(app.startup.first_connected_at(), Some(first));
-}
-
-#[test]
 fn connected_reconciles_trust_for_new_cwd() {
     let mut app = make_test_app();
     app.trust.status = crate::app::trust::TrustStatus::Trusted;
@@ -2551,4 +2530,74 @@ fn reported_dynamic_removal_is_reversed_by_a_contradictory_authoritative_snapsho
     let error = app.mcp.last_error.as_ref().unwrap();
     assert!(error.contains("chosen") && error.contains("confirming"));
     assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn lifecycle_reconnection_keeps_the_welcome_settled_after_the_first_hello() {
+    use crate::app::HistoryOutputId;
+    use crate::app::test_support::{EventClock, output_region, welcome_art};
+    use crate::ui::inline_chat_rows::serialize_live_rows_at;
+    let clock = EventClock::new();
+    clock.at(0);
+    let mut app = make_test_app();
+    let mut settled_art = None;
+    for (seconds, model_name) in [(0, "first-model"), (60, "later-model")] {
+        clock.at(seconds);
+        handle_client_event(&mut app, connected_event(model_name));
+        assert_eq!(
+            app.session_runtime.current_model.as_ref().unwrap().resolved_id,
+            model_name,
+            "the later connection must actually be applied"
+        );
+        handle_client_event(
+            &mut app,
+            ClientEvent::StatusSnapshotReceived {
+                session_id: "test-session".into(),
+                account: model::AccountInfo {
+                    email: None,
+                    organization: None,
+                    subscription_type: Some("Orchid".into()),
+                    token_source: None,
+                    api_key_source: None,
+                    api_provider: None,
+                },
+            },
+        );
+        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
+            "prefersReducedMotion",
+            serde_json::json!(false),
+        ));
+        let id = app
+            .transcript
+            .messages
+            .iter()
+            .flat_map(|message| &message.blocks)
+            .find_map(|block| match block {
+                MessageBlock::Welcome(welcome) => Some(HistoryOutputId::Block(welcome.id)),
+                _ => None,
+            })
+            .expect("current welcome identity");
+        for offset in [100, 2_000] {
+            let at = clock.at_millis(seconds * 1000 + offset);
+            let rows = serialize_live_rows_at(
+                &mut app,
+                120,
+                &std::collections::BTreeSet::new(),
+                at,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            );
+            let (segment, text) = output_region(&rows, &id);
+            assert!(
+                text.iter().any(|row| row.contains("Session ID:") && row.contains("test-session"))
+            );
+            assert_eq!(segment.commit_ready, seconds != 0 || offset == 2_000);
+            let art = welcome_art(&text);
+            assert!(!art.is_empty());
+            if seconds == 0 && offset == 2_000 {
+                settled_art = Some(art);
+            } else if seconds != 0 {
+                assert_eq!(Some(art), settled_art);
+            }
+        }
+    }
 }

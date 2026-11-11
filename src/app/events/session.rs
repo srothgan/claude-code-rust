@@ -57,7 +57,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
     if let Some(slot) = take_connection_slot() {
         app.session_runtime.conn = Some(slot.conn);
     }
-    app.startup.mark_connected(std::time::Instant::now());
+    app.startup.mark_connected(crate::app::input_event_now());
     apply_session_cwd(app, cwd);
     reset_for_new_session(
         app,
