@@ -413,7 +413,7 @@ fn tool_title_cache_tracks_literal_rendering_and_display_context() {
 }
 
 #[test]
-fn render_tool_call_title_shows_backgrounded_badge() {
+fn render_tool_call_titles_show_backgrounded_badge_and_shell_identity() {
     let mut tc = test_tool_call("tc-bg", "Agent", model::ToolCallStatus::InProgress);
     tc.task_metadata = Some(model::TaskMetadata::new().backgrounded(Some(true)));
 
@@ -426,6 +426,21 @@ fn render_tool_call_title_shows_backgrounded_badge() {
     let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
     assert!(rendered.contains("[backgrounded]"));
+
+    for (tool, other) in [("Bash", "PowerShell"), ("PowerShell", "Bash")] {
+        let mut shell = test_tool_call("tc-shell", tool, model::ToolCallStatus::InProgress);
+        shell.title = "echo audit".to_owned();
+        let line = standard::render_tool_call_title(
+            &shell,
+            ToolCallRenderContext::default(),
+            80,
+            crate::ui::SpinnerState::Animated(0),
+        );
+        let title: String = line.spans.iter().map(|span| span.content.as_ref()).collect();
+        assert!(title.contains(tool), "title lost {tool} identity: {title}");
+        assert!(title.contains("echo audit"), "title lost command: {title}");
+        assert!(!title.contains(other), "title borrowed {other} identity: {title}");
+    }
 }
 
 #[test]

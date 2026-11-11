@@ -298,6 +298,25 @@ mod tests {
     use super::*;
     use syntect::easy::HighlightLines;
 
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    fn reference_style(style: syntect::highlighting::Style) -> Style {
+        let color = style.foreground;
+        let mut result = Style::default().fg(Color::Rgb(color.r, color.g, color.b));
+        if style.font_style.contains(FontStyle::BOLD) {
+            result = result.add_modifier(Modifier::BOLD);
+        }
+        if style.font_style.contains(FontStyle::ITALIC) {
+            result = result.add_modifier(Modifier::ITALIC);
+        }
+        if style.font_style.contains(FontStyle::UNDERLINE) {
+            result = result.add_modifier(Modifier::UNDERLINED);
+        }
+        result
+    }
+
     #[test]
     fn hidden_lines_preserve_upstream_styles_across_syntax_boundaries() {
         let fixtures = [
@@ -320,65 +339,61 @@ mod tests {
             ),
             ("md", "# Heading\n\n```rust\n/* comment\ninside\n*/\nfn main() {}\n```\n**tail**\n"),
         ];
-        for (language, source) in fixtures {
-            let lines: Vec<_> = LinesWithEndings::from(source).collect();
-            // Include runs ending inside a multiline construct and repeated transitions.
-            for visibility in [
-                vec![true; lines.len()],
-                (0..lines.len()).map(|i| i < 2 || i >= lines.len() - 3).collect(),
-                (0..lines.len()).map(|i| i % 2 == 0).collect(),
-                (0..lines.len()).map(|i| i >= lines.len() - 3).collect(),
-            ] {
-                let theme = theme(EmbeddedThemeName::MonokaiExtendedBright);
-                let mut reference = HighlightLines::new(syntax_for_language(Some(language)), theme);
-                let mut split = SourceHighlighter::new(
-                    None,
-                    Some(language),
-                    EmbeddedThemeName::MonokaiExtendedBright,
-                );
-                for (index, (&line, visible)) in lines.iter().zip(visibility).enumerate() {
-                    let ranges = reference.highlight_line(line, &SYNTAX_SET).unwrap();
-                    let actual = split.line(line, visible);
-                    if visible {
-                        let expected: Vec<_> = ranges
-                            .into_iter()
-                            .filter_map(|(style, text)| {
-                                let text = text.strip_suffix('\n').unwrap_or(text);
-                                (!text.is_empty()).then(|| {
-                                    Span::styled(
-                                        text.to_owned(),
-                                        ratatui_style(style.foreground, style.font_style),
-                                    )
-                                })
-                            })
-                            .collect();
-                        assert_eq!(actual.unwrap().spans, expected, "{language} line {index}");
-                    } else {
-                        assert!(actual.is_none(), "hidden source must not produce display spans");
+        for theme_name in
+            [EmbeddedThemeName::MonokaiExtendedBright, EmbeddedThemeName::Base16OceanDark]
+        {
+            for (language, source) in fixtures {
+                let syntax = SYNTAX_SET.find_syntax_by_token(language).expect("fixture syntax");
+                let lines: Vec<_> = LinesWithEndings::from(source).collect();
+                let visibility =
+                    (0..lines.len()).map(|i| i < 2 || i >= lines.len() - 3).collect::<Vec<_>>();
+                let mut reference = HighlightLines::new(syntax, THEME_SET.get(theme_name));
+                let mut actual = SourceHighlighter::new(None, Some(language), theme_name);
+                for (index, (line, visible)) in lines.iter().zip(visibility).enumerate() {
+                    let expected =
+                        reference.highlight_line(line, &SYNTAX_SET).expect("reference highlight");
+                    let rendered = actual.line(line, visible);
+                    if !visible {
+                        assert!(
+                            rendered.is_none(),
+                            "hidden line emitted spans: {language} {index}"
+                        );
+                        continue;
                     }
+                    let expected = expected
+                        .into_iter()
+                        .filter_map(|(style, text)| {
+                            let text = text.strip_suffix('\n').unwrap_or(text);
+                            (!text.is_empty()).then(|| (text.to_owned(), reference_style(style)))
+                        })
+                        .collect::<Vec<_>>();
+                    let rendered = rendered.expect("visible line");
+                    let actual = rendered
+                        .spans
+                        .iter()
+                        .map(|span| (span.content.to_string(), span.style))
+                        .collect::<Vec<_>>();
+                    assert_eq!(actual, expected, "{language} line {index}, theme {theme_name:?}");
                 }
             }
         }
     }
 
     #[test]
-    fn highlight_code_preserves_text() {
-        let rendered = highlight_code("fn main() {}\n", Some("rs"));
-        let text: String = rendered[0].spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(text.contains("fn"));
-        assert!(text.contains("main"));
-    }
-
-    #[test]
-    fn highlight_code_accepts_explicit_theme() {
-        let rendered =
-            SourceHighlighter::new(None, Some("rs"), EmbeddedThemeName::MonokaiExtendedBright)
-                .line("fn main() {}\n", true)
-                .unwrap();
-        let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-
-        assert!(text.contains("fn"));
-        assert!(text.contains("main"));
-        assert!(rendered.spans.iter().any(|span| span.style.fg.is_some()));
+    fn highlight_code_preserves_complete_source_for_known_and_fallback_languages() {
+        for (source, language, expected) in [
+            (
+                "  fn main() {\n    let café = \"x y\";\n}\n",
+                Some("rs"),
+                vec!["  fn main() {", "    let café = \"x y\";", "}", ""],
+            ),
+            ("first  row\n\n雪; !?\n", None, vec!["first  row", "", "雪; !?", ""]),
+            ("one\ntwo", Some("no-such-language"), vec!["one", "two"]),
+            ("", Some("rs"), vec![""]),
+        ] {
+            let rendered = highlight_code(source, language);
+            let actual = rendered.iter().map(line_text).collect::<Vec<_>>();
+            assert_eq!(actual, expected, "language={language:?}, source={source:?}");
+        }
     }
 }

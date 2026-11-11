@@ -422,36 +422,44 @@ mod tests {
     }
 
     #[test]
-    fn system_notice_blocks_serialize_as_text_like_with_tint() {
+    fn system_text_and_notice_keep_their_severity_association() {
         let mut msg = system_message(
-            vec![MessageBlock::Notice(NoticeBlock::new(
-                SystemSeverity::Warning,
-                "Warning inline".to_owned(),
-            ))],
-            SystemSeverity::Warning,
+            vec![
+                MessageBlock::Text(TextBlock::from_complete("general status")),
+                MessageBlock::Notice(NoticeBlock::new(
+                    SystemSeverity::Warning,
+                    "inline caution".to_owned(),
+                )),
+            ],
+            SystemSeverity::Info,
         );
 
         let rows = build_user_system_message_rows(&mut msg, render_context());
         let texts = segment_texts(&rows);
-        assert_eq!(texts.first().expect("header"), "Warning");
-
-        let warning_line = rows
-            .segments
-            .iter()
-            .find_map(|segment| match segment {
-                super::MessageRowSegment::Lines { lines } => lines.iter().find(|line| {
-                    line.spans.iter().any(|span| span.content.as_ref().contains("Warning inline"))
-                }),
+        assert_eq!(texts.first().expect("system role header"), "Info");
+        let status =
+            texts.iter().position(|line| line.contains("general status")).expect("status text");
+        let notice =
+            texts.iter().position(|line| line.contains("inline caution")).expect("notice text");
+        assert!(status < notice, "block text ordering was lost: {texts:?}");
+        let content_style = |needle: &str| {
+            rows.segments.iter().find_map(|segment| match segment {
+                super::MessageRowSegment::Lines { lines } => lines
+                    .iter()
+                    .find(|line| line.spans.iter().any(|span| span.content.contains(needle)))
+                    .and_then(|line| {
+                        line.spans
+                            .iter()
+                            .find(|span| span.content.contains(needle))
+                            .map(|span| span.style.fg)
+                    }),
                 super::MessageRowSegment::Blank => None,
             })
-            .expect("warning line");
-
-        assert!(
-            warning_line
-                .spans
-                .iter()
-                .filter(|span| !span.content.is_empty())
-                .all(|span| span.style.fg == Some(crate::ui::theme::STATUS_WARNING))
+        };
+        assert_ne!(
+            content_style("general status"),
+            content_style("inline caution"),
+            "notice severity must remain associated with notice content independently of the system role"
         );
     }
 
