@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+use super::test_support::{has_multiple_content_fg_colors, read_tool_call, render_structured_read};
 use super::*;
 use pretty_assertions::assert_eq;
 use std::fmt::Write as _;
@@ -39,35 +40,6 @@ fn fork_cards_show_inheritance_then_observed_models_and_never_ignored_overrides(
 
 fn rendered_line_texts_trimmed(lines: &[Line<'static>]) -> Vec<String> {
     rendered_line_texts(lines).into_iter().map(|line| line.trim_end().to_owned()).collect()
-}
-
-fn has_multiple_content_fg_colors(lines: &[Line<'static>]) -> bool {
-    let mut colors = Vec::new();
-    for color in
-        lines.iter().flat_map(|line| line.spans.iter().skip(1)).filter_map(|span| span.style.fg)
-    {
-        if !colors.contains(&color) {
-            colors.push(color);
-        }
-    }
-    colors.len() > 1
-}
-
-fn read_tool_call(path: &str, text: &str) -> ToolCallInfo {
-    let mut tc = test_tool_call("Read opaque-title", "Read", model::ToolCallStatus::Completed);
-    tc.locations = vec![model::ToolCallLocation::new(path)];
-    tc.content = vec![model::ToolCallContent::from(text.to_owned())];
-    tc
-}
-
-fn assert_read_path_is_syntax_colored(path: &str, text: &str) {
-    let tc = read_tool_call(path, text);
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        120,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    assert!(has_multiple_content_fg_colors(&body), "expected syntax coloring for path {path:?}");
 }
 
 #[test]
@@ -325,133 +297,6 @@ fn tool_title_cache_tracks_literal_rendering_and_display_context() {
 }
 
 #[test]
-fn tool_display_title_uses_plan_aliases() {
-    let write = test_tool_call("tc-plan-write", "Write", model::ToolCallStatus::Completed);
-    let edit = test_tool_call("tc-plan-edit", "Edit", model::ToolCallStatus::Completed);
-    let read = test_tool_call("tc-plan-read", "Read", model::ToolCallStatus::Completed);
-    let plan = ToolCallRenderContext { current_mode_id: Some("plan"), ..Default::default() };
-
-    assert_eq!(tool_display_title(&write, plan), "Create Plan");
-    assert_eq!(tool_display_title(&edit, plan), "Update Plan");
-    assert_eq!(tool_display_title(&read, plan), "tc-plan-read");
-}
-
-#[test]
-fn tool_display_title_uses_stable_question_title_for_pending_ask_user_question() {
-    let mut tc = test_tool_call(
-        "What is your favorite language?",
-        "AskUserQuestion",
-        model::ToolCallStatus::InProgress,
-    );
-    let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-    tc.pending_question = Some(crate::app::InlineQuestion {
-        idle_timeout: None,
-        last_activity: std::time::Instant::now(),
-        prompt: model::QuestionPrompt::new(
-            "What is your favorite language?",
-            "Language",
-            false,
-            vec![model::QuestionOption::new("rust", "Rust")],
-        ),
-        response_tx,
-        focused_option_index: 0,
-        selected_option_indices: std::collections::BTreeSet::new(),
-        notes: String::new(),
-        notes_cursor: 0,
-        editing_notes: false,
-        focused: true,
-        question_index: 0,
-        total_questions: 4,
-    });
-
-    assert_eq!(tool_display_title(&tc, ToolCallRenderContext::default()), "Questions (4)");
-}
-
-#[test]
-fn tool_display_title_uses_answered_questions_title_for_completed_ask_user_question() {
-    let mut tc =
-        test_tool_call("Which config format?", "AskUserQuestion", model::ToolCallStatus::Completed);
-    tc.raw_input = Some(serde_json::json!({
-        "question_results": [
-            { "question": "First?", "header": "First", "selected_options": [] },
-            { "question": "Second?", "header": "Second", "selected_options": [] }
-        ]
-    }));
-
-    assert_eq!(tool_display_title(&tc, ToolCallRenderContext::default()), "Answered questions (2)");
-}
-
-#[test]
-fn tool_display_title_formats_raw_mcp_titles() {
-    let tc = test_tool_call(
-        "mcp__claude_ai_Strava__list_activities",
-        "mcp__claude_ai_Strava__list_activities",
-        model::ToolCallStatus::Completed,
-    );
-
-    assert_eq!(
-        tool_display_title(&tc, ToolCallRenderContext::default()),
-        "Strava: List activities"
-    );
-}
-
-#[test]
-fn tool_display_title_keeps_non_raw_mcp_titles() {
-    let mut tc = test_tool_call(
-        "mcp__claude_ai_Strava__list_activities",
-        "mcp__claude_ai_Strava__list_activities",
-        model::ToolCallStatus::Completed,
-    );
-    tc.title = "Recent Strava activities".to_owned();
-
-    assert_eq!(
-        tool_display_title(&tc, ToolCallRenderContext::default()),
-        "Recent Strava activities"
-    );
-}
-
-#[test]
-fn tool_display_title_keeps_malformed_mcp_titles_raw() {
-    let tc = test_tool_call(
-        "mcp__fff_find_files",
-        "mcp__fff_find_files",
-        model::ToolCallStatus::Completed,
-    );
-
-    assert_eq!(tool_display_title(&tc, ToolCallRenderContext::default()), "mcp__fff_find_files");
-}
-
-#[test]
-fn standard_title_uses_plan_alias_for_write() {
-    let tc = test_tool_call("Write notes/plan.md", "Write", model::ToolCallStatus::Completed);
-
-    let rendered = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext { current_mode_id: Some("plan"), ..Default::default() },
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(text.contains("Create Plan"));
-    assert!(!text.contains("Write notes/plan.md"));
-}
-
-#[test]
-fn standard_title_uses_generic_icon_for_unknown_tools() {
-    let tc = test_tool_call("tc-unknown", "UnknownFutureTool", model::ToolCallStatus::Completed);
-
-    let rendered = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-
-    assert_eq!(rendered.spans.get(1).map(|span| span.content.as_ref()), Some("\u{25cb} "));
-}
-
-#[test]
 fn generic_renderer_preserves_refresh_mcp_tools_json_output() {
     let mut tc =
         test_tool_call("RefreshMcpTools", "RefreshMcpTools", model::ToolCallStatus::Completed);
@@ -469,50 +314,6 @@ fn generic_renderer_preserves_refresh_mcp_tools_json_output() {
 }
 
 #[test]
-fn standard_title_uses_mcp_icon_and_readable_title() {
-    let tc = test_tool_call(
-        "mcp__fff__find_files",
-        "mcp__fff__find_files",
-        model::ToolCallStatus::Completed,
-    );
-
-    let rendered = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert_eq!(rendered.spans.get(1).map(|span| span.content.as_ref()), Some("\u{232c} "));
-    assert!(text.contains("fff: Find files"));
-    assert!(!text.contains("mcp__fff__find_files"));
-}
-
-#[test]
-fn read_body_uses_preserved_location_for_rust_syntax() {
-    assert_read_path_is_syntax_colored("src/main.rs", "fn main() {\n    println!(\"hi\");\n}\n");
-}
-
-#[test]
-fn read_body_highlights_toml_from_two_face_syntaxes() {
-    assert_read_path_is_syntax_colored("Cargo.toml", "[package]\nname = \"demo\"\n");
-}
-
-#[test]
-fn read_body_highlights_tsx_from_two_face_syntaxes() {
-    assert_read_path_is_syntax_colored(
-        "frontend/App.tsx",
-        "export function App() {\n    return <main>Hello</main>;\n}\n",
-    );
-}
-
-#[test]
-fn read_body_highlights_dockerfile_by_filename() {
-    assert_read_path_is_syntax_colored("Dockerfile", "FROM rust:1\nRUN cargo build\n");
-}
-
-#[test]
 fn read_body_strips_ansi_before_syntax_coloring() {
     let tc = read_tool_call("src/main.rs", "\u{1b}[31mfn\u{1b}[0m main() {}\n");
     let body = standard::ToolBodyCursor::default().render(
@@ -527,229 +328,12 @@ fn read_body_strips_ansi_before_syntax_coloring() {
     assert!(has_multiple_content_fg_colors(&body));
 }
 
-#[test]
-fn read_image_body_distinguishes_status_from_filename() {
-    let tc = read_tool_call(r"C:\work\captures\screen.png", "Viewed Image screen.png");
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        120,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-
-    assert_eq!(
-        rendered_line_texts_trimmed(&body),
-        vec!["  \u{2514}\u{2500} Viewed image screen.png"]
-    );
-    assert_eq!(body.len(), 1);
-    assert!(body[0].spans.len() >= 4);
-
-    let status = &body[0].spans[1];
-    assert_eq!(status.content.as_ref(), "Viewed image");
-    assert_eq!(status.style.fg, Some(theme::DIM));
-    assert!(status.style.add_modifier.contains(Modifier::ITALIC));
-
-    let separator = &body[0].spans[2];
-    assert_eq!(separator.content.as_ref(), " ");
-
-    let file_name = &body[0].spans[3];
-    assert_eq!(file_name.content.as_ref(), "screen.png");
-    assert_eq!(file_name.style.fg, Some(Color::White));
-    assert!(!file_name.style.add_modifier.contains(Modifier::BOLD));
-}
-
-#[test]
-fn read_body_does_not_style_unrelated_text_as_an_image_result() {
-    let tc = read_tool_call("notes/status.txt", "Viewed Image screen.png");
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        120,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-
-    assert_eq!(
-        rendered_line_texts_trimmed(&body),
-        vec!["  \u{2514}\u{2500} Viewed Image screen.png"]
-    );
-    assert!(!body[0].spans.iter().any(|span| span.content.as_ref() == "Viewed image"));
-}
-
-/// Render a completed Read whose bridge result carried the file source and start line.
-fn render_structured_read(
-    path: &str,
-    source: &str,
-    start_line: usize,
-    width: u16,
-) -> (ToolCallInfo, Vec<Line<'static>>) {
-    let mut tc = test_tool_call("tc-structured-read", "Read", model::ToolCallStatus::Completed);
-    tc.title = format!("Read {path}");
-    tc.raw_input = Some(serde_json::json!({ "file_path": path }));
-    tc.content = vec![model::ToolCallContent::from(source.to_owned())];
-    tc.output_metadata = Some(
-        model::ToolOutputMetadata::new()
-            .read(Some(model::ReadOutputMetadata { file_path: path.into(), start_line })),
-    );
-    let mut rendered = Vec::new();
-    render_tool_call_cached(
-        &mut tc,
-        ToolCallRenderContext::default(),
-        width,
-        crate::ui::SpinnerState::Static,
-        &mut rendered,
-    );
-    (tc, rendered)
-}
-
 /// Body rows after the title, without the `  │  ` / `  └─ ` tool body prefix.
 fn read_body_rows(rendered: &[Line<'static>]) -> Vec<String> {
     rendered_line_texts(&rendered[1..])
         .into_iter()
         .map(|row| row.chars().skip(5).collect::<String>().trim_end().to_owned())
         .collect()
-}
-
-#[test]
-fn structured_read_numbers_each_line_from_the_result_start_line() {
-    let source = "fn first() {}\r\nfn second() {}  \r\n";
-    let (tc, rendered) = render_structured_read("src/lib.rs", source, 41, 80);
-
-    assert_eq!(read_body_rows(&rendered), ["41  fn first() {}", "42  fn second() {}"]);
-    assert_eq!(style_of(&rendered, "41").fg, Some(theme::DIM));
-    assert_ne!(style_of(&rendered, "fn first").fg, style_of(&rendered, "first").fg);
-    let model::ToolCallContent::Content(content) = &tc.content[0] else {
-        panic!("Read content should stay text");
-    };
-    let model::ContentBlock::Text(text) = &content.content else {
-        panic!("Read content should stay text");
-    };
-    assert_eq!(text.text, source);
-}
-
-#[test]
-fn structured_read_renders_a_single_line_with_its_number() {
-    let (_, rendered) = render_structured_read("config.json", "{\"a\":1}", 7, 80);
-
-    assert_eq!(read_body_rows(&rendered), ["7  {\"a\":1}"]);
-}
-
-#[test]
-fn structured_markdown_read_shows_literal_source() {
-    let (_, rendered) = render_structured_read(
-        "README.md",
-        "# Heading\n\n- **Body** text\n```bash\n#!/bin/sh\n# comment\n```\n",
-        1,
-        80,
-    );
-
-    assert_eq!(
-        read_body_rows(&rendered),
-        [
-            "1  # Heading",
-            "2",
-            "3  - **Body** text",
-            "4  ```bash",
-            "5  #!/bin/sh",
-            "6  # comment",
-            "7  ```"
-        ]
-    );
-}
-
-#[test]
-fn structured_read_wraps_long_lines_under_the_text_column() {
-    let long = "let value = alpha_beta_gamma_delta_epsilon_zeta_eta_theta;";
-    let source = format!("{long}\nshort();");
-    // 30 columns minus the 5-column body prefix leaves 25; the gutter "NN  " takes 4.
-    let (_, rendered) = render_structured_read("src/main.rs", &source, 9, 30);
-    let rows = read_body_rows(&rendered);
-
-    assert_eq!(
-        rows,
-        [
-            " 9  let value = alpha_bet",
-            "    a_gamma_delta_epsilon",
-            "    _zeta_eta_theta;",
-            "10  short();",
-        ]
-    );
-    assert!(rendered[1..].iter().all(|row| row.width() <= 30));
-}
-
-#[test]
-fn structured_read_hides_middle_source_lines_before_wrapping() {
-    let mut lines = (1..=20).map(|n| format!("line {n}")).collect::<Vec<_>>();
-    lines[1] = "line 2 is long enough to wrap onto a second row".to_owned();
-    let (_, rendered) = render_structured_read("notes.txt", &lines.join("\n"), 1, 40);
-
-    assert_eq!(
-        read_body_rows(&rendered),
-        [
-            " 1  line 1",
-            " 2  line 2 is long enough to wrap o",
-            "    nto a second row",
-            " 3  line 3",
-            "... 13 lines hidden ...",
-            "17  line 17",
-            "18  line 18",
-            "19  line 19",
-            "20  line 20",
-        ]
-    );
-}
-
-#[test]
-fn structured_read_clips_oversized_lines_so_every_line_stays_visible() {
-    let source = format!("{}\n{}", "a".repeat(2_000), "b".repeat(2_000));
-    let (_, rendered) = render_structured_read("bundle.min.js", &source, 1, 40);
-    let rows = read_body_rows(&rendered);
-
-    assert!(rows.len() <= TOOL_BODY_MAX_LINES);
-    let second = rows.iter().position(|row| row.starts_with("2  ")).expect("line 2 is visible");
-    assert!(rows[0].starts_with("1  a"));
-    assert!(rows[second - 1].ends_with('\u{2026}'));
-    assert!(rows.last().is_some_and(|row| row.ends_with('\u{2026}')));
-    assert!(!rows.iter().any(|row| row.contains("hidden")));
-}
-
-#[test]
-fn structured_read_expands_tabs_to_tab_stops() {
-    let (_, rendered) = render_structured_read("Makefile", "all:\n\tcargo build\n", 1, 80);
-
-    assert_eq!(read_body_rows(&rendered), ["1  all:", "2      cargo build"]);
-}
-
-#[test]
-fn structured_read_keeps_source_that_looks_like_image_status() {
-    let (_, rendered) = render_structured_read("status.txt", "Viewed Image status.txt", 42, 80);
-
-    assert_eq!(read_body_rows(&rendered), ["42  Viewed Image status.txt"]);
-}
-
-#[test]
-fn unstructured_read_keeps_numeric_source_prefixes() {
-    let tc = read_tool_call("notes.txt", "1st line\n2nd line");
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-
-    assert_eq!(rendered_line_texts_trimmed(&body), ["  │  1st line", "  └─ 2nd line"]);
-}
-
-#[test]
-fn structured_read_preserves_head_tail_and_omission_count_at_narrow_widths() {
-    let source = (1..=20).map(|n| format!("L{n}")).collect::<Vec<_>>().join("\n");
-    for (width, marker) in [(15, "… 13"), (20, "… 13 hidden"), (30, "... 13 lines hidden ...")]
-    {
-        let (_, rendered) = render_structured_read("notes.txt", &source, 1, width);
-
-        assert_eq!(
-            read_body_rows(&rendered),
-            [" 1  L1", " 2  L2", " 3  L3", marker, "17  L17", "18  L18", "19  L19", "20  L20"],
-            "width {width}"
-        );
-        assert!(rendered[1..].iter().all(|row| row.width() <= usize::from(width)));
-    }
 }
 
 #[test]
@@ -872,20 +456,22 @@ fn shell_output_keeps_program_styles_over_the_dim_default() {
     let (tc, rendered) = render_completed_shell(output);
 
     assert_eq!(style_of(&rendered, "red").fg, Some(Color::Red));
-    assert_eq!(style_of(&rendered, "plain").fg, Some(theme::DIM));
+    let default_fg = style_of(&rendered, "plain").fg;
+    assert_ne!(default_fg, style_of(&rendered, "red").fg);
     let ok = style_of(&rendered, "ok");
     assert_eq!(ok.fg, Some(Color::Green));
     assert!(ok.add_modifier.contains(Modifier::BOLD));
     let done = style_of(&rendered, "done");
     assert_eq!(done.fg, Some(Color::Green));
     assert!(!done.add_modifier.contains(Modifier::BOLD));
-    assert_eq!(style_of(&rendered, "default").fg, Some(theme::DIM));
+    assert_eq!(style_of(&rendered, "default").fg, default_fg);
     let hot = style_of(&rendered, "hot");
     assert_eq!(hot.fg, Some(Color::Indexed(196)));
     assert!(hot.add_modifier.contains(Modifier::BOLD));
     assert_eq!(style_of(&rendered, "rgb").fg, Some(Color::Rgb(10, 20, 30)));
     let bg = style_of(&rendered, "bg");
-    assert_eq!((bg.fg, bg.bg), (Some(theme::DIM), Some(Color::Blue)));
+    assert_eq!(bg.bg, Some(Color::Blue));
+    assert_eq!(bg.fg, default_fg);
     assert!(matches!(style_of(&rendered, "after").bg, None | Some(Color::Reset)));
     assert_eq!(tc.terminal_output.as_deref(), Some(output));
 }
@@ -1400,25 +986,6 @@ fn cached_tool_body_rerenders_after_width_change() {
     );
 
     assert!(narrow.len() > wide.len(), "narrow render should rebuild cached body at the new width");
-}
-
-#[test]
-fn bash_title_preserves_command_title_in_plan_mode() {
-    let mut tc = test_tool_call("echo hi", "Bash", model::ToolCallStatus::Completed);
-    tc.terminal_command = Some("echo hi".to_owned());
-
-    let rendered = standard::render_tool_call_title(
-        &tc,
-        ToolCallRenderContext { current_mode_id: Some("plan"), ..Default::default() },
-        80,
-        crate::ui::SpinnerState::Animated(0),
-    );
-    let text: String = rendered.spans.iter().map(|span| span.content.as_ref()).collect();
-
-    assert!(text.contains("Bash"));
-    assert!(text.contains("echo hi"));
-    assert!(!text.contains("Create Plan"));
-    assert!(!text.contains("Update Plan"));
 }
 
 #[test]

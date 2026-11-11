@@ -418,6 +418,59 @@ pub(super) mod test_support {
     use crate::app::ToolCallInfo;
     use ratatui::text::Line;
 
+    pub(super) fn read_tool_call(path: &str, text: &str) -> ToolCallInfo {
+        let mut tc = crate::app::test_support::named_tool_call_info(
+            "Read opaque-title",
+            "Read",
+            model::ToolCallStatus::Completed,
+        );
+        tc.locations = vec![model::ToolCallLocation::new(path)];
+        tc.content = vec![model::ToolCallContent::from(text.to_owned())];
+        tc
+    }
+
+    /// Render a completed Read whose bridge result carried the file source and start line.
+    pub(super) fn render_structured_read(
+        path: &str,
+        source: &str,
+        start_line: usize,
+        width: u16,
+    ) -> (ToolCallInfo, Vec<Line<'static>>) {
+        let mut tc = crate::app::test_support::named_tool_call_info(
+            "tc-structured-read",
+            "Read",
+            model::ToolCallStatus::Completed,
+        );
+        tc.title = format!("Read {path}");
+        tc.raw_input = Some(serde_json::json!({ "file_path": path }));
+        tc.content = vec![model::ToolCallContent::from(source.to_owned())];
+        tc.output_metadata = Some(
+            model::ToolOutputMetadata::new()
+                .read(Some(model::ReadOutputMetadata { file_path: path.into(), start_line })),
+        );
+        let mut rendered = Vec::new();
+        super::render_tool_call_cached(
+            &mut tc,
+            super::ToolCallRenderContext::default(),
+            width,
+            crate::ui::SpinnerState::Static,
+            &mut rendered,
+        );
+        (tc, rendered)
+    }
+
+    pub(super) fn has_multiple_content_fg_colors(lines: &[Line<'static>]) -> bool {
+        let mut colors = Vec::new();
+        for color in
+            lines.iter().flat_map(|line| line.spans.iter().skip(1)).filter_map(|span| span.style.fg)
+        {
+            if !colors.contains(&color) {
+                colors.push(color);
+            }
+        }
+        colors.len() > 1
+    }
+
     pub(crate) fn interaction_app(tools: Vec<ToolCallInfo>) -> crate::app::App {
         use crate::app::{App, AppStatus, ChatMessage, MessageBlock, MessageRole};
         let mut app = App::test_default();
@@ -630,3 +683,6 @@ mod tests;
 
 #[cfg(test)]
 mod title_audit_tests;
+
+#[cfg(test)]
+mod source_audit_tests;
