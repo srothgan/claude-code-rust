@@ -9,6 +9,26 @@ use std::time::{Duration, Instant};
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(75);
 
+trait MetadataWatcher: std::fmt::Debug {
+    fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()>;
+}
+
+impl MetadataWatcher for RecommendedWatcher {
+    fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+        Watcher::watch(self, path, mode)
+    }
+}
+
+type WatchSource = (Box<dyn MetadataWatcher>, Receiver<notify::Result<Event>>);
+
+fn native_watch_source() -> notify::Result<WatchSource> {
+    let (event_tx, event_rx) = mpsc::channel();
+    let watcher = notify::recommended_watcher(move |event| {
+        let _ = event_tx.send(event);
+    })?;
+    Ok((Box::new(watcher), event_rx))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BranchDisplayState {
     Named(String),
@@ -31,7 +51,7 @@ impl BranchDisplayState {
 pub(crate) struct GitContextState {
     repo: Option<ResolvedRepo>,
     branch: BranchDisplayState,
-    watcher: Option<RecommendedWatcher>,
+    watcher: Option<Box<dyn MetadataWatcher>>,
     event_rx: Option<Receiver<notify::Result<Event>>>,
     pending_refresh_since: Option<Instant>,
 }
@@ -55,13 +75,21 @@ impl GitContextState {
     }
 
     pub(crate) fn sync_to_cwd(&mut self, cwd: &Path) -> bool {
+        self.sync_to_cwd_with(cwd, &mut native_watch_source)
+    }
+
+    fn sync_to_cwd_with(
+        &mut self,
+        cwd: &Path,
+        source: &mut impl FnMut() -> notify::Result<WatchSource>,
+    ) -> bool {
         let discovered = ResolvedRepo::discover(cwd);
         let repo_changed = self.repo.as_ref() != discovered.as_ref();
         let should_install_watcher = repo_changed
             || (discovered.is_some() && (self.watcher.is_none() || self.event_rx.is_none()));
 
         if should_install_watcher {
-            self.install_watcher(discovered.as_ref());
+            self.install_watcher(discovered.as_ref(), source);
         } else if discovered.is_none() {
             self.watcher = None;
             self.event_rx = None;
@@ -82,6 +110,15 @@ impl GitContextState {
     }
 
     pub(crate) fn tick(&mut self, cwd: &Path, now: Instant) -> bool {
+        self.tick_with(cwd, now, &mut native_watch_source)
+    }
+
+    fn tick_with(
+        &mut self,
+        cwd: &Path,
+        now: Instant,
+        source: &mut impl FnMut() -> notify::Result<WatchSource>,
+    ) -> bool {
         let mut should_refresh = false;
 
         if let Some(event_rx) = &self.event_rx {
@@ -96,7 +133,10 @@ impl GitContextState {
                     }
                     Ok(Err(err)) => {
                         tracing::debug!(error = %err, "git watcher reported an error");
+                        self.watcher = None;
+                        self.event_rx = None;
                         should_refresh = true;
+                        break;
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
@@ -118,7 +158,7 @@ impl GitContextState {
             .is_some_and(|started| now.duration_since(started) >= WATCH_DEBOUNCE)
         {
             self.pending_refresh_since = None;
-            return self.sync_to_cwd(cwd);
+            return self.sync_to_cwd_with(cwd, source);
         }
 
         false
@@ -132,7 +172,11 @@ impl GitContextState {
         };
     }
 
-    fn install_watcher(&mut self, repo: Option<&ResolvedRepo>) {
+    fn install_watcher(
+        &mut self,
+        repo: Option<&ResolvedRepo>,
+        source: &mut impl FnMut() -> notify::Result<WatchSource>,
+    ) {
         self.pending_refresh_since = None;
         self.watcher = None;
         self.event_rx = None;
@@ -141,25 +185,26 @@ impl GitContextState {
             return;
         };
 
-        let (event_tx, event_rx) = mpsc::channel();
-        let watcher_result = notify::recommended_watcher(move |event| {
-            let _ = event_tx.send(event);
-        });
-
-        let mut watcher = match watcher_result {
-            Ok(watcher) => watcher,
+        let (mut watcher, event_rx) = match source() {
+            Ok(source) => source,
             Err(err) => {
                 tracing::warn!(error = %err, "failed to initialize git metadata watcher");
                 return;
             }
         };
 
+        let mut all_registered = true;
         for (path, mode) in repo.watch_directories() {
             if let Err(err) = watcher.watch(&path, mode) {
                 tracing::warn!(path = %path.display(), error = %err, "failed to watch git metadata path");
+                all_registered = false;
             }
         }
 
+        // A partial subscription must remain eligible for admission on the next sync.
+        if !all_registered {
+            return;
+        }
         self.event_rx = Some(event_rx);
         self.watcher = Some(watcher);
     }
@@ -341,10 +386,12 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{BranchDisplayState, GitContextState, ResolvedRepo, WATCH_DEBOUNCE};
-    use notify::{Event, EventKind};
+    use super::{GitContextState, MetadataWatcher, WATCH_DEBOUNCE, WatchSource};
+    use notify::{Event, EventKind, RecursiveMode};
+    use std::cell::RefCell;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -375,112 +422,298 @@ mod tests {
         repo
     }
 
-    #[test]
-    fn discovers_repo_root_from_nested_cwd() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_standard_repo(dir.path(), "main");
+    #[derive(Debug, Default)]
+    struct WatchControl {
+        paths: Vec<(PathBuf, RecursiveMode)>,
+        sender: Option<mpsc::Sender<notify::Result<Event>>>,
+        fail_path: Option<PathBuf>,
+    }
 
-        let resolved = ResolvedRepo::discover(&repo.join("src").join("nested")).expect("repo");
+    impl WatchControl {
+        fn notify_path(&self, path: &Path) {
+            if self.paths.iter().any(|(watched, mode)| {
+                if *mode == RecursiveMode::Recursive {
+                    path.starts_with(watched)
+                } else {
+                    path.parent() == Some(watched.as_path())
+                }
+            }) {
+                self.send(Ok(Event::new(EventKind::Any).add_path(path.to_path_buf())));
+            }
+        }
 
-        assert_eq!(resolved.worktree_root, repo);
-        assert_eq!(resolved.effective_git_dir, repo.join(".git"));
-        assert_eq!(resolved.common_git_dir, repo.join(".git"));
+        fn send(&self, event: notify::Result<Event>) {
+            self.sender.as_ref().expect("active event source").send(event).expect("live receiver");
+        }
+    }
+
+    #[derive(Debug)]
+    struct ControlledWatcher(Rc<RefCell<WatchControl>>);
+
+    impl MetadataWatcher for ControlledWatcher {
+        fn watch(&mut self, path: &Path, mode: RecursiveMode) -> notify::Result<()> {
+            let mut control = self.0.borrow_mut();
+            if control.fail_path.as_deref() == Some(path) {
+                return Err(notify::Error::generic("fixture admission failure"));
+            }
+            control.paths.push((path.to_path_buf(), mode));
+            Ok(())
+        }
+    }
+
+    impl Drop for ControlledWatcher {
+        fn drop(&mut self) {
+            let mut control = self.0.borrow_mut();
+            control.paths.clear();
+            control.sender = None;
+        }
+    }
+
+    fn controlled_source(
+        control: &Rc<RefCell<WatchControl>>,
+    ) -> impl FnMut() -> notify::Result<WatchSource> + use<> {
+        let control = Rc::clone(control);
+        move || {
+            let (sender, receiver) = mpsc::channel();
+            control.borrow_mut().sender = Some(sender);
+            Ok((Box::new(ControlledWatcher(Rc::clone(&control))), receiver))
+        }
+    }
+
+    fn fixture(root: &Path, linked: bool, branch: &str) -> (PathBuf, PathBuf, PathBuf) {
+        if linked {
+            let repo = create_worktree_repo(root, branch);
+            let common = root.join("admin/common");
+            write_file(&common.join("HEAD"), "ref: refs/heads/WRONG-common-branch\n");
+            (repo, root.join("admin/worktrees/wt-1/HEAD"), common)
+        } else {
+            let repo = create_standard_repo(root, branch);
+            let common = repo.join(".git");
+            (repo, common.join("HEAD"), common)
+        }
     }
 
     #[test]
-    fn resolves_git_file_and_commondir_layout() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_worktree_repo(dir.path(), "feature/footer");
-
-        let resolved = ResolvedRepo::discover(&repo.join("src")).expect("repo");
-
-        assert_eq!(resolved.worktree_root, repo);
-        assert_eq!(
-            resolved.effective_git_dir,
-            dir.path().join("admin").join("worktrees").join("wt-1")
-        );
-        assert_eq!(resolved.common_git_dir, dir.path().join("admin").join("common"));
-        assert_eq!(
-            resolved.heads_dir,
-            dir.path().join("admin").join("common").join("refs").join("heads")
-        );
+    fn existing_nested_cwds_project_the_effective_named_or_detached_head() {
+        for linked in [false, true] {
+            let dir = tempfile::tempdir().expect("fixture");
+            let (repo, head, _) = fixture(dir.path(), linked, "feature/footer");
+            let nested = repo.join("src/nested");
+            fs::create_dir_all(&nested).expect("existing nested cwd");
+            let mut state = GitContextState::default();
+            state.sync_to_cwd(&nested);
+            assert_eq!(state.branch_name(), Some("feature/footer"));
+            state.sync_to_cwd(&repo);
+            assert_eq!(state.branch_name(), Some("feature/footer"));
+            write_file(&head, "0123456789abcdef0123456789abcdef01234567\n");
+            state.sync_to_cwd(&nested);
+            assert_eq!(state.branch_name(), None, "detached HEAD clears the named branch");
+            let outside = tempfile::tempdir().expect("independent outside cwd");
+            state.sync_to_cwd(outside.path());
+            assert_eq!(state.branch_name(), None);
+        }
     }
 
     #[test]
-    fn resolves_named_branch_from_head() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_standard_repo(dir.path(), "feature/footer");
-        let resolved = ResolvedRepo::discover(&repo).expect("repo");
-
-        assert_eq!(
-            resolved.resolve_branch_state(),
-            BranchDisplayState::Named("feature/footer".to_owned())
-        );
+    fn notified_branch_refresh_is_not_starved_by_a_continuing_burst() {
+        for linked in [false, true] {
+            let dir = tempfile::tempdir().expect("fixture");
+            let (repo, head, common) = fixture(dir.path(), linked, "before");
+            let control = Rc::new(RefCell::new(WatchControl::default()));
+            let mut source = controlled_source(&control);
+            let mut state = GitContextState::default();
+            state.sync_to_cwd_with(&repo, &mut source);
+            let start = Instant::now();
+            write_file(&head, "ref: refs/heads/first\n");
+            control.borrow().notify_path(&head);
+            state.tick_with(&repo, start, &mut source);
+            assert_eq!(state.branch_name(), Some("before"));
+            write_file(&head, "ref: refs/heads/second\n");
+            control.borrow().notify_path(&common.join("packed-refs"));
+            state.tick_with(&repo, start + WATCH_DEBOUNCE / 2, &mut source);
+            assert_eq!(state.branch_name(), Some("before"));
+            write_file(&head, "ref: refs/heads/latest\n");
+            control.borrow().notify_path(&common.join("refs/heads/feature/footer"));
+            state.tick_with(&repo, start + WATCH_DEBOUNCE, &mut source);
+            assert_eq!(
+                state.branch_name(),
+                Some("latest"),
+                "first event bounds the refresh deadline"
+            );
+            write_file(&head, "ref: refs/heads/later-independent\n");
+            control.borrow().notify_path(&head);
+            state.tick_with(&repo, start + WATCH_DEBOUNCE * 2, &mut source);
+            state.tick_with(&repo, start + WATCH_DEBOUNCE * 3, &mut source);
+            assert_eq!(state.branch_name(), Some("later-independent"));
+        }
     }
 
     #[test]
-    fn resolves_detached_head_state() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_standard_repo(dir.path(), "main");
-        write_file(&repo.join(".git").join("HEAD"), "0123456789abcdef\n");
-        let resolved = ResolvedRepo::discover(&repo).expect("repo");
-
-        assert_eq!(resolved.resolve_branch_state(), BranchDisplayState::Detached);
-    }
-
-    #[test]
-    fn returns_none_when_outside_repo() {
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        assert!(ResolvedRepo::discover(dir.path()).is_none());
-    }
-
-    #[test]
-    fn filters_relevant_git_metadata_paths() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_standard_repo(dir.path(), "main");
-        let resolved = ResolvedRepo::discover(&repo).expect("repo");
-
-        let head_event = Event::new(EventKind::Any).add_path(repo.join(".git").join("HEAD"));
-        let packed_refs_event =
-            Event::new(EventKind::Any).add_path(repo.join(".git").join("packed-refs"));
-        let branch_ref_event = Event::new(EventKind::Any)
-            .add_path(repo.join(".git").join("refs").join("heads").join("main"));
-        let unrelated_event = Event::new(EventKind::Any).add_path(repo.join(".git").join("index"));
-
-        assert!(resolved.is_relevant_event(&head_event));
-        assert!(resolved.is_relevant_event(&packed_refs_event));
-        assert!(resolved.is_relevant_event(&branch_ref_event));
-        assert!(!resolved.is_relevant_event(&unrelated_event));
-    }
-
-    #[test]
-    fn debounces_bursty_events_into_one_refresh() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_standard_repo(dir.path(), "main");
+    fn failed_effective_head_watch_is_admitted_on_same_cwd_resynchronization() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let (repo, head, _) = fixture(dir.path(), true, "before");
+        let control = Rc::new(RefCell::new(WatchControl {
+            fail_path: head.parent().map(Path::to_path_buf),
+            ..WatchControl::default()
+        }));
+        let mut source = controlled_source(&control);
         let mut state = GitContextState::default();
-        assert!(state.sync_to_cwd(&repo));
-        write_file(&repo.join(".git").join("HEAD"), "ref: refs/heads/feature/footer\n");
-        write_file(
-            &repo.join(".git").join("refs").join("heads").join("feature").join("footer"),
-            "feedface\n",
-        );
+        state.sync_to_cwd_with(&repo, &mut source);
+        assert_eq!(state.branch_name(), Some("before"));
+        control.borrow_mut().fail_path = None;
+        state.sync_to_cwd_with(&repo, &mut source);
+        write_file(&head, "ref: refs/heads/recovered-admission\n");
+        control.borrow().notify_path(&head);
+        let now = Instant::now();
+        state.tick_with(&repo, now, &mut source);
+        state.tick_with(&repo, now + WATCH_DEBOUNCE, &mut source);
+        assert_eq!(state.branch_name(), Some("recovered-admission"));
+    }
 
-        let (event_tx, event_rx) = mpsc::channel();
-        state.event_rx = Some(event_rx);
-        state.watcher = None;
-        let first = Event::new(EventKind::Any).add_path(repo.join(".git").join("HEAD"));
-        let second =
-            Event::new(EventKind::Any).add_path(repo.join(".git").join("refs").join("heads"));
-        event_tx.send(Ok(first)).expect("send first");
-        event_tx.send(Ok(second)).expect("send second");
+    #[test]
+    fn rescan_error_and_disconnection_recover_and_observe_the_next_change() {
+        for failure in ["rescan", "lost subscriptions", "disconnect"] {
+            let dir = tempfile::tempdir().expect("fixture");
+            let (repo, head, _) = fixture(dir.path(), true, "before");
+            let control = Rc::new(RefCell::new(WatchControl::default()));
+            let mut source = controlled_source(&control);
+            let mut state = GitContextState::default();
+            state.sync_to_cwd_with(&repo, &mut source);
+            write_file(&head, "ref: refs/heads/after-failure\n");
+            match failure {
+                "rescan" => control
+                    .borrow()
+                    .send(Ok(Event::new(EventKind::Other).set_flag(notify::event::Flag::Rescan))),
+                "lost subscriptions" => {
+                    control.borrow_mut().paths.clear();
+                    control
+                        .borrow()
+                        .send(Err(notify::Error::generic("fixture lost subscriptions")));
+                }
+                _ => {
+                    control.borrow_mut().sender = None;
+                }
+            }
+            let now = Instant::now();
+            state.tick_with(&repo, now, &mut source);
+            state.tick_with(&repo, now + WATCH_DEBOUNCE, &mut source);
+            assert_eq!(state.branch_name(), Some("after-failure"), "{failure}");
+            write_file(&head, "ref: refs/heads/still-watching\n");
+            control.borrow().notify_path(&head);
+            state.tick_with(&repo, now + WATCH_DEBOUNCE * 2, &mut source);
+            state.tick_with(&repo, now + WATCH_DEBOUNCE * 3, &mut source);
+            assert_eq!(state.branch_name(), Some("still-watching"), "{failure}");
+        }
+    }
 
-        let started = Instant::now();
-        assert!(!state.tick(&repo, started));
-        assert_eq!(state.branch_name(), Some("main"));
-        assert!(!state.tick(&repo, started + Duration::from_millis(10)));
-        assert!(state.tick(&repo, started + WATCH_DEBOUNCE + Duration::from_millis(10)));
-        assert_eq!(state.branch_name(), Some("feature/footer"));
+    #[test]
+    fn missing_head_clears_stale_branch_and_restoration_is_observed() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let (repo, head, _) = fixture(dir.path(), false, "before");
+        let control = Rc::new(RefCell::new(WatchControl::default()));
+        let mut source = controlled_source(&control);
+        let mut state = GitContextState::default();
+        state.sync_to_cwd_with(&repo, &mut source);
+        fs::remove_file(&head).expect("remove fixture HEAD");
+        control.borrow().notify_path(&head);
+        let now = Instant::now();
+        state.tick_with(&repo, now, &mut source);
+        state.tick_with(&repo, now + WATCH_DEBOUNCE, &mut source);
+        assert_eq!(state.branch_name(), None);
+        write_file(&head, "ref: refs/heads/restored\n");
+        control.borrow().notify_path(&head);
+        state.tick_with(&repo, now + WATCH_DEBOUNCE * 2, &mut source);
+        state.tick_with(&repo, now + WATCH_DEBOUNCE * 3, &mut source);
+        assert_eq!(state.branch_name(), Some("restored"));
+    }
+
+    fn replace_head(head: &Path, branch: &str) {
+        let lock = head.with_extension("lock");
+        write_file(&lock, &format!("ref: refs/heads/{branch}\n"));
+        fs::rename(lock, head).expect("Git-style HEAD lock/rename");
+    }
+
+    fn assert_branch_region(app: &crate::app::App, expected: &str) {
+        let footer = crate::ui::footer_rows::serialize_footer_rows(app, 500);
+        let branches: Vec<_> = footer.rows[0]
+            .spans
+            .iter()
+            .filter(|s| s.content.starts_with("Branch: "))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(branches, [expected], "actual footer branch region");
+    }
+
+    fn await_native_branch(
+        app: &mut crate::app::App,
+        expected: &str,
+        forbidden: Option<&str>,
+        logical_now: &mut Instant,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.git_branch() != Some(expected) {
+            assert!(
+                Instant::now() < deadline,
+                "native notification did not deliver {expected}; got {:?}",
+                app.git_branch()
+            );
+            *logical_now += WATCH_DEBOUNCE;
+            app.tick_git_context(*logical_now);
+            if let Some(forbidden) = forbidden {
+                assert_ne!(
+                    app.git_branch(),
+                    Some(forbidden),
+                    "old repository must not regain ownership"
+                );
+            }
+            std::thread::yield_now();
+        }
+        assert!(app.surface_dirty.chat.repaint, "notified branch change schedules repaint");
+    }
+
+    #[tokio::test]
+    async fn native_head_replacement_updates_footer_and_same_name_cwd_handoff() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let dir = tempfile::tempdir().expect("fixture");
+                let first_root = dir.path().join("ordinary");
+                let second_root = dir.path().join("linked");
+                let (first, first_head, _) = fixture(&first_root, false, "same/branch");
+                let (second, second_head, _) = fixture(&second_root, true, "same/branch");
+                let (mut app, _commands) = crate::app::test_support::app_with_connection();
+                app.settings_home_override = Some(dir.path().to_path_buf());
+                app.cwd_raw = first.to_string_lossy().into_owned();
+                app.cwd = "fixture".into();
+                app.sync_git_context();
+                assert_branch_region(&app, "Branch: same/branch");
+                let mut now = Instant::now();
+                app.surface_dirty.chat.repaint = false;
+                replace_head(&first_head, "ordinary/updated");
+                await_native_branch(&mut app, "ordinary/updated", None, &mut now);
+                assert_branch_region(&app, "Branch: ordinary/updated");
+                replace_head(&first_head, "same/branch");
+                await_native_branch(&mut app, "same/branch", None, &mut now);
+                crate::app::handle_client_event(
+                    &mut app,
+                    crate::app::test_support::session_replacement(
+                        "session-2",
+                        &second,
+                        vec![],
+                        None,
+                    ),
+                );
+                assert_branch_region(&app, "Branch: same/branch");
+                app.surface_dirty.chat.repaint = false;
+                replace_head(&second_head, "linked/updated");
+                await_native_branch(&mut app, "linked/updated", None, &mut now);
+                assert_branch_region(&app, "Branch: linked/updated");
+                app.surface_dirty.chat.repaint = false;
+                replace_head(&first_head, "old/again");
+                replace_head(&second_head, "linked/still-watching");
+                await_native_branch(&mut app, "linked/still-watching", Some("old/again"), &mut now);
+                assert_branch_region(&app, "Branch: linked/still-watching");
+            })
+            .await;
     }
 
     #[test]
@@ -495,19 +728,5 @@ mod tests {
         assert_eq!(state.branch_name(), Some("main"));
         assert!(state.sync_to_cwd(&outside));
         assert_eq!(state.branch_name(), None);
-    }
-
-    #[test]
-    fn repo_identity_is_stable_across_nested_cwds() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let repo = create_standard_repo(dir.path(), "main");
-        let nested = repo.join("src").join("nested");
-        fs::create_dir_all(&nested).expect("nested dir");
-        let mut state = GitContextState::default();
-
-        assert!(state.sync_to_cwd(&repo));
-        let original = state.repo.clone().expect("repo");
-        assert!(!state.sync_to_cwd(&nested));
-        assert_eq!(state.repo.as_ref(), Some(&original));
     }
 }
