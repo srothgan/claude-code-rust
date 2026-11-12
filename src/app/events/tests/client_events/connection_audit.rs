@@ -25,7 +25,7 @@ fn preferences(home: &Path, approved: &[&Path]) -> std::path::PathBuf {
     path
 }
 
-fn fixture(home: &Path) -> (App, CommandReceiver) {
+pub(super) fn fixture(home: &Path) -> (App, CommandReceiver) {
     let (mut app, commands) = app_with_bridge_connection();
     app.settings_home_override = Some(home.to_path_buf());
     app.cwd_raw = home.to_string_lossy().into_owned();

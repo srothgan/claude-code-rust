@@ -625,13 +625,30 @@ fn live_rows_contain_text(app: &mut App, expected: &str) -> bool {
     .any(|row| row.spans.iter().any(|span| span.content.as_ref().contains(expected)))
 }
 
-fn session_overview_has_welcome(app: &App) -> bool {
-    app.show_session_overview
-        && app
-            .transcript
-            .messages
+fn assert_no_session_overview_rows(app: &mut App) {
+    let welcome_ids = app
+        .transcript
+        .messages
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .filter_map(|block| match block {
+            MessageBlock::Welcome(welcome) => Some(crate::app::HistoryOutputId::Block(welcome.id)),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    let rows = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+        app,
+        160,
+        &std::collections::BTreeSet::new(),
+        None,
+    );
+    assert!(
+        !rows
+            .segments()
             .iter()
-            .any(|message| matches!(message.role, MessageRole::Welcome))
+            .any(|segment| segment.ids.iter().any(|id| welcome_ids.contains(id))),
+        "suppressed overview must produce no rendered region"
+    );
 }
 
 fn connected_event(model_name: &str) -> ClientEvent {
@@ -930,7 +947,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
         panic!("expected restored user text");
     };
     assert_eq!(block.text, "startup user line\n\nsecond paragraph");
-    assert!(!session_overview_has_welcome(&app));
+    assert_no_session_overview_rows(&mut app);
     assert!(matches!(app.status, AppStatus::Ready));
     assert!(!app.turn.cancel_requested);
 
@@ -949,7 +966,7 @@ fn startup_resume_history_renders_from_canonical_messages() {
         },
     );
 
-    assert!(!session_overview_has_welcome(&app));
+    assert_no_session_overview_rows(&mut app);
 }
 
 #[test]
