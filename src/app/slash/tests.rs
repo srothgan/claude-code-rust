@@ -26,25 +26,6 @@ fn session_update(update: model::SessionUpdate) -> crate::agent::events::ClientE
 }
 
 #[test]
-fn ultracode_reports_local_connection_errors() {
-    let mut app = App::test_default();
-    assert!(try_handle_submit(&mut app, "/ultracode on"));
-    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("error").blocks[0]
-    else {
-        panic!("text")
-    };
-    assert_eq!(block.text, "Cannot change Ultracode: not connected yet.");
-    let _receiver = attach_test_connection(&mut app);
-    assert!(try_handle_submit(&mut app, "/ultracode off"));
-    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("error").blocks[0]
-    else {
-        panic!("text")
-    };
-    assert_eq!(block.text, "Cannot change Ultracode: no active session.");
-    assert!(app.turn.pending_command_ack.is_none());
-}
-
-#[test]
 fn ultracode_status_uses_verified_snapshot_and_effort() {
     for (state, expected) in [
         (None, "Ultracode status is unknown for this session."),
@@ -131,44 +112,6 @@ fn resolved_submission_is_the_active_turn_policy_authority() {
 }
 
 #[test]
-fn unsupported_command_is_handled_locally() {
-    let mut app = App::test_default();
-    let consumed = try_handle_submit(&mut app, "/definitely-unknown");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    assert!(matches!(last.role, MessageRole::System(_)));
-}
-
-#[test]
-fn advertised_command_is_forwarded() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_commands =
-        vec![model::AvailableCommand::new("/remote-command", "Remote command")];
-    let consumed = try_handle_submit(&mut app, "/remote-command");
-    assert!(!consumed);
-}
-
-#[test]
-fn advertised_command_alias_is_forwarded_and_offered() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_commands = vec![
-        model::AvailableCommand::new("/remote-command", "Remote command")
-            .aliases(vec!["/remote".to_owned()]),
-    ];
-
-    assert!(!try_handle_submit(&mut app, "/remote"));
-    assert_eq!(
-        find_advertised_command(&app, "/remote").map(|cmd| cmd.name.as_str()),
-        Some("/remote-command")
-    );
-    assert!(
-        supported_command_candidates(&app).iter().any(|candidate| candidate.primary == "/remote")
-    );
-}
-
-#[test]
 fn advertised_command_collision_prefers_canonical_then_builtin() {
     let mut app = App::test_default();
     app.sdk_inventory.available_commands = vec![
@@ -221,77 +164,6 @@ fn documented_app_slash_commands(markdown: &str) -> Vec<String> {
     }
 
     names
-}
-
-#[test]
-fn config_without_args_opens_settings_view() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-
-    let consumed = try_handle_submit(&mut app, "/config");
-
-    assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-}
-
-#[test]
-fn app_config_shadows_advertised_config_command() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-    app.sdk_inventory.available_commands =
-        vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
-
-    let consumed = try_handle_submit(&mut app, "/config");
-
-    assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-}
-
-#[test]
-fn settings_shortcuts_own_completion_and_route_to_their_pane_during_an_active_turn() {
-    for (name, category) in [
-        ("/config", "general"),
-        ("/memory", "memory"),
-        ("/permissions", "permissions"),
-        ("/sandbox", "sandbox"),
-        ("/hooks", "hooks"),
-    ] {
-        let mut app = App::test_default();
-        app.sdk_inventory.available_commands =
-            vec![model::AvailableCommand::new(name, "SDK command").input_hint("<action>")];
-        app.input.set_text(name);
-        let _ = app.input.set_cursor(0, name.chars().count());
-        let suggestions = requested_slash_state(&app).expect("suggestions");
-        assert_eq!(
-            suggestions.candidates.iter().filter(|candidate| candidate.primary == name).count(),
-            1
-        );
-        app.config.settings.query = "old query".into();
-        app.config.selected_scope = crate::agent::settings::SettingsScope::Local;
-        app.status = AppStatus::Thinking;
-        assert!(try_handle_submit(&mut app, name));
-        assert_eq!(app.config.settings.category, category);
-        assert!(app.config.settings.query.is_empty());
-        assert_eq!(app.config.settings.focus, crate::app::config::SettingsFocus::Content);
-        assert_eq!(app.config.selected_scope, crate::agent::settings::SettingsScope::Local);
-        assert_eq!(app.status, AppStatus::Thinking);
-        assert!(app.pending_submit.is_none());
-        assert_eq!(
-            app.surface_mode,
-            super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-        );
-        assert!(try_handle_submit(&mut app, &format!("{name} extra")));
-        let message = app.transcript.messages.last().expect("usage feedback");
-        assert!(message.blocks.iter().any(|block|matches!(block, crate::app::MessageBlock::Text(text) if text.text == format!("Usage: {name}"))));
-    }
 }
 
 #[test]
@@ -382,129 +254,6 @@ async fn fast_capability_check_still_allows_disable() {
             );
         })
         .await;
-}
-
-#[test]
-fn fast_rejects_invalid_arguments_without_dispatching() {
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("sess-1"));
-
-    let consumed = try_handle_submit(&mut app, "/fast invalid");
-
-    assert!(consumed);
-    assert!(rx.try_recv().is_err());
-    assert!(!matches!(app.status, AppStatus::CommandPending));
-    let last = app.transcript.messages.last().expect("usage message");
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /fast [on|off]");
-}
-
-#[test]
-fn help_without_args_opens_help_tab() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-
-    let consumed = try_handle_submit(&mut app, "/help");
-
-    assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-    assert_eq!(app.config.active_tab, super::super::ConfigTab::Help);
-}
-
-#[test]
-fn config_with_extra_args_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/config extra");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /config");
-}
-
-#[test]
-fn plugins_without_args_opens_plugins_tab() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-
-    let consumed = try_handle_submit(&mut app, "/plugins");
-
-    assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-    assert_eq!(app.config.active_tab, super::super::ConfigTab::Plugins);
-}
-
-#[test]
-fn mcp_opens_config_at_mcp_tab() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-
-    let consumed = try_handle_submit(&mut app, "/mcp");
-
-    assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-    assert_eq!(app.config.active_tab, super::super::ConfigTab::Mcp);
-}
-
-#[test]
-fn mcp_with_extra_args_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/mcp extra");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /mcp");
-}
-
-#[test]
-fn plugins_with_extra_args_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/plugins extra");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /plugins");
-}
-
-#[test]
-fn login_rejects_extra_args() {
-    let mut app = App::test_default();
-    let consumed = try_handle_submit(&mut app, "/login somearg");
-    assert!(consumed);
-    let last = app.transcript.messages.last().expect("expected system message");
-    assert!(matches!(last.role, MessageRole::System(_)));
 }
 
 #[test]
@@ -635,20 +384,6 @@ fn effort_argument_candidates_filter_by_query() {
 }
 
 #[test]
-fn docs_without_args_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/docs");
-
-    assert!(consumed);
-    let last = app.transcript.messages.last().expect("expected system message");
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
-}
-
-#[test]
 fn docs_models_show_advertised_effort_levels() {
     let mut app = App::test_default();
     app.sdk_inventory.available_models = vec![
@@ -757,58 +492,12 @@ fn docs_shortcuts_use_live_help_state() {
 }
 
 #[test]
-fn docs_with_unknown_topic_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/docs nope");
-
-    assert!(consumed);
-    let last = app.transcript.messages.last().expect("expected system message");
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
-}
-
-#[test]
-fn docs_with_extra_args_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/docs commands extra");
-
-    assert!(consumed);
-    let last = app.transcript.messages.last().expect("expected system message");
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /docs <mode|models|shortcuts|commands|agents>");
-}
-
-#[test]
 fn non_variable_command_argument_mode_is_disabled() {
     let mut app = App::test_default();
     app.input.set_text("/cancel now");
     let _ = app.input.set_cursor(0, "/cancel now".chars().count());
     sync_with_cursor(&mut app);
     assert!(app.slash.visible().is_none());
-}
-
-#[test]
-fn new_session_command_is_rendered_as_user_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/new-session");
-    assert!(consumed);
-    assert!(app.transcript.messages.len() >= 2);
-
-    let Some(first) = app.transcript.messages.first() else {
-        panic!("expected first message");
-    };
-    assert!(matches!(first.role, MessageRole::User));
-    let Some(MessageBlock::Text(block)) = first.blocks.first() else {
-        panic!("expected user text block");
-    };
-    assert_eq!(block.text, "/new-session");
 }
 
 #[test]
@@ -827,94 +516,6 @@ fn resume_without_id_opens_fullscreen_picker() {
         panic!("expected text block");
     };
     assert_eq!(block.text, "/resume");
-}
-
-#[test]
-fn resume_picker_preselects_current_session_when_listed() {
-    let mut app = App::test_default();
-    let _receiver = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("current-session"));
-    app.recent_sessions = vec![
-        crate::app::RecentSessionInfo {
-            session_id: "other-session".into(),
-            summary: "other".into(),
-            last_modified_ms: 2,
-            file_size_bytes: 1,
-            cwd: None,
-            git_branch: None,
-            custom_title: None,
-            first_prompt: Some("other".into()),
-        },
-        crate::app::RecentSessionInfo {
-            session_id: "current-session".into(),
-            summary: "current".into(),
-            last_modified_ms: 1,
-            file_size_bytes: 1,
-            cwd: None,
-            git_branch: None,
-            custom_title: None,
-            first_prompt: Some("current".into()),
-        },
-    ];
-
-    assert!(try_handle_submit(&mut app, "/resume"));
-
-    assert_eq!(app.session_picker.selected, 1);
-}
-
-#[test]
-fn resume_with_extra_args_returns_usage() {
-    let mut app = App::test_default();
-    let consumed = try_handle_submit(&mut app, "/resume abc-123 extra");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /resume");
-}
-
-#[test]
-fn rewind_with_missing_target_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/rewind");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /rewind <user_message_uuid> <both|conversation|code>");
-}
-
-#[test]
-fn rewind_with_cached_target_requires_connection() {
-    let mut app = App::test_default();
-    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
-        uuid: "user-1".to_owned(),
-        first_text: "first prompt".to_owned(),
-        input_text: "first prompt".to_owned(),
-        index: 0,
-        previous_assistant_uuid: None,
-        resume_anchor_uuid: None,
-    }];
-
-    let consumed = try_handle_submit(&mut app, "/rewind user-1 conversation");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected selection message");
-    };
-    assert!(matches!(last.role, MessageRole::System(Some(SystemSeverity::Error))));
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Cannot rewind: not connected yet.");
 }
 
 #[test]
@@ -1311,193 +912,6 @@ fn agent_invalid_arguments_return_usage() {
     }
 }
 
-#[test]
-fn effort_invalid_arguments_return_usage() {
-    for input in ["/effort", "/effort banana", "/effort high extra"] {
-        let mut app = App::test_default();
-
-        let consumed = try_handle_submit(&mut app, input);
-
-        assert!(consumed);
-        let Some(last) = app.transcript.messages.last() else {
-            panic!("expected system usage message for {input}");
-        };
-        let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-            panic!("expected text block");
-        };
-        assert_eq!(block.text, "Usage: /effort <low|medium|high|xhigh|max|reset>");
-        assert!(!matches!(app.status, AppStatus::CommandPending));
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn new_session_sets_command_pending() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut app = App::test_default();
-            let _rx = attach_test_connection(&mut app);
-
-            let consumed = try_handle_submit(&mut app, "/new-session");
-            assert!(consumed);
-            assert!(
-                matches!(app.status, AppStatus::CommandPending),
-                "expected CommandPending, got {:?}",
-                app.status
-            );
-            assert_eq!(app.turn.pending_command_label.as_deref(), Some("Starting new session..."));
-        })
-        .await;
-}
-
-#[test]
-fn compact_without_connection_is_handled_locally() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/compact");
-    assert!(consumed);
-    assert!(!app.turn.compaction.is_active());
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system message");
-    };
-    assert!(matches!(last.role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Cannot compact: not connected yet.");
-}
-
-#[test]
-fn compact_with_args_returns_usage_message() {
-    let mut app = App::test_default();
-    app.transcript.messages.push(ChatMessage::new(
-        MessageRole::User,
-        vec![MessageBlock::Text(TextBlock::from_complete("keep"))],
-        None,
-    ));
-
-    let consumed = try_handle_submit(&mut app, "/compact now");
-    assert!(consumed);
-    assert!(app.transcript.messages.len() >= 2);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    assert!(matches!(last.role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /compact");
-}
-
-#[test]
-fn mode_with_extra_args_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/mode plan extra");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    assert!(matches!(last.role, MessageRole::System(_)));
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /mode <id>");
-}
-
-#[test]
-fn model_with_missing_id_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/model");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /model <id>");
-}
-
-#[test]
-fn model_with_extra_args_returns_usage_message() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/model sonnet extra");
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected system usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /model <id>");
-}
-
-#[test]
-fn status_opens_config_at_status_tab() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-
-    let consumed = try_handle_submit(&mut app, "/status");
-
-    assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-    assert_eq!(app.config.active_tab, super::super::ConfigTab::Status);
-}
-
-#[test]
-fn usage_opens_config_at_usage_tab() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let mut app = App::test_default();
-    app.settings_home_override = Some(dir.path().to_path_buf());
-
-    let consumed = try_handle_submit(&mut app, "/usage");
-
-    assert!(consumed);
-    assert_eq!(
-        app.surface_mode,
-        super::super::SurfaceMode::Fullscreen(super::super::FullscreenView::Config)
-    );
-    assert_eq!(app.config.active_tab, super::super::ConfigTab::Usage);
-}
-
-#[test]
-fn status_with_extra_args_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/status extra");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /status");
-}
-
-#[test]
-fn usage_with_extra_args_returns_usage() {
-    let mut app = App::test_default();
-
-    let consumed = try_handle_submit(&mut app, "/usage extra");
-
-    assert!(consumed);
-    let Some(last) = app.transcript.messages.last() else {
-        panic!("expected usage message");
-    };
-    let Some(MessageBlock::Text(block)) = last.blocks.first() else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /usage");
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn ultracode_composer_wire_events_status_and_footer_workflow() {
     tokio::task::LocalSet::new().run_until(Box::pin(async {
@@ -1690,26 +1104,6 @@ async fn explicit_fast_retry_recovers_unknown_state_after_acknowledgement() {
             assert_eq!(app.session_runtime.fast_mode_state, model::FastModeState::Off);
         })
         .await;
-}
-
-#[test]
-fn reload_without_a_connection_or_with_arguments_is_refused_before_any_command() {
-    let mut app = App::test_default();
-    assert!(try_handle_submit(&mut app, "/reload"));
-    assert_eq!(app.status, AppStatus::Ready);
-    assert!(app.turn.pending_command_ack.is_none());
-    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("notice").blocks[0]
-    else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Cannot reload: not connected yet.");
-
-    assert!(try_handle_submit(&mut app, "/reload now"));
-    let MessageBlock::Text(block) = &app.transcript.messages.last().expect("usage").blocks[0]
-    else {
-        panic!("expected text block");
-    };
-    assert_eq!(block.text, "Usage: /reload");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2161,3 +1555,5 @@ fn live_turn_view_submissions_open_the_requested_pane_and_preserve_response_owne
 
 #[path = "tests/completion_audit.rs"]
 mod completion_audit;
+
+mod submission_audit;
