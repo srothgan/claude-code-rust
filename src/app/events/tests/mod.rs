@@ -8,9 +8,9 @@ use crate::app::keymap::{
 };
 use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
 use crate::app::{
-    ChatRebuildKind, FocusOwner, FocusTarget, FullscreenView, InlinePermission, InlineQuestion,
-    ReleaseReason, SurfaceMode, TerminalLifecycleState, TextBlockSpacing, ToolCallInfo,
-    ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
+    FocusOwner, FocusTarget, FullscreenView, InlinePermission, InlineQuestion, SurfaceMode,
+    TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot,
+    UsageSourceKind, mention,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
