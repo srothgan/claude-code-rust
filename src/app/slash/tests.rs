@@ -624,39 +624,6 @@ fn plugins_with_extra_args_returns_usage() {
     assert_eq!(block.text, "Usage: /plugins");
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn login_is_handled_as_builtin_and_sets_command_pending() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut app = App::test_default();
-            let consumed = try_handle_submit(&mut app, "/login");
-            assert!(consumed, "/login should be handled locally");
-            // Status becomes CommandPending (or stays Ready if claude CLI is not in PATH)
-            assert!(
-                matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
-                "expected CommandPending or Ready, got {:?}",
-                app.status
-            );
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn logout_is_handled_as_builtin_and_sets_command_pending() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut app = App::test_default();
-            let consumed = try_handle_submit(&mut app, "/logout");
-            assert!(consumed, "/logout should be handled locally");
-            assert!(
-                matches!(app.status, AppStatus::CommandPending | AppStatus::Ready),
-                "expected CommandPending or Ready, got {:?}",
-                app.status
-            );
-        })
-        .await;
-}
-
 #[test]
 fn login_rejects_extra_args() {
     let mut app = App::test_default();
@@ -1199,20 +1166,6 @@ fn confirm_selection_replaces_only_active_argument_token() {
     confirm_selection(&mut app);
 
     assert_eq!(app.input.text(), "/model new-id trailing");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn login_is_handled_as_builtin_even_when_advertised() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let mut app = App::test_default();
-            app.sdk_inventory.available_commands =
-                vec![model::AvailableCommand::new("/login", "Login")];
-
-            let consumed = try_handle_submit(&mut app, "/login");
-            assert!(consumed, "/login should be handled locally even when SDK advertises it");
-        })
-        .await;
 }
 
 #[test]
@@ -1786,17 +1739,6 @@ fn compact_without_connection_is_handled_locally() {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Cannot compact: not connected yet.");
-}
-
-#[test]
-fn compact_with_active_session_starts_manual_compaction() {
-    let mut app = App::test_default();
-    let _rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-
-    let consumed = try_handle_submit(&mut app, "/compact");
-    assert!(!consumed);
-    assert!(app.turn.compaction.is_active());
 }
 
 #[test]

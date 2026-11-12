@@ -83,10 +83,17 @@ impl TerminalTest {
             let hits = rows
                 .iter()
                 .enumerate()
-                .filter(|(_, row)| row.contains(source))
+                .filter(|(_, row)| {
+                    row.trim_start().strip_prefix('❯').is_some_and(|body| body.trim() == source)
+                })
                 .map(|(i, _)| i)
                 .collect::<Vec<_>>();
-            assert_eq!(hits.len(), 1, "one user message for {source}");
+            assert_eq!(
+                hits.len(),
+                1,
+                "one user message for {source}; matching rows: {:?}",
+                hits.iter().map(|i| &rows[*i]).collect::<Vec<_>>()
+            );
             hits[0]
         };
         let start = position(user);

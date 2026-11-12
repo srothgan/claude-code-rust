@@ -62,8 +62,19 @@ fn main() -> io::Result<()> {
         std::fs::write(file, before.replacen(entry, "", 1))?;
         return Ok(());
     }
-    assert_eq!(args, ["auth", "login"]);
     let profile = PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").expect("isolated profile"));
+    assert!(args == ["auth", "login"] || args == ["auth", "logout"]);
+    let mut calls = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(profile.join("auth-calls"))?;
+    writeln!(calls, "{}", args.join("\t"))?;
+    std::fs::write(profile.join("auth-pid"), std::process::id().to_string())?;
+    if args[1] == "logout" {
+        std::fs::remove_file(profile.join(".credentials.json"))?;
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(profile.join("auth-release"));
     println!("AUTH_CHILD_READY");
     io::stdout().flush()?;
     let mut input = String::new();

@@ -251,7 +251,7 @@ function streamReply(messageUuid) {
     },
   });
   if (presentationScenario) {
-    for (const [role, uuid] of [['user', messageUuid], ['assistant', undefined]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'message_metadata', role, timestamp: '2026-10-03T15:02:01Z', source_message_uuid: uuid } });
+    for (const [role, uuid] of [['user', messageUuid], ['assistant', undefined]]) send({ event: 'session_update', session_id: SESSION, update: { type: 'message_metadata', role, timestamp: SCENARIO === 'presentation' && role === 'user' ? '2026-10-03T15:01:01Z' : '2026-10-03T15:02:01Z', source_message_uuid: uuid } });
     if (SCENARIO === 'presentation') send({ event: 'session_update', session_id: SESSION, update: { type: 'agent_message_chunk', content: { type: 'text', text: '\n```rust\nlet answer = 42;\n```\n' }, source_message_uuid: null } });
   }
   if (notificationScenario) {
@@ -473,6 +473,7 @@ function renameSession(message) {
     send({ event: 'slash_error', session_id: SESSION, message: `failed to rename session: Session ${SESSION} not found` });
     return;
   }
+  fs.appendFileSync(transcriptPath(), `${JSON.stringify({ type: 'custom-title', customTitle: message.title, sessionId: SESSION })}\n`);
   send({ event: 'session_update', session_id: SESSION, update: { type: 'session_title_update', title: message.title } });
   send({ event: 'sessions_listed', sessions: [listedSession({ custom_title: message.title })] });
 }
@@ -508,6 +509,22 @@ readline
       case 'create_session':
       case 'new_session':
       case 'resume_session':
+        if (SCENARIO === 'auth-audit') {
+          if (message.command === 'new_session' && !fs.existsSync(path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json'))) {
+            send({ event: 'auth_required', method_name: 'fixture-login', method_description: 'Fixture credentials required' });
+            break;
+          }
+          if (!nativeActions) {
+            let previous = '';
+            nativeActions = setInterval(() => {
+              const action = fs.existsSync(RELEASE_FILE) ? fs.readFileSync(RELEASE_FILE, 'utf8') : '';
+              if (!action || action === previous) return;
+              previous = action;
+              send({ event: 'session_update', session_id: SESSION, update: { type: 'system_notice_update', severity: 'warning', message: `AUTH_REDRAW_${action}` } });
+              send({ event: 'sessions_listed', sessions: [] });
+            }, INTERVAL_MS);
+          }
+        }
         if (SCENARIO === 'session-handoff') {
           let previous = '';
           record({ type: 'barrier', name: 'connection-waiting' });
@@ -550,6 +567,7 @@ readline
           restored_input: null,
         });
         if (SCENARIO.startsWith('resize-') || SCENARIO.startsWith('background-') || ['native-surfaces', 'permission-after-history', 'replay-code-audit', 'hold-reading-presentation', 'hold-activity-audit'].includes(SCENARIO)) send({ event: 'status_snapshot', session_id: SESSION, account: { subscription_type: 'Fixture subscription' } });
+        if (SCENARIO.startsWith('compact-audit')) send({ event: 'session_update', session_id: SESSION, update: { type: 'system_notice_update', severity: 'info', message: 'Fixture help: /compact summarizes earlier context' } });
         if (SCENARIO === 'status-rename') {
           send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
             { name: 'clear', description: 'Clear conversation history', input_hint: null },
@@ -561,6 +579,9 @@ readline
             { name: 'rename', description: 'Rename the current conversation', input_hint: '[name]' },
           ] } });
         }
+        if (SCENARIO === 'auth-audit') send({ event: 'session_update', session_id: SESSION, update: { type: 'available_commands_update', commands: [
+          { name: 'login', description: 'Advertised login collision', input_hint: null },
+        ] } });
         if (SCENARIO === 'native-surfaces' && !nativeActions) {
           let previous = '';
           nativeActions = setInterval(() => {
@@ -620,6 +641,14 @@ readline
         sideQuestion(message);
         break;
       case 'prompt':
+        if (SCENARIO.startsWith('compact-audit') && message.chunks.map(chunk => chunk.value).join('').trim() === '/compact') {
+          send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'compaction_update', phase: 'started' } });
+          const failed = SCENARIO.endsWith('failure');
+          send({ event: 'session_update', session_id: SESSION, update: { type: 'compaction_update', phase: 'finished', result: failed ? 'failed' : 'success', ...(failed ? { error_code: 'unknown', error: 'FIXTURE_COMPACT_DENIED' } : {}) } });
+          send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
+          break;
+        }
         if (SCENARIO === 'elicitation') {
           send({ event: 'user_message_queued', session_id: SESSION, message_uuid: message.message_uuid });
           send({ event: 'user_message_started', session_id: SESSION, message_uuid: message.message_uuid, source: 'command_lifecycle' });
@@ -678,7 +707,7 @@ readline
         send({
           event: 'skills_and_styles_reloaded',
           session_id: SESSION,
-          skills: { status: 'reloaded', names: ['deploy', 'lint'] },
+          skills: { status: 'reloaded', names: reloads === 1 ? ['deploy', 'lint'] : ['deploy', 'lint', 'check'] },
           output_styles: reloads === 1
             ? { status: 'reloaded', names: ['default', 'Explanatory', 'mine'] }
             : { status: 'failed', message: 'style directory unreadable' },

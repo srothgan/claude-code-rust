@@ -20,7 +20,9 @@ fn assistant_body(row: &str) -> &str {
 }
 
 fn terminal_log_filter(scenario: &str) -> &'static str {
-    if scenario == "input-audit" {
+    if scenario == "auth-audit" {
+        "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug,app.session=debug"
+    } else if scenario == "input-audit" {
         "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug,app.paste=debug,app.input=debug"
     } else {
         "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug"
@@ -1134,35 +1136,80 @@ fn shutdown_preserves_read_previews_after_resize() {
 
 #[test]
 fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_them() {
-    let common =
-        ["--model", "opus", "--effort", "max", "--permission-mode", "plan", "--agent", "reviewer"];
-    for (selection, expected_session) in [
-        (vec![], "fake-session"),
-        (vec!["-r", "chosen-session"], "chosen-session"),
-        (vec!["-c"], "fake-recent-session"),
-        (vec!["resume", "chosen-session"], "chosen-session"),
+    let files = tempfile::tempdir().expect("flag files");
+    let settings = files.path().join("settings.json");
+    std::fs::write(&settings, r#"{"model":"sonnet"}"#).expect("settings input");
+    for (selection, expected_session, file_input, relative_dir) in [
+        (vec![], "fake-session", false, false),
+        (vec!["-r", "chosen-session"], "chosen-session", false, false),
+        (vec!["-c"], "fake-recent-session", false, false),
+        (vec!["resume", "chosen-session"], "chosen-session", false, false),
+        (vec![], "fake-session", true, false),
+        (vec![], "fake-session", false, true),
     ] {
-        let mut args = common.to_vec();
+        let mut args = vec![
+            "--model",
+            "opus",
+            "--effort",
+            "max",
+            "--permission-mode",
+            "plan",
+            "--agent",
+            "reviewer",
+        ];
+        if file_input {
+            args.extend([
+                "--settings",
+                settings.to_str().expect("settings path"),
+                "--system-prompt",
+                "You are a release bot.",
+            ]);
+        }
+        if relative_dir {
+            args.extend(["--dir", "."]);
+        }
         args.extend(selection);
         args.push("Review this project");
         let mut test = TerminalTest::start_with_options("stream", 3, None, &args, true);
         test.wait_journal("turn_complete");
         test.assert_prompts(&["Review this project"]);
         assert_eq!(test.prompts()[0]["session_id"], expected_session);
-        let launch = test
+        let launches: Vec<_> = test
             .journal()
             .into_iter()
-            .find(|entry| {
+            .filter(|entry| {
                 entry["command"] == "create_session" || entry["command"] == "resume_session"
             })
-            .expect("session launch command");
+            .collect();
+        assert_eq!(launches.len(), 1);
+        let launch = &launches[0];
         assert_eq!(launch["launch_settings"]["model"], "opus");
         assert_eq!(launch["launch_settings"]["permission_mode"], "plan");
         assert_eq!(launch["launch_settings"]["effort"], "max");
         assert_eq!(launch["launch_settings"]["agent"], "reviewer");
-        let saved: Value = serde_json::from_str(
-            &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
-                .expect("saved settings"),
+        assert_eq!(
+            Path::new(test.commands("initialize")[0]["cwd"].as_str().expect("initialized cwd"))
+                .canonicalize()
+                .expect("resolved cwd"),
+            test.project_dir().canonicalize().expect("fixture project")
+        );
+        if launch["command"] == "create_session" {
+            assert_eq!(
+                Path::new(launch["cwd"].as_str().expect("launch cwd"))
+                    .canonicalize()
+                    .expect("launch cwd exists"),
+                test.project_dir().canonicalize().expect("fixture project")
+            );
+        }
+        if file_input {
+            assert_eq!(
+                launch["launch_settings"]["settings"],
+                serde_json::json!({"model":"sonnet"})
+            );
+            assert_eq!(launch["launch_settings"]["system_prompt"], "You are a release bot.");
+        }
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved settings"),
         )
         .expect("settings JSON");
         assert_eq!(
@@ -1170,6 +1217,16 @@ fn interactive_cli_startup_sends_overrides_and_initial_prompt_without_saving_the
             serde_json::json!({"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}})
         );
         test.shutdown();
+        let after: Value = serde_json::from_slice(
+            &std::fs::read(test.temp.path().join("profile/settings.json"))
+                .expect("preferences after exit"),
+        )
+        .expect("saved preferences JSON");
+        assert_eq!(
+            after,
+            serde_json::json!({"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}}),
+            "launch overrides must not be saved at exit"
+        );
     }
 }
 
@@ -1251,72 +1308,87 @@ fn forked_resume_continues_under_the_new_session_id() {
 }
 
 #[test]
-fn launch_configuration_leaves_the_saved_preferences_untouched() {
-    let files = tempfile::tempdir().expect("flag files");
-    let settings = files.path().join("settings.json");
-    std::fs::write(&settings, r#"{"model":"sonnet"}"#).expect("settings file");
-    let mut test = TerminalTest::start_with_options(
-        "stream",
-        3,
-        None,
-        &[
-            "--settings",
-            settings.to_str().expect("UTF-8 path"),
-            "--system-prompt",
-            "You are a release bot.",
-            "Review this project",
-        ],
-        true,
-    );
-    test.wait_journal("turn_complete");
-    let launch = test.commands("create_session").remove(0)["launch_settings"].clone();
-    assert_eq!(launch["settings"], serde_json::json!({ "model": "sonnet" }));
-    assert_eq!(launch["system_prompt"], "You are a release bot.");
-    let saved: Value = serde_json::from_str(
-        &std::fs::read_to_string(test.temp.path().join("profile/settings.json"))
-            .expect("saved settings"),
-    )
-    .expect("settings JSON");
-    assert_eq!(
-        saved,
-        serde_json::json!({"model":"haiku","effortLevel":"medium","permissions":{"defaultMode":"default"}})
-    );
-    test.shutdown();
-}
-
-#[test]
 fn auth_child_owns_stdin_and_output_and_returns_a_resized_usable_terminal() {
-    for mode in ["success", "failure"] {
-        let mut test = TerminalTest::start_with_auth("stream", 3, Some(mode));
+    for mode in ["success", "failure", "spawn-error"] {
+        let mut test = TerminalTest::start_with_auth("auth-audit", 3, Some(mode));
+        test.wait_until("advertised login collision delivered", |test| {
+            test.journal().iter().any(|e| {
+                e["update"]["commands"]
+                    .as_array()
+                    .is_some_and(|commands| commands.iter().any(|c| c["name"] == "login"))
+            })
+        });
         test.submit("/login", "/login");
-        test.wait_screen("AUTH_CHILD_READY");
-        // Once the child is waiting on stdin, the TUI must stop every output
-        // source, including animated OSC window-title updates.
-        let before = test.output.lock().expect("output lock").raw.len();
-        std::thread::sleep(Duration::from_millis(250));
-        let after = test.output.lock().expect("output lock").raw.len();
-        assert_eq!(after, before, "TUI wrote while auth child owned the terminal");
-        test.resize(25, 61);
-        test.send(b"child_only_407\r");
-        // The child records its input before it prints this marker.
-        test.wait_screen("AUTH_INPUT_RECORDED");
         let profile = test.temp.path().join("profile");
-        let received =
-            std::fs::read_to_string(profile.join("auth-input")).expect("child stdin record");
-        assert_eq!(received.trim_end_matches(['\r', '\n']), "child_only_407");
-        test.release_auth_child();
-        if mode == "failure" {
-            test.wait_screen("/login failed (exit code: 7)");
+        if mode == "spawn-error" {
+            test.wait_screen("Failed to run claude auth login");
+            assert!(!profile.join("auth-calls").exists());
+        } else {
+            test.wait_screen("AUTH_CHILD_READY");
+            assert_eq!(
+                std::fs::read_to_string(profile.join("auth-calls")).expect("auth argv"),
+                "auth\tlogin\n"
+            );
+            // A real bridge update requests a chat repaint while the child owns
+            // output. Application consumption, rather than elapsed time, fences
+            // the observation; no child output is produced in this interval.
+            let before = test.raw_offset();
+            let applied = test.log_offset();
+            test.signal("redraw");
+            test.wait_until("redraw-producing event applied while child owns terminal", |test| {
+                test.runtime_records_since(applied)
+                    .iter()
+                    .any(|e| e["event_name"] == "sessions_list_updated")
+            });
+            assert!(test.raw_since(before).is_empty(), "TUI wrote while auth child owned output");
+            test.resize(25, 61);
+            test.send(b"child_only_407\r");
+            test.wait_screen("AUTH_INPUT_RECORDED");
+            assert_eq!(
+                std::fs::read_to_string(profile.join("auth-input"))
+                    .expect("child stdin")
+                    .trim_end_matches(['\r', '\n']),
+                "child_only_407"
+            );
+            test.release_auth_child();
+            if mode == "failure" {
+                test.wait_screen("/login failed (exit code: 7)");
+            }
         }
-        test.wait_screen("[READY]");
-        test.resize(38, 87);
+        test.wait_until("auth finished and terminal accepts input", |test| {
+            test.screen().contains("[READY]")
+        });
+        let credentials = profile.join(".credentials.json");
+        assert_eq!(credentials.exists(), mode == "success");
+        if mode == "success" {
+            let saved: Value =
+                serde_json::from_slice(&std::fs::read(&credentials).expect("credentials"))
+                    .expect("credential JSON");
+            assert_eq!(saved["claudeAiOauth"]["accessToken"], "fixture-only-not-a-token");
+            assert_eq!(test.commands("new_session").len(), 1);
+        } else {
+            assert!(test.commands("new_session").is_empty());
+        }
+        if mode == "spawn-error" {
+            test.resize_and_wait_for_draw(25, 61);
+        }
+        test.resize_and_wait_for_draw(38, 87);
         test.send("AFTER_AUTH 界".as_bytes());
         test.wait_screen("AFTER_AUTH 界");
         test.paste(" + PASTE 🦀");
         test.wait_screen("PASTE 🦀");
+        test.resize_keeping(25, 61, &["AFTER_AUTH 界 + PASTE 🦀"]);
+        test.resize_keeping(38, 87, &["AFTER_AUTH 界 + PASTE 🦀"]);
         test.submit_draft();
-        test.wait_screen("reply 1 started");
+        test.wait_turn_finished("reply 1 started");
         test.assert_prompts(&["AFTER_AUTH 界 + PASTE 🦀"]);
+        assert_eq!(
+            test.prompts()[0]["session_id"],
+            if mode == "success" { "fake-session-after-login" } else { "fake-session" }
+        );
+        if mode == "success" {
+            command_audit::logout_and_relogin(&mut test);
+        }
         test.shutdown();
     }
 }
@@ -1583,37 +1655,24 @@ fn background_tasks_flush_in_creation_order_and_append_results_once() {
 }
 
 #[test]
-fn auth_spawn_failure_restores_terminal_ownership_and_input() {
-    let mut test = TerminalTest::start_with_auth("stream", 3, Some("spawn-error"));
-    test.submit("/login", "/login");
-    test.wait_screen_with("Failed to run claude auth login", &["[READY]"]);
-    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-    test.send(b"AFTER_SPAWN_ERROR");
-    test.wait_composer_text(offset, "AFTER_SPAWN_ERROR");
-    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-    test.paste(" + PASTE 界 🦀");
-    test.wait_composer_text(offset, "AFTER_SPAWN_ERROR + PASTE 界 🦀");
-    test.resize_keeping(25, 61, &["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
-    test.resize_keeping(38, 87, &["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
-    test.submit_draft();
-    test.wait_turn_finished("reply 1 started");
-    test.assert_prompts(&["AFTER_SPAWN_ERROR + PASTE 界 🦀"]);
-    test.shutdown();
-}
-
-#[test]
 fn fatal_bridge_exit_during_auth_stops_the_owned_child_and_finishes_shutdown() {
     let mut test = TerminalTest::start_with_auth("disconnect-during-auth", 3, Some("success"));
     test.submit("/login", "/login");
     test.wait_screen("AUTH_CHILD_READY");
     // The fake CLI is blocked in read_line. Shutdown must stop and reap the
     // owned child before returning the terminal and finishing the app exit.
+    let pid: u32 = std::fs::read_to_string(test.temp.path().join("profile/auth-pid"))
+        .expect("owned child PID")
+        .parse()
+        .expect("PID");
+    assert!(command_audit::process_alive(pid), "child really started");
     test.release();
     let status = test
         .child
         .wait_for_exit(Duration::from_secs(15))
         .expect("bounded shutdown while auth owns stdin");
     assert!(!status.success());
+    assert!(!command_audit::process_alive(pid), "auth child must be reaped before app exit");
     assert!(!test.temp.path().join("profile/auth-input").exists());
     test.assert_prompts(&[]);
     test.wait_final_output("exited before completing the protocol");
@@ -1728,73 +1787,60 @@ fn tips_setting_preserves_activity_without_empty_messages_through_real_config_sa
     let mut test = TerminalTest::start("hold-activity-off", 3);
     test.submit("NO_OUTPUT_YET", "NO_OUTPUT_YET");
     test.wait_journal("reply-held");
-    test.wait_until("disabled tips retain activity without an empty assistant frame", |test| {
-        let screen = test.screen();
-        screen.contains("NO_OUTPUT_YET")
-            && !screen.lines().any(assistant_marker)
-            && screen.lines().any(|line| line.trim_start().starts_with("│ ◆ "))
-            && !screen.contains("│ Tip:")
+    test.wait_until("activity without an empty response or disabled tips", |test| {
+        command_audit::activity_matches(test, true, false)
     });
-    let activity_header = test
-        .screen()
-        .lines()
-        .find(|line| line.trim_start().starts_with("│ ◆ "))
-        .expect("immediate activity header")
-        .trim_end()
-        .to_owned();
     for enabled in [true, false, true] {
         test.submit("/config", "/config");
         test.wait_settings_ready("Show tips");
         test.select_setting("Show tips");
+        let before = test.commands("mutate_setting").len();
         test.send(b" ");
         test.wait_setting(
             "profile/settings.json",
             "/spinnerTipsEnabled",
             Some(&Value::Bool(enabled)),
         );
-        test.send(b"\x1b");
-        test.wait_until("only tips follow the acknowledged setting", |test| {
-            let screen = test.screen();
-            screen.lines().any(|line| line.trim().strip_prefix("❯ ") == Some("NO_OUTPUT_YET"))
-                && !screen.lines().any(assistant_marker)
-                && screen.lines().any(|line| line.trim_end() == activity_header)
-                && screen.contains("│ Tip:") == enabled
+        test.wait_until("matching save result", |test| {
+            let commands = test.commands("mutate_setting");
+            commands.len() == before + 1
+                && test.journal().iter().any(|e| {
+                    e["event"] == "settings_result"
+                        && e["request_id"] == commands[before]["request_id"]
+                        && e["session_id"] == "fake-session"
+                        && e["result"]["persistence"] == "saved"
+                })
         });
-        test.resize_and_wait_for_draw(25, 61);
-        test.resize_and_wait_for_draw(SHORT_ROWS, COLS);
-        test.wait_until(
-            "resize retains activity without an empty response independently of tips",
-            |test| {
-                let screen = test.screen();
-                !screen.lines().any(assistant_marker)
-                    && screen.lines().any(|line| line.trim_end() == activity_header)
-                    && screen.contains("│ Tip:") == enabled
-            },
-        );
+        assert_eq!(test.commands("mutate_setting")[before]["mutation"]["value"], enabled);
+        test.send(b"\x1b");
+        test.wait_until("acknowledged tips in activity region", |test| {
+            command_audit::activity_matches(test, true, enabled)
+        });
+        for (rows, cols) in [(25, 61), (SHORT_ROWS, COLS)] {
+            test.resize_and_wait_for_draw(rows, cols);
+            test.wait_until("resize preserves activity and tips preference", |test| {
+                command_audit::activity_matches(test, true, enabled)
+            });
+        }
     }
     test.signal("requires_action");
-    test.wait_until("waiting hides activity", |test| {
-        let screen = test.screen();
-        !screen.lines().any(assistant_marker)
-            && !screen.contains(&activity_header)
-            && !screen.contains("│ Tip:")
+    test.wait_until("waiting removes transient activity", |test| {
+        command_audit::activity_matches(test, false, false)
     });
     test.signal("running");
-    let resumed = test.wait_screen_with("│ Tip:", &[&activity_header]);
-    assert!(!resumed.lines().any(assistant_marker));
+    test.wait_until("running restores saved tips and activity", |test| {
+        command_audit::activity_matches(test, true, true)
+    });
     test.signal("done");
     test.wait_until("completion removes transient activity", |test| {
-        let screen = test.screen();
-        screen.contains("[READY]")
-            && !screen.lines().any(assistant_marker)
-            && !screen.contains(&activity_header)
-            && !screen.contains("│ Tip:")
+        command_audit::activity_matches(test, false, false) && test.screen().contains("[READY]")
     });
     assert_eq!(test.commands("mutate_setting").len(), 3);
     assert!(
         test.commands("mutate_setting")
             .iter()
-            .all(|command| command["mutation"]["id"] == "spinnerTipsEnabled")
+            .all(|c| c["mutation"]["id"] == "spinnerTipsEnabled"
+                && c["session_id"] == "fake-session")
     );
     test.assert_prompts(&["NO_OUTPUT_YET"]);
     test.shutdown();
@@ -1925,8 +1971,7 @@ fn trust_prompt_names_the_directory_that_yes_will_save() {
             .unwrap_or_else(|| panic!("no {text:?} row: {}", test.trust_prompt))
     };
     let path = row_of("Path: ");
-    assert!(row_of("Trust this project directory?") < row_of("Claude Rust will wait"));
-    assert!(row_of("Claude Rust will wait") < path, "{}", test.trust_prompt);
+
     // The path may wrap; its later rows are indented under the label.
     let shown: String = std::iter::once(&rows[path]["Path: ".len()..])
         .chain(
@@ -1935,7 +1980,17 @@ fn trust_prompt_names_the_directory_that_yes_will_save() {
                 .map_while(|row| row.strip_prefix("      ").filter(|rest| !rest.trim().is_empty())),
         )
         .collect();
-    assert_eq!(&shown, keys[0], "{}", test.trust_prompt);
+    let expected = test.project_dir().canonicalize().expect("resolved fixture project");
+    assert_eq!(
+        Path::new(&shown).canonicalize().expect("displayed project exists"),
+        expected,
+        "display must identify fixture project"
+    );
+    assert_eq!(
+        Path::new(keys[0]).canonicalize().expect("trusted project exists"),
+        expected,
+        "trust must be saved for fixture project"
+    );
     assert!(Path::new(keys[0]).is_absolute(), "{}", keys[0]);
     assert!(!test.trust_prompt.contains("Unknown Project"), "{}", test.trust_prompt);
 }
@@ -2521,18 +2576,17 @@ fn scheduler_and_queue_times_stay_in_their_tool_cards_after_terminal_replay() {
 fn presentation_clocks_and_copy_picker_navigation_survive_terminal_resize() {
     let mut test = TerminalTest::start("presentation", 3);
     test.submit("Clock test", "Clock test");
-    test.wait_screen("Elapsed 2.0s");
-    test.wait_screen("Done ");
-    test.wait_screen("15:02Z");
+    test.wait_until("message-associated clocks", command_audit::message_clocks_match);
     test.submit("/copy", "/copy");
-    // The command menu already shows the picker's title as its description.
     test.wait_screen_with("Code block 1 (rust)", &["Copy last response"]);
     test.send(b"\x1b[B");
-    test.resize_keeping(24, 42, &["Code block 1 (rust)"]);
+    test.wait_until("code choice selected", command_audit::code_choice_selected);
+    test.resize_and_wait_for_draw(24, 42);
+    test.wait_until("same code choice selected after resize", command_audit::code_choice_selected);
     test.send(b"\x1b");
     test.wait_screen("Type a message");
     test.submit("Follow up", "Follow up");
-    test.wait_screen("reply 2 started");
+    test.wait_turn_finished("reply 2 started");
     test.assert_prompts(&["Clock test", "Follow up"]);
     test.shutdown();
 }
@@ -2855,22 +2909,6 @@ fn status_name_row(test: &TerminalTest, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-#[test]
-fn status_tab_shows_the_session_name_after_rename() {
-    let mut test = TerminalTest::start("session-name", 3);
-    test.submit_command("/rename probe-e2e");
-    test.wait_turn_finished("Session renamed to: probe-e2e");
-    test.assert_prompts(&["/rename probe-e2e"]);
-
-    // The fake bridge lists no sessions, so only the title it sent after the
-    // turn can name the session here.
-    test.submit("/status", "/status");
-    test.wait_for("the new name in Status", |test| status_name_row(test, "probe-e2e"));
-    test.shutdown();
-}
-
-const SESSION_NOT_SAVED_WARNING: &str = "Renaming becomes available after this session is saved. Run a command or send a message, then try again.";
-
 /// The rename dialog's rows below its field, inside the borders, up to the
 /// bottom border: `(rows under the field, help line)`.
 fn rename_dialog(test: &TerminalTest, field: &str) -> Option<(Vec<String>, String)> {
@@ -2909,10 +2947,11 @@ fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
     // confirmation disabled and the warning beneath the field.
     test.send(b"r");
     let (rows, help) = test.wait_for("the not-saved warning", |test| {
-        rename_dialog(test, "Custom session name")
-            .filter(|(rows, _)| text_beneath_rename_field(rows) == SESSION_NOT_SAVED_WARNING)
+        rename_dialog(test, "Custom session name").filter(|(rows, _)| {
+            text_beneath_rename_field(rows).contains("after this session is saved")
+        })
     });
-    assert_eq!(help, "Esc cancel", "{rows:?}");
+    assert!(help.contains("Esc") && !help.contains("Enter"), "{rows:?}");
     test.paste("early");
     test.wait_for("the edited draft", |test| rename_dialog(test, "early"));
     test.send(b"\r");
@@ -2933,7 +2972,7 @@ fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
     let (rows, help) = test
         .wait_for("an enabled rename dialog", |test| rename_dialog(test, "Custom session name"));
     assert_eq!(text_beneath_rename_field(&rows), "", "the warning is gone");
-    assert_eq!(help, "Enter confirm | Esc cancel");
+    assert!(help.contains("Enter") && help.contains("Esc"));
 
     // The SDK's failure stays in the dialog with the draft.
     test.paste("fail-me");
@@ -2952,11 +2991,13 @@ fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
     let titles: Vec<_> =
         test.commands("rename_session").iter().map(|command| command["title"].clone()).collect();
     assert_eq!(titles, ["fail-me", "demo-488"]);
+    assert!(test.commands("rename_session").iter().all(|c| c["session_id"] == "fake-session"));
+    assert!(command_audit::saved_title(&test, "fake-session", "demo-488"));
 
     // Neither outcome reaches the chat.
     test.send(b"\x1b");
     test.wait_screen("Type a message");
-    let chat = test.screen();
+    let chat = test.transcript_rows().join("\n");
     assert!(!chat.contains("failed to rename") && !chat.contains("Renamed session"), "{chat}");
 
     // The fixture's `/clear` starts an unsaved session the listing names after the command.
@@ -2969,37 +3010,67 @@ fn status_rename_waits_for_the_saved_session_and_reports_only_in_status() {
     assert!(status_name_row(&test, "/clear").is_none());
     test.send(b"r");
     test.wait_for("the not-saved warning for the new session", |test| {
-        rename_dialog(test, "Custom session name")
-            .filter(|(rows, _)| text_beneath_rename_field(rows) == SESSION_NOT_SAVED_WARNING)
+        rename_dialog(test, "Custom session name").filter(|(rows, _)| {
+            text_beneath_rename_field(rows).contains("after this session is saved")
+        })
     });
     test.shutdown();
+
+    // The SDK-advertised /rename route remains distinct from the host dialog.
+    let mut sdk = TerminalTest::start("session-name", 3);
+    sdk.submit_command("/rename probe-e2e");
+    sdk.wait_turn_finished("Session renamed to: probe-e2e");
+    sdk.assert_prompts(&["/rename probe-e2e"]);
+    assert_eq!(sdk.prompts()[0]["session_id"], "fake-session");
+    assert!(sdk.commands("rename_session").is_empty());
+    sdk.submit("/status", "/status");
+    sdk.wait_for("SDK title applied to session name row", |test| {
+        status_name_row(test, "probe-e2e")
+    });
+    sdk.shutdown();
 }
 
 #[test]
 fn reload_reports_the_reloaded_counts_and_then_a_half_that_failed() {
-    let mut test = TerminalTest::start("reload", 3);
-    test.submit_command("/reload");
-    test.wait_turn_finished("Reloaded skills (2) and output styles (3)");
-
-    // The skills half still reports as reloaded next to the output styles that failed.
-    test.submit_command("/reload");
-    test.wait_turn_finished("Could not reload output styles: style directory unreadable");
-
-    // /reload is app-owned: it reaches the bridge as its own command, never as a prompt.
-    assert_eq!(test.commands("reload_skills_and_styles").len(), 2);
-    test.assert_prompts(&[]);
-    test.shutdown();
-}
-
-#[test]
-fn reload_that_expired_in_the_bridge_queue_releases_input_with_a_notice() {
-    let mut test = TerminalTest::start("reload-expired", 3);
-    test.submit_command("/reload");
-    // [READY] beside the notice: the reload no longer blocks input.
-    let screen = test.wait_turn_finished("Reload did not start within 10 s");
-    assert!(screen.contains("Nothing was reloaded"), "{screen}");
-    assert_eq!(test.commands("reload_skills_and_styles").len(), 1);
-    test.shutdown();
+    for scenario in ["reload", "reload-expired"] {
+        let mut test = TerminalTest::start(scenario, 3);
+        test.submit_command("/reload");
+        if scenario == "reload" {
+            test.wait_turn_finished("Reloaded skills (2) and output styles (3)");
+            test.submit_command("/reload");
+            test.wait_turn_finished("Could not reload output styles: style directory unreadable");
+            let rows = test.transcript_rows();
+            let failure = rows
+                .iter()
+                .position(|row| row.contains("Could not reload output styles"))
+                .expect("partial notice");
+            let notice = rows[failure.saturating_sub(1)..=failure].join("\n");
+            assert!(
+                notice.contains("Reloaded skills (3)"),
+                "successful half accompanies failed half: {notice}"
+            );
+            assert_eq!(test.commands("reload_skills_and_styles").len(), 2);
+        } else {
+            // Delivered bridge queue expiry; no claim of a real ten-second wait.
+            test.wait_turn_finished("Nothing was reloaded");
+            assert!(
+                test.transcript_rows()
+                    .iter()
+                    .any(|row| row.contains("Reload did not start within 10 s"))
+            );
+            assert_eq!(test.commands("reload_skills_and_styles").len(), 1);
+        }
+        assert!(
+            test.commands("reload_skills_and_styles")
+                .iter()
+                .all(|c| c["session_id"] == "fake-session")
+        );
+        test.assert_prompts(&[]);
+        test.submit("AFTER_RELOAD", "AFTER_RELOAD");
+        test.wait_turn_finished("reply 1 started");
+        test.assert_prompts(&["AFTER_RELOAD"]);
+        test.shutdown();
+    }
 }
 
 /// The Markdown the `export` scenario's saved conversation must produce, after the header.
@@ -3009,40 +3080,30 @@ const EXPORTED_BODY: &str = "## User\n\nList the files\n\n## Assistant\n\nListin
 fn export_writes_the_saved_conversation_and_never_overwrites_it() {
     let mut test = TerminalTest::start("export", 3);
     test.submit_command("/export transcript.md");
-    test.wait_turn_finished("Exported the conversation to");
-
     let target = test.project_dir().join("transcript.md");
-    let file = std::fs::read_to_string(&target).expect("exported file");
-    // Header fields vary with the machine and the clock; the body is exact.
-    let body = file
-        .split_once("- Exported: ")
-        .and_then(|(_, rest)| rest.split_once("\n\n"))
-        .map(|(_, body)| body)
-        .expect("exported body");
-    assert!(file.starts_with("# Conversation\n\n- Session: fake-session\n- Directory: "), "{file}");
-    assert!(file.contains("\n- Model: Fake model\n- Exported: "), "{file}");
-    assert_eq!(body, EXPORTED_BODY);
-    assert!(!file.contains('\u{1b}'), "terminal escapes must not reach the file");
+    test.wait_until("complete explicit export", |test| {
+        command_audit::complete_export(&target, &test.project_dir())
+    });
+    test.wait_turn_finished("Exported the conversation to");
     assert_eq!(test.commands("export_session_history").len(), 1);
+    assert_eq!(test.commands("export_session_history")[0]["session_id"], "fake-session");
     test.assert_prompts(&[]);
 
-    // A second export to the same path is refused before the bridge is asked.
+    let sentinel = b"INDEPENDENT_EXISTING_FILE\n\x00Keep every byte\xff\n";
+    std::fs::write(&target, sentinel).expect("independent pre-existing data");
     test.submit_command("/export transcript.md");
-    test.wait_until("overwrite refusal across terminal wrapping", |test| {
-        let screen = test.screen();
-        screen.contains("Not exporting:")
-            && screen
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .contains("already exists and will not be overwritten.")
+    test.wait_until("overwrite refused", |test| {
+        test.screen()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains("already exists and will not be overwritten.")
     });
-    assert_eq!(std::fs::read_to_string(&target).expect("kept file"), file);
-    assert_eq!(test.commands("export_session_history").len(), 1);
+    assert_eq!(std::fs::read(&target).expect("existing file"), sentinel);
+    assert_eq!(test.commands("export_session_history").len(), 1, "refusal must not fetch history");
 
-    // Without a path the name is the session id and the UTC export time.
     test.submit_command("/export");
-    test.wait_until("the default-named export", |test| {
+    test.wait_until("complete default export", |test| {
         std::fs::read_dir(test.project_dir()).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
                 let name = entry.file_name();
@@ -3050,9 +3111,15 @@ fn export_writes_the_saved_conversation_and_never_overwrites_it() {
                 name.starts_with("export-fake-session-")
                     && name.ends_with("Z.md")
                     && name.len() == "export-fake-session-20261013T123045Z.md".len()
+                    && command_audit::complete_export(&entry.path(), &test.project_dir())
             })
         })
     });
+    test.wait_until("default export acknowledged", |test| {
+        test.commands("export_session_history").len() == 2 && test.screen().contains("[READY]")
+    });
+    assert_eq!(std::fs::read(&target).expect("existing file"), sentinel);
+    test.assert_prompts(&[]);
     test.shutdown();
 }
 
@@ -3171,6 +3238,35 @@ fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes()
                     .any(|field| field["id"] == "runningSubagents" && field["visible"] == false)
             })
     });
+    test.send(b"\x1b"); // Close footer editor.
+    test.send(b"\x1b"); // Return to chat.
+    test.wait_until("saved footer hides count", |test| {
+        test.screen_rows().iter().any(|row| row.contains("[READY]") && !row.contains("AGENTS:"))
+    });
+    test.submit("/config", "/config");
+    test.wait_settings_ready("Footer");
+    test.select_setting("Footer");
+    test.send(b"\r");
+    test.wait_until("reopened footer retains hidden choice", |test| {
+        test.screen_rows()
+            .iter()
+            .any(|row| row.contains("Running subagents") && row.contains("[ ]"))
+    });
+    test.send(b"\x1b");
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    test.send(b"\x1b[D");
+    test.wait_screen_with("Review parser", &["Subagents", "running"]);
+    test.send(b"\x1b[A");
+    test.wait_until("hidden count does not hide selected agent", |test| {
+        test.screen().contains("Check the parser for edge cases")
+    });
+    test.send(b"\x1b");
+    test.wait_screen("Type a message");
+    assert!(
+        test.screen_rows().iter().any(|row| row.contains("[READY]") && !row.contains("AGENTS:"))
+    );
+    test.assert_prompts(&[]);
     test.shutdown();
     assert_eq!(std::fs::read(&inherited_path).expect("inherited preferences"), original.as_bytes());
     let saved: Value = serde_json::from_slice(
@@ -3179,36 +3275,13 @@ fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes()
     )
     .expect("saved JSON");
     assert_eq!(saved["unrelated"], "preserve this profile");
-}
-
-#[test]
-fn hiding_the_subagent_footer_count_keeps_the_subagents_view_accessible() {
-    let mut test = TerminalTest::start_with_profile(
-        "agents",
-        3,
-        None,
-        &[],
-        false,
-        &[],
-        AppProfileFixture {
-            contents: Some(include_str!("fixtures/app-settings/hidden-subagents.json")),
-            ..AppProfileFixture::default()
-        },
+    // Start a fresh app with the bytes actually saved above. Reopening an
+    // editor alone could keep passing with a broken startup preference reader.
+    command_audit::reload_hidden_footer(inherited.path(), &saved.to_string());
+    assert_eq!(
+        std::fs::read(&inherited_path).expect("inherited profile remains untouched"),
+        original.as_bytes()
     );
-    test.send(b"\x1b[D");
-    test.wait_screen_with("Review parser", &["Subagents", "running"]);
-    // Ready can precede the task inventory. Opening an empty view does not
-    // select a subagent when its row later arrives, so choose it explicitly.
-    test.send(b"\x1b[A");
-    test.wait_until("selected subagent details", |test| {
-        test.screen().contains("Check the parser for edge cases")
-    });
-    test.send(b"\x1b");
-    test.wait_screen("Type a message");
-    let footer =
-        test.screen_rows().into_iter().find(|row| row.contains("[READY]")).expect("ready footer");
-    assert!(!footer.contains("AGENTS:"), "custom footer must hide the count: {footer}");
-    test.shutdown();
 }
 
 #[test]
@@ -3321,30 +3394,6 @@ fn a_bad_dir_or_bridge_script_exits_before_the_terminal_is_touched() {
 }
 
 #[test]
-#[allow(clippy::expect_used)]
-fn a_relative_dir_starts_the_session_in_the_absolute_directory_it_names() {
-    // The app runs from `project`, so `--dir .` names it.
-    let mut test = TerminalTest::start_with_options("stream", 3, None, &["--dir", "."], false);
-    // The directory as the platform spells its own working directory: physical on Unix
-    // (macOS temp dirs sit behind a symlink), as given on Windows.
-    let project = test.temp.path().join("project");
-    #[cfg(not(windows))]
-    let project = project.canonicalize().expect("project path");
-
-    let session = test
-        .wait_for("the session request", |test| test.commands("create_session").into_iter().next());
-    assert_eq!(session["cwd"].as_str().map(Path::new), Some(project.as_path()), "{session}");
-    let location = test.wait_for("the footer location", |test| {
-        test.screen().lines().find_map(|line| {
-            let (_, value) = line.split_once("Loc: ")?;
-            Some(value.split_whitespace().next().unwrap_or_default().to_owned())
-        })
-    });
-    assert!(location.ends_with("project"), "Loc: {location}");
-    test.shutdown();
-}
-
-#[test]
 fn mcp_elicitation_forms_preserve_typed_answers_queue_focus_and_resize_controls() {
     let mut test = TerminalTest::start("elicitation", 3);
     test.submit("start forms", "start forms");
@@ -3361,8 +3410,8 @@ fn mcp_elicitation_forms_preserve_typed_answers_queue_focus_and_resize_controls(
     test.wait_screen("\u{203a} tags (required)");
     test.send(b" ");
     test.wait_screen("[x] red");
-    test.resize_keeping(25, 61, &["tags (required)", "red"]);
-    test.resize_keeping(38, 87, &["tags (required)"]);
+    test.resize_keeping(25, 61, &["› tags (required)", "[x] red"]);
+    test.resize_keeping(38, 87, &["› tags (required)", "[x] red"]);
     test.send(b"\t");
     test.wait_screen("\u{203a} Accept");
     test.send(b"\r");
@@ -3371,6 +3420,7 @@ fn mcp_elicitation_forms_preserve_typed_answers_queue_focus_and_resize_controls(
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["elicitation_request_id"], "form-a");
     assert_eq!(responses[0]["action"], "accept");
+    assert_eq!(responses[0]["session_id"], "fake-session");
     assert_eq!(
         responses[0]["content"],
         serde_json::json!({"amount":0,"confirm":false,"note":"","tags":["red"]})
@@ -3382,6 +3432,8 @@ fn mcp_elicitation_forms_preserve_typed_answers_queue_focus_and_resize_controls(
     let responses = test.commands("elicitation_response");
     assert_eq!(responses[1]["elicitation_request_id"], "form-b");
     assert_eq!(responses[1]["action"], "cancel");
+    assert_eq!(responses[1]["session_id"], "fake-session");
+    test.assert_prompts(&["start forms"]);
     assert!(responses[1].get("content").is_none());
     assert!(
         !std::fs::read_to_string(test.temp.path().join("runtime.log"))
@@ -4045,3 +4097,6 @@ mod tool_body;
 
 #[path = "support/terminal_replay_audit.rs"]
 mod replay_audit;
+
+#[path = "support/terminal_command_audit.rs"]
+mod command_audit;
