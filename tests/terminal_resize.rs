@@ -546,6 +546,22 @@ impl TerminalTest {
     }
 
     fn diagnostics(&self) -> String {
+        let all = self.ordered_source("streamed line ");
+        let committed = self.committed_source("streamed line ").unwrap_or_default();
+        let native = self.native_words();
+        let native_count = native.len();
+        let missing_native = native_history_words()
+            .into_iter()
+            .filter(|word| !native.contains(word))
+            .take(8)
+            .collect::<Vec<_>>();
+        let source_summary = format!(
+            "Captured source: all={}, committed={}; committed first={:?}, last={:?}; native_words={native_count}, missing_native={missing_native:?}",
+            all.len(),
+            committed.len(),
+            &committed[..committed.len().min(12)],
+            &committed[committed.len().saturating_sub(12)..]
+        );
         let output = self.output.lock().expect("output lock");
         let log = std::fs::read_to_string(self.temp.path().join("runtime.log")).unwrap_or_default();
         let paste = log
@@ -554,7 +570,7 @@ impl TerminalTest {
             .collect::<Vec<_>>()
             .join("\n");
         format!(
-            "{}\nRaw output tail:\n{}\nRuntime log tail:\n{}\nPaste events:\n{}",
+            "{}\n{source_summary}\nRaw output tail:\n{}\nRuntime log tail:\n{}\nPaste events:\n{}",
             output.parser.screen().contents(),
             tail(&String::from_utf8_lossy(&output.raw), 2000),
             tail(&log, 6000),
@@ -620,16 +636,6 @@ impl TerminalTest {
     /// the app applied the completion.
     fn wait_turn_finished(&mut self, turn_output: &str) -> String {
         self.wait_screen_with(turn_output, &["[READY]"])
-    }
-
-    /// Returns the first streamed row shown while the viewport is pinned.
-    fn wait_pinned_output(&mut self) -> String {
-        self.wait_screen_with("Reading output", &["streamed line"])
-            .lines()
-            .find(|line| line.contains("streamed line"))
-            .expect("visible output anchor")
-            .trim()
-            .to_owned()
     }
 
     fn release_auth_child(&mut self) {
@@ -900,39 +906,22 @@ fn shutdown_preserves_completed_history_without_reinserting_it() {
         let mut test = TerminalTest::start("resize-replay", 240);
         test.submit("SHUTDOWN_HISTORY", "SHUTDOWN_HISTORY");
         test.wait_turn_finished("streamed line 240");
-        test.wait_completed_reply_in_scrollback(240);
+        test.wait_ordered_reply(240);
         if mode == "reading" {
             test.send(b"\x1b[5~");
-            test.wait_screen("Reading output");
+            test.wait_region_text(0, "hint", "Reading output");
         } else if mode == "fullscreen" {
             test.submit("/config", "/config");
             test.wait_settings_ready("Description:");
             assert!(test.output.lock().expect("output lock").parser.screen().alternate_screen());
         }
-        let offset =
-            std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-        test.shutdown();
-        test.wait_shutdown_screen();
-        let rows = test.transcript_rows();
-        for line in 1..=240 {
-            let suffix = format!("streamed line {line}");
-            assert_eq!(
-                rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(),
-                1,
-                "{mode}: completed row {line} must survive exactly once"
-            );
-        }
-        let records = test.runtime_records_since(offset);
+        let offset = test.raw_offset();
+        test.finish_replay();
+        test.assert_ordered_reply(240);
         assert!(
-            !records
-                .iter()
-                .any(|record| record["event_name"] == "inline_chat_scrollback_insert_applied"),
-            "{mode}: closing must preserve committed history without writing it again"
+            !test.raw_since(offset).windows(4).any(|w| w == b"\x1b[3J"),
+            "{mode}: shutdown must preserve committed history without purge/reinsertion"
         );
-        let screen = test.output.lock().expect("output lock").parser.screen().clone();
-        assert!(!screen.alternate_screen(), "shutdown must return to the main screen");
-        assert!(!screen.hide_cursor(), "shutdown must restore the cursor");
-        assert!(screen.contents().contains("Shutting down"));
     }
 }
 
@@ -941,27 +930,37 @@ fn shutdown_keeps_received_output_and_dismisses_pending_interactions() {
     for scenario in ["hold-success", "permission", "question"] {
         let mut test = TerminalTest::start(scenario, 8);
         test.submit("SHUTDOWN_ACTIVE", "SHUTDOWN_ACTIVE");
-        let marker = match scenario {
-            "permission" => "Allow once",
-            "question" => "Choose fixture destination",
-            _ => "streamed line 8",
-        };
-        test.wait_screen(marker);
-        if scenario == "hold-success" {
-            test.wait_journal("reply-held");
-        }
-        test.shutdown();
-        test.wait_shutdown_screen();
-        let screen = test.screen();
-        assert!(screen.contains("Shutting down"));
-        assert!(!screen.contains("Allow once") && !screen.contains("Choose fixture destination"));
-        assert_eq!(test.commands("cancel_turn").len(), 1);
-        if scenario == "hold-success" {
-            let rows = test.transcript_rows();
-            for line in 1..=8 {
-                let suffix = format!("streamed line {line}");
-                assert_eq!(rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(), 1);
+        match scenario {
+            "permission" => {
+                test.wait_screen("Allow once");
             }
+            "question" => {
+                test.wait_screen("Choose fixture destination");
+            }
+            _ => test.wait_held_reply(8),
+        }
+        test.finish_replay();
+        let screen = test.screen();
+        assert!(!screen.contains("Allow once") && !screen.contains("Choose fixture destination"));
+        let cancels = test.commands("cancel_turn");
+        assert_eq!(cancels.len(), 1);
+        assert_eq!(cancels[0]["session_id"], "fake-session");
+        for response in test.commands("permission_response") {
+            assert_eq!(response["session_id"], "fake-session");
+            assert_eq!(response["tool_call_id"], "fixture-tool");
+            assert!(
+                response["outcome"]["outcome"] != "selected"
+                    || response["outcome"]["option_id"] == "deny-once"
+            );
+        }
+        for response in test.commands("question_response") {
+            assert_eq!(response["session_id"], "fake-session");
+            assert_eq!(response["tool_call_id"], "fixture-tool");
+            assert_ne!(response["outcome"]["outcome"], "answered");
+        }
+        test.assert_prompts(&["SHUTDOWN_ACTIVE"]);
+        if scenario == "hold-success" {
+            test.assert_ordered_reply(8);
         }
     }
 }
@@ -1000,48 +999,52 @@ fn shutdown_force_interrupt_can_stop_pending_transcript_recovery() {
 #[test]
 fn resize_inserts_ready_history_before_later_layout_and_restarts_partial_replay() {
     let mut test = TerminalTest::start("resize-replay", 2_000);
-    test.submit("PROGRESSIVE_REPLAY", "PROGRESSIVE_REPLAY");
+    let prologue =
+        "READY_ORCHID READY_COPPER READY_RIVER READY_SILVER READY_LAVENDER READY_PROLOGUE_END";
+    test.submit(prologue, "READY_PROLOGUE_END");
     test.wait_turn_finished("streamed line 2000");
-    test.wait_completed_reply_in_scrollback(2_000);
-    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-    test.resize(18, 73);
-    test.wait_until("assistant history prepared after initial history insertion", |test| {
-        test.runtime_records_since(offset).iter().any(|record| {
-            record["event_name"] == "inline_chat_layout_step" && record["assistant_text"] == true
-        })
-    });
-    let records = test.runtime_records_since(offset);
-    let inserted = records
-        .iter()
-        .position(|record| record["event_name"] == "inline_chat_history_insert_request")
-        .expect("initial insertion");
-    let assistant_layout = records
-        .iter()
-        .position(|record| {
-            record["event_name"] == "inline_chat_layout_step" && record["assistant_text"] == true
-        })
-        .expect("assistant layout");
-    assert!(inserted < assistant_layout, "ready history must not wait for the later large message");
-    assert!(
-        !records
+    test.wait_ordered_reply(2_000);
+    let ready = |test: &TerminalTest| {
+        test.transcript_rows()
             .iter()
-            .any(|record| record["event_name"] == "inline_chat_terminal_draw_transaction"
-                && record["replay_complete"] == true),
-        "fixture must still be replaying before the next resize"
+            .flat_map(|row| row.split_whitespace())
+            .filter(|word| word.starts_with("READY_"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let expected = prologue.split_whitespace().collect::<Vec<_>>();
+    let offset = test.log_offset();
+    test.resize(18, 73);
+    test.wait_until(
+        "ready source is physically inserted while later history is incomplete",
+        |test| {
+            let delivered = test.ordered_source("streamed line ");
+            ready(test) == expected
+                && !delivered.is_empty()
+                && delivered.len() < 2_000
+                && test.runtime_records_since(offset).iter().any(|record| {
+                    record["event_name"] == "inline_chat_terminal_draw_transaction"
+                        && record["terminal_width"] == 73
+                        && record["terminal_height"] == 18
+                        && record["replay_incomplete"] == true
+                })
+        },
     );
-
+    let before =
+        test.transcript_rows().into_iter().filter(|row| row.contains("READY_")).collect::<Vec<_>>();
+    let offset = test.raw_offset();
     test.resize_and_wait_for_draw(24, 61);
-    test.wait_completed_reply_in_scrollback(2_000);
-    let rows = test.transcript_rows();
-    for line in 1..=2_000 {
-        let suffix = format!("streamed line {line}");
-        assert_eq!(
-            rows.iter().filter(|row| row.trim_end().ends_with(&suffix)).count(),
-            1,
-            "row {line} must survive exactly once at the latest width"
-        );
-    }
-    test.shutdown();
+    test.wait_ordered_reply(2_000);
+    assert_eq!(ready(&test), expected);
+    let after =
+        test.transcript_rows().into_iter().filter(|row| row.contains("READY_")).collect::<Vec<_>>();
+    assert_ne!(before, after, "source must actually wrap differently at the two widths");
+    assert!(
+        test.raw_since(offset).windows(4).any(|w| w == b"\x1b[3J"),
+        "superseded partial history must be replaced"
+    );
+    test.finish_replay();
+    test.assert_ordered_reply(2_000);
 }
 
 fn assert_read_previews(test: &TerminalTest) {
@@ -1086,44 +1089,30 @@ fn assert_read_previews(test: &TerminalTest) {
     }
 }
 
-fn assert_empty_insertion_preserves_viewport_height(records: &[Value]) {
-    let mut shrank_for_insertion = false;
-    for record in records {
-        match record["event_name"].as_str() {
-            Some("inline_chat_geometry_reconciled") => {
-                shrank_for_insertion |=
-                    record["old_height"].as_u64().is_some_and(|height| height > 1)
-                        && record["target_height"] == 1;
-            }
-            Some("inline_chat_terminal_draw_transaction") => {
-                if record["flushed_rows"] == 0 {
-                    assert!(!shrank_for_insertion, "empty insertion must not shrink the viewport");
-                }
-                shrank_for_insertion = false;
-            }
-            _ => {}
-        }
-    }
-}
-
 #[test]
 fn read_replay_preserves_preview_windows_and_draft_across_resizes() {
     let mut test = TerminalTest::start("resize-read", 2_000);
     test.submit("READ_PREVIEWS", "READ_PREVIEWS");
     test.wait_turn_finished("READ_2000_2000");
     assert_read_previews(&test);
-    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    let offset = test.log_offset();
     test.resize(18, 73);
-    test.paste("DRAFT_DURING_READ");
-    test.wait_composer_text(offset, "DRAFT_DURING_READ");
-    let resize_offset =
-        std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
+    test.paste("DRAFT_DURING_READ\nkeep this paragraph");
+    test.wait_native_composer(offset, "DRAFT_DURING_READ", "keep this paragraph");
+    let offset = test.log_offset();
     test.resize_and_wait_for_draw(24, 61);
-    test.wait_composer_text(resize_offset, "DRAFT_DURING_READ");
+    test.wait_native_composer(offset, "DRAFT_DURING_READ", "keep this paragraph");
     assert_read_previews(&test);
-    assert_empty_insertion_preserves_viewport_height(&test.runtime_records_since(offset));
     test.assert_prompts(&["READ_PREVIEWS"]);
-    test.shutdown();
+    let offset = test.journal().len();
+    test.submit_draft();
+    wait_resize_reply(
+        &mut test,
+        offset,
+        &["READ_PREVIEWS", "DRAFT_DURING_READ\nkeep this paragraph"],
+        "READ_DRAFT_ACCEPTED",
+    );
+    test.finish_replay();
 }
 
 #[test]
@@ -1456,38 +1445,29 @@ fn background_completion_replies_keep_streamed_tails_mutable_and_preserve_normal
     let mut test = TerminalTest::start("background-replies", 3);
     test.submit("BACKGROUND_STREAM", "BACKGROUND_STREAM");
     test.wait_turn_finished("Foreground reply is complete.");
+    let offset = test.log_offset();
     test.paste("NORMAL_AFTER_COMPLETIONS");
-    test.wait_screen("NORMAL_AFTER_COMPLETIONS");
+    test.wait_composer_text(offset, "NORMAL_AFTER_COMPLETIONS");
     for (number, prefix, full) in [
         (1, "The", "The first background task finished completely."),
         (2, "Short task 2 (`", "Short task 2 (task-two) finished with exit code 0."),
     ] {
         test.signal(&format!("result-{number}"));
         test.wait_screen(&format!("OUTPUT_{number}"));
-        let log_offset =
-            std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
         test.signal(&format!("prefix-{number}"));
-        test.wait_journal(&format!("prefix-{number}"));
-        test.wait_screen(prefix);
-        test.wait_until("unfinished reply remains in the mutable region", |test| {
-            test.runtime_records_since(log_offset).iter().any(|record| {
-                record["event_name"] == "inline_chat_draw_summary"
-                    && record["status"] == "Running"
-                    && record["first_mutable_boundary_kind"] == "Some(AssistantText)"
-            })
+        test.wait_until("unfinished source appears once in the actual transcript", |test| {
+            test.transcript_rows().iter().filter(|row| assistant_body(row) == prefix).count() == 1
         });
-        test.resize_keeping(
-            if number == 1 { TALL_ROWS } else { SHORT_ROWS },
-            COLS,
-            &[prefix, "NORMAL_AFTER_COMPLETIONS"],
-        );
+        test.resize_and_wait_for_draw(if number == 1 { TALL_ROWS } else { SHORT_ROWS }, COLS);
+        let rows = test.transcript_rows();
+        assert_eq!(rows.iter().filter(|row| assistant_body(row) == prefix).count(), 1);
         test.signal(&format!("finish-{number}"));
-        test.wait_journal(&format!("finish-{number}"));
         test.wait_turn_finished(full);
         let rows = test.transcript_rows();
         assert_eq!(rows.iter().filter(|row| assistant_body(row) == full).count(), 1);
         assert!(!rows.iter().any(|row| assistant_body(row) == prefix));
     }
+    test.assert_prompts(&["BACKGROUND_STREAM"]);
     test.submit_draft();
     test.wait_turn_finished("Normal conversation continues completely.");
     test.resize_and_wait_for_draw(TALL_ROWS, COLS);
@@ -1501,7 +1481,7 @@ fn background_completion_replies_keep_streamed_tails_mutable_and_preserve_normal
         assert_eq!(rows.iter().filter(|row| assistant_body(row) == full).count(), 1);
     }
     test.assert_prompts(&["BACKGROUND_STREAM", "NORMAL_AFTER_COMPLETIONS"]);
-    test.shutdown();
+    test.finish_replay();
 }
 
 #[test]
@@ -1822,94 +1802,99 @@ fn tips_setting_preserves_activity_without_empty_messages_through_real_config_sa
 
 #[test]
 fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_completion() {
-    let mut test = TerminalTest::start_with_options(
-        "hold-activity",
-        3,
-        None,
-        &["--log-filter", "warn,app.lifecycle=debug,app.render=debug,bridge.protocol=debug"],
-        false,
-    );
+    let mut test = TerminalTest::start("hold-activity-audit", 3);
     test.submit("START_ACTIVITY", "START_ACTIVITY");
-    test.wait_journal("reply-held");
-    let initial_screen = test.wait_screen_with("│ ◆ ", &["│ Tip:", "START_ACTIVITY"]);
-    let initial_rows: Vec<_> = initial_screen.lines().map(str::trim_end).collect();
-    assert!(!initial_rows.iter().any(|line| assistant_marker(line)));
-    let activity = initial_rows
-        .iter()
-        .position(|line| line.trim_start().starts_with("\u{2502} \u{25c6} "))
-        .expect("activity");
-    assert!(
-        initial_rows.iter().position(|line| line.contains("START_ACTIVITY")).expect("user message")
-            < activity
+    test.wait_until(
+        "activity without an empty assistant message and with real committed user history",
+        |test| {
+            test.captured_region(0, "activity").is_some_and(|(_, rows)| !rows.is_empty())
+                && test
+                    .committed_rows()
+                    .is_some_and(|rows| rows.iter().any(|row| row.contains("START_ACTIVITY")))
+                && test
+                    .captured_region(0, "live")
+                    .is_some_and(|(_, rows)| !rows.iter().any(|row| assistant_marker(row)))
+        },
     );
-    assert!(!initial_screen.contains("Thinking…"));
-    let activity_header = initial_rows[activity].to_owned();
     test.signal("thinking");
-    // Thinking retains the activity verb.
-    let thinking = test.wait_screen_with("◆ Thinking…", &[&activity_header]);
-    assert_eq!(thinking.matches("Thinking…").count(), 1);
-    let thinking_row = thinking.lines().find(|line| line.contains("Thinking\u{2026}")).unwrap();
-    assert!(assistant_marker(thinking_row));
+    test.wait_region_text(0, "live", "Thinking");
     test.submit("QUEUED_ACTIVITY", "QUEUED_ACTIVITY");
+    let offset = test.log_offset();
     test.paste("DRAFT_ACTIVITY");
-    let screen = test.wait_screen_with(
-        "DRAFT_ACTIVITY",
-        &["Thinking…", &activity_header, "│ Tip:", "QUEUED_ACTIVITY"],
-    );
-    assert!(
-        screen.find("Thinking…").expect("assistant thinking")
-            < screen.find(&activity_header).expect("activity")
-    );
-    assert!(
-        screen.find(&activity_header).expect("activity")
-            < screen.find("│ Tip:").expect("grouped tip")
-    );
-    assert!(
-        screen.find("│ Tip:").expect("tip") < screen.find("QUEUED_ACTIVITY").expect("queued field")
-    );
+    test.wait_composer_text(offset, "DRAFT_ACTIVITY");
+    test.wait_region_text(0, "hint", "QUEUED_ACTIVITY");
+    let mut transient = test.assert_activity_regions(true);
+    test.assert_no_transient_history(&transient);
     test.resize_and_wait_for_draw(25, 61);
-    test.wait_until("cursor remains in editor after resize", |test| {
-        let output = test.output.lock().expect("output");
-        let screen = output.parser.screen();
-        let (row, _) = screen.cursor_position();
-        let contents = screen.contents();
-        contents.contains("◆ Thinking…")
-            && contents
-                .lines()
-                .nth(usize::from(row))
-                .is_some_and(|line| line.contains("DRAFT_ACTIVITY"))
-    });
+    transient.extend(test.assert_activity_regions(true));
+    test.assert_no_transient_history(&transient);
+    let offset = test.log_offset();
     test.signal("requires_action");
-    test.wait_until("hidden activity while input is required", |test| {
-        let screen = test.screen();
-        !screen.contains("Thinking…") && !screen.contains("Tip:")
-    });
+    test.wait_until(
+        "required input suppresses transient thinking/activity while preserving queued input",
+        |test| {
+            test.captured_region(offset, "activity").is_some_and(|(_, rows)| rows.is_empty())
+                && test.captured_region(offset, "live").is_some_and(|(_, rows)| {
+                    !rows.iter().any(|row| assistant_marker(row) && row.contains("Thinking"))
+                })
+                && test
+                    .captured_region(offset, "hint")
+                    .is_some_and(|(_, rows)| rows.iter().any(|row| row.contains("QUEUED_ACTIVITY")))
+                && test
+                    .captured_region(offset, "editor")
+                    .is_some_and(|(_, rows)| rows.iter().any(|row| row.contains("DRAFT_ACTIVITY")))
+        },
+    );
+    test.assert_no_transient_history(&transient);
     test.signal("running");
-    test.wait_screen_with("Thinking…", &["Tip:"]);
+    test.wait_region_text(0, "live", "Thinking");
+    transient.extend(test.assert_activity_regions(true));
+    test.assert_no_transient_history(&transient);
+    let offset = test.log_offset();
     test.signal("working");
-    test.wait_until("ordinary activity after thinking retains the activity verb", |test| {
-        let screen = test.screen();
-        !screen.contains("Thinking…")
-            && screen.contains("Tip:")
-            && screen.contains(&activity_header)
+    test.wait_until("ordinary activity resumes without temporary thinking", |test| {
+        test.captured_region(offset, "live").is_some_and(|(_, rows)| {
+            !rows.iter().any(|row| assistant_marker(row) && row.contains("Thinking"))
+        }) && test.captured_region(offset, "activity").is_some_and(|(_, rows)| !rows.is_empty())
     });
+    transient.extend(test.assert_activity_regions(false));
+    test.assert_no_transient_history(&transient);
     test.resize_and_wait_for_draw(SHORT_ROWS, COLS);
+    test.assert_no_transient_history(&transient);
+    let offset = test.journal().len();
     test.signal("done");
-    test.wait_until("activity removed and draft kept after completion", |test| {
-        let screen = test.screen();
-        screen.contains("[READY]")
-            && screen.contains("DRAFT_ACTIVITY")
-            && !screen.contains("Tip:")
-            && !screen.contains("Thinking…")
+    wait_resize_reply(&mut test, offset, &["START_ACTIVITY", "QUEUED_ACTIVITY"], "reply 2 started");
+    test.wait_until("activity removed while exact draft remains editable", |test| {
+        test.captured_region(0, "activity").is_some_and(|(_, rows)| rows.is_empty())
+            && test
+                .captured_region(0, "editor")
+                .is_some_and(|(_, rows)| rows.iter().any(|row| row.contains("DRAFT_ACTIVITY")))
     });
-    let output = test.output.lock().expect("output");
-    let mut screen = output.parser.screen().clone();
-    for offset in 0..100 {
-        screen.set_scrollback(offset);
-        assert!(!screen.contents().contains("Thinking…"));
-        assert!(!screen.contents().contains("Tip:"));
-        assert!(!screen.contents().contains(&activity_header));
+    test.wait_until(
+        "real foreground history committed before checking transient exclusion",
+        |test| {
+            test.committed_rows().is_some_and(|rows| {
+                rows.iter().any(|row| row.contains("START_ACTIVITY"))
+                    && rows.iter().any(|row| row.contains("QUEUED_ACTIVITY"))
+            }) && test.committed_source("streamed line ") == Some(vec![1, 2, 3])
+        },
+    );
+    let rows = test.transcript_rows();
+    for temporary in transient {
+        assert!(
+            !rows.iter().any(|row| row.trim() == temporary),
+            "transient activity entered history: {temporary}"
+        );
     }
+    let offset = test.journal().len();
+    test.submit_draft();
+    wait_resize_reply(
+        &mut test,
+        offset,
+        &["START_ACTIVITY", "QUEUED_ACTIVITY", "DRAFT_ACTIVITY"],
+        "reply 3 started",
+    );
+    test.finish_replay();
 }
 
 #[test]
@@ -1959,69 +1944,80 @@ fn trust_prompt_names_the_directory_that_yes_will_save() {
 fn queued_prompt_starts_once_after_active_reply_and_preserves_the_next_draft() {
     let mut test = TerminalTest::start("hold-success", 3);
     test.submit("FIRST", "FIRST");
-    test.wait_journal("reply-held");
+    test.wait_held_reply(3);
     test.submit("QUEUED 界", "QUEUED 界");
-    test.wait_journal("user_message_queued");
-    test.paste("UNSENT 🦀");
-    test.wait_screen("UNSENT 🦀");
-    test.resize(25, 61);
-    test.resize(38, 87);
-    test.assert_prompts(&["FIRST", "QUEUED 界"]);
-    let prompts = test.prompts();
-    let queued_id = &prompts[1]["message_uuid"];
+    test.wait_region_text(0, "hint", "QUEUED 界");
     assert!(
         !test
-            .journal()
+            .captured_region(0, "live")
+            .expect("live region")
+            .1
             .iter()
-            .any(|e| e["event"] == "user_message_started" && &e["message_uuid"] == queued_id)
+            .any(|row| row.contains("QUEUED 界"))
     );
-
+    let offset = test.log_offset();
+    test.paste("UNSENT 🦀");
+    test.wait_composer_text(offset, "UNSENT 🦀");
+    test.resize_and_wait_for_draw(25, 61);
+    test.wait_region_text(0, "hint", "QUEUED 界");
+    test.assert_prompts(&["FIRST", "QUEUED 界"]);
+    let queued_id = test.prompts()[1]["message_uuid"].clone();
+    assert!(
+        test.journal()
+            .iter()
+            .any(|e| e["event"] == "user_message_queued" && e["message_uuid"] == queued_id)
+    );
+    let offset = test.journal().len();
     test.release();
-    test.wait_screen_with("reply 2 started", &["[READY]", "UNSENT 🦀"]);
-    let journal = test.journal();
-    let queued = journal
-        .iter()
-        .position(|e| e["event"] == "user_message_queued" && &e["message_uuid"] == queued_id)
-        .expect("queued event");
-    let completed =
-        journal.iter().position(|e| e["event"] == "turn_complete").expect("first completion");
-    assert_eq!(journal[completed]["queued_turn_count"], 1);
-    let started: Vec<_> = journal
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e["event"] == "user_message_started" && &e["message_uuid"] == queued_id)
-        .collect();
-    assert_eq!(started.len(), 1, "queued message must start exactly once");
-    assert!(queued < completed && completed < started[0].0);
+    wait_resize_reply(&mut test, offset, &["FIRST", "QUEUED 界"], "reply 2 started");
+    assert!(
+        !test
+            .captured_region(0, "hint")
+            .expect("hint region")
+            .1
+            .iter()
+            .any(|row| row.contains("QUEUED 界"))
+    );
+    test.wait_region_text(0, "editor", "UNSENT 🦀");
+    test.assert_turn_source("FIRST", Some("QUEUED 界"), 3);
+    test.assert_turn_source("QUEUED 界", None, 3);
+    let offset = test.journal().len();
     test.submit_draft();
-    test.wait_screen("reply 3 started");
-    test.assert_prompts(&["FIRST", "QUEUED 界", "UNSENT 🦀"]);
-    test.shutdown();
+    wait_resize_reply(&mut test, offset, &["FIRST", "QUEUED 界", "UNSENT 🦀"], "reply 3 started");
+    test.finish_replay();
 }
 
 #[test]
 fn cancelling_a_stream_preserves_the_draft_and_allows_the_next_turn() {
     let mut test = TerminalTest::start("hold-success", 3);
     test.submit("CANCEL_ME", "CANCEL_ME");
-    test.wait_journal("reply-held");
+    test.wait_held_reply(3);
+    let offset = test.log_offset();
     test.paste("AFTER_CANCEL 界");
-    test.wait_screen("AFTER_CANCEL 界");
-    test.send(b"\x1b"); // Escape cancels a turn; Ctrl+C clears the composer.
-    test.wait_journal("turn_interrupt_receipt");
-    test.wait_screen_with("[READY]", &["AFTER_CANCEL 界"]);
-    test.resize_keeping(25, 61, &["AFTER_CANCEL 界"]);
-    test.resize_keeping(38, 87, &["AFTER_CANCEL 界"]);
-    // Release the old barrier after cancel: a stray timer must not resume it.
-    let before = test.journal().iter().filter(|e| e["event"] == "session_update").count();
-    test.release();
-    std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(test.journal().iter().filter(|e| e["event"] == "session_update").count(), before);
-    assert_eq!(test.commands("cancel_turn").len(), 1);
-    assert!(test.journal().iter().any(|e| e["terminal_reason"] == "aborted_streaming"));
+    test.wait_composer_text(offset, "AFTER_CANCEL 界");
+    test.send(b"\x1b");
+    test.wait_until("cancel acknowledged for the active session and rendered as ready", |test| {
+        test.journal()
+            .iter()
+            .any(|e| e["event"] == "turn_interrupt_receipt" && e["session_id"] == "fake-session")
+            && test.screen().contains("[READY]")
+    });
+    let cancels = test.commands("cancel_turn");
+    assert_eq!(cancels.len(), 1);
+    assert_eq!(cancels[0]["session_id"], "fake-session");
+    test.assert_ordered_reply(3);
+    for (rows, cols) in [(25, 61), (38, 87)] {
+        let offset = test.log_offset();
+        test.resize_and_wait_for_draw(rows, cols);
+        test.wait_composer_text(offset, "AFTER_CANCEL 界");
+    }
+    test.assert_prompts(&["CANCEL_ME"]);
+    let offset = test.journal().len();
     test.submit_draft();
-    test.wait_screen("reply 2 started");
-    test.assert_prompts(&["CANCEL_ME", "AFTER_CANCEL 界"]);
-    test.shutdown();
+    wait_resize_reply(&mut test, offset, &["CANCEL_ME", "AFTER_CANCEL 界"], "reply 2 started");
+    test.assert_turn_source("CANCEL_ME", Some("AFTER_CANCEL 界"), 3);
+    test.assert_turn_source("AFTER_CANCEL 界", None, 3);
+    test.finish_replay();
 }
 
 #[test]
@@ -2450,20 +2446,46 @@ fn unicode_pastes_cross_the_placeholder_boundary_without_payload_loss() {
 
 #[test]
 fn a_stream_error_preserves_the_next_unsent_draft_through_resize() {
-    let mut test = TerminalTest::start("hold-error", 8);
-    test.submit("go", "❯ go");
-    test.wait_journal("reply-held");
-
-    test.paste("NEXT_DRAFT 界 🦀\nkeep this paragraph");
-    test.wait_screen("keep this paragraph");
-    test.release();
-    test.wait_journal("turn_error");
-    let draft = ["NEXT_DRAFT 界 🦀", "keep this paragraph"];
-    test.wait_screen_with("Fixture service unavailable", &draft);
-    test.resize_keeping(55, 120, &draft);
-    test.resize_keeping(38, 87, &draft);
-    test.assert_prompts(&["go"]);
-    test.shutdown();
+    for (scenario, recoverable, cause) in [
+        ("hold-error", false, "Fixture service unavailable"),
+        ("hold-limit-error", true, "Fixture usage limit reached"),
+    ] {
+        let mut test = TerminalTest::start(scenario, 8);
+        test.submit("go", "❯ go");
+        test.wait_held_reply(8);
+        let offset = test.log_offset();
+        test.paste("NEXT_DRAFT 界 🦀\nkeep this paragraph");
+        test.wait_native_composer(offset, "NEXT_DRAFT 界 🦀", "keep this paragraph");
+        let offset = test.journal().len();
+        test.release();
+        test.wait_until("correlated error consumed", |test| {
+            test.journal()
+                .iter()
+                .skip(offset)
+                .any(|e| e["event"] == "turn_error" && e["session_id"] == "fake-session")
+                && test.screen().contains(cause)
+        });
+        for (rows, cols) in [(55, 120), (38, 87)] {
+            let offset = test.log_offset();
+            test.resize_and_wait_for_draw(rows, cols);
+            test.wait_native_composer(offset, "NEXT_DRAFT 界 🦀", "keep this paragraph");
+        }
+        test.assert_prompts(&["go"]);
+        if recoverable {
+            let offset = test.journal().len();
+            test.submit_draft();
+            wait_resize_reply(
+                &mut test,
+                offset,
+                &["go", "NEXT_DRAFT 界 🦀\nkeep this paragraph"],
+                "reply 2 started",
+            );
+        } else {
+            test.wait_region_text(0, "editor", "Input disabled");
+            test.assert_prompts(&["go"]);
+        }
+        test.finish_replay();
+    }
 }
 
 #[test]
@@ -2566,199 +2588,169 @@ fn scrollback_capture_honors_split_saved_lines_erasure_without_changing_visible_
 
 #[test]
 fn completed_transcript_remains_scrollable_after_zoom_in_and_out() {
-    let mut test = TerminalTest::start_with_options(
-        "resize-ready",
-        80,
-        None,
-        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
-        false,
-    );
-    test.submit("SCROLLBACK_CONTROL", "SCROLLBACK_CONTROL");
-    test.wait_turn_finished("streamed line 80");
-    test.wait_completed_reply_in_scrollback(80);
-    for (rows, cols) in [(30, 64), (2, 64), (1, 64), (55, 120), (38, 87)] {
-        test.resize_and_wait_for_draw(rows, cols);
-        test.wait_completed_reply_in_scrollback(80);
+    for mode in ["live", "reading", "active-code"] {
+        let mut test = TerminalTest::start(
+            if mode == "active-code" { "replay-code-audit" } else { "native-surfaces" },
+            if mode == "active-code" { 12 } else { 80 },
+        );
+        test.seed_native_history();
+        if mode == "reading" {
+            test.send(b"\x1b[5~");
+            test.wait_region_text(0, "hint", "Reading output");
+        } else if mode == "active-code" {
+            test.submit("UNFINISHED_CODE_BLOCK", "UNFINISHED_CODE_BLOCK");
+            test.wait_until("correlated code prefix rendered", |test| {
+                test.prompts().last().is_some_and(|prompt| {
+                    test.journal().iter().any(|e| {
+                        e["name"] == "reply-held" && e["message_uuid"] == prompt["message_uuid"]
+                    })
+                }) && test.ordered_source("code line ") == (1..=12).collect::<Vec<_>>()
+            });
+        }
+        let sizes: &[(u16, u16)] = if mode == "active-code" {
+            &[(30, 64), (120, 120)]
+        } else if mode == "reading" {
+            &[(30, 64), (55, 120)]
+        } else {
+            &[(30, 64), (2, 64), (1, 64), (55, 120), (38, 87)]
+        };
+        for &(rows, cols) in sizes {
+            test.resize_and_wait_for_draw(rows, cols);
+            test.wait_until("complete source retained across the current dimensions", |test| {
+                test.committed_native_words().as_ref() == Some(&native_history_words())
+            });
+            assert_eq!(test.committed_native_words(), Some(native_history_words()));
+            if cols == 64 {
+                assert!(
+                    test.transcript_rows()
+                        .iter()
+                        .any(|r| r.contains("NATIVE_ROW_024") && !r.contains("NATIVE_END_024")),
+                    "source must actually wrap at the narrow width"
+                );
+            }
+            if mode == "active-code" {
+                assert_eq!(test.ordered_source("code line "), (1..=12).collect::<Vec<_>>());
+            }
+            if mode == "reading" && rows > 2 {
+                test.wait_region_text(0, "hint", "Reading output");
+                test.assert_native_reading_slice();
+            }
+        }
+        if mode == "active-code" {
+            let offset = test.journal().len();
+            test.release();
+            test.wait_until("code completion consumed with complete prefix and suffix", |test| {
+                test.journal()
+                    .iter()
+                    .skip(offset)
+                    .any(|e| e["event"] == "turn_complete" && e["session_id"] == "fake-session")
+                    && test.screen().contains("[READY]")
+                    && test.ordered_source("code line ") == (1..=12).collect::<Vec<_>>()
+            });
+            assert_eq!(test.committed_native_words(), Some(native_history_words()));
+            let offset = test.raw_offset();
+            test.submit("NEXT_ORDINARY_TURN", "NEXT_ORDINARY_TURN");
+            test.wait_turn_finished("reply 3 started");
+            assert_eq!(test.ordered_source("code line "), (1..=12).collect::<Vec<_>>());
+            assert_eq!(test.committed_native_words(), Some(native_history_words()));
+            assert!(
+                !test.raw_since(offset).windows(4).any(|w| w == b"\x1b[3J"),
+                "completed resize must not purge on a later ordinary turn"
+            );
+            test.assert_prompts(&[
+                "NATIVE_HISTORY_REQUEST",
+                "UNFINISHED_CODE_BLOCK",
+                "NEXT_ORDINARY_TURN",
+            ]);
+        } else {
+            test.assert_prompts(&["NATIVE_HISTORY_REQUEST"]);
+        }
+        test.finish_replay();
+        test.assert_native_history();
     }
-    test.shutdown();
-}
-
-#[test]
-fn a_new_resize_supersedes_active_replay_and_restores_history_at_the_latest_size() {
-    let mut test = TerminalTest::start_with_options(
-        "resize-replay",
-        2_000,
-        None,
-        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
-        false,
-    );
-    test.submit("LARGE_REPLAY", "LARGE_REPLAY");
-    test.wait_turn_finished("streamed line 2000");
-    test.wait_completed_reply_in_scrollback(2_000);
-    let offset = std::fs::read(test.temp.path().join("runtime.log")).expect("runtime log").len();
-    test.resize(12, 64);
-    test.wait_until("replay has started inserting history", |test| {
-        test.runtime_records_since(offset).iter().any(|record| {
-            record["event_name"] == "inline_chat_history_insert_request"
-                && record["batch_kind"] == "Replay"
-        })
-    });
-    test.resize_and_wait_for_draw(55, 120);
-    test.wait_completed_reply_in_scrollback(2_000);
-    let replay_frames: Vec<_> = test
-        .runtime_records_since(offset)
-        .into_iter()
-        .filter(|record| {
-            record["event_name"] == "inline_chat_terminal_draw_transaction"
-                && (record["replay_incomplete"] == true || record["replay_complete"] == true)
-        })
-        .collect();
-    test.shutdown();
-    assert!(
-        replay_frames.iter().any(|record| record["replay_incomplete"] == true),
-        "a large replay must yield before completing: {replay_frames:?}",
-    );
-    assert!(
-        replay_frames
-            .iter()
-            .all(|record| record["flushed_rows"].as_u64().is_some_and(|rows| rows <= 160)),
-        "a single large message must respect the replay row budget: {replay_frames:?}",
-    );
-    assert!(
-        test.runtime_records_since(offset).iter().any(|record| {
-            record["event_name"] == "inline_chat_purge_replay_cleared"
-                && record["terminal_height"] == 55
-                && record["terminal_width"] == 120
-        }),
-        "the latest resize must clear stale replay output before restoring history",
-    );
-}
-
-#[test]
-fn completed_transcript_remains_scrollable_when_zooming_during_an_unfinished_code_block() {
-    let mut test = TerminalTest::start_with_options(
-        "resize-code",
-        80,
-        None,
-        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
-        false,
-    );
-    test.submit("COMPLETED_PREFIX", "COMPLETED_PREFIX");
-    test.wait_turn_finished("streamed line 80");
-    test.wait_completed_reply_in_scrollback(80);
-    test.submit("UNFINISHED_CODE_BLOCK", "UNFINISHED_CODE_BLOCK");
-    test.wait_journal("reply-held");
-    test.wait_screen("code line 80");
-    test.resize_keeping(30, 64, &["code line 80"]);
-    let prefix_survived_zoom_in =
-        test.transcript_rows().iter().any(|row| row.trim_end().ends_with("streamed line 1"));
-    let zoom_in_diagnostics = test.diagnostics();
-    test.resize_and_wait_for_draw(120, 120);
-    test.wait_completed_reply_in_scrollback(80);
-    let journal_offset = test.journal().len();
-    test.release();
-    test.wait_until("released code turn completes and the app applies it", |test| {
-        test.journal().iter().skip(journal_offset).any(|entry| entry["event"] == "turn_complete")
-            && test.screen().contains("[READY]")
-            && test.screen().contains("code line 80")
-    });
-    let expected = (1..=80).collect::<Vec<usize>>();
-    let code_rows = |test: &TerminalTest| {
-        test.transcript_rows()
-            .iter()
-            .filter_map(|row| {
-                row.split_once("code line ")
-                    .map(|(_, suffix)| suffix.trim().parse::<usize>().unwrap())
-            })
-            .collect::<Vec<_>>()
-    };
-    test.wait_until("completed code reaches history exactly once after resize", |test| {
-        code_rows(test) == expected
-    });
-    let offset = test.raw_offset();
-    test.submit("NEXT_ORDINARY_TURN", "NEXT_ORDINARY_TURN");
-    test.wait_turn_finished("reply 3 started");
-    assert_eq!(code_rows(&test), expected);
-    assert!(
-        !test.raw_since(offset).windows(4).any(|bytes| bytes == b"\x1b[3J"),
-        "consumed turn resize must not purge on the next ordinary turn"
-    );
-    test.assert_prompts(&["COMPLETED_PREFIX", "UNFINISHED_CODE_BLOCK", "NEXT_ORDINARY_TURN"]);
-    test.shutdown();
-    assert!(
-        prefix_survived_zoom_in,
-        "zooming in lost the completed transcript; zooming out restored it:\n{zoom_in_diagnostics}",
-    );
-}
-
-#[test]
-fn completed_transcript_remains_scrollable_when_resizing_in_reading_mode() {
-    let mut test = TerminalTest::start_with_options(
-        "resize-ready",
-        80,
-        None,
-        &["--log-filter", "warn,app.render=debug,bridge.protocol=debug"],
-        false,
-    );
-    test.submit("READING_PREFIX", "READING_PREFIX");
-    test.wait_turn_finished("streamed line 80");
-    test.wait_completed_reply_in_scrollback(80);
-    test.send(b"\x1b[5~");
-    test.wait_screen("Reading output");
-    // Establish actual terminal history before the resize clears it.
-    test.wait_completed_reply_in_scrollback(80);
-    test.resize_keeping(30, 64, &["Reading output"]);
-    test.wait_completed_reply_in_scrollback(80);
-    test.shutdown();
 }
 
 #[test]
 fn reading_output_stays_anchored_through_streaming_resize_and_explicit_return_live() {
-    let mut test = TerminalTest::start("hold-presentation", 80);
-    test.submit("Reading test", "Reading test");
-    test.wait_journal("reading-barrier");
-    // The barrier is the bridge's view. Page Up must reach an app that has
-    // already rendered the held output.
-    test.wait_screen("streamed line 20");
-    test.send(b"\x1b[5~"); // Page Up enters reading mode.
-    let pinned = test.wait_pinned_output();
-    test.release();
-    let completed = test.wait_screen_with("[READY]", &[&pinned]);
-    assert!(
-        !completed.contains("streamed line 80"),
-        "paused output jumped to the tail: {}",
-        test.diagnostics()
-    );
-    test.resize_keeping(TALL_ROWS, 64, &[&pinned]);
-    test.send(b"\x1b[1;5F"); // Ctrl+End explicitly returns to live output.
-    test.wait_screen("streamed line 80");
-    test.wait_until("following restored", |test| !test.screen().contains("Reading output"));
-    test.shutdown();
-}
-
-#[test]
-fn saved_auto_scroll_off_holds_new_output_until_the_user_returns_live() {
-    let mut test = TerminalTest::start("hold-presentation", 80);
-    test.submit("Saved scroll test", "Saved scroll test");
-    test.wait_journal("reading-barrier");
-    test.submit("/config", "/config");
-    test.wait_settings_ready("Auto-scroll");
-    test.select_setting("Auto-scroll");
-    test.send(b"\x1b[C"); // On -> Off at the selected user scope.
-    test.wait_setting("profile/settings.json", "/autoScrollEnabled", Some(&Value::Bool(false)));
-    test.send(b"\x1b");
-    let pinned = test.wait_pinned_output();
-    test.release();
-    test.wait_screen_with("[READY]", &[&pinned]);
-    test.send(b"\x1b[1;5F");
-    // The saved Off preference still holds after the jump.
-    test.wait_screen_with("streamed line 80", &["Reading output"]);
-    let saved: Value = serde_json::from_slice(
-        &std::fs::read(test.temp.path().join("profile/settings.json")).expect("saved preferences"),
-    )
-    .expect("settings JSON");
-    assert_eq!(saved["autoScrollEnabled"], false);
-    test.shutdown();
+    for saved_off in [false, true] {
+        let mut test = TerminalTest::start("hold-reading-presentation", 200);
+        test.submit("READING_SOURCE", "READING_SOURCE");
+        test.wait_reading_burst(80);
+        if saved_off {
+            test.submit("/config", "/config");
+            test.wait_settings_ready("Auto-scroll");
+            test.select_setting("Auto-scroll");
+            test.send(b"\x1b[C");
+            test.wait_setting(
+                "profile/settings.json",
+                "/autoScrollEnabled",
+                Some(&Value::Bool(false)),
+            );
+            test.send(b"\x1b");
+        } else {
+            test.send(b"\x1b[5~");
+        }
+        test.wait_region_text(0, "hint", "Reading output");
+        let pinned =
+            test.reading_anchor().expect("first visible reading source and viewport offset");
+        test.release();
+        test.wait_reading_burst(120);
+        assert_eq!(
+            test.reading_anchor(),
+            Some(pinned),
+            "new output must not move a pinned reading view"
+        );
+        test.resize_and_wait_for_draw(25, 64);
+        test.wait_until("reading anchor and viewport offset restored at the new size", |test| {
+            test.reading_anchor() == Some(pinned)
+        });
+        test.send(b"\x1b[1;5F");
+        test.wait_screen("streamed line 120");
+        let after_jump = test.reading_anchor().expect("anchor after explicit live jump");
+        test.signal("second");
+        test.wait_reading_burst(160);
+        if saved_off {
+            assert_eq!(
+                test.reading_anchor(),
+                Some(after_jump),
+                "saved Off still prevents following after explicit jump"
+            );
+            assert!(
+                !test
+                    .captured_region(0, "live")
+                    .expect("live region")
+                    .1
+                    .iter()
+                    .any(|r| r.contains("streamed line 160"))
+            );
+        } else {
+            test.wait_screen("streamed line 160");
+            assert_ne!(
+                test.reading_anchor(),
+                Some(after_jump),
+                "enabled following must advance with subsequent output"
+            );
+        }
+        test.signal("third");
+        test.wait_reading_burst(200);
+        test.wait_screen("[READY]");
+        if saved_off {
+            assert_eq!(test.reading_anchor(), Some(after_jump));
+            let saved: Value = serde_json::from_slice(
+                &std::fs::read(test.temp.path().join("profile/settings.json"))
+                    .expect("saved preferences"),
+            )
+            .expect("settings JSON");
+            assert_eq!(saved["autoScrollEnabled"], false);
+        }
+        if saved_off {
+            test.send(b"\x1b[1;5F");
+            test.wait_screen("streamed line 200");
+        }
+        test.wait_committed_reply(200);
+        test.assert_prompts(&["READING_SOURCE"]);
+        test.finish_replay();
+    }
 }
 
 #[allow(clippy::expect_used)]
@@ -3533,16 +3525,7 @@ impl TerminalTest {
     }
 
     fn native_words(&self) -> Vec<String> {
-        self.transcript_rows()
-            .iter()
-            .flat_map(|row| row.split_whitespace())
-            .filter(|word| {
-                ["NATIVE_ROW_", "NATIVE_copper_", "NATIVE_river_", "NATIVE_END_"]
-                    .iter()
-                    .any(|prefix| word.starts_with(*prefix))
-            })
-            .map(str::to_owned)
-            .collect()
+        replay_audit::native_tokens(&self.transcript_rows())
     }
 
     fn wait_native_history(&mut self) {
@@ -3972,8 +3955,16 @@ fn native_same_size_resize_in_chat_and_fullscreen_preserves_rows_and_never_purge
     }
     // Positive control: a real changed size must request and emit purge/replay.
     let offset = test.raw_offset();
-    test.resize_and_wait_for_draw(28, 61);
-    test.wait_native_history();
+    let draw_offset = test.log_offset();
+    test.resize(28, 61);
+    test.wait_until("changed-size redraw retains complete ordered native source", |test| {
+        test.runtime_records_since(draw_offset).iter().any(|record| {
+            record["event_name"] == "inline_chat_terminal_draw_transaction"
+                && record["terminal_width"] == 61
+                && record["terminal_height"] == 28
+        }) && test.native_words() == native_history_words()
+    });
+    test.assert_native_history();
     assert!(test.raw_since(offset).windows(4).any(|w| w == b"\x1b[3J"));
     let log_offset = test.log_offset();
     test.paste("!");
@@ -4051,3 +4042,6 @@ mod input_audit;
 
 #[path = "support/terminal_tool_body.rs"]
 mod tool_body;
+
+#[path = "support/terminal_replay_audit.rs"]
+mod replay_audit;

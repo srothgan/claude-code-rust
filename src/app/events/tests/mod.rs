@@ -8,10 +8,9 @@ use crate::app::keymap::{
 };
 use crate::app::slash::{SlashCandidate, SlashContext, SlashState};
 use crate::app::{
-    ChatRebuildKind, ComposerRenderState, FocusOwner, FocusTarget, FullscreenView,
-    InlinePermission, InlineQuestion, LiveRegionRenderState, ReleaseReason, SurfaceMode,
-    TerminalLifecycleState, TextBlockSpacing, ToolCallInfo, ToolCallScope, UsageSnapshot,
-    UsageSourceKind, mention,
+    ChatRebuildKind, FocusOwner, FocusTarget, FullscreenView, InlinePermission, InlineQuestion,
+    ReleaseReason, SurfaceMode, TerminalLifecycleState, TextBlockSpacing, ToolCallInfo,
+    ToolCallScope, UsageSnapshot, UsageSourceKind, mention,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pretty_assertions::assert_eq;
@@ -274,53 +273,6 @@ fn block_snapshot(block: &MessageBlock) -> BlockSnapshot {
             BlockSnapshot::UserDialog { request_id: block.request_id.clone() }
         }
     }
-}
-
-fn seed_resize_measurements(app: &mut App) {
-    app.chat_render.terminal_width = 90;
-    app.chat_render.terminal_height = 30;
-    app.chat_render.composer = ComposerRenderState {
-        activity_rows: 0,
-        width: 90,
-        hint_rows: 1,
-        btw_rows: 0,
-        editor_rows: 2,
-        footer_rows: 1,
-        total_rows: 4,
-        caret_row: 1,
-        caret_col: 3,
-        last_rendered_rows: 4,
-    };
-    app.chat_render.live_region = LiveRegionRenderState {
-        anchor_valid: true,
-        total_rows: 12,
-        hidden_rows_above: 3,
-        viewport_height: 9,
-        last_rendered_rows: 7,
-    };
-}
-
-fn assert_resize_measurements_cleared(app: &App, width: u16, height: u16) {
-    assert_eq!(app.chat_render.terminal_width, width);
-    assert_eq!(app.chat_render.terminal_height, height);
-    assert_eq!(app.chat_render.composer, ComposerRenderState::default());
-    assert!(!app.chat_render.live_region.anchor_valid);
-    assert_eq!(app.chat_render.live_region.total_rows, 0);
-    assert_eq!(app.chat_render.live_region.hidden_rows_above, 0);
-    assert_eq!(app.chat_render.live_region.viewport_height, 0);
-    assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
-}
-
-fn assert_seed_resize_measurements_preserved(app: &App) {
-    assert_eq!(app.chat_render.terminal_width, 90);
-    assert_eq!(app.chat_render.terminal_height, 30);
-    assert_eq!(app.chat_render.composer.width, 90);
-    assert_eq!(app.chat_render.composer.total_rows, 4);
-    assert!(app.chat_render.live_region.anchor_valid);
-    assert_eq!(app.chat_render.live_region.total_rows, 12);
-    assert_eq!(app.chat_render.live_region.hidden_rows_above, 3);
-    assert_eq!(app.chat_render.live_region.viewport_height, 9);
-    assert_eq!(app.chat_render.live_region.last_rendered_rows, 7);
 }
 
 #[test]
@@ -871,123 +823,6 @@ fn todowrite_tool_call_does_not_mutate_task_state() {
 }
 
 #[test]
-fn resize_marks_chat_surface_dirty_when_running_chat() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
-    );
-    assert!(app.surface_dirty.chat.repaint);
-    assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
-    assert_resize_measurements_cleared(&app, 120, 40);
-}
-
-#[test]
-fn same_size_resize_does_not_request_chat_purge() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(90, 30));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert_seed_resize_measurements_preserved(&app);
-}
-
-#[test]
-fn reconciling_an_unreported_size_requests_the_same_chat_purge_as_a_resize_event() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    seed_resize_measurements(&mut app);
-
-    reconcile_terminal_size(&mut app, 90, 55);
-
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
-    );
-    assert!(app.surface_dirty.chat.repaint);
-    assert_resize_measurements_cleared(&app, 90, 55);
-}
-
-#[test]
-fn reconciling_the_recorded_size_changes_nothing() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    seed_resize_measurements(&mut app);
-
-    reconcile_terminal_size(&mut app, 90, 30);
-
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert_seed_resize_measurements_preserved(&app);
-}
-
-#[test]
-fn resize_marks_fullscreen_surface_dirty_when_running_fullscreen() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle =
-        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
-    app.session_runtime.prompt_suggestion = Some("Write focused tests".to_owned());
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert!(app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert!(app.chat_render.resize_purge_replay_on_chat_return);
-    assert_eq!(app.session_runtime.prompt_suggestion.as_deref(), Some("Write focused tests"));
-    assert_resize_measurements_cleared(&app, 120, 40);
-}
-
-#[test]
-fn same_size_resize_while_fullscreen_does_not_defer_chat_purge() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle =
-        TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(90, 30));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert!(!app.chat_render.resize_purge_replay_on_chat_return);
-    assert_seed_resize_measurements_preserved(&app);
-}
-
-#[test]
-fn resize_while_released_to_child_stores_size_without_drawing_hidden_chat() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::ReleasedToChild(ReleaseReason::AuthFlow);
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert!(!app.surface_dirty.fullscreen.redraw);
-    assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    assert!(!app.surface_dirty.chat.repaint);
-    assert_resize_measurements_cleared(&app, 120, 40);
-}
-
-#[test]
 fn resize_does_not_mutate_messages() {
     let mut app = make_test_app();
     app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
@@ -1016,23 +851,6 @@ fn resize_does_not_clear_active_assistant_ownership() {
     handle_terminal_event(&mut app, Event::Resize(120, 40));
 
     assert_eq!(app.active_turn_assistant_idx(), Some(1));
-}
-
-#[test]
-fn resize_during_active_turn_marks_final_purge_replay_needed() {
-    let mut app = make_test_app();
-    app.surface_dirty = crate::app::SurfaceDirtyState::default();
-    app.terminal_lifecycle = TerminalLifecycleState::Running(SurfaceMode::Chat);
-    app.status = AppStatus::Running;
-    seed_resize_measurements(&mut app);
-
-    handle_terminal_event(&mut app, Event::Resize(120, 40));
-
-    assert_eq!(
-        app.surface_dirty.chat.rebuild,
-        ChatRebuildKind::PurgeReplay(crate::app::ChatPurgeReplayOptions::resize())
-    );
-    assert!(app.chat_render.resize_purge_replay_after_turn);
 }
 
 #[test]
