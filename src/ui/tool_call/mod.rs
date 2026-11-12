@@ -41,10 +41,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 // Re-export submodule items used by tests.
 #[cfg(test)]
-use errors::{
-    extract_tool_use_error_message, looks_like_internal_error, render_failed_tool_text_content,
-    render_tool_use_error_content, summarize_internal_error,
-};
+use errors::render_failed_tool_text_content;
 
 #[cfg(test)]
 use standard::cap_write_diff_lines;
@@ -686,3 +683,6 @@ mod title_audit_tests;
 
 #[cfg(test)]
 mod source_audit_tests;
+
+#[cfg(test)]
+mod body_audit_tests;

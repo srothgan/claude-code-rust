@@ -88,11 +88,6 @@ pub(super) fn debug_failed_tool_render(tc: &ToolCallInfo) {
     );
 }
 
-#[cfg(test)]
-pub(super) fn extract_tool_use_error_message(input: &str) -> Option<String> {
-    extract_tool_use_error_message_inner(input)
-}
-
 fn extract_tool_use_error_message_inner(input: &str) -> Option<String> {
     extract_xml_tag_value(input, "tool_use_error").map(str::to_owned)
 }

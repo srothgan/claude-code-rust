@@ -30,7 +30,6 @@ fn terminal_log_filter(scenario: &str) -> &'static str {
 const COLS: u16 = 87;
 const SHORT_ROWS: u16 = 38;
 const TALL_ROWS: u16 = 55;
-const RESIZES: u32 = 200;
 const SCROLLBACK_ROWS: usize = 10_000;
 const OWNED_REGION_ERROR: &str = "refusing to clear outside inline chat owned region";
 // A liveness bound for outcomes that must happen. It only limits how long a
@@ -1642,24 +1641,106 @@ fn fatal_bridge_exit_during_auth_stops_the_owned_child_and_finishes_shutdown() {
 
 #[test]
 fn concurrent_resize_typing_and_paste_deliver_every_prompt_exactly_once() {
-    let mut test = TerminalTest::start("stream", 3);
-    let mut expected = Vec::new();
-    for index in 0..15 {
-        test.resize(25, 61);
-        let typed = format!("RESIZE_INPUT_{index}");
-        test.send(typed.as_bytes());
-        test.resize(38, 87);
-        test.paste(" + PASTE 界 🦀");
-        // Earlier prompts stay in the transcript, so only this prompt's own
-        // text shows that the composer holds the whole draft.
-        let draft = format!("{typed} + PASTE 界 🦀");
-        test.wait_screen(&draft);
-        test.submit_draft();
-        test.wait_turn_finished(&format!("reply {} started", index + 1));
-        expected.push(draft);
-        test.assert_prompts(&expected.iter().map(String::as_str).collect::<Vec<_>>());
-    }
+    let mut test = TerminalTest::start("hold-success", 8);
+    let initial = "hello\n\nhow are you";
+    let first_turn_offset = test.journal().len();
+    test.submit(initial, "how are you");
+    test.wait_until("correlated held stream rendered", |test| {
+        test.prompts().first().is_some_and(|prompt| {
+            test.journal().iter().any(|event| {
+                event["name"] == "reply-held"
+                    && event["message_uuid"] == prompt["message_uuid"]
+                    && event["session_id"] == prompt["session_id"]
+            })
+        }) && test.screen().contains("streamed line 8")
+            && test.screen().contains("[WORKING]")
+    });
+    let rows = test.transcript_rows();
+    let first = rows.iter().position(|row| row.trim() == "❯ hello").expect("first paragraph");
+    let second = rows.iter().position(|row| row.trim() == "how are you").expect("second paragraph");
+    assert!(second > first + 1 && rows[first + 1..second].iter().all(|row| row.trim().is_empty()));
+
+    let offset = test.log_offset();
+    test.send(b"RESIZE_TYPED");
+    test.wait_composer_text(offset, "RESIZE_TYPED");
+    test.resize_and_wait_for_draw(25, 61);
+    let offset = test.log_offset();
+    test.paste(" + PASTE 界 🦀 e\u{301}\nsecond paragraph");
+    wait_resize_draft(
+        &mut test,
+        offset,
+        &["RESIZE_TYPED + PASTE 界 🦀 e\u{301}", "second paragraph"],
+    );
+    let offset = test.log_offset();
+    test.resize_and_wait_for_draw(18, 45);
+    wait_resize_draft(
+        &mut test,
+        offset,
+        &["RESIZE_TYPED + PASTE 界 🦀 e\u{301}", "second paragraph"],
+    );
+    let offset = test.log_offset();
+    test.resize_and_wait_for_draw(55, 120);
+    wait_resize_draft(
+        &mut test,
+        offset,
+        &["RESIZE_TYPED + PASTE 界 🦀 e\u{301}", "second paragraph"],
+    );
+    test.assert_prompts(&[initial]);
+    test.release();
+    wait_resize_reply(&mut test, first_turn_offset, &[initial], "streamed line 8");
+
+    let active_draft = "RESIZE_TYPED + PASTE 界 🦀 e\u{301}\nsecond paragraph";
+    let offset = test.journal().len();
+    test.submit_draft();
+    wait_resize_reply(&mut test, offset, &[initial, active_draft], "reply 2 started");
+
+    let offset = test.log_offset();
+    test.paste("IDLE 界 e\u{301}\nlast 🦀");
+    wait_resize_draft(&mut test, offset, &["IDLE 界 e\u{301}", "last 🦀"]);
+    let offset = test.log_offset();
+    test.resize_and_wait_for_draw(30, 61);
+    wait_resize_draft(&mut test, offset, &["IDLE 界 e\u{301}", "last 🦀"]);
+    let offset = test.log_offset();
+    test.send(b" + TYPED");
+    wait_resize_draft(&mut test, offset, &["IDLE 界 e\u{301}", "last 🦀 + TYPED"]);
+    test.assert_prompts(&[initial, active_draft]);
+    let expected = [initial, active_draft, "IDLE 界 e\u{301}\nlast 🦀 + TYPED"];
+    let offset = test.journal().len();
+    test.submit_draft();
+    wait_resize_reply(&mut test, offset, &expected, "reply 3 started");
     test.shutdown();
+    test.assert_prompts(&expected);
+}
+
+fn wait_resize_draft(test: &mut TerminalTest, offset: usize, fragments: &[&str]) {
+    test.wait_until("literal draft retained in physical composer rows", |test| {
+        test.composer_rows_since(offset).is_some_and(|rows| {
+            fragments
+                .iter()
+                .all(|fragment| rows.iter().filter(|row| row.contains(fragment)).count() == 1)
+        })
+    });
+}
+
+fn wait_resize_reply(test: &mut TerminalTest, offset: usize, expected: &[&str], output: &str) {
+    test.wait_until("correlated reply consumed with exact prompt sequence", |test| {
+        let prompts = test.prompts();
+        let Some(prompt) = prompts.last() else { return false };
+        let journal = test.journal();
+        let events = &journal[offset..];
+        prompts.len() == expected.len()
+            && events.iter().any(|event| {
+                event["event"] == "user_message_started"
+                    && event["message_uuid"] == prompt["message_uuid"]
+                    && event["session_id"] == prompt["session_id"]
+            })
+            && events.iter().any(|event| {
+                event["event"] == "turn_complete" && event["session_id"] == prompt["session_id"]
+            })
+            && test.screen().contains(output)
+            && test.screen().contains("[READY]")
+    });
+    test.assert_prompts(expected);
 }
 
 #[test]
@@ -2081,71 +2162,6 @@ fn bridge_eof_and_malformed_output_report_failure_and_exit_without_extra_submiss
             );
         }
     }
-}
-
-#[test]
-fn resizing_a_streamed_reply_preserves_rendering_and_clean_shutdown() {
-    let mut test = TerminalTest::start("stream", 1500);
-    test.submit("hello\n\nhow are you", "how are you");
-    // The stream scrolls the prompt off the screen, so it is read from the
-    // whole transcript. Terminal padding can leave spaces on visually blank rows.
-    test.wait_until("submitted paragraph gap", |test| {
-        let transcript = test.transcript_rows();
-        let Some(first) = transcript.iter().position(|row| row.trim() == "❯ hello") else {
-            return false;
-        };
-        let Some(second) = transcript.iter().position(|row| row.trim() == "how are you") else {
-            return false;
-        };
-        second > first + 1 && transcript[first + 1..second].iter().all(|row| row.trim().is_empty())
-    });
-    test.wait_until("submitted prompt recorded by the bridge", |test| !test.prompts().is_empty());
-    test.assert_prompts(&["hello\n\nhow are you"]);
-
-    for step in 0..RESIZES {
-        let rows = if step % 2 == 0 { TALL_ROWS } else { SHORT_ROWS };
-        test.resize(rows, COLS);
-        std::thread::sleep(Duration::from_millis(40 + u64::from(step % 7) * 23));
-        assert!(
-            test.child.process.try_wait().expect("poll child").is_none(),
-            "child exited after {} resizes:\n{}",
-            step + 1,
-            test.diagnostics()
-        );
-    }
-
-    test.wait_screen("streamed line 1500");
-    test.wait_journal("turn_complete");
-    test.submit("again", "again");
-    test.wait_screen("reply 2 started");
-    test.assert_prompts(&["hello\n\nhow are you", "again"]);
-    test.shutdown();
-}
-
-#[test]
-fn width_and_height_resizes_preserve_unicode_multiline_draft_and_exact_submission() {
-    let mut test = TerminalTest::start("hold-success", 8);
-    test.submit("go", "❯ go");
-    test.wait_journal("reply-held");
-    test.wait_screen("streamed line 8");
-
-    let draft = "keep 界 🦀 e\u{301}\nsecond paragraph";
-    test.paste(draft);
-    test.wait_screen("second paragraph");
-    for _ in 0..3 {
-        for (rows, cols) in [(18, 61), (55, 120), (12, 30), (38, 87), (38, 87)] {
-            test.resize(rows, cols);
-            std::thread::sleep(Duration::from_millis(40));
-        }
-    }
-    test.resize_keeping(30, 100, &["keep 界 🦀 e\u{301}", "second paragraph"]);
-    test.assert_prompts(&["go"]); // Resizing must not submit the draft.
-    test.release();
-    test.wait_journal("turn_complete");
-    test.submit_draft();
-    test.wait_screen("reply 2 started");
-    test.assert_prompts(&["go", draft]);
-    test.shutdown();
 }
 
 #[test]
@@ -4032,3 +4048,6 @@ mod live_feedback;
 
 #[path = "support/terminal_input_audit.rs"]
 mod input_audit;
+
+#[path = "support/terminal_tool_body.rs"]
+mod tool_body;

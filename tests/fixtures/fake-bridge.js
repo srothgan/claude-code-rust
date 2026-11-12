@@ -138,6 +138,12 @@ const model = {
 function streamReply(messageUuid) {
   send({ event: 'user_message_started', session_id: SESSION, message_uuid: messageUuid, source: 'command_lifecycle' });
   replyNumber++;
+  if (SCENARIO === 'tool-body-wire') {
+    active = { timer: require('./tool-body-audit.cjs')({
+      send, record, session: SESSION, messageUuid, releaseFile: RELEASE_FILE, finish,
+    }) };
+    return;
+  }
   if (SCENARIO === 'input-audit') {
     send({ event: 'turn_complete', session_id: SESSION, terminal_reason: 'completed', queued_turn_count: 0 });
     record({ type: 'barrier', name: 'input-acknowledged', message_uuid: messageUuid });
@@ -348,7 +354,7 @@ function streamReply(messageUuid) {
     });
     if (SCENARIO === 'hold-presentation' && line === 20) record({ type: 'barrier', name: 'reading-barrier' });
     if (line >= lines) {
-      if (gated) record({ type: 'barrier', name: 'reply-held' });
+      if (gated) record({ type: 'barrier', name: 'reply-held', session_id: SESSION, message_uuid: messageUuid });
       else finish({ event: 'turn_complete', session_id: SESSION });
     }
   }, INTERVAL_MS);

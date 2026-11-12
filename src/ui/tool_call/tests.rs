@@ -2,7 +2,6 @@
 use super::test_support::{has_multiple_content_fg_colors, read_tool_call, render_structured_read};
 use super::*;
 use pretty_assertions::assert_eq;
-use std::fmt::Write as _;
 fn test_tool_call(id: &str, sdk_tool_name: &str, status: model::ToolCallStatus) -> ToolCallInfo {
     ToolCallInfo {
         title: id.to_owned(),
@@ -576,47 +575,6 @@ fn ask_user_question_completed_body_renders_structured_answers() {
 }
 
 #[test]
-fn ask_user_question_completed_body_indents_preview_and_notes_with_answers() {
-    let mut tc =
-        test_tool_call("AskUserQuestion", "AskUserQuestion", model::ToolCallStatus::Completed);
-    tc.raw_input = Some(serde_json::json!({
-        "question_results": [
-            {
-                "question": "Which config format do you prefer?",
-                "header": "Config fmt",
-                "question_index": 0,
-                "total_questions": 1,
-                "selected_options": [
-                    {
-                        "option_id": "question_0",
-                        "label": "JSON",
-                        "description": "Ubiquitous, no comments."
-                    }
-                ],
-                "annotation": {
-                    "preview": "{\n  \"server\": { \"host\": \"127.0.0.1\" }\n}",
-                    "notes": "Use this for generated config."
-                }
-            }
-        ]
-    }));
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        120,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered = rendered_line_texts_trimmed(&body);
-
-    assert!(rendered.iter().any(|line| line.contains("  [x] JSON - Ubiquitous, no comments.")));
-    assert!(rendered.iter().any(|line| line.contains("      Preview")));
-    assert!(rendered.iter().any(|line| line.contains("        {")));
-    assert!(
-        rendered.iter().any(|line| line.contains("      Notes: Use this for generated config."))
-    );
-}
-
-#[test]
 fn ask_user_question_pending_body_hides_answer_transcript() {
     let mut tc =
         test_tool_call("AskUserQuestion", "AskUserQuestion", model::ToolCallStatus::InProgress);
@@ -697,35 +655,6 @@ fn bash_title_does_not_wrap_for_long_title() {
         crate::ui::SpinnerState::Animated(0),
     );
     assert!(spans_width(&top.spans) <= 40);
-}
-
-#[test]
-fn bash_body_uses_plain_indent_without_box_borders() {
-    let mut tc = test_tool_call("tc-bash-indent", "Bash", model::ToolCallStatus::Completed);
-    tc.terminal_id = Some("term-indent".to_owned());
-    tc.terminal_command = Some("echo hi".to_owned());
-    tc.terminal_output = Some("hi".to_owned());
-
-    let mut rendered = Vec::new();
-    render_tool_call_cached(
-        &mut tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-        &mut rendered,
-    );
-    let rendered_text: Vec<String> = rendered
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert_eq!(rendered_text.len(), 2);
-    assert!(rendered_text[1].starts_with("      hi"));
-    assert!(!rendered_text.iter().any(|line| line.contains("echo hi")));
-    assert!(
-        rendered_text.iter().all(|line| !line.contains('\u{256D}') && !line.contains('\u{2570}'))
-    );
-    assert!(rendered_text.iter().all(|line| !line.starts_with("  \u{2502}")));
 }
 
 #[test]
@@ -989,60 +918,6 @@ fn cached_tool_body_rerenders_after_width_change() {
 }
 
 #[test]
-fn mcp_resource_body_renders_saved_path_hint_when_text_omits_it() {
-    let mut tc =
-        test_tool_call("tc-mcp-resource", "ReadMcpResource", model::ToolCallStatus::Completed);
-    tc.content = vec![model::ToolCallContent::McpResource(
-        model::McpResource::new("file://manual.pdf")
-            .mime_type(Some("application/pdf".to_owned()))
-            .text(Some("Binary resource downloaded successfully.".to_owned()))
-            .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
-    )];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(rendered.iter().any(|line| line.contains("Binary resource downloaded successfully.")));
-    assert!(rendered.iter().any(|line| line.contains("Saved to: C:\\tmp\\manual.pdf")));
-}
-
-#[test]
-fn mcp_resource_body_avoids_duplicate_saved_path_hint_when_text_already_mentions_it() {
-    let mut tc =
-        test_tool_call("tc-mcp-resource-dupe", "ReadMcpResource", model::ToolCallStatus::Completed);
-    tc.content = vec![model::ToolCallContent::McpResource(
-        model::McpResource::new("file://manual.pdf")
-            .mime_type(Some("application/pdf".to_owned()))
-            .text(Some(
-                "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf".to_owned(),
-            ))
-            .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
-    )];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert_eq!(
-        rendered.iter().filter(|line| line.contains("Saved to: C:\\tmp\\manual.pdf")).count(),
-        0
-    );
-}
-
-#[test]
 fn mcp_resource_links_render_summary_and_bounded_body_at_narrow_and_wide_widths() {
     let mut tc =
         test_tool_call("tc-resource-link", "mcp__docs__export", model::ToolCallStatus::Completed);
@@ -1109,80 +984,6 @@ fn read_tool_renders_head_hidden_marker_and_tail() {
 }
 
 #[test]
-fn diff_tool_renders_without_expand_hint() {
-    let mut tc = test_tool_call("tc-diff", "Write", model::ToolCallStatus::Completed);
-    tc.content = vec![model::ToolCallContent::Diff(
-        model::Diff::new("src/main.rs", "new".to_owned()).old_text(Some("old".to_owned())),
-    )];
-
-    let mut rendered = Vec::new();
-    render_tool_call_cached(
-        &mut tc,
-        ToolCallRenderContext::default(),
-        80,
-        crate::ui::SpinnerState::Animated(0),
-        &mut rendered,
-    );
-    let text: Vec<String> = rendered
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(!text.iter().any(|line| line.contains("expand")));
-    assert!(text.iter().any(|line| line.contains("(+1, -1)")));
-    assert!(text.iter().any(|line| line.contains("+  new")));
-    assert!(text.len() > 2);
-}
-
-#[test]
-fn diff_tool_body_adds_nested_indent_inside_tool_prefix() {
-    for width in [48, 100] {
-        let mut tc = test_tool_call("repository-diffs", "Write", model::ToolCallStatus::Completed);
-        let first = (0..79).fold(String::new(), |mut text, n| {
-            writeln!(text, "ALPHA_{n:02}_long_wrapped_source_ending").unwrap();
-            text
-        }) + "ALPHA_LAST\n";
-        tc.content = vec![
-            model::ToolCallContent::Diff(
-                model::Diff::new("alpha.rs", first).repository(Some("alpha/repo".into())),
-            ),
-            model::ToolCallContent::Diff(
-                model::Diff::new("beta.rs", "BETA_NEW")
-                    .old_text(Some("BETA_OLD"))
-                    .repository(Some("beta/repo".into())),
-            ),
-        ];
-        let lines = standard::ToolBodyCursor::default().render(
-            &tc,
-            width,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rows = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
-            .collect::<Vec<_>>();
-        let alpha = rows.iter().position(|r| r.contains("alpha/repo")).unwrap();
-        let beta = rows.iter().position(|r| r.contains("beta/repo")).unwrap();
-        let first = &rows[alpha..beta];
-        let second = &rows[beta..];
-        assert!(first.iter().any(|r| r.contains("+80")));
-        assert!(first.iter().any(|r| r.contains("diff lines omitted")));
-        assert!(first.iter().any(|r| r.contains("ALPHA_LAST")));
-        assert!(!first.iter().any(|r| r.contains("BETA")));
-        assert!(second.iter().any(|r| r.contains("+1") && r.contains("-1")));
-        assert!(second.iter().any(|r| r.contains("BETA_NEW")));
-        assert!(second.iter().any(|r| r.contains("BETA_OLD")));
-        assert!(!second.iter().any(|r| r.contains("ALPHA")));
-        let prefix_end = rows[alpha].find('\u{2502}').unwrap();
-        let repository_start = rows[alpha].find("alpha/repo").unwrap();
-        let count = first.iter().find(|r| r.contains("+80")).unwrap();
-        assert!(repository_start > prefix_end + '\u{2502}'.len_utf8());
-        assert!(count.find("+80").unwrap() > prefix_end + '\u{2502}'.len_utf8());
-        assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
-    }
-}
-
-#[test]
 fn diff_tool_body_preserves_source_code_indentation() {
     let mut tc = test_tool_call("tc-diff-code-indent", "Edit", model::ToolCallStatus::Completed);
     tc.content = vec![model::ToolCallContent::Diff(model::Diff::new(
@@ -1202,76 +1003,6 @@ fn diff_tool_body_preserves_source_code_indentation() {
 
     assert!(rendered.iter().any(|line| line.contains("+      if true {")));
     assert!(rendered.iter().any(|line| line.contains("+          return;")));
-}
-
-#[test]
-fn diff_tool_body_preserves_nested_indent_for_wrapped_continuations() {
-    let source = "        alpha  beta gamma delta epsilon zeta END";
-    for width in [40, 60] {
-        let mut tc = test_tool_call("wrapped-source", "Edit", model::ToolCallStatus::Completed);
-        tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("f.rs", source))];
-        let lines = standard::ToolBodyCursor::default().render(
-            &tc,
-            width,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rows = lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
-            .collect::<Vec<_>>();
-        let start = rows.iter().position(|r| r.contains("alpha")).unwrap();
-        let marker = rows[start].find('+').unwrap();
-        let body = rows[start]
-            .chars()
-            .take(rows[start][..marker].chars().count() + 3)
-            .collect::<String>()
-            .len();
-        let indent = source.len() - source.trim_start().len();
-        let mut recovered = rows[start][body..].to_owned();
-        for row in &rows[start + 1..] {
-            let prefix_chars = rows[start][..body].chars().count() + indent;
-            let prefix = row.chars().take(prefix_chars).collect::<String>();
-            assert!(prefix.chars().rev().take(indent).all(char::is_whitespace));
-            recovered.push_str(&row[prefix.len()..]);
-        }
-        assert_eq!(recovered.trim_end(), source);
-        assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
-        assert!(!rows.iter().any(|r| r.contains("omitted")));
-    }
-}
-
-#[test]
-fn write_diff_cap_keeps_omission_marker_nested_indented() {
-    let new_text = (0..120).fold(String::new(), |mut text, idx| {
-        let _ = writeln!(&mut text, "line {idx}");
-        text
-    });
-    let mut tc = test_tool_call("tc-diff-cap", "Write", model::ToolCallStatus::Completed);
-    tc.content = vec![model::ToolCallContent::Diff(model::Diff::new("src/main.rs", new_text))];
-
-    let body = standard::ToolBodyCursor::default().render(
-        &tc,
-        80,
-        &crate::ui::layout_control::LayoutControl::uninterrupted(),
-    );
-    let rendered: Vec<String> = body
-        .iter()
-        .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-        .collect();
-
-    assert!(
-        rendered.iter().any(|line| line.starts_with("  │    (+120)"))
-            || rendered.iter().any(|line| line.starts_with("  └─   (+120)"))
-    );
-    assert!(
-            rendered
-                .iter()
-                .any(|line| line.starts_with("  │    ... ") && line.contains("diff lines omitted"))
-                || rendered
-                    .iter()
-                    .any(|line| line.starts_with("  └─    ... ")
-                        && line.contains("diff lines omitted"))
-        );
 }
 
 #[test]
@@ -1341,39 +1072,6 @@ fn non_plan_write_diff_body_stays_capped_by_tool_height() {
 }
 
 #[test]
-fn internal_error_detection_accepts_xml_payload() {
-    let payload = "<error><code>-32603</code><message>Adapter process crashed</message></error>";
-    assert!(looks_like_internal_error(payload));
-}
-
-#[test]
-fn internal_error_detection_rejects_plain_bash_failure() {
-    let payload = "bash: unknown_command: command not found";
-    assert!(!looks_like_internal_error(payload));
-}
-
-#[test]
-fn summarize_internal_error_prefers_xml_message() {
-    let payload = "<error><code>-32603</code><message>Adapter process crashed</message></error>";
-    assert_eq!(summarize_internal_error(payload), "Adapter process crashed");
-}
-
-#[test]
-fn summarize_internal_error_reads_json_rpc_message() {
-    let payload = r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#;
-    assert_eq!(summarize_internal_error(payload), "internal rpc fault");
-}
-
-#[test]
-fn extract_tool_use_error_message_reads_inner_text() {
-    let payload = "<tool_use_error>Sibling tool call errored</tool_use_error>";
-    assert_eq!(
-        extract_tool_use_error_message(payload).as_deref(),
-        Some("Sibling tool call errored")
-    );
-}
-
-#[test]
 fn failed_tool_text_content_reads_common_xml_error_wrappers() {
     let failed = model::ToolCallStatus::Failed;
     let render = |status, text| {
@@ -1403,16 +1101,6 @@ fn failed_tool_text_content_reads_common_xml_error_wrappers() {
         None
     );
     assert_eq!(render(failed, "<message>missing close"), None);
-}
-
-#[test]
-fn render_tool_use_error_content_shows_only_inner_text_lines() {
-    let lines = render_tool_use_error_content("Line A\nLine B");
-    let rendered: Vec<String> =
-        lines.iter().map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
-    assert_eq!(rendered.len(), 2);
-    assert!(rendered.iter().any(|line| line == "Line A"));
-    assert!(rendered.iter().any(|line| line == "Line B"));
 }
 
 #[test]
