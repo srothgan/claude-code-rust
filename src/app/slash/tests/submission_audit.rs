@@ -28,6 +28,8 @@ fn error_text(app: &App) -> &str {
 fn invalid_submissions_preserve_history_and_reject_before_dispatch_or_navigation() {
     let cases = [
         ("/fast invalid", "/fast [on|off]"),
+        ("/agent", "/agent <name|reset>"),
+        ("/agent reviewer extra", "/agent <name|reset>"),
         ("/config extra", "/config"),
         ("/memory extra", "/memory"),
         ("/permissions extra", "/permissions"),
