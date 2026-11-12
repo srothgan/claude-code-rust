@@ -26,47 +26,6 @@ fn session_update(update: model::SessionUpdate) -> crate::agent::events::ClientE
 }
 
 #[test]
-fn parse_non_slash_returns_none() {
-    assert!(parse("hello world").is_none());
-}
-
-#[test]
-fn ultracode_usage_policy_and_completion() {
-    for input in
-        ["/ultracode", "/ultracode toggle", "/ultracode on extra", "/ultracode status extra"]
-    {
-        let mut app = App::test_default();
-        assert!(try_handle_submit(&mut app, input));
-        let MessageBlock::Text(block) = &app.transcript.messages.last().expect("usage").blocks[0]
-        else {
-            panic!("expected usage text");
-        };
-        assert_eq!(block.text, "Usage: /ultracode <on|off|status>");
-        assert_eq!(ResolvedSubmission::resolve(input.to_owned()).class(), SubmissionClass::Invalid);
-    }
-    let app = App::test_default();
-    assert!(supported_command_candidates(&app).iter().any(|c| c.primary == "/ultracode"));
-    assert!(!supported_command_candidates(&app).iter().any(|c| c.primary == "/ultramode"));
-    assert_eq!(
-        argument_candidates(&app, "/ultracode", 0)
-            .iter()
-            .map(|c| c.insert_value.as_str())
-            .collect::<Vec<_>>(),
-        vec!["on", "off", "status"]
-    );
-    assert_eq!(
-        ResolvedSubmission::resolve("/ultracode status".to_owned()).class(),
-        SubmissionClass::Informational
-    );
-    for operation in ["on", "off"] {
-        assert_eq!(
-            ResolvedSubmission::resolve(format!("/ultracode {operation}")).class(),
-            SubmissionClass::TurnExclusive
-        );
-    }
-}
-
-#[test]
 fn ultracode_reports_local_connection_errors() {
     let mut app = App::test_default();
     assert!(try_handle_submit(&mut app, "/ultracode on"));
@@ -118,13 +77,6 @@ fn ultracode_status_uses_verified_snapshot_and_effort() {
         assert_eq!(block.text, expected);
         assert_eq!(app.status, AppStatus::Running);
     }
-}
-
-#[test]
-fn parse_slash_name_and_args() {
-    let parsed = parse("/mode plan").expect("slash command");
-    assert_eq!(parsed.name, "/mode");
-    assert_eq!(parsed.args, vec!["plan"]);
 }
 
 #[test]
@@ -236,22 +188,6 @@ fn advertised_command_collision_prefers_canonical_then_builtin() {
 }
 
 #[test]
-fn login_logout_appear_in_candidates_as_builtins() {
-    let app = App::test_default();
-    let names: Vec<String> =
-        supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-    assert!(names.iter().any(|n| n == "/agent"), "missing /agent");
-    assert!(names.iter().any(|n| n == "/config"), "missing /config");
-    assert!(names.iter().any(|n| n == "/docs"), "missing /docs");
-    assert!(names.iter().any(|n| n == "/login"), "missing /login");
-    assert!(names.iter().any(|n| n == "/logout"), "missing /logout");
-    assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
-    assert!(names.iter().any(|n| n == "/plugins"), "missing /plugins");
-    assert!(names.iter().any(|n| n == "/rewind"), "missing /rewind");
-    assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
-}
-
-#[test]
 fn app_slash_catalog_roundtrips_command_names() {
     for spec in APP_SLASH_COMMANDS {
         assert_eq!(AppSlashCommand::from_name(spec.name), Some(spec.command));
@@ -285,36 +221,6 @@ fn documented_app_slash_commands(markdown: &str) -> Vec<String> {
     }
 
     names
-}
-
-/// The manual is read from disk rather than with `include_str!` so docs are not
-/// embedded in the shipped binary. Only names and order are enforced; prose in
-/// the other columns is free to diverge.
-#[test]
-fn docs_app_owned_command_table_matches_catalog() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src/commands.md");
-    let markdown = std::fs::read_to_string(path).expect("read docs/src/commands.md");
-
-    let documented = documented_app_slash_commands(&markdown);
-    let documented: Vec<&str> = documented.iter().map(String::as_str).collect();
-    let expected: Vec<&str> = APP_SLASH_COMMANDS.iter().map(|spec| spec.name).collect();
-
-    for name in &expected {
-        assert!(
-            documented.contains(name),
-            "{name} is in APP_SLASH_COMMANDS but missing from the App-Owned Commands table in docs/src/commands.md"
-        );
-    }
-    for name in &documented {
-        assert!(
-            expected.contains(name),
-            "{name} is listed in the App-Owned Commands table in docs/src/commands.md but is not in APP_SLASH_COMMANDS"
-        );
-    }
-    assert_eq!(
-        documented, expected,
-        "the App-Owned Commands table in docs/src/commands.md must list commands in APP_SLASH_COMMANDS order"
-    );
 }
 
 #[test]
@@ -389,22 +295,6 @@ fn settings_shortcuts_own_completion_and_route_to_their_pane_during_an_active_tu
 }
 
 #[test]
-fn app_config_candidate_ignores_advertised_config_metadata() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_commands =
-        vec![model::AvailableCommand::new("/config", "SDK config command").input_hint("<setting>")];
-    app.input.set_text("/config");
-    let _ = app.input.set_cursor(0, "/config".chars().count());
-
-    let slash = requested_slash_state(&app).expect("slash state");
-    let config_candidates: Vec<_> =
-        slash.candidates.iter().filter(|candidate| candidate.primary == "/config").collect();
-
-    assert_eq!(config_candidates.len(), 1);
-    assert_eq!(config_candidates[0].secondary.as_deref(), Some("Open settings"));
-}
-
-#[test]
 fn app_config_does_not_enter_advertised_argument_mode() {
     let mut app = App::test_default();
     app.sdk_inventory.available_commands =
@@ -413,22 +303,6 @@ fn app_config_does_not_enter_advertised_argument_mode() {
     let _ = app.input.set_cursor(0, "/config ".chars().count());
 
     assert!(requested_slash_state(&app).is_none());
-}
-
-#[test]
-fn app_fast_candidate_ignores_advertised_fast_metadata() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_commands =
-        vec![model::AvailableCommand::new("/fast", "SDK fast command").input_hint("<mode>")];
-    app.input.set_text("/fast");
-    let _ = app.input.set_cursor(0, "/fast".chars().count());
-
-    let slash = requested_slash_state(&app).expect("slash state");
-    let fast_candidates: Vec<_> =
-        slash.candidates.iter().filter(|candidate| candidate.primary == "/fast").collect();
-
-    assert_eq!(fast_candidates.len(), 1);
-    assert_eq!(fast_candidates[0].secondary.as_deref(), Some("Toggle session fast mode"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -651,99 +525,6 @@ fn detect_slash_argument_context_after_first_space() {
 }
 
 #[test]
-fn mode_argument_candidates_are_dynamic() {
-    let mut app = App::test_default();
-    app.session_runtime.mode = Some(super::super::ModeState {
-        current_mode_id: "plan".to_owned(),
-        current_mode_name: "Plan".to_owned(),
-        available_modes: vec![
-            super::super::ModeInfo { id: "plan".to_owned(), name: "Plan".to_owned() },
-            super::super::ModeInfo { id: "code".to_owned(), name: "Code".to_owned() },
-        ],
-    });
-
-    let candidates = argument_candidates(&app, "/mode", 0);
-    assert!(candidates.iter().any(|c| c.insert_value == "plan"));
-    assert!(candidates.iter().any(|c| c.insert_value == "code"));
-    assert!(candidates.iter().any(|c| c.primary == "Plan"));
-    assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("plan")));
-}
-
-#[test]
-fn model_argument_candidates_are_dynamic() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_models = vec![
-        crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet")
-            .description("Balanced coding model"),
-        crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
-    ];
-    let candidates = argument_candidates(&app, "/model", 0);
-    assert!(candidates.iter().any(|c| c.insert_value == "sonnet"));
-    assert!(candidates.iter().any(|c| c.primary == "Claude Sonnet"));
-    assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("Balanced coding model")));
-    assert!(candidates.iter().any(|c| c.insert_value == "opus"));
-}
-
-#[test]
-fn model_argument_candidates_include_sdk_default_option() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_models = vec![
-        crate::agent::model::AvailableModel::new("default", "Default")
-            .description("Default (recommended)"),
-        crate::agent::model::AvailableModel::new("sonnet", "Claude Sonnet"),
-        crate::agent::model::AvailableModel::new("opus", "Claude Opus"),
-    ];
-
-    let candidates = argument_candidates(&app, "/model", 0);
-
-    assert!(candidates.iter().any(|c| c.insert_value == "default"));
-    assert!(candidates.iter().any(|c| c.primary == "Default"));
-    assert!(candidates.iter().any(|c| c.secondary.as_deref() == Some("Default (recommended)")));
-    assert!(candidates.iter().any(|c| c.insert_value == "sonnet"));
-    assert!(candidates.iter().any(|c| c.insert_value == "opus"));
-}
-
-#[test]
-fn model_argument_candidates_keep_sdk_opus_description_when_unpinned() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_models = vec![
-        crate::agent::model::AvailableModel::new("opus", "Opus")
-            .description("Opus 4.7 · Most capable for complex work"),
-    ];
-
-    let candidates = argument_candidates(&app, "/model", 0);
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].insert_value, "opus");
-    assert_eq!(
-        candidates[0].secondary.as_deref(),
-        Some("Opus 4.7 · Most capable for complex work")
-    );
-}
-
-#[test]
-fn agent_argument_candidates_include_reset_and_available_agents() {
-    let mut app = App::test_default();
-    app.sdk_inventory.available_agents = vec![
-        crate::agent::model::AvailableAgent::new("reviewer", "Review code").model("claude-opus"),
-        crate::agent::model::AvailableAgent::new("planner", "Plan work"),
-    ];
-
-    let candidates = argument_candidates(&app, "/agent", 0);
-
-    assert!(candidates.iter().any(|candidate| {
-        candidate.insert_value == "reset"
-            && candidate.secondary.as_deref() == Some("Clear active agent")
-    }));
-    assert!(candidates.iter().any(|candidate| {
-        candidate.insert_value == "reviewer"
-            && candidate.primary == "reviewer"
-            && candidate.secondary.as_deref() == Some("Review code - claude-opus")
-    }));
-    assert!(candidates.iter().any(|candidate| candidate.insert_value == "planner"));
-}
-
-#[test]
 fn agent_argument_candidates_filter_by_query() {
     let mut app = App::test_default();
     app.sdk_inventory.available_agents = vec![
@@ -830,105 +611,6 @@ fn rewind_argument_candidates_hide_stale_targets() {
 }
 
 #[test]
-fn rewind_argument_context_requests_targets_when_cache_is_stale() {
-    let mut app = App::test_default();
-    let mut rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-    app.input.set_text("/rewind ");
-    let _ = app.input.set_cursor(0, "/rewind ".chars().count());
-
-    sync_with_cursor(&mut app);
-
-    assert!(app.sdk_inventory.rewind_targets_in_flight);
-    let envelope = rx.try_recv().expect("rewind target request");
-    assert!(matches!(
-        envelope.command,
-        crate::agent::wire::BridgeCommand::GetRewindTargets { session_id }
-            if session_id == "session-1"
-    ));
-}
-
-#[test]
-fn rewind_argument_context_shows_loading_while_request_is_in_flight() {
-    let mut app = App::test_default();
-    let _rx = attach_test_connection(&mut app);
-    app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-    app.input.set_text("/rewind ");
-    let _ = app.input.set_cursor(0, "/rewind ".chars().count());
-
-    sync_with_cursor(&mut app);
-
-    let slash = app.slash.visible().expect("slash state");
-    assert!(slash.candidates.is_empty());
-    assert_eq!(slash.placeholder.as_deref(), Some("Loading messages"));
-}
-
-#[test]
-fn rewind_argument_context_shows_no_previous_messages_when_loaded_empty() {
-    let mut app = App::test_default();
-    let session_id = model::SessionId::new("session-1");
-    app.session_runtime.session_id = Some(session_id.clone());
-    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
-    app.input.set_text("/rewind ");
-    let _ = app.input.set_cursor(0, "/rewind ".chars().count());
-
-    let slash = requested_slash_state(&app).expect("slash state");
-
-    assert!(slash.candidates.is_empty());
-    assert_eq!(slash.placeholder.as_deref(), Some("No previous user messages"));
-}
-
-#[test]
-fn rewind_argument_context_shows_no_matching_messages_for_filtered_empty_result() {
-    let mut app = App::test_default();
-    let session_id = model::SessionId::new("session-1");
-    app.session_runtime.session_id = Some(session_id.clone());
-    app.sdk_inventory.rewind_targets_session_id = Some(session_id);
-    app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
-        uuid: "user-1".to_owned(),
-        first_text: "first prompt".to_owned(),
-        input_text: "first prompt".to_owned(),
-        index: 0,
-        previous_assistant_uuid: None,
-        resume_anchor_uuid: None,
-    }];
-    app.input.set_text("/rewind missing");
-    let _ = app.input.set_cursor(0, "/rewind missing".chars().count());
-
-    let slash = requested_slash_state(&app).expect("slash state");
-
-    assert!(slash.candidates.is_empty());
-    assert_eq!(slash.placeholder.as_deref(), Some("No matching messages"));
-}
-
-#[test]
-fn effort_argument_candidates_include_session_only_max() {
-    let mut app = App::test_default();
-    app.session_runtime.current_model = Some(
-        crate::agent::model::CurrentModel::new("opus", "Opus", "Opus")
-            .supports_effort(true)
-            .supported_effort_levels(vec![
-                crate::agent::model::EffortLevel::Low,
-                crate::agent::model::EffortLevel::Medium,
-                crate::agent::model::EffortLevel::High,
-                crate::agent::model::EffortLevel::XHigh,
-                crate::agent::model::EffortLevel::Max,
-            ]),
-    );
-
-    let candidates = argument_candidates(&app, "/effort", 0);
-
-    assert_eq!(
-        candidates.iter().map(|candidate| candidate.insert_value.as_str()).collect::<Vec<_>>(),
-        vec!["low", "medium", "high", "xhigh", "max", "reset"]
-    );
-    assert!(candidates.iter().any(|candidate| {
-        candidate.insert_value == "max"
-            && candidate.secondary.as_deref() == Some("Max - Maximum effort")
-    }));
-}
-
-#[test]
 fn effort_argument_candidates_filter_by_query() {
     let mut app = App::test_default();
     app.session_runtime.current_model = Some(
@@ -950,17 +632,6 @@ fn effort_argument_candidates_filter_by_query() {
             .collect::<Vec<_>>(),
         vec!["xhigh"]
     );
-}
-
-#[test]
-fn docs_argument_candidates_are_static_topics() {
-    let app = App::test_default();
-    let candidates = argument_candidates(&app, "/docs", 0);
-    assert!(candidates.iter().any(|c| c.insert_value == "mode"));
-    assert!(candidates.iter().any(|c| c.insert_value == "models"));
-    assert!(candidates.iter().any(|c| c.insert_value == "shortcuts"));
-    assert!(candidates.iter().any(|c| c.insert_value == "commands"));
-    assert!(candidates.iter().any(|c| c.insert_value == "agents"));
 }
 
 #[test]
@@ -1120,52 +791,6 @@ fn non_variable_command_argument_mode_is_disabled() {
     let _ = app.input.set_cursor(0, "/cancel now".chars().count());
     sync_with_cursor(&mut app);
     assert!(app.slash.visible().is_none());
-}
-
-#[test]
-fn variable_command_argument_mode_stays_active_without_matches() {
-    let mut app = App::test_default();
-    app.session_runtime.mode = Some(super::super::ModeState {
-        current_mode_id: "plan".to_owned(),
-        current_mode_name: "Plan".to_owned(),
-        available_modes: vec![super::super::ModeInfo {
-            id: "plan".to_owned(),
-            name: "Plan".to_owned(),
-        }],
-    });
-    app.input.set_text("/mode xyz");
-    let _ = app.input.set_cursor(0, "/mode xyz".chars().count());
-    sync_with_cursor(&mut app);
-    let slash = app.slash.visible().expect("slash state should stay active for empty result hint");
-    assert!(slash.candidates.is_empty());
-}
-
-#[test]
-fn confirm_selection_replaces_only_active_argument_token() {
-    let mut app = App::test_default();
-    app.input.set_text("/model old-id trailing");
-    let _ = app.input.set_cursor(0, "/model old-id".chars().count());
-    app.slash.show(SlashState {
-        trigger_row: 0,
-        trigger_col: 7,
-        query: "old-id".to_owned(),
-        context: SlashContext::Argument {
-            command: "/model".to_owned(),
-            arg_index: 0,
-            token_range: (7, 13),
-        },
-        candidates: vec![SlashCandidate {
-            insert_value: "new-id".to_owned(),
-            primary: "New".to_owned(),
-            secondary: None,
-        }],
-        placeholder: None,
-        dialog: DialogState::default(),
-    });
-
-    confirm_selection(&mut app);
-
-    assert_eq!(app.input.text(), "/model new-id trailing");
 }
 
 #[test]
@@ -1810,101 +1435,6 @@ fn model_with_extra_args_returns_usage_message() {
 }
 
 #[test]
-fn confirm_selection_with_invalid_trigger_row_is_noop() {
-    let mut app = App::test_default();
-    app.input.set_text("/mode");
-    app.slash.show(SlashState {
-        trigger_row: 99,
-        trigger_col: 0,
-        query: "m".into(),
-        context: SlashContext::CommandName,
-        candidates: vec![SlashCandidate {
-            insert_value: "/mode".into(),
-            primary: "/mode".into(),
-            secondary: None,
-        }],
-        placeholder: None,
-        dialog: DialogState::default(),
-    });
-
-    confirm_selection(&mut app);
-
-    assert_eq!(app.input.text(), "/mode");
-}
-
-#[test]
-fn docs_command_confirm_enters_argument_mode() {
-    let mut app = App::test_default();
-    app.input.set_text("/do");
-    let _ = app.input.set_cursor(0, "/do".chars().count());
-    app.slash.show(SlashState {
-        trigger_row: 0,
-        trigger_col: 0,
-        query: "do".into(),
-        context: SlashContext::CommandName,
-        candidates: vec![SlashCandidate {
-            insert_value: "/docs".into(),
-            primary: "/docs".into(),
-            secondary: Some("Show in-chat help topics".into()),
-        }],
-        placeholder: None,
-        dialog: DialogState::default(),
-    });
-
-    confirm_selection(&mut app);
-
-    assert_eq!(app.input.text(), "/docs ");
-    let slash = app.slash.visible().expect("topic autocomplete should activate");
-    match &slash.context {
-        SlashContext::Argument { command, arg_index, .. } => {
-            assert_eq!(command, "/docs");
-            assert_eq!(*arg_index, 0);
-        }
-        SlashContext::CommandName => panic!("expected argument autocomplete"),
-    }
-    assert!(slash.candidates.iter().any(|candidate| candidate.insert_value == "mode"));
-}
-
-#[test]
-fn single_argument_builtin_selection_closes_autocomplete() {
-    for (command, value) in [
-        ("/docs", "commands"),
-        ("/agent", "reviewer"),
-        ("/effort", "xhigh"),
-        ("/mode", "plan"),
-        ("/model", "sonnet"),
-        ("/resume", "session-1"),
-    ] {
-        let mut app = App::test_default();
-        let input = format!("{command} ");
-        app.input.set_text(&input);
-        let _ = app.input.set_cursor(0, input.chars().count());
-        app.slash.show(SlashState {
-            trigger_row: 0,
-            trigger_col: input.chars().count(),
-            query: String::new(),
-            context: SlashContext::Argument {
-                command: command.to_owned(),
-                arg_index: 0,
-                token_range: (input.chars().count(), input.chars().count()),
-            },
-            candidates: vec![SlashCandidate {
-                insert_value: value.to_owned(),
-                primary: value.to_owned(),
-                secondary: None,
-            }],
-            placeholder: None,
-            dialog: DialogState::default(),
-        });
-
-        confirm_selection(&mut app);
-
-        assert_eq!(app.input.text(), format!("{command} {value} "));
-        assert!(app.slash.visible().is_none(), "{command} should close after first argument");
-    }
-}
-
-#[test]
 fn status_opens_config_at_status_tab() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut app = App::test_default();
@@ -1966,30 +1496,6 @@ fn usage_with_extra_args_returns_usage() {
         panic!("expected text block");
     };
     assert_eq!(block.text, "Usage: /usage");
-}
-
-#[test]
-fn status_appears_in_candidates() {
-    let app = App::test_default();
-    let names: Vec<String> =
-        supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-    assert!(names.iter().any(|n| n == "/status"), "missing /status");
-}
-
-#[test]
-fn usage_appears_in_candidates() {
-    let app = App::test_default();
-    let names: Vec<String> =
-        supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-    assert!(names.iter().any(|n| n == "/usage"), "missing /usage");
-}
-
-#[test]
-fn mcp_appears_in_candidates() {
-    let app = App::test_default();
-    let names: Vec<String> =
-        supported_command_candidates(&app).into_iter().map(|c| c.primary).collect();
-    assert!(names.iter().any(|n| n == "/mcp"), "missing /mcp");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2652,3 +2158,6 @@ fn live_turn_view_submissions_open_the_requested_pane_and_preserve_response_owne
         assert!(rx.try_recv().is_err());
     }
 }
+
+#[path = "tests/completion_audit.rs"]
+mod completion_audit;
