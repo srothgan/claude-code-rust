@@ -106,15 +106,16 @@ pub(super) fn render_selection_blocks(
 }
 
 pub(in crate::ui) fn render_message(frame: &mut Frame, area: Rect, title: &str, body: &str) {
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled(title, title_style()),
-            Line::default(),
-            Line::styled(body, Style::default().fg(theme::DIM)),
-        ])
-        .wrap(Wrap { trim: false }),
-        area,
-    );
+    frame.render_widget(message(title, body), area);
+}
+
+pub(super) fn message<'a>(title: &'a str, body: &'a str) -> Paragraph<'a> {
+    Paragraph::new(vec![
+        Line::styled(title, title_style()),
+        Line::default(),
+        Line::styled(body, Style::default().fg(theme::DIM)),
+    ])
+    .wrap(Wrap { trim: false })
 }
 
 pub(in crate::ui) fn section_heading(title: &str) -> Line<'static> {

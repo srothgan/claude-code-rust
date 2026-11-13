@@ -271,7 +271,10 @@ fn render_wrapped_diff_row(
         vec![Line::default()]
     } else {
         let wrapped_width = content_width.saturating_sub(leading_indent_width).max(1);
-        wrap_styled_chunks(&[StyledChunk { text: content.to_owned(), style }], wrapped_width)
+        super::wrap::split_line_at_width(
+            Line::from(Span::styled(content.to_owned(), style)),
+            wrapped_width,
+        )
     };
 
     let line_number_text = line_number.map_or_else(
@@ -338,20 +341,14 @@ pub fn lang_from_title(title: &str) -> String {
 /// The bridge adapter often wraps file contents in ```` ``` ```` fences.
 pub fn strip_outer_code_fence(text: &str) -> String {
     let trimmed = text.trim();
-    if trimmed.starts_with("```") {
-        // Find end of first line (the opening fence, possibly with a language tag)
-        if let Some(first_newline) = trimmed.find('\n') {
-            let after_opening = &trimmed[first_newline + 1..];
-            // Check if it ends with a closing fence
-            if let Some(body) = after_opening.strip_suffix("```") {
-                return body.trim_end().to_owned();
-            }
-            // Also handle closing fence followed by newline
-            let after_trimmed = after_opening.trim_end();
-            if let Some(stripped) = after_trimmed.strip_suffix("```") {
-                return stripped.trim_end().to_owned();
-            }
-        }
+    let Some((opening, rest)) = trimmed.split_once('\n') else { return text.to_owned() };
+    let fence_len = opening.bytes().take_while(|byte| *byte == b'`').count();
+    if fence_len < 3 || opening[fence_len..].contains('`') {
+        return text.to_owned();
+    }
+    let (body, closing) = rest.rsplit_once('\n').unwrap_or(("", rest));
+    if closing.len() == fence_len && closing.bytes().all(|byte| byte == b'`') {
+        return body.trim_end().to_owned();
     }
     text.to_owned()
 }
@@ -363,194 +360,168 @@ mod tests {
 
     #[test]
     fn strip_outer_code_fence_handles_supported_and_passthrough_shapes() {
-        let cases = [
+        for (input, expected) in [
             ("```rust\nfn main() {}\n```", "fn main() {}"),
             ("```\nhello world\n```", "hello world"),
             ("```\ncontent\n```  \n", "content"),
             ("```\n```\n", ""),
+            ("```\n  \n```", ""),
             ("```python\nline1\nline2\nline3\n```", "line1\nline2\nline3"),
             ("  ```\ncontent\n```", "content"),
             ("just plain text", "just plain text"),
             ("~~~\ncontent\n~~~", "~~~\ncontent\n~~~"),
             ("```rust\nfn main() {}", "```rust\nfn main() {}"),
-        ];
-
-        for (input, expected) in cases {
+            ("```\nsome code\n```\nmore code\n```", "some code\n```\nmore code"),
+            (
+                "````markdown\nalpha\n```rust\ninner\n```\nomega\n````",
+                "alpha\n```rust\ninner\n```\nomega",
+            ),
+            ("````\ncontent here\n````", "content here"),
+            ("````\ncontent\n```", "````\ncontent\n```"),
+            ("```\ninline ```", "```\ninline ```"),
+        ] {
             assert_eq!(strip_outer_code_fence(input), expected, "input: {input:?}");
         }
     }
 
     #[test]
-    fn strip_outer_code_fence_preserves_inner_fences_and_large_blocks() {
-        let nested = "```\nsome code\n```\nmore code\n```";
-        let nested_result = strip_outer_code_fence(nested);
-        assert!(nested_result.contains("some code"));
-        assert!(nested_result.contains("more code"));
-
-        let quadruple = "````\ncontent here\n````";
-        assert!(strip_outer_code_fence(quadruple).contains("content here"));
-
-        let blank_lines = "```\n\n\n\n```";
-        let blank_result = strip_outer_code_fence(blank_lines);
-        assert!(blank_result.is_empty() || blank_result.chars().all(|c| c == '\n'));
-
-        let big: String = (0..10_000).fold(String::new(), |mut s, i| {
-            use std::fmt::Write;
-            writeln!(s, "line {i}").unwrap();
-            s
-        });
-        let input = format!("```\n{big}```");
-        let result = strip_outer_code_fence(&input);
-        assert!(result.contains("line 0"));
-        assert!(result.contains("line 9999"));
+    fn terminal_dispatch_distinguishes_patches_from_program_output() {
+        let control = crate::ui::layout_control::LayoutControl::uninterrupted();
+        for patch in [
+            "diff --git a/f b/f\nindex 111..222 100644\n@@ -1 +1 @@\n-old\n+new",
+            "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n+new",
+        ] {
+            let lines = crate::ui::terminal_output::render_terminal_output(patch, &control);
+            assert_eq!(plain(&lines).join("\n"), patch);
+            assert_row_color(&lines, "-old", Color::Red);
+            assert_row_color(&lines, "+new", Color::Green);
+        }
+        for text in [
+            "@@ processing job\n+ordinary",
+            "--- report\n+++ totals\n-ordinary",
+            "index results\n+ordinary",
+            "just output",
+        ] {
+            let lines = crate::ui::terminal_output::render_terminal_output(
+                &format!("\x1b[35m{text}\x1b[0m"),
+                &control,
+            );
+            assert_eq!(plain(&lines).join("\n"), text);
+            for line in &lines {
+                for span in &line.spans {
+                    assert_eq!(span.style.fg, Some(Color::Magenta));
+                }
+            }
+        }
     }
 
     #[test]
-    fn render_diff_includes_repository_label() {
-        let lines = render_diff(
-            &model::Diff::new("src/main.rs", "fn main() {}\n")
-                .old_text(Some("fn old() {}\n"))
-                .repository(Some("acme/project".to_owned())),
-            80,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let repository_line: String =
-            lines[0].spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(repository_line.contains("[acme/project]"));
+    fn raw_patch_preserves_each_source_row_and_its_change_style() {
+        let patch = "diff --git a/f b/f\nindex 111..222 100644\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n context\n \n-deleted body\n+added body\n\\ No newline at end of file";
+        let lines = render_raw_unified_diff(patch);
+        assert_eq!(plain(&lines).join("\n"), patch);
+        assert_row_color(&lines, "-deleted body", Color::Red);
+        assert_row_color(&lines, "+added body", Color::Green);
+        let style = |text: &str| {
+            lines
+                .iter()
+                .find(|l| line_text(l) == text)
+                .unwrap()
+                .spans
+                .iter()
+                .find(|s| !s.content.is_empty())
+                .unwrap()
+                .style
+        };
+        assert_ne!(style(" context"), style("+added body"));
+        assert_ne!(style("@@ -1,3 +1,3 @@"), style(" context"));
+        assert_ne!(style("\\ No newline at end of file"), style("-deleted body"));
     }
 
     #[test]
-    fn looks_like_unified_diff_detects_git_style_payload() {
-        let raw = "diff --git a/a.rs b/a.rs\nindex 111..222 100644\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        assert!(looks_like_unified_diff(raw));
+    fn structured_diff_preserves_complete_source_and_wrapped_line_identity() {
+        let source = "fn main() {\n    if ready {\n        alpha  beta \u{754c} gamma delta epsilon zeta eta theta END\n    }\n}";
+        for width in [32, 55, 100] {
+            let lines = render_diff(
+                &model::Diff::new("source.rs", source),
+                width,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            );
+            let rows = plain(&lines);
+            let starts = numbered_rows(&rows);
+            assert_eq!(starts.iter().map(|(_, n, _)| *n).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
+            for (i, expected) in source.lines().enumerate() {
+                let (start, _, marker) = starts[i];
+                assert_eq!(marker, '+');
+                let end = starts.get(i + 1).map_or(rows.len(), |r| r.0);
+                assert_wrapped_source(&rows[start..end], expected, '+');
+            }
+            assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
+        }
     }
 
     #[test]
-    fn render_raw_unified_diff_styles_hunks_and_additions() {
-        let raw = "--- a/file.rs\n+++ b/file.rs\n@@ -1 +1 @@\n-old\n+new\n";
-        let lines = render_raw_unified_diff(raw);
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Red));
-        assert_eq!(lines[1].spans[0].style.fg, Some(Color::Green));
-        assert_eq!(lines[2].spans[0].style.fg, Some(Color::Cyan));
-        assert_eq!(lines[4].spans[0].style.fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn render_diff_adds_line_numbers_and_hanging_indent() {
-        let lines = render_diff(
-            &model::Diff::new(
-                "tmp.md",
-                "This is a long added line that should wrap onto another visual line.\n".to_owned(),
-            ),
-            28,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered: Vec<String> = lines
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect();
-
-        assert_eq!(rendered[0], "(+1)");
-        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Green));
-        assert!(rendered.iter().any(|line| line.contains("1  +  This is a long")));
-        assert!(rendered.iter().any(|line| line.starts_with("      ")));
-        assert!(!rendered.iter().any(|line| line == "tmp.md"));
-    }
-
-    #[test]
-    fn render_diff_numbers_lines_by_file_position() {
-        let old = (1..=130).fold(String::new(), |mut text, line| {
-            use std::fmt::Write;
-            writeln!(text, "line {line}").unwrap();
+    fn structured_diff_associates_source_positions_and_counts_with_each_hunk() {
+        let old = (1..=130).fold(String::new(), |mut text, n| {
+            use std::fmt::Write as _;
+            writeln!(text, "source {n}").unwrap();
             text
         });
-        let new = old.replace("line 122\n", "first\nsecond\n");
+        let new = old
+            .replace("source 12\n", "early replacement\n")
+            .replace("source 122\n", "late first\nlate second\n");
         let lines = render_diff(
-            &model::Diff::new("tmp.rs", new).old_text(Some(old)),
+            &model::Diff::new("f", new).old_text(Some(old)),
             80,
             &crate::ui::layout_control::LayoutControl::uninterrupted(),
         );
-        let rendered: Vec<String> = lines
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect();
-
-        assert_eq!(
-            rendered,
-            [
-                "(+2, -1)",
-                "119     line 119",
-                "120     line 120",
-                "121     line 121",
-                "122  -  line 122",
-                "122  +  first",
-                "123  +  second",
-                "124     line 123",
-                "125     line 124",
-                "126     line 125",
-            ]
-        );
-    }
-
-    #[test]
-    fn render_diff_preserves_source_indentation() {
-        let lines = render_diff(
-            &model::Diff::new(
-                "tmp.rs",
-                "fn main() {\n    if true {\n        return;\n    }\n}\n".to_owned(),
-            ),
-            80,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered: Vec<String> = lines
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect();
-
-        assert!(rendered.iter().any(|line| line.contains("+      if true {")));
-        assert!(rendered.iter().any(|line| line.contains("+          return;")));
-    }
-
-    #[test]
-    fn render_diff_preserves_source_indentation_for_wrapped_lines() {
-        let lines = render_diff(
-            &model::Diff::new(
-                "tmp.rs",
-                "        This is a long added line that should wrap with indentation preserved.\n"
-                    .to_owned(),
-            ),
-            28,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered: Vec<String> = lines
-            .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
-            .collect();
-
-        assert!(rendered.iter().any(|line| line.contains("+          This is a")));
-        assert!(rendered.iter().any(|line| line.contains("indentation")));
-        assert!(rendered.iter().any(|line| line.starts_with("              ")));
-    }
-
-    #[test]
-    fn diff_count_header_styles_added_and_removed_counts() {
-        let added = render_diff_count_header(4, 0).unwrap();
-        let added_text: String = added.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(added_text, "(+4)");
-        assert_eq!(added.spans[1].style.fg, Some(Color::Green));
-
-        let removed = render_diff_count_header(0, 3).unwrap();
-        let removed_text: String = removed.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(removed_text, "(-3)");
-        assert_eq!(removed.spans[1].style.fg, Some(Color::Red));
-
-        let mixed = render_diff_count_header(4, 3).unwrap();
-        let mixed_text: String = mixed.spans.iter().map(|span| span.content.as_ref()).collect();
-        assert_eq!(mixed_text, "(+4, -3)");
-        assert_eq!(mixed.spans[1].style.fg, Some(Color::Green));
-        assert_eq!(mixed.spans[3].style.fg, Some(Color::Red));
-
-        assert!(render_diff_count_header(0, 0).is_none());
+        let rows = plain(&lines);
+        for (text, number, marker, counts) in [
+            ("source 12", 12, '-', ("+1", "-1")),
+            ("early replacement", 12, '+', ("+1", "-1")),
+            ("source 122", 122, '-', ("+2", "-1")),
+            ("late first", 122, '+', ("+2", "-1")),
+            ("late second", 123, '+', ("+2", "-1")),
+            ("source 123", 124, ' ', ("+2", "-1")),
+        ] {
+            let index = rows.iter().position(|r| r.ends_with(text)).unwrap();
+            assert_number(&rows[index], number, marker);
+            let header = rows[..index].iter().rev().find(|r| count_row(r)).unwrap();
+            assert!(header.contains(counts.0) && header.contains(counts.1), "{header}");
+        }
+        for (old, new, added, removed) in [
+            ("", "one\ntwo\n", Some("+2"), None),
+            ("one\ntwo\nthree\n", "", None, Some("-3")),
+            ("old\n", "new\n", Some("+1"), Some("-1")),
+            ("same\n", "same\n", None, None),
+        ] {
+            let lines = render_diff(
+                &model::Diff::new("f", new).old_text(Some(old)),
+                80,
+                &crate::ui::layout_control::LayoutControl::uninterrupted(),
+            );
+            let headers = plain(&lines).into_iter().filter(|r| count_row(r)).collect::<Vec<_>>();
+            if added.is_none() && removed.is_none() {
+                assert!(headers.is_empty());
+                continue;
+            }
+            assert_eq!(headers.len(), 1);
+            for (expected, sign, color) in [(added, '+', Color::Green), (removed, '-', Color::Red)]
+            {
+                if let Some(expected) = expected {
+                    assert!(headers[0].contains(expected));
+                    let header = lines.iter().find(|l| line_text(l) == headers[0]).unwrap();
+                    assert!(
+                        header
+                            .spans
+                            .iter()
+                            .any(|s| s.content == expected && s.style.fg == Some(color))
+                    );
+                } else {
+                    assert!(!headers[0].contains(sign));
+                }
+            }
+        }
     }
 
     #[test]
@@ -596,5 +567,102 @@ mod tests {
         for path in unsupported {
             assert!(!is_markdown_file(path), "path should not be markdown: {path:?}");
         }
+    }
+    fn count_row(row: &str) -> bool {
+        row.split(|c: char| !c.is_ascii_digit() && c != '+' && c != '-').any(|token| {
+            token
+                .strip_prefix('+')
+                .or_else(|| token.strip_prefix('-'))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+    }
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+    fn plain(lines: &[Line<'_>]) -> Vec<String> {
+        lines.iter().map(line_text).collect()
+    }
+    fn assert_row_color(lines: &[Line<'_>], text: &str, color: Color) {
+        let row = lines.iter().find(|l| line_text(l) == text).expect("source row");
+        assert!(
+            row.spans.iter().filter(|s| !s.content.is_empty()).all(|s| s.style.fg == Some(color))
+        );
+    }
+    fn numbered_rows(rows: &[String]) -> Vec<(usize, usize, char)> {
+        rows.iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let t = r.trim_start();
+                let n = t.split_whitespace().next()?.parse().ok()?;
+                let after = t.trim_start_matches(|c: char| c.is_ascii_digit());
+                let marker = match after.trim_start().chars().next() {
+                    Some('+') => '+',
+                    Some('-') => '-',
+                    _ => ' ',
+                };
+                Some((i, n, marker))
+            })
+            .collect()
+    }
+    fn assert_number(row: &str, number: usize, marker: char) {
+        let parsed = numbered_rows(&[row.into()]);
+        assert_eq!(parsed, [(0, number, marker)], "{row}");
+    }
+    fn assert_wrapped_source(rows: &[String], source: &str, marker: char) {
+        let first = &rows[0];
+        let marker_at = first.find(marker).unwrap();
+        let body = marker_at + 3;
+        let indent = source.len() - source.trim_start().len();
+        let mut recovered = first[body..].to_owned();
+        for row in &rows[1..] {
+            assert!(row[..body + indent].chars().all(char::is_whitespace), "{row}");
+            recovered.push_str(&row[body + indent..]);
+        }
+        assert_eq!(recovered, source);
+    }
+    #[test]
+    fn repository_patch_tracks_literal_positions_and_hunk_anchors_after_wrapping() {
+        let long = "    alpha  beta \u{754c} gamma delta epsilon zeta END";
+        let patch = format!(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -0,0 +1,2 @@\n+insert one\n+insert two\n@@ -10,2 +11,0 @@\n-delete ten\n-delete eleven\n@@ -20,3 +20,4 @@\n-old twenty\n+new twenty\n+{long}\n \n context twenty two\n@@ -40 +41 @@\n-old forty\n+new forty"
+        );
+        for width in [32, 100] {
+            let (lines, anchors) = render_repository_patch(&patch, width);
+            let rows = plain(&lines);
+            assert_eq!(
+                anchors.iter().map(|i| rows[*i].as_str()).collect::<Vec<_>>(),
+                ["@@ -0,0 +1,2 @@", "@@ -10,2 +11,0 @@", "@@ -20,3 +20,4 @@", "@@ -40 +41 @@"]
+            );
+            for (text, n, marker) in [
+                ("insert one", 1, '+'),
+                ("insert two", 2, '+'),
+                ("delete ten", 10, '-'),
+                ("delete eleven", 11, '-'),
+                ("old twenty", 20, '-'),
+                ("new twenty", 20, '+'),
+                ("context twenty two", 23, ' '),
+                ("old forty", 40, '-'),
+                ("new forty", 41, '+'),
+            ] {
+                assert_number(rows.iter().find(|r| r.ends_with(text)).unwrap(), n, marker);
+            }
+            let start = rows.iter().position(|r| r.contains("alpha")).unwrap();
+            let end = numbered_rows(&rows)
+                .into_iter()
+                .find(|(i, n, _)| *i > start && *n == 22)
+                .unwrap()
+                .0;
+            assert_wrapped_source(&rows[start..end], long, '+');
+            assert_number(&rows[end], 22, ' ');
+            assert!(rows[end].trim_end().ends_with("22"));
+            assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
+        }
+        let (lines, _) = render_repository_patch(
+            "@@ -1,2 +1,3 @@\n context\n-old\n\\ No newline at end of file\n+new\n+tail\n\\ No newline at end of file",
+            80,
+        );
+        let rows = plain(&lines);
+        assert_number(rows.iter().find(|r| r.ends_with("new")).unwrap(), 2, '+');
+        assert_number(rows.iter().find(|r| r.ends_with("tail")).unwrap(), 3, '+');
     }
 }

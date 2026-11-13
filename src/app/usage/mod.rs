@@ -6,8 +6,7 @@ use crate::agent::events::ClientEvent;
 use crate::agent::types::StructuredUsageSnapshot;
 use crate::app::{
     App, ExtraUsage, SessionUsageSummary, UsageActivitySummary, UsageActivityWindow,
-    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind,
-    UsageSourceMode, UsageWindow,
+    UsageBehaviorAttribution, UsageNamedAttribution, UsageSnapshot, UsageSourceKind, UsageWindow,
 };
 use std::time::{Duration, SystemTime};
 
@@ -35,25 +34,25 @@ pub(crate) fn request_refresh(app: &mut App) {
 
     apply_refresh_started(app);
 
-    if app.usage.active_source == UsageSourceMode::Auto
-        && let (Some(connection), Some(session_id)) =
-            (app.session_runtime.conn.as_ref(), app.session_runtime.session_id.as_ref())
+    if let (Some(connection), Some(session_id)) =
+        (app.session_runtime.conn.as_ref(), app.session_runtime.session_id.as_ref())
         && connection.get_usage(session_id.as_str().to_owned()).is_ok()
     {
         return;
     }
 
-    spawn_host_refresh(app, app.usage.active_source, None);
+    spawn_host_refresh(app, None);
 }
 
-fn spawn_host_refresh(app: &App, source_mode: UsageSourceMode, sdk_error: Option<String>) {
+fn spawn_host_refresh(app: &App, sdk_error: Option<String>) {
+    let probe = HostProbe::system();
     let event_tx = app.event_tx.clone();
     let epoch = app.session_runtime.session_scope_epoch;
     let cwd_raw = app.cwd_raw.clone();
 
     tokio::task::spawn_local(async move {
         let _ = event_tx.send(ClientEvent::UsageRefreshStarted { epoch }).await;
-        match refresh_snapshot(source_mode, cwd_raw).await {
+        match refresh_snapshot_auto(&probe, cwd_raw).await {
             Ok(snapshot) => {
                 let _ = event_tx.send(ClientEvent::UsageSnapshotReceived { epoch, snapshot }).await;
             }
@@ -84,7 +83,7 @@ pub(crate) fn apply_structured_sdk_result(
 
     let message = error.unwrap_or_else(|| "structured SDK usage returned no snapshot".to_owned());
     if tokio::runtime::Handle::try_current().is_ok() {
-        spawn_host_refresh(app, UsageSourceMode::Auto, Some(message));
+        spawn_host_refresh(app, Some(message));
     } else {
         apply_refresh_failure(app, message.clone(), UsageSourceKind::Sdk);
     }
@@ -239,8 +238,12 @@ pub(crate) fn visible_windows(snapshot: &UsageSnapshot) -> Vec<&UsageWindow> {
 }
 
 pub(crate) fn format_window_reset(window: &UsageWindow) -> Option<String> {
+    format_window_reset_at(window, SystemTime::now())
+}
+
+fn format_window_reset_at(window: &UsageWindow, now: SystemTime) -> Option<String> {
     if let Some(resets_at) = window.resets_at {
-        return Some(format!("resets in {}", format_remaining_until(resets_at)));
+        return Some(format!("resets in {}", format_remaining_until(resets_at, now)));
     }
 
     let description = window.reset_description.as_deref()?.trim();
@@ -251,8 +254,8 @@ fn snapshot_is_fresh(snapshot: &UsageSnapshot) -> bool {
     snapshot.fetched_at.elapsed().is_ok_and(|age| age < USAGE_REFRESH_TTL)
 }
 
-fn format_remaining_until(target: SystemTime) -> String {
-    let Ok(remaining) = target.duration_since(SystemTime::now()) else {
+fn format_remaining_until(target: SystemTime, now: SystemTime) -> String {
+    let Ok(remaining) = target.duration_since(now) else {
         return "< 1 minute".to_owned();
     };
 
@@ -277,27 +280,36 @@ fn format_remaining_until(target: SystemTime) -> String {
     format!("{minutes}m")
 }
 
-async fn refresh_snapshot(
-    source_mode: UsageSourceMode,
-    cwd_raw: String,
-) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    match source_mode {
-        UsageSourceMode::Oauth => oauth::fetch_snapshot().await.map_err(|error| {
-            UsageRefreshFailure { source: UsageSourceKind::Oauth, message: error.into_message() }
-        }),
-        UsageSourceMode::Cli => cli::fetch_snapshot(cwd_raw)
-            .await
-            .map_err(|message| UsageRefreshFailure { source: UsageSourceKind::Cli, message }),
-        UsageSourceMode::Auto => refresh_snapshot_auto(cwd_raw).await,
+#[derive(Clone)]
+struct HostProbe {
+    http: oauth::Probe,
+    cli: cli::Probe,
+}
+
+impl HostProbe {
+    fn system() -> Self {
+        #[cfg(test)]
+        if let Some(probe) = TEST_PROBE.with(|slot| slot.borrow().clone()) {
+            return probe;
+        }
+        Self { http: oauth::Probe::system(), cli: cli::Probe::system() }
     }
 }
 
-async fn refresh_snapshot_auto(cwd_raw: String) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    match oauth::fetch_snapshot().await {
+#[cfg(test)]
+thread_local! {
+    static TEST_PROBE: std::cell::RefCell<Option<HostProbe>> = const { std::cell::RefCell::new(None) };
+}
+
+async fn refresh_snapshot_auto(
+    probe: &HostProbe,
+    cwd_raw: String,
+) -> Result<UsageSnapshot, UsageRefreshFailure> {
+    match probe.http.fetch_snapshot().await {
         Ok(snapshot) => Ok(snapshot),
         Err(error) if error.should_fallback_to_cli() => {
             let oauth_message = error.into_message();
-            cli::fetch_snapshot(cwd_raw).await.map_err(|message| UsageRefreshFailure {
+            probe.cli.fetch_snapshot(cwd_raw).await.map_err(|message| UsageRefreshFailure {
                 source: UsageSourceKind::Cli,
                 message: format!(
                     "OAuth unavailable ({oauth_message}). CLI fallback failed: {message}"
@@ -313,3 +325,9 @@ async fn refresh_snapshot_auto(cwd_raw: String) -> Result<UsageSnapshot, UsageRe
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+mod audit_tests;

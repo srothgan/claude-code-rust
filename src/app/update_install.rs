@@ -87,7 +87,7 @@ pub fn run_update_install(app: &App, latest_version: &str, method: &InstallMetho
 
 /// Hand the install to a detached worker so the shell prompt returns immediately.
 pub fn start_background_update_install(app: &App, latest_version: &str, method: &InstallMethod) {
-    match spawn_worker(latest_version, method) {
+    match spawn_worker(app.global_settings_path.as_deref(), latest_version, method) {
         Ok(()) => eprintln!("Updating claude-rs to v{latest_version} in the background."),
         Err(error) => {
             report_outcome_to_terminal(app, failure_message(method, latest_version, &Err(error)));
@@ -235,12 +235,24 @@ fn lock_worker(path: &Path) -> Result<File, fs4::TryLockError> {
     Ok(file)
 }
 
-fn spawn_worker(latest_version: &str, method: &InstallMethod) -> Result<(), String> {
+fn spawn_worker(
+    selected_settings: Option<&Path>,
+    latest_version: &str,
+    method: &InstallMethod,
+) -> Result<(), String> {
     let args = worker_args(latest_version, method)
         .ok_or_else(|| "no update install method was selected".to_owned())?;
+    // The worker changes cwd. Carry the parent's selected profile across that boundary
+    // rather than resolving a relative inherited override against the temporary directory.
+    let settings = std::path::absolute(
+        selected_settings.ok_or_else(|| "no app settings path was selected".to_owned())?,
+    )
+    .map_err(|error| format!("failed to resolve selected app settings: {error}"))?;
+    let profile =
+        settings.parent().ok_or_else(|| "app settings path has no directory".to_owned())?;
     let exe = std::env::current_exe()
         .map_err(|error| format!("failed to locate the claude-rs executable: {error}"))?;
-    spawn_detached(Command::new(&exe).args(args))
+    spawn_detached(Command::new(&exe).args(args).env("CLAUDE_RS_CONFIG_DIR", profile))
         .map(drop)
         .map_err(|error| format!("failed to start {}: {error}", exe.display()))
 }
@@ -526,39 +538,6 @@ mod tests {
     use crate::app::{MessageBlock, MessageRole};
 
     const VERSION: &str = "9.9.9";
-    #[cfg(windows)]
-    const OUTLIVES_THE_TEST: &str = "ping -n 120 127.0.0.1 >nul";
-    #[cfg(unix)]
-    const OUTLIVES_THE_TEST: &str = "sleep 120";
-
-    fn shell(script: &str) -> Command {
-        #[cfg(windows)]
-        let (program, flag) = ("cmd", "/C");
-        #[cfg(unix)]
-        let (program, flag) = ("sh", "-c");
-        let mut command = Command::new(program);
-        command.args([flag, script]);
-        command
-    }
-
-    /// Blocks until the file named by `RELEASE` exists, then creates the file named by `MARKER`.
-    fn gated_command() -> Command {
-        #[cfg(windows)]
-        let (program, flags, script) = (
-            "powershell.exe",
-            ["-NoProfile", "-Command"],
-            "while (-not (Test-Path -LiteralPath $env:RELEASE)) { Start-Sleep -Milliseconds 20 }; Set-Content -LiteralPath $env:MARKER -Value done",
-        );
-        #[cfg(unix)]
-        let (program, flags, script) = (
-            "sh",
-            ["-e", "-c"],
-            r#"while [ ! -e "$RELEASE" ]; do sleep 0.02; done; : > "$MARKER""#,
-        );
-        let mut command = Command::new(program);
-        command.args(flags).arg(script);
-        command
-    }
 
     fn worker_fixture(settings: &str) -> (tempfile::TempDir, WorkerPaths) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -569,41 +548,6 @@ mod tests {
         };
         std::fs::write(&paths.settings, settings).expect("settings fixture");
         (dir, paths)
-    }
-
-    fn saved_updates(paths: &WorkerPaths) -> serde_json::Value {
-        let saved: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&paths.settings).expect("read settings"))
-                .expect("settings JSON");
-        saved["updates"].clone()
-    }
-
-    fn run_fake_install(paths: &WorkerPaths, timeout: Duration, script: &str) -> WorkerOutcome {
-        run_worker(paths, VERSION, &InstallMethod::Npm, timeout, |io| io.run(&mut shell(script)))
-    }
-
-    #[test]
-    fn worker_records_a_failed_install_and_a_later_success_clears_it() {
-        let (_dir, paths) = worker_fixture(r#"{"updates":{"autoInstall":true}}"#);
-
-        let outcome = run_fake_install(&paths, WORKER_INSTALL_TIMEOUT, "echo boom&& exit 3");
-
-        assert_eq!(outcome, WorkerOutcome::Failed);
-        let updates = saved_updates(&paths);
-        let error = updates["last_install_error"].as_str().expect("recorded failure");
-        assert!(error.contains("v9.9.9"), "names the version: {error}");
-        assert!(error.contains('3'), "names the exit status: {error}");
-        assert!(error.contains(&paths.log.display().to_string()), "names the log: {error}");
-        assert_eq!(updates["autoInstall"], true);
-        let log = std::fs::read_to_string(&paths.log).expect("worker log");
-        assert!(log.contains("boom"), "installer output is captured in the log: {log}");
-
-        let outcome = run_fake_install(&paths, WORKER_INSTALL_TIMEOUT, "exit 0");
-
-        assert_eq!(outcome, WorkerOutcome::Installed);
-        let updates = saved_updates(&paths);
-        assert!(updates.get("last_install_error").is_none());
-        assert_eq!(updates["autoInstall"], true);
     }
 
     #[test]
@@ -628,41 +572,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&paths.log).expect("log"), "first worker output");
     }
 
-    #[test]
-    fn worker_stops_an_installer_that_exceeds_the_time_limit() {
-        let (_dir, paths) = worker_fixture("{}");
-        let started = Instant::now();
-
-        let outcome = run_fake_install(&paths, Duration::from_millis(300), OUTLIVES_THE_TEST);
-
-        assert!(started.elapsed() < Duration::from_secs(60), "the installer was not stopped");
-        assert_eq!(outcome, WorkerOutcome::Failed);
-        let updates = saved_updates(&paths);
-        let error = updates["last_install_error"].as_str().expect("recorded failure");
-        assert!(error.contains("time limit"), "{error}");
-    }
-
-    #[test]
-    fn detached_spawn_returns_while_the_command_is_still_running() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let release = dir.path().join("release");
-        let marker = dir.path().join("marker");
-        let mut command = gated_command();
-        command.env("RELEASE", &release).env("MARKER", &marker);
-
-        let mut child = spawn_detached(&mut command).expect("spawn");
-
-        assert!(!marker.exists(), "spawning must not wait for the command");
-        #[cfg(unix)]
-        assert_leads_its_own_session(&child);
-        std::fs::write(&release, "").expect("release the command");
-        assert!(child.wait().expect("wait").success());
-        assert!(marker.exists(), "the detached command ran to completion");
-    }
-
     #[cfg(unix)]
     #[allow(unsafe_code)]
-    fn assert_leads_its_own_session(child: &Child) {
+    pub(super) fn assert_leads_its_own_session(child: &Child) {
         let pid = libc::pid_t::try_from(child.id()).expect("pid");
         // SAFETY: `getsid` takes a plain integer and the child is still running.
         let session = unsafe { libc::getsid(pid) };
@@ -726,3 +638,7 @@ mod tests {
         assert!(warnings[0].contains("npm update install for v9.9.9 failed."), "{warnings:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "update_install_audit_tests.rs"]
+mod audit_tests;

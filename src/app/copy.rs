@@ -147,37 +147,178 @@ mod tests {
         app.transcript.messages.push(message);
     }
 
-    #[test]
-    fn picker_copies_canonical_code_and_retains_choice_on_clipboard_failure() {
-        let mut app = App::test_default();
-        response(&mut app, "Explanation\n\n```rust\nlet x = 1;\n```\n");
-        open_with(&mut app, |_| panic!("picker must wait for a choice"));
-        assert_eq!(
-            app.surface_mode,
-            crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Copy)
-        );
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(38, 12)).expect("terminal");
+    fn picker_rows(
+        app: &mut App,
+        terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> Vec<String> {
+        terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, app)).unwrap();
         terminal
-            .draw(|frame| crate::ui::render_fullscreen_surface(frame, &mut app))
-            .expect("render picker");
-        handle_key_with(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), |_| Ok(()));
-        handle_key_with(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), |_| {
-            Err("Clipboard unavailable".into())
-        });
-        assert_eq!(app.copy_picker.as_ref().expect("retain picker").selected, 1);
-        assert_eq!(
-            app.copy_picker.as_ref().expect("error").error.as_deref(),
-            Some("Clipboard unavailable")
-        );
-        let mut copied = String::new();
+            .backend()
+            .buffer()
+            .content
+            .chunks(70)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+
+    fn choice_style(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        label: &str,
+    ) -> ratatui::style::Style {
+        let buffer = terminal.backend().buffer();
+        for y in 0..buffer.area.height {
+            let row = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+            if let Some(byte) = row.find(label) {
+                let column = unicode_width::UnicodeWidthStr::width(&row[..byte]);
+                return buffer[(u16::try_from(column).unwrap(), y)].style();
+            }
+        }
+        panic!("missing copy choice {label}");
+    }
+
+    #[test]
+    fn copy_picker_shows_the_selected_payload_and_retry_then_discards_cancelled_selection() {
+        let source = "Cedar explanation\n\n```rust\nfn cedar() {}\n```\n\nElm explanation\n\n```text\n  雪 e\u{301}clair\nend\n```\n";
+        let expected = "  雪 e\u{301}clair\nend\n";
+        let mut app = App::test_default();
+        app.input.set_text("unsent 界");
+        response(&mut app, source);
+        open_with(&mut app, |_| panic!("copy must wait for explicit activation"));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(70, 16)).unwrap();
+        picker_rows(&mut app, &mut terminal);
+        let normal = choice_style(&terminal, "Code block 1 (rust)");
+        for _ in 0..2 {
+            handle_key_with(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), |_| {
+                panic!("navigation must not copy")
+            });
+        }
+        picker_rows(&mut app, &mut terminal);
+        let selected = choice_style(&terminal, "Code block 2 (text)");
+        assert_ne!(selected, normal, "selected choice must have visible emphasis");
+        assert_eq!(choice_style(&terminal, "Code block 1 (rust)"), normal);
+        let mut attempts = Vec::new();
         handle_key_with(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), |text| {
-            copied = text.into();
+            attempts.push(text.to_owned());
+            assert_eq!(text, expected);
+            Err("COPY_DENIED_492".into())
+        });
+        let rows = picker_rows(&mut app, &mut terminal);
+        assert_eq!(choice_style(&terminal, "Code block 2 (text)"), selected);
+        assert_eq!(choice_style(&terminal, "Code block 1 (rust)"), normal);
+        let choice = rows.iter().position(|row| row.contains("Code block 2 (text)")).unwrap();
+        let error = rows.iter().position(|row| row.contains("COPY_DENIED_492")).unwrap();
+        let controls = rows
+            .iter()
+            .position(|row| row.contains("Enter retry") && row.contains("Esc cancel"))
+            .unwrap();
+        assert!(choice < error && error < controls);
+        handle_key_with(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), |text| {
+            attempts.push(text.to_owned());
+            assert_eq!(text, expected);
             Ok(())
         });
-        assert_eq!(copied, "let x = 1;\n");
-        assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+        assert_eq!(attempts, [expected, expected]);
         assert!(app.copy_picker.is_none());
+        assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+        assert_eq!(app.input.text(), "unsent 界");
+        crate::app::handle_terminal_event(&mut app, crossterm::event::Event::Paste("!".into()));
+        crate::app::finalize_pending_paste_event(&mut app);
+        assert_eq!(app.input.text(), "unsent 界!");
+
+        open_with(&mut app, |_| panic!("picker must wait"));
+        handle_key_with(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), |_| {
+            panic!("navigation must not copy")
+        });
+        crate::app::handle_terminal_event(
+            &mut app,
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        assert!(app.copy_picker.is_none());
+        assert!(!app.shutdown_requested());
+        assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+        assert_eq!(app.input.text(), "unsent 界!");
+        open_with(&mut app, |_| panic!("reopening must not copy"));
+        picker_rows(&mut app, &mut terminal);
+        assert_ne!(
+            choice_style(&terminal, "Full response"),
+            choice_style(&terminal, "Code block 2 (text)")
+        );
+        assert_eq!(choice_style(&terminal, "Code block 2 (text)"), normal);
+        handle_key_with(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), |_| {
+            panic!("cancel must not copy")
+        });
+        assert_eq!(app.input.text(), "unsent 界!");
+    }
+
+    #[test]
+    fn direct_copy_waits_for_completion_and_reports_failure_before_successful_retry() {
+        use crate::agent::{events::ClientEvent, model};
+        use crate::app::test_support::{app_with_connection, deliver_update, source_chunk};
+        let (mut app, _commands) = app_with_connection();
+        app.status = crate::app::AppStatus::Ready;
+        app.input.set_text("unsent 雪 draft");
+        for role in [MessageRole::User, MessageRole::System(Some(SystemSeverity::Info))] {
+            app.push_message_tracked(ChatMessage::new(
+                role,
+                vec![MessageBlock::Text(TextBlock::from_complete("NOT_COPYABLE"))],
+                None,
+            ));
+        }
+        let mut tool_only = ChatMessage::new(
+            MessageRole::Assistant,
+            vec![MessageBlock::ToolCall(Box::new(crate::app::test_support::tool_call_info(
+                "tool-only",
+                model::ToolCallStatus::Completed,
+            )))],
+            None,
+        );
+        tool_only.timing.finish();
+        app.push_message_tracked(tool_only);
+        deliver_update(&mut app, model::SessionUpdate::AgentResponseStarted);
+        let expected = "Completed cedar response: 雪 e\u{301}clair\nsecond line";
+        deliver_update(&mut app, source_chunk(expected, "copy-source", false));
+        open_with(&mut app, |_| panic!("no completed response may reach the clipboard"));
+        assert!(app.copy_picker.is_none());
+        assert_eq!(app.surface_mode, crate::app::SurfaceMode::Chat);
+        assert!(app.transcript.messages.iter().flat_map(|message| &message.blocks).any(|block| matches!(block, MessageBlock::Notice(notice) if notice.text.text.contains("No completed response"))));
+        assert_eq!(app.input.text(), "unsent 雪 draft");
+        crate::app::handle_client_event(
+            &mut app,
+            ClientEvent::TurnComplete {
+                session_id: "session-1".into(),
+                queued_turn_count: None,
+                terminal_reason: None,
+            },
+        );
+        let mut attempts = Vec::new();
+        open_with(&mut app, |text| {
+            attempts.push(text.to_owned());
+            assert_eq!(text, expected);
+            Err("DIRECT_COPY_DENIED_725".into())
+        });
+        let failure = app.transcript.messages.last().unwrap();
+        assert!(matches!(failure.role, MessageRole::System(Some(SystemSeverity::Error))));
+        assert!(
+            matches!(&failure.blocks[..], [MessageBlock::Text(text)] if text.text.contains("DIRECT_COPY_DENIED_725") && !text.text.contains("Copied to clipboard"))
+        );
+        assert!(app.copy_picker.is_none());
+        assert_eq!(app.input.text(), "unsent 雪 draft");
+        assert_eq!(choices(&app)[0].text, expected);
+        open_with(&mut app, |text| {
+            attempts.push(text.to_owned());
+            assert_eq!(text, expected);
+            Ok(())
+        });
+        assert_eq!(attempts, [expected, expected]);
+        let success = app.transcript.messages.last().unwrap();
+        assert!(matches!(success.role, MessageRole::System(Some(SystemSeverity::Info))));
+        assert!(
+            matches!(&success.blocks[..], [MessageBlock::Text(text)] if text.text.contains("Copied") && !text.text.contains("DIRECT_COPY_DENIED_725"))
+        );
+        assert!(app.copy_picker.is_none());
+        assert_eq!(app.input.text(), "unsent 雪 draft");
+        assert_eq!(choices(&app)[0].text, expected);
     }
 
     #[test]

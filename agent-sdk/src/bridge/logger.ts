@@ -437,7 +437,11 @@ export function logBridgeEventSent(
     ...(requestId ? { requestId } : {}),
     ...("session_id" in event ? { sessionId: event.session_id } : {}),
     ...(eventToolCallId(event) ? { toolCallId: eventToolCallId(event) } : {}),
+    ...("error_kind" in event ? { errorKind: event.error_kind } : {}),
     sizeBytes,
-    fields: { bridge_event: event.event },
+    fields: {
+      bridge_event: event.event,
+      ...("terminal_reason" in event ? { terminal_reason: event.terminal_reason } : {}),
+    },
   });
 }

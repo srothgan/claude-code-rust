@@ -145,9 +145,14 @@ export async function emitReconciledMcpSnapshotFromStatuses(
   servers: readonly SdkMcpServerStatus[],
   source: McpSnapshotSource,
   requestId?: string,
-): Promise<McpServerStatus[]> {
-  let mapped = servers.map(mapMcpServerStatus);
-  mapped = await reconcileSuspiciousMcpStatuses(session, mapped);
+): Promise<McpServerStatus[] | undefined> {
+  const isActive = () => !session.closing;
+  const mapped = await reconcileSuspiciousMcpStatuses(
+    session,
+    servers.map(mapMcpServerStatus),
+    isActive,
+  );
+  if (!mapped || !isActive()) return undefined;
   return emitMcpSnapshotFromMappedStatuses(session, mapped, source, requestId);
 }
 

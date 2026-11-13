@@ -132,3 +132,8 @@ str_to_string = "warn"
 
 [lints.rust]
 unsafe_code = "warn"
+
+# Local rendering fixes until upstream releases contain them.
+[patch.crates-io]
+tui-markdown = { path = "third-party/tui-markdown" }
+tui-textarea-2 = { path = "third-party/tui-textarea" }

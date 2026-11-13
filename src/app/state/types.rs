@@ -109,14 +109,6 @@ pub struct MessageUsage {
     pub cache_write_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UsageSourceMode {
-    #[default]
-    Auto,
-    Oauth,
-    Cli,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsageSourceKind {
     Sdk,
@@ -202,16 +194,13 @@ pub struct UsageState {
     pub snapshot: Option<UsageSnapshot>,
     pub in_flight: bool,
     pub last_error: Option<String>,
-    pub active_source: UsageSourceMode,
     pub last_attempted_source: Option<UsageSourceKind>,
 }
 
+// Keep the established context-usage names used by session consumers.
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionUsageState {
-    pub last_compaction_trigger: Option<model::CompactionTrigger>,
-    pub last_compaction_pre_tokens: Option<u64>,
-    pub last_compaction_post_tokens: Option<u64>,
-    pub last_compaction_duration_ms: Option<u64>,
     pub context_usage_percent: Option<u8>,
     pub context_usage_in_flight: bool,
     pub context_usage_refresh_pending: bool,
@@ -249,26 +238,7 @@ pub struct RemovedMcpServerGuard {
     pub expected_source: crate::agent::types::McpSnapshotSource,
 }
 
-pub const DEFAULT_RENDER_CACHE_BUDGET_BYTES: usize = 24 * 1024 * 1024;
 pub const DEFAULT_HISTORY_RETENTION_MAX_BYTES: usize = 64 * 1024 * 1024;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderCacheBudget {
-    pub max_bytes: usize,
-    pub last_total_bytes: usize,
-    pub last_evicted_bytes: usize,
-    pub total_evictions: usize,
-}
-
-impl Default for RenderCacheBudget {
-    fn default() -> Self {
-        Self {
-            max_bytes: DEFAULT_RENDER_CACHE_BUDGET_BYTES,
-            last_total_bytes: 0,
-            last_evicted_bytes: 0,
-            total_evictions: 0,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HistoryRetentionPolicy {
@@ -289,16 +259,6 @@ pub struct HistoryRetentionStats {
     pub dropped_bytes: usize,
     pub total_dropped_messages: usize,
     pub total_dropped_bytes: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CacheBudgetEnforceStats {
-    pub total_before_bytes: usize,
-    pub total_after_bytes: usize,
-    pub evicted_bytes: usize,
-    pub evicted_blocks: usize,
-    /// Bytes in protected (non-evictable) blocks excluded from the budget comparison.
-    pub protected_bytes: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

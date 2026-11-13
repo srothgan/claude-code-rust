@@ -465,13 +465,14 @@ pub(crate) fn tasks_changed(app: &mut App) {
         })
     });
     if let Some(read) = app.agents.read.as_mut() {
-        let current_run = app
-            .sdk_inventory
-            .tasks
-            .iter()
-            .find(|task| task.task_id == read.agent_id)
-            .map(|task| &task.run_id);
-        if current_run != Some(&read.run_id) {
+        let current_task =
+            app.sdk_inventory.tasks.iter().find(|task| task.task_id == read.agent_id);
+        // Lifecycle changes invalidate response eligibility even while the reader
+        // preserves its saved content, including executions without a run ID.
+        if current_task.is_none_or(|task| task.status != TaskStatus::Completed) {
+            read.after_completion = false;
+        }
+        if current_task.map(|task| &task.run_id) != Some(&read.run_id) {
             read.saved_snapshot = true;
             read.after_completion = false;
             if read.pending {
@@ -500,10 +501,6 @@ fn read_selected_response(app: &mut App, again: bool) {
         app.agents.read_in_flight = Some(passed.request_id);
     }
     if status != SubagentStatus::Completed {
-        // A subagent resumed after it completed will end with another response.
-        if let Some(read) = app.agents.read.as_mut() {
-            read.after_completion = false;
-        }
         return;
     }
     if app.agents.has_transcript(&task_id) != Some(true) {

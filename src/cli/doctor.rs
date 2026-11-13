@@ -288,9 +288,11 @@ impl DoctorSection {
     fn for_check(id: &str) -> Self {
         match id {
             "bridge_runtime" | "bridge_runtime_version" | "bridge_script" => Self::Runtime,
-            "config_settings" | "config_local_settings" | "config_preferences" | "config_paths" => {
-                Self::Configuration
-            }
+            "config_settings"
+            | "config_project_settings"
+            | "config_local_settings"
+            | "config_preferences"
+            | "config_paths" => Self::Configuration,
             "runtime_log_dir" | "legacy_log_path" => Self::Logs,
             "npm_root_package" | "npm_platform_package" => Self::Npm,
             "claude_credentials" => Self::Credentials,
@@ -328,7 +330,9 @@ impl HumanStyle {
 }
 
 fn is_candidate_detail_key(key: &str) -> bool {
-    key.starts_with("candidate_") || key.starts_with("packaged_candidate_")
+    key.strip_prefix("candidate_")
+        .or_else(|| key.strip_prefix("packaged_candidate_"))
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 impl DoctorStatus {
@@ -931,151 +935,5 @@ impl DoctorCheck {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        DoctorReport, DoctorStatus, PlatformPackageSelection, PlatformReport,
-        ROOT_NPM_PACKAGE_NAME, classify_bun_version, config_path_checks, package_json_check,
-        parse_bun_version, platform_package_selection_for, write_human_report,
-    };
-    use std::path::Path;
-
-    #[test]
-    fn parses_bun_versions() {
-        assert_eq!(parse_bun_version("1.3.14"), Some("1.3.14"));
-        assert_eq!(parse_bun_version("v1.3.14"), Some("1.3.14"));
-        assert_eq!(parse_bun_version("1.3.14-canary.1"), Some("1.3.14-canary.1"));
-        assert_eq!(parse_bun_version("v1.3.14+20260705"), Some("1.3.14+20260705"));
-        assert_eq!(parse_bun_version("not-bun"), None);
-        assert_eq!(parse_bun_version("1.3.14-"), None);
-    }
-
-    #[test]
-    fn invalid_bun_version_is_hard_failure() {
-        let check = classify_bun_version("not-bun", Path::new("bun"));
-
-        assert_eq!(check.status, DoctorStatus::Fail);
-        assert!(check.hard_failure);
-    }
-
-    #[test]
-    fn human_report_does_not_print_json() {
-        let report = DoctorReport {
-            version: "1.2.3".to_owned(),
-            platform: PlatformReport { os: "test-os".to_owned(), arch: "test-arch".to_owned() },
-            checks: vec![super::DoctorCheck::pass("binary_version", "Binary version", "1.2.3")],
-        };
-        let mut output = Vec::new();
-
-        write_human_report(&mut output, &report, super::HumanStyle::new(false))
-            .expect("write report");
-
-        let output = String::from_utf8(output).expect("utf8");
-        assert!(output.contains("claude-rs doctor"));
-        assert!(output.contains("[PASS]  Binary version"));
-        assert!(output.contains("Status  Check"));
-        assert!(!output.trim_start().starts_with('{'));
-    }
-
-    #[test]
-    fn config_path_checks_use_project_root_override_for_local_settings() {
-        let project = tempfile::tempdir().expect("tempdir");
-
-        let checks = config_path_checks(Some(project.path()));
-
-        let local = checks
-            .iter()
-            .find(|check| check.id == "config_local_settings")
-            .expect("local settings check");
-        assert_eq!(
-            local.details.get("path").map(String::as_str),
-            Some(
-                project
-                    .path()
-                    .join(".claude")
-                    .join("settings.local.json")
-                    .to_string_lossy()
-                    .as_ref()
-            )
-        );
-    }
-
-    #[test]
-    fn package_json_check_skips_unrelated_packages_until_expected_package() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let unrelated = dir.path().join("unrelated").join("package.json");
-        let expected = dir.path().join("expected").join("package.json");
-        std::fs::create_dir_all(unrelated.parent().expect("unrelated parent"))
-            .expect("create unrelated parent");
-        std::fs::create_dir_all(expected.parent().expect("expected parent"))
-            .expect("create expected parent");
-        std::fs::write(&unrelated, r#"{"name":"other-project","version":"9.9.9"}"#)
-            .expect("write unrelated package");
-        std::fs::write(
-            &expected,
-            format!(r#"{{"name":"{ROOT_NPM_PACKAGE_NAME}","version":"1.2.3"}}"#),
-        )
-        .expect("write expected package");
-
-        let check = package_json_check(
-            "npm_root_package",
-            "npm root package",
-            vec![unrelated, expected.clone()],
-            Some(ROOT_NPM_PACKAGE_NAME),
-            false,
-        );
-
-        assert_eq!(check.status, DoctorStatus::Pass);
-        assert_eq!(
-            check.details.get("path").map(String::as_str),
-            Some(expected.to_string_lossy().as_ref())
-        );
-        assert_eq!(check.details.get("name").map(String::as_str), Some(ROOT_NPM_PACKAGE_NAME));
-    }
-
-    #[test]
-    fn package_json_check_warns_on_unrelated_package_metadata() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let unrelated = dir.path().join("package.json");
-        std::fs::write(&unrelated, r#"{"name":"other-project","version":"9.9.9"}"#)
-            .expect("write unrelated package");
-
-        let check = package_json_check(
-            "npm_root_package",
-            "npm root package",
-            vec![unrelated],
-            Some(ROOT_NPM_PACKAGE_NAME),
-            false,
-        );
-
-        assert_eq!(check.status, DoctorStatus::Warn);
-        assert!(check.message.contains("expected claude-code-rust package metadata"));
-    }
-
-    #[test]
-    fn platform_package_selection_requires_glibc_for_linux_packages() {
-        assert_eq!(
-            platform_package_selection_for("linux", "x86_64", Some("glibc")),
-            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-linux-x64-gnu")
-        );
-        assert_eq!(
-            platform_package_selection_for("linux", "aarch64", Some("glibc")),
-            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-linux-arm64-gnu")
-        );
-        assert_eq!(
-            platform_package_selection_for("linux", "x86_64", Some("musl")),
-            PlatformPackageSelection::UnsupportedLinuxLibc { arch: "x86_64", libc: "musl" }
-        );
-    }
-
-    #[test]
-    fn platform_package_selection_handles_non_linux_targets() {
-        assert_eq!(
-            platform_package_selection_for("windows", "x86_64", None),
-            PlatformPackageSelection::Supported("@srothgan/claude-code-rust-win32-x64-msvc")
-        );
-        assert_eq!(
-            platform_package_selection_for("freebsd", "x86_64", None),
-            PlatformPackageSelection::UnsupportedPlatform
-        );
-    }
-}
+#[path = "doctor_audit_tests.rs"]
+mod audit_tests;

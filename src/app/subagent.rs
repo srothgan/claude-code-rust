@@ -67,7 +67,7 @@ fn detect_subagent_at_cursor(
 
     // Eager activation: allow a bare `&` only when it is at token end (`... &` with no
     // trailing chars). This avoids triggering on spacing/operator patterns like `& `.
-    if cursor_col == token_start + 1 {
+    if token_end == token_start + 1 {
         if token_end == chars.len() {
             return Some(SubagentDetection {
                 trigger_row: cursor_row,
@@ -299,52 +299,234 @@ mod tests {
     use crate::app::App;
 
     #[test]
-    fn detect_subagent_requires_alpha_after_ampersand() {
-        let lines = vec!["& review".to_owned()];
-        assert!(detect_subagent_at_cursor(&lines, 0, 1).is_none());
+    fn subagent_detection_respects_token_grammar_and_character_coordinates() {
+        for (line, cursor, expected) in [
+            ("界 &review_2-x tail", 8, Some((2, "revie"))),
+            ("界 &review_2-x", 13, Some((2, "review_2-x"))),
+            ("界 &", 3, Some((2, ""))),
+            ("&review", 1, Some((0, ""))),
+            ("&review tail", 4, Some((0, "rev"))),
+            ("&9bad", 1, None),
+            ("&9bad", 5, None),
+            ("&-bad", 1, None),
+            ("&bad!", 1, None),
+            ("&bad!", 5, None),
+            ("&éclair", 1, None),
+            ("& review", 1, None),
+            ("cmd && build", 5, None),
+            ("cmd && build", 6, None),
+            ("x&review", 8, None),
+            ("&review", 0, None),
+            ("&review", 8, None),
+        ] {
+            let lines = vec!["untouched".into(), line.into()];
+            let result = detect_subagent_at_cursor(&lines, 1, cursor);
+            assert_eq!(
+                result,
+                expected.map(|(trigger_col, query)| SubagentDetection {
+                    trigger_row: 1,
+                    trigger_col,
+                    query: query.into(),
+                }),
+                "{line:?}, cursor {cursor}"
+            );
+        }
+    }
+
+    fn advertised_agents() -> Vec<crate::agent::model::AvailableAgent> {
+        let mut model_agent = crate::agent::model::AvailableAgent::new("builder", "Compile");
+        model_agent.model = Some("SpecialModel".into());
+        vec![
+            crate::agent::model::AvailableAgent::new("reviewer", "Inspect changes"),
+            crate::agent::model::AvailableAgent::new("explorer", "FindNeedle"),
+            model_agent,
+            crate::agent::model::AvailableAgent::new("", "FindNeedle"),
+        ]
     }
 
     #[test]
-    fn detect_subagent_rejects_double_ampersand() {
-        let lines = vec!["cmd && build".to_owned()];
-        assert!(detect_subagent_at_cursor(&lines, 0, 6).is_none());
-    }
-
-    #[test]
-    fn sync_with_cursor_activates_when_subagent_token_is_valid() {
+    fn subagent_matching_selects_advertised_identity_and_preserves_surrounding_draft() {
+        for (query, name, description, model) in [
+            ("REVIEW", "reviewer", "Inspect changes", None),
+            ("findneedle", "explorer", "FindNeedle", None),
+            ("SPECIALMODEL", "builder", "Compile", Some("SpecialModel")),
+        ] {
+            let mut app = App::test_default();
+            app.sdk_inventory.available_agents = advertised_agents();
+            app.input.set_text(&format!("FIRST\n界 &{query} preserve suffix\nLAST"));
+            app.input.set_cursor(1, 3 + query.len());
+            sync_with_cursor(&mut app);
+            let state = app.subagent.as_ref().unwrap();
+            assert_eq!(
+                state
+                    .candidates
+                    .iter()
+                    .map(|c| (c.name.as_str(), c.description.as_str(), c.model.as_deref()))
+                    .collect::<Vec<_>>(),
+                [(name, description, model)]
+            );
+            confirm_selection(&mut app);
+            assert_eq!(app.input.text(), format!("FIRST\n界 &{name} preserve suffix\nLAST"));
+            app.input.textarea_insert_char('!');
+            assert_eq!(app.input.text(), format!("FIRST\n界 &{name}! preserve suffix\nLAST"));
+        }
         let mut app = App::test_default();
-        app.sdk_inventory.available_agents = vec![
-            crate::agent::model::AvailableAgent::new("reviewer", "Review code"),
-            crate::agent::model::AvailableAgent::new("explore", "Explore codebase"),
-        ];
-        app.input.set_text("&re");
-        let _ = app.input.set_cursor_col(3);
-
-        sync_with_cursor(&mut app);
-
-        let state = app.subagent.as_ref().expect("subagent state should be active");
-        assert_eq!(state.query, "re");
-        assert!(!state.candidates.is_empty());
-    }
-
-    #[test]
-    fn sync_with_cursor_activates_on_bare_ampersand_at_line_end() {
-        let mut app = App::test_default();
-        app.sdk_inventory.available_agents =
-            vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+        app.sdk_inventory.available_agents = advertised_agents();
         app.input.set_text("&");
-
         sync_with_cursor(&mut app);
-
-        let state = app.subagent.as_ref().expect("subagent state should be active");
-        assert_eq!(state.query, "");
-        assert!(!state.candidates.is_empty());
+        assert_eq!(
+            app.subagent
+                .as_ref()
+                .unwrap()
+                .candidates
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["reviewer", "explorer", "builder"]
+        );
+        app.input.insert_str("unmatched");
+        sync_with_cursor(&mut app);
+        assert!(app.subagent.is_none());
+        assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+        app.input.set_text("&review");
+        sync_with_cursor(&mut app);
+        confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "&reviewer ");
+        for text in ["& ", "&review"] {
+            app.sdk_inventory.available_agents.clear();
+            app.input.set_text(text);
+            sync_with_cursor(&mut app);
+            assert!(app.subagent.is_none());
+        }
     }
 
     #[test]
-    fn find_subagent_spans_ignores_double_ampersand() {
-        let spans = find_subagent_spans("run && wait &reviewer");
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].2, "reviewer");
+    fn subagent_highlight_spans_preserve_byte_ranges_and_reject_malformed_neighbors() {
+        let text = "界 &alpha_2-x && &beta x&embed &9bad &bad! & &éclair";
+        assert_eq!(
+            find_subagent_spans(text),
+            [(4, 14, "alpha_2-x".into()), (18, 23, "beta".into())]
+        );
+        assert_eq!(&text[4..14], "&alpha_2-x");
+        assert_eq!(&text[18..23], "&beta");
+    }
+
+    fn agent_key(app: &mut App, code: crossterm::event::KeyCode) {
+        crate::app::events::handle_terminal_event(
+            app,
+            crossterm::event::Event::Key(crossterm::event::KeyEvent::new(
+                code,
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        );
+    }
+    fn publish_agents(app: &mut App, agents: Vec<crate::agent::model::AvailableAgent>) {
+        crate::app::events::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::SessionUpdate {
+                session_id: "completion-session".into(),
+                update: crate::agent::model::SessionUpdate::AvailableAgentsUpdate(
+                    crate::agent::model::AvailableAgentsUpdate::new(agents),
+                ),
+            },
+        );
+    }
+    fn agent_menu(app: &App) -> Vec<String> {
+        use ratatui::{
+            buffer::Buffer,
+            layout::Rect,
+            widgets::{Paragraph, Widget},
+        };
+        let area = Rect::new(3, 2, 100, 10);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 106, 14));
+        Paragraph::new(crate::ui::input_rows::build_composer_hint_rows(app))
+            .render(area, &mut buffer);
+        (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn advertised_agent_refresh_updates_visible_selection_and_keyboard_completion() {
+        use crate::agent::model::AvailableAgent;
+        use crossterm::event::KeyCode;
+        let mut app = App::test_default();
+        app.status = crate::app::AppStatus::Ready;
+        app.session_runtime.session_id =
+            Some(crate::agent::model::SessionId::new("completion-session"));
+        publish_agents(
+            &mut app,
+            vec![
+                AvailableAgent::new("review-a", "OLD_A"),
+                AvailableAgent::new("review-b", "OLD_B"),
+                AvailableAgent::new("review-c", "OLD_C"),
+            ],
+        );
+        app.input.set_text("FIRST\n界 &re suffix\nLAST");
+        app.input.set_cursor(1, 2);
+        for _ in 0..3 {
+            agent_key(&mut app, KeyCode::Right);
+        }
+        agent_key(&mut app, KeyCode::Down);
+        agent_key(&mut app, KeyCode::Down);
+        assert!(agent_menu(&app).iter().any(|r| r.contains("> &review-c")));
+        let mut updated = AvailableAgent::new("review-b", "NEW_B");
+        updated.model = Some("MODEL_B".into());
+        publish_agents(&mut app, vec![updated, AvailableAgent::new("review-d", "NEW_D")]);
+        let rows = agent_menu(&app);
+        assert_eq!(rows.len(), 2);
+        let b = rows.iter().find(|r| r.contains("&review-b")).unwrap();
+        assert!(b.contains("NEW_B") && b.contains("MODEL_B") && !b.contains("NEW_D"));
+        let d = rows.iter().find(|r| r.contains("&review-d")).unwrap();
+        assert!(d.contains("NEW_D") && !d.contains("MODEL_B"));
+        assert!(
+            rows.iter().all(|r| !r.contains("OLD_")
+                && !r.contains("&review-a")
+                && !r.contains("&review-c"))
+        );
+        let selected = rows.iter().filter(|r| r.contains("> ")).collect::<Vec<_>>();
+        assert_eq!(selected.len(), 1);
+        let expected = if selected[0].contains("&review-b") {
+            "review-b"
+        } else {
+            assert!(selected[0].contains("&review-d"));
+            "review-d"
+        };
+        agent_key(&mut app, KeyCode::Enter);
+        assert_eq!(app.input.text(), format!("FIRST\n界 &{expected} suffix\nLAST"));
+        assert!(app.pending_submit.is_none());
+
+        let mut app = App::test_default();
+        app.status = crate::app::AppStatus::Ready;
+        app.session_runtime.session_id =
+            Some(crate::agent::model::SessionId::new("completion-session"));
+        publish_agents(&mut app, vec![AvailableAgent::new("review-old", "OLD")]);
+        app.input.set_text("&re");
+        sync_with_cursor(&mut app);
+        assert!(!agent_menu(&app).is_empty());
+        publish_agents(&mut app, vec![AvailableAgent::new("builder", "BUILD_ONLY")]);
+        assert!(agent_menu(&app).is_empty());
+        assert!(app.subagent.is_none());
+        assert_eq!(app.focus_owner(), crate::app::FocusOwner::Input);
+        agent_key(&mut app, KeyCode::Tab);
+        agent_key(&mut app, KeyCode::Char('x'));
+        assert!(app.input.text().ends_with('x'));
+        assert!(!app.input.text().contains("review-old"));
+        app.input.set_text("ordinary draft");
+        publish_agents(&mut app, vec![AvailableAgent::new("builder", "LATEST")]);
+        assert!(agent_menu(&app).is_empty());
+        assert_eq!(app.input.text(), "ordinary draft");
+        app.input.set_text("&bui");
+        sync_with_cursor(&mut app);
+        assert!(agent_menu(&app).iter().any(|r| r.contains("&builder") && r.contains("LATEST")));
+        agent_key(&mut app, KeyCode::Enter);
+        assert_eq!(app.input.text(), "&builder ");
     }
 }

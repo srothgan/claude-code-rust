@@ -20,7 +20,7 @@ where
 }
 
 impl PanicRestoreHook {
-    pub(crate) fn install<F>(restored: Arc<AtomicBool>, restore: F) -> Self
+    pub(crate) fn install<F>(restore: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
     {
@@ -32,7 +32,7 @@ impl PanicRestoreHook {
         let restore_for_hook = Arc::clone(&restore);
 
         std::panic::set_hook(Box::new(move |panic_info| {
-            restore_once(restored.as_ref(), || restore_for_hook.as_ref()());
+            restore_for_hook.as_ref()();
             previous_for_hook.as_ref()(panic_info);
         }));
 
@@ -60,11 +60,7 @@ impl Drop for PanicRestoreHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::panic;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static PANIC_HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn restore_once_only_runs_restore_logic_once() {
@@ -79,42 +75,5 @@ mod tests {
         });
 
         assert_eq!(restore_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn panic_hook_restores_once_and_chains_previous_hook() {
-        let _guard = PANIC_HOOK_TEST_LOCK.lock().expect("lock panic hook test");
-        let original = panic::take_hook();
-        let previous_calls = Arc::new(AtomicUsize::new(0));
-        let previous_calls_for_hook = Arc::clone(&previous_calls);
-        panic::set_hook(Box::new(move |_panic_info| {
-            previous_calls_for_hook.fetch_add(1, Ordering::SeqCst);
-        }));
-
-        let restored = Arc::new(AtomicBool::new(false));
-        let restore_calls = Arc::new(AtomicUsize::new(0));
-        let restore_calls_for_hook = Arc::clone(&restore_calls);
-        let hook = PanicRestoreHook::install(Arc::clone(&restored), move || {
-            restore_calls_for_hook.fetch_add(1, Ordering::SeqCst);
-        });
-
-        let _ = panic::catch_unwind(|| {
-            panic!("trigger hook");
-        });
-
-        assert_eq!(restore_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(previous_calls.load(Ordering::SeqCst), 1);
-
-        drop(hook);
-
-        let _ = panic::catch_unwind(|| {
-            panic!("trigger restored previous hook");
-        });
-
-        assert_eq!(restore_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(previous_calls.load(Ordering::SeqCst), 2);
-
-        let _installed = panic::take_hook();
-        panic::set_hook(original);
     }
 }

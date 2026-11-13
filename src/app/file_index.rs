@@ -1202,6 +1202,20 @@ fn run_scan_with_limit(
     event_tx: &SyncSender<FileIndexEvent>,
     max_entries: usize,
 ) {
+    run_scan_from(root, generation, respect_gitignore, cancel, event_tx, max_entries, |emit| {
+        for_each_candidate(root, root, respect_gitignore, Some(cancel), emit)
+    });
+}
+
+fn run_scan_from(
+    root: &Path,
+    generation: u64,
+    respect_gitignore: bool,
+    cancel: &Arc<AtomicBool>,
+    event_tx: &SyncSender<FileIndexEvent>,
+    max_entries: usize,
+    produce: impl FnOnce(&mut dyn FnMut(FileCandidate) -> bool) -> bool,
+) {
     let started_at = Instant::now();
     log_scan_started(root, generation, respect_gitignore, max_entries);
     let mut batch = Vec::with_capacity(SCAN_BATCH_SIZE);
@@ -1237,8 +1251,7 @@ fn run_scan_with_limit(
         receiver_dropped = !sent;
         sent
     };
-    let scan_complete =
-        for_each_candidate(root, root, respect_gitignore, Some(cancel), &mut emit_candidate);
+    let scan_complete = produce(&mut emit_candidate);
     if !scan_complete && !limited {
         tracing::info!(
             target: crate::logging::targets::APP_FILE_INDEX,
@@ -1453,9 +1466,7 @@ fn normalize_watch_events(
     use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind, RenameMode};
 
     let mut rebuild = false;
-    let mut create_or_modify_paths = Vec::new();
-    let mut rename_paths = Vec::new();
-    let mut remove_paths = Vec::new();
+    let mut changed_paths = Vec::new();
     let mut raw_events = 0usize;
 
     for event in events {
@@ -1481,21 +1492,17 @@ fn normalize_watch_events(
         }
 
         match event.kind {
-            EventKind::Modify(ModifyKind::Name(RenameMode::Any | RenameMode::Both)) => {
-                extend_unique_paths(&mut rename_paths, event.paths);
-            }
             EventKind::Create(CreateKind::Any | CreateKind::File | CreateKind::Folder)
             | EventKind::Modify(
                 ModifyKind::Any
                 | ModifyKind::Data(_)
                 | ModifyKind::Metadata(_)
-                | ModifyKind::Name(RenameMode::To),
-            ) => {
-                extend_unique_paths(&mut create_or_modify_paths, event.paths);
-            }
-            EventKind::Modify(ModifyKind::Name(RenameMode::From))
+                | ModifyKind::Name(
+                    RenameMode::Any | RenameMode::Both | RenameMode::From | RenameMode::To,
+                ),
+            )
             | EventKind::Remove(RemoveKind::Any | RemoveKind::File | RemoveKind::Folder) => {
-                extend_unique_paths(&mut remove_paths, event.paths);
+                extend_unique_paths(&mut changed_paths, event.paths);
             }
             EventKind::Other => {
                 rebuild = true;
@@ -1511,23 +1518,16 @@ fn normalize_watch_events(
             message = "file index watcher batch requested rebuild",
             generation,
             raw_events,
-            create_or_modify_paths = create_or_modify_paths.len(),
-            rename_paths = rename_paths.len(),
-            remove_paths = remove_paths.len(),
+            changed_paths = changed_paths.len(),
         );
         return vec![FileIndexEvent::RebuildRequested { generation }];
     }
 
-    let Some(mut changes) = collect_rename_changes(root, respect_gitignore, &rename_paths) else {
+    // Notifications may be coalesced or reordered. Reconcile each affected path
+    // with the filesystem after the debounce batch instead of replaying kinds.
+    let Some(changes) = collect_path_changes(root, respect_gitignore, &changed_paths) else {
         return vec![FileIndexEvent::RebuildRequested { generation }];
     };
-    let Some(create_or_modify_changes) =
-        collect_create_or_modify_changes(root, respect_gitignore, &create_or_modify_paths)
-    else {
-        return vec![FileIndexEvent::RebuildRequested { generation }];
-    };
-    changes.extend(create_or_modify_changes);
-    changes.extend(collect_remove_changes(root, &remove_paths));
     let events = chunk_fs_changes(generation, changes);
     if raw_events > 0 {
         tracing::debug!(
@@ -1536,9 +1536,7 @@ fn normalize_watch_events(
             message = "file index watcher batch normalized",
             generation,
             raw_events,
-            create_or_modify_paths = create_or_modify_paths.len(),
-            rename_paths = rename_paths.len(),
-            remove_paths = remove_paths.len(),
+            changed_paths = changed_paths.len(),
             fs_batches = events.len(),
         );
     }
@@ -1586,7 +1584,7 @@ fn matches_ignore_semantics_change(root: &Path, paths: &[PathBuf]) -> bool {
     })
 }
 
-fn collect_create_or_modify_changes(
+fn collect_path_changes(
     root: &Path,
     respect_gitignore: bool,
     paths: &[PathBuf],
@@ -1595,52 +1593,23 @@ fn collect_create_or_modify_changes(
     for path in paths {
         if path.is_dir() {
             return None;
-        } else if path.is_file() {
-            let mut entries = scan_subtree(root, path, respect_gitignore);
-            if let Some(candidate) = entries.pop() {
-                changes.push(FileIndexChange::Upsert(candidate));
-            } else if let Some(rel_path) = normalize_relative_path(root, path) {
-                changes.push(FileIndexChange::RemoveExact { rel_path });
-            }
         }
-    }
-    Some(changes)
-}
-
-fn collect_remove_changes(root: &Path, paths: &[PathBuf]) -> Vec<FileIndexChange> {
-    let mut changes = Vec::new();
-    for path in paths {
         let Some(rel_path) = normalize_relative_path(root, path) else {
             continue;
         };
-        changes.push(FileIndexChange::RemoveExact { rel_path: rel_path.clone() });
-        changes.push(FileIndexChange::RemovePrefix { rel_prefix: ensure_dir_suffix(rel_path) });
-    }
-    changes
-}
-
-fn collect_rename_changes(
-    root: &Path,
-    respect_gitignore: bool,
-    paths: &[PathBuf],
-) -> Option<Vec<FileIndexChange>> {
-    if paths.is_empty() {
-        return Some(Vec::new());
-    }
-    if paths.len() == 1 {
-        // macOS FSEvents emits two separate RenameMode::Any events (one per
-        // path) instead of a single paired event. If the path no longer exists
-        // it is the "from" side of the rename and should be treated as a remove.
-        if paths.first().is_some_and(|p| !p.exists()) {
-            return Some(collect_remove_changes(root, paths));
+        // A current file or missing path cannot retain children from a directory
+        // that occupied the same path before this notification batch.
+        changes.push(FileIndexChange::RemovePrefix {
+            rel_prefix: ensure_dir_suffix(rel_path.clone()),
+        });
+        if path.is_file()
+            && let Some(candidate) = scan_subtree(root, path, respect_gitignore).pop()
+        {
+            changes.push(FileIndexChange::Upsert(candidate));
+        } else {
+            changes.push(FileIndexChange::RemoveExact { rel_path });
         }
-        return collect_create_or_modify_changes(root, respect_gitignore, paths);
     }
-    if paths.len() != 2 {
-        return None;
-    }
-    let mut changes = collect_remove_changes(root, &paths[..1]);
-    changes.extend(collect_create_or_modify_changes(root, respect_gitignore, &paths[1..])?);
     Some(changes)
 }
 
@@ -1653,21 +1622,30 @@ fn for_each_candidate(
     walk_root: &Path,
     respect_gitignore: bool,
     cancel: Option<&Arc<AtomicBool>>,
-    emit: &mut impl FnMut(FileCandidate) -> bool,
+    emit: &mut (impl FnMut(FileCandidate) -> bool + ?Sized),
 ) -> bool {
-    let mut builder = ignore::WalkBuilder::new(walk_root);
+    // Start at the index root so incremental scans inherit the same ignore
+    // rules as a full scan; explicit walker roots bypass their own exclusion.
+    let requested = walk_root.to_path_buf();
+    let mut builder = ignore::WalkBuilder::new(root);
     builder
         .hidden(false)
         .git_ignore(respect_gitignore)
         .git_global(respect_gitignore)
         .git_exclude(respect_gitignore)
-        .sort_by_file_path(std::cmp::Ord::cmp);
+        .sort_by_file_path(std::cmp::Ord::cmp)
+        .filter_entry(move |entry| {
+            requested.starts_with(entry.path()) || entry.path().starts_with(&requested)
+        });
 
     for result in builder.build() {
         if cancel.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed)) {
             return false;
         }
         let Ok(entry) = result else { continue };
+        if !entry.path().starts_with(walk_root) {
+            continue;
+        }
         let Some(candidate) = candidate_from_entry(root, &entry) else { continue };
         if !emit(candidate) {
             return false;
@@ -1754,6 +1732,31 @@ impl ScanOverrides {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// Holds matcher delivery at the channel boundary while the application creates real requests.
+    pub(crate) struct HeldMatcher {
+        _index_rx: Receiver<FileIndexMatcherCommand>,
+        query_rx: Receiver<MentionMatchRequest>,
+    }
+    impl HeldMatcher {
+        pub(crate) fn install(app: &mut App) -> Self {
+            let (index_tx, index_rx) = mpsc::sync_channel(MATCHER_INDEX_QUEUE_CAPACITY);
+            let (query_tx, query_rx) = mpsc::channel();
+            app.file_index.matcher = Some(FileIndexMatcherHandle { index_tx, query_tx });
+            Self { _index_rx: index_rx, query_rx }
+        }
+        pub(crate) fn request(&self) -> MentionMatchRequest {
+            self.query_rx.recv_timeout(Duration::from_secs(5)).expect("real mention request")
+        }
+        pub(crate) fn has_no_request(&self) -> bool {
+            matches!(self.query_rx.try_recv(), Err(TryRecvError::Empty))
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::{App, mention};
@@ -1786,7 +1789,16 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         drain_events(app);
-        assert!(predicate(app), "condition not met before timeout");
+        assert!(
+            predicate(app),
+            "condition not met before timeout; candidates={:?}, index={:?}",
+            app.mention.as_ref().map(|m| m
+                .candidates
+                .iter()
+                .map(|c| &c.rel_path)
+                .collect::<Vec<_>>()),
+            app.file_index.entries.keys().collect::<Vec<_>>()
+        );
     }
 
     fn candidate(rel_path: &str) -> FileCandidate {
@@ -1794,7 +1806,7 @@ mod tests {
             rel_path: rel_path.to_owned(),
             rel_path_lower: rel_path.to_lowercase(),
             basename_lower: candidate_basename(rel_path).to_lowercase(),
-            depth: rel_path.matches('/').count(),
+            depth: rel_path.trim_end_matches('/').matches('/').count(),
         }
     }
 
@@ -1826,78 +1838,6 @@ mod tests {
     }
 
     #[test]
-    fn reopening_mention_reuses_existing_generation() {
-        let (mut app, _tmp) = app_with_temp_files(&["src/main.rs"]);
-        restart(&mut app);
-        app.input.set_text("@rs");
-        let _ = app.input.set_cursor(0, 3);
-
-        mention::activate(&mut app);
-        wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.status.is_finished() && !app.file_index.entries.is_empty()
-        });
-        let generation = app.file_index.generation;
-
-        mention::deactivate(&mut app);
-        app.input.set_text("@src");
-        let _ = app.input.set_cursor(0, 4);
-        mention::activate(&mut app);
-
-        assert_eq!(app.file_index.generation, generation);
-    }
-
-    #[test]
-    fn stale_scan_event_is_ignored_after_reset() {
-        let mut app = App::test_default();
-        let stale_generation = app.file_index.generation;
-        reset(&mut app);
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
-                generation: stale_generation,
-                entries: vec![FileCandidate {
-                    rel_path: "stale.rs".to_owned(),
-                    rel_path_lower: "stale.rs".to_owned(),
-                    basename_lower: "stale.rs".to_owned(),
-                    depth: 0,
-                }],
-            })
-            .expect("send stale scan batch");
-
-        drain_events(&mut app);
-
-        assert!(app.file_index.entries.is_empty());
-    }
-
-    #[test]
-    fn live_remove_blocks_late_scan_entry_from_same_generation() {
-        let mut app = App::test_default();
-        app.file_index.generation = 7;
-        app.file_index.status = FileIndexStatus::Scanning;
-
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch {
-                generation: 7,
-                changes: vec![FileIndexChange::RemoveExact { rel_path: "stale.rs".to_owned() }],
-            })
-            .expect("send live remove");
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
-                generation: 7,
-                entries: vec![FileCandidate {
-                    rel_path: "stale.rs".to_owned(),
-                    rel_path_lower: "stale.rs".to_owned(),
-                    basename_lower: "stale.rs".to_owned(),
-                    depth: 0,
-                }],
-            })
-            .expect("send stale scan batch");
-
-        drain_events(&mut app);
-
-        assert!(!app.file_index.entries.contains_key("stale.rs"));
-    }
-
-    #[test]
     fn matcher_entries_repair_lookup_after_swap_remove() {
         let mut entries = MatcherEntries::default();
         entries.upsert(candidate("a.rs"));
@@ -1916,400 +1856,743 @@ mod tests {
 
     fn mention_matcher_paths(matcher: &mut MentionMatcher, query: &str) -> Vec<String> {
         matcher.set_query(query);
-        while matcher.tick(NUCLEO_QUERY_TICK_MS).running {}
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while matcher.tick(NUCLEO_QUERY_TICK_MS).running {
+            assert!(Instant::now() < deadline, "matcher query did not finish: {query}");
+        }
         matcher.candidates(MAX_CANDIDATES).into_iter().map(|candidate| candidate.rel_path).collect()
     }
 
-    #[test]
-    fn mention_matcher_streams_scan_batches_into_nucleo() {
-        let mut matcher = MentionMatcher::default();
-        let batch =
-            (0..75).map(|idx| candidate(&format!("src/file-{idx:03}.rs"))).collect::<Vec<_>>();
-
-        let stats = matcher.upsert_scan_batch(batch);
-        let paths = mention_matcher_paths(&mut matcher, "file");
-
-        assert_eq!(stats.inserted, 75);
-        assert_eq!(matcher.injected_items(), 75);
-        assert_eq!(paths.len(), MAX_CANDIDATES);
-        assert!(paths.iter().all(|path| path.contains("file")));
-    }
-
-    #[test]
-    fn mention_matcher_finds_root_level_directory() {
-        let mut matcher = MentionMatcher::default();
-        matcher.upsert_scan_batch(vec![
-            candidate("aaa_huge/file-000.rs"),
-            candidate("web_dev_work/"),
-            candidate("src/lib.rs"),
-        ]);
-
-        let paths = mention_matcher_paths(&mut matcher, "web_dev_work");
-
-        assert!(paths.iter().any(|path| path == "web_dev_work/"));
-    }
-
-    #[test]
-    fn mention_matcher_finds_query_containing_spaces() {
-        let mut matcher = MentionMatcher::default();
-        matcher.upsert_scan_batch(vec![
-            candidate("docs/my folder/read me.md"),
-            candidate("src/main.rs"),
-        ]);
-
-        let paths = mention_matcher_paths(&mut matcher, "my folder");
-
-        assert!(paths.iter().any(|path| path == "docs/my folder/read me.md"));
-    }
-
-    #[test]
-    fn mention_matcher_prefers_shallow_paths_over_deep_dependency_matches() {
-        let mut matcher = MentionMatcher::default();
-        matcher.upsert_scan_batch(vec![
-            candidate("tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js"),
-            candidate("tester/node_modules/@supabase/storage-js/dist/module/lib/errors.js"),
-            candidate("docs/supabase error module.md"),
-        ]);
-
-        let paths = mention_matcher_paths(&mut matcher, "supabase error module");
-
-        assert_eq!(paths.first().map(String::as_str), Some("docs/supabase error module.md"));
-    }
-
-    #[test]
-    fn mention_matcher_keeps_explicit_deep_path_prefix_ahead_of_shallow_matches() {
-        let mut matcher = MentionMatcher::default();
-        matcher.upsert_scan_batch(vec![
-            candidate("docs/tester node_modules note.md"),
-            candidate("tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js"),
-        ]);
-
-        let paths = mention_matcher_paths(&mut matcher, "tester/node_modules");
-
-        assert_eq!(
-            paths.first().map(String::as_str),
-            Some("tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js")
-        );
-    }
-
-    #[test]
-    fn mention_matcher_rebuilds_after_filesystem_removal() {
-        let mut matcher = MentionMatcher::default();
-        matcher.reset(vec![candidate("old.rs"), candidate("src/current.rs")]);
-
-        assert!(mention_matcher_paths(&mut matcher, "old").iter().any(|path| path == "old.rs"));
-
-        let stats = matcher.apply_change_batch(vec![FileIndexChange::RemoveExact {
-            rel_path: "old.rs".to_owned(),
-        }]);
-        let paths = mention_matcher_paths(&mut matcher, "old");
-
-        assert_eq!(stats.removed, 1);
-        assert!(!paths.iter().any(|path| path == "old.rs"));
-    }
-
-    #[test]
-    fn matcher_runtime_prioritizes_query_over_pending_scan_batches() {
-        let (index_tx, index_rx) = mpsc::channel();
-        let (query_tx, query_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
-        let mut runtime = FileIndexMatcherRuntime::new(1, index_rx, query_rx, event_tx);
-        runtime.reset(1, 1, vec![candidate("target.rs")], FileIndexStatus::Scanning);
-        for idx in 0..32 {
-            index_tx
-                .send(FileIndexMatcherCommand::ScanBatch {
-                    generation: 1,
-                    index_version: 2 + idx,
-                    entries: vec![candidate(&format!("bulk/file-{idx:03}.rs"))],
-                })
-                .expect("queue scan batch");
+    fn send_index_events(app: &mut App, events: impl IntoIterator<Item = FileIndexEvent>) {
+        for event in events {
+            app.file_index_event_tx.send(event).unwrap();
+            drain_events(app);
         }
-        query_tx
-            .send(MentionMatchRequest {
-                generation: 1,
-                index_version: 1,
-                sequence: 7,
-                query: "target".to_owned(),
-            })
-            .expect("queue query");
-
-        assert!(runtime.handle_next_command());
-
-        let event = event_rx.recv_timeout(Duration::from_secs(2)).expect("match result");
-        let FileIndexEvent::MatchResult(result) = event else {
-            panic!("expected match result");
-        };
-        assert_eq!(result.sequence, 7);
-        assert!(result.candidates.iter().any(|candidate| candidate.rel_path == "target.rs"));
-        assert_eq!(runtime.matcher.len(), 1);
     }
-
-    #[test]
-    fn spawn_scan_streams_batches_before_finished_event() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        for idx in 0..300 {
-            let path = tmp.path().join("src").join(format!("file-{idx}.rs"));
-            std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
-            std::fs::write(path, "").expect("write file");
-        }
-        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
-        let _scan = spawn_scan(tmp.path().to_path_buf(), 1, true, tx);
-
-        let first = rx.recv_timeout(Duration::from_secs(2)).expect("first scan event");
-        assert!(matches!(first, FileIndexEvent::ScanBatch { .. }));
-    }
-
-    #[test]
-    fn file_index_event_channel_applies_bounded_backpressure() {
-        let (tx, _rx) = event_channel();
-        for generation in 0..EVENT_QUEUE_CAPACITY {
-            tx.try_send(FileIndexEvent::ScanFinished {
-                generation: generation as u64,
-                limited: false,
-            })
-            .expect("event should fit within configured capacity");
-        }
-
-        assert!(matches!(
-            tx.try_send(FileIndexEvent::ScanFinished { generation: 99, limited: false }),
-            Err(mpsc::TrySendError::Full(_))
-        ));
-    }
-
-    #[test]
-    fn scan_stops_at_the_entry_limit_and_reports_partial_state() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        for idx in 0..5 {
-            std::fs::write(tmp.path().join(format!("file-{idx}.rs")), "").expect("write file");
-        }
-        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
-        let cancel = Arc::new(AtomicBool::new(false));
-
-        run_scan_with_limit(tmp.path(), 7, true, &cancel, &tx, 3);
-
-        let mut entries = Vec::new();
-        let mut limited = false;
-        while let Ok(event) = rx.try_recv() {
-            match event {
-                FileIndexEvent::ScanBatch { entries: batch, .. } => entries.extend(batch),
-                FileIndexEvent::ScanFinished { limited: event_limited, .. } => {
-                    limited = event_limited;
-                }
-                FileIndexEvent::FsBatch { .. }
-                | FileIndexEvent::RebuildRequested { .. }
-                | FileIndexEvent::MatchResult(_) => {}
-            }
-        }
-
-        assert_eq!(entries.len(), 3);
-        assert!(limited);
-    }
-
-    #[test]
-    fn background_index_updates_do_not_repaint_without_an_active_mention() {
-        let mut app = App::test_default();
-        app.file_index.generation = 4;
+    fn load_fixture_index(app: &mut App, respect: bool) {
+        reset(app);
+        app.file_index.root = Some(PathBuf::from(&app.cwd_raw));
+        app.file_index.respect_gitignore = respect;
         app.file_index.status = FileIndexStatus::Scanning;
-        app.surface_dirty.chat.repaint = false;
-        app.file_index_event_tx
-            .send(FileIndexEvent::ScanBatch {
-                generation: 4,
-                entries: vec![candidate("src/main.rs")],
-            })
-            .expect("send scan batch");
-
-        drain_events(&mut app);
-
-        assert!(app.file_index.entries.contains_key("src/main.rs"));
-        assert!(!app.surface_dirty.chat.repaint);
-    }
-
-    #[test]
-    fn spawn_scan_indexes_each_candidate_once_in_a_single_walk() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(tmp.path().join("aaa_huge")).expect("create huge sibling");
-        std::fs::create_dir_all(tmp.path().join("web_dev_work")).expect("create target sibling");
-        for idx in 0..300 {
-            let path = tmp.path().join("aaa_huge").join(format!("file-{idx}.rs"));
-            std::fs::write(path, "").expect("write file");
-        }
-        let (tx, rx) = mpsc::sync_channel(EVENT_QUEUE_CAPACITY);
-        let _scan = spawn_scan(tmp.path().to_path_buf(), 1, true, tx);
-        let mut paths = Vec::new();
-
-        loop {
-            match rx.recv_timeout(Duration::from_secs(2)).expect("scan event") {
-                FileIndexEvent::ScanBatch { entries, .. } => {
-                    paths.extend(entries.into_iter().map(|candidate| candidate.rel_path));
-                }
-                FileIndexEvent::ScanFinished { limited, .. } => {
-                    assert!(!limited);
-                    break;
-                }
-                FileIndexEvent::FsBatch { .. }
-                | FileIndexEvent::RebuildRequested { .. }
-                | FileIndexEvent::MatchResult(_) => panic!("unexpected scan event"),
-            }
-        }
-
-        let unique = paths.iter().collect::<BTreeSet<_>>();
-        assert_eq!(unique.len(), paths.len());
-        assert!(paths.iter().any(|path| path == "web_dev_work/"));
-    }
-
-    #[test]
-    fn fs_batch_create_updates_matcher_candidates_without_real_watcher() {
-        let mut app = App::test_default();
-        app.file_index.generation = 5;
-        app.file_index.status = FileIndexStatus::Complete;
-        app.file_index.entries.insert("existing.rs".to_owned(), candidate("existing.rs"));
-        app.mention = Some(mention::MentionState::new(0, 0, "new".to_owned(), Vec::new()));
-
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch {
-                generation: 5,
-                changes: vec![FileIndexChange::Upsert(candidate("new.rs"))],
-            })
-            .expect("send fs batch");
-
-        drain_events(&mut app);
-
-        assert!(app.surface_dirty.chat.repaint);
-        wait_for(&mut app, Duration::from_secs(1), |app| {
-            app.mention.as_ref().is_some_and(|mention| {
-                mention.candidates.iter().any(|candidate| candidate.rel_path == "new.rs")
-            })
-        });
-        let mention = app.mention.as_ref().expect("mention");
-        assert_eq!(
-            mention
-                .candidates
-                .iter()
-                .map(|candidate| candidate.rel_path.as_str())
-                .collect::<Vec<_>>(),
-            vec!["new.rs"]
+        let (tx, rx) = event_channel();
+        run_scan_with_limit(
+            Path::new(&app.cwd_raw),
+            app.file_index.generation,
+            respect,
+            &Arc::new(AtomicBool::new(false)),
+            &tx,
+            MAX_INDEX_ENTRIES,
         );
+        drop(tx);
+        send_index_events(app, rx);
     }
-
-    #[test]
-    fn fs_batch_rename_replaces_old_path_without_real_watcher() {
-        let (mut app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
-        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        app.file_index.generation = 9;
-        app.file_index.status = FileIndexStatus::Complete;
-        app.file_index.root = Some(root.clone());
-        app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
-        app.file_index.entries.insert("keep.rs".to_owned(), candidate("keep.rs"));
-        app.mention = Some(mention::MentionState::new(0, 0, "rs".to_owned(), Vec::new()));
-
-        std::fs::rename(root.join("before.rs"), root.join("after.rs"))
-            .expect("rename watched file");
-        let changes =
-            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")])
-                .expect("file rename should not require rebuild");
-        app.file_index_event_tx
-            .send(FileIndexEvent::FsBatch { generation: 9, changes })
-            .expect("send rename fs batch");
-
-        drain_events(&mut app);
-
-        assert!(!app.file_index.entries.contains_key("before.rs"));
-        assert!(app.file_index.entries.contains_key("after.rs"));
-        assert!(app.file_index.entries.contains_key("keep.rs"));
-        wait_for(&mut app, Duration::from_secs(1), |app| {
-            app.mention.as_ref().is_some_and(|mention| {
-                mention.candidates.iter().any(|candidate| candidate.rel_path == "after.rs")
-            })
+    fn visible_paths(app: &App) -> Vec<String> {
+        let mut paths = app
+            .mention
+            .as_ref()
+            .map(|m| m.candidates.iter().map(|c| c.rel_path.clone()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        paths.sort();
+        paths
+    }
+    fn query_paths(app: &mut App, query: &str, expected: &[&str]) {
+        mention::deactivate(app);
+        app.input.set_text(&format!("@{query}"));
+        mention::activate(app);
+        let expected = expected.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>();
+        wait_for(app, Duration::from_secs(10), |a| {
+            visible_paths(a) == expected
+                && a.mention.as_ref().is_some_and(|m| {
+                    m.placeholder_message().is_none_or(|s| s.starts_with("No match"))
+                })
         });
-        let mention = app.mention.as_ref().expect("mention");
-        let visible = mention
+        assert_eq!(visible_paths(app), expected);
+    }
+    fn confirm_path(app: &mut App, path: &str) {
+        let target = app
+            .mention
+            .as_ref()
+            .unwrap()
             .candidates
             .iter()
-            .map(|candidate| candidate.rel_path.as_str())
-            .collect::<Vec<_>>();
-        assert!(visible.contains(&"after.rs"));
-        assert!(visible.contains(&"keep.rs"));
-        assert!(!visible.contains(&"before.rs"));
+            .position(|c| c.rel_path == path)
+            .unwrap();
+        for _ in 0..target {
+            mention::move_down(app);
+        }
+        mention::confirm_selection(app);
+        assert_eq!(app.input.text(), format!("@'{path}' "));
     }
-
+    fn watch_event(kind: notify::EventKind, paths: &[PathBuf]) -> notify::Event {
+        let mut event = notify::Event::new(kind);
+        event.paths = paths.to_vec();
+        event
+    }
+    fn apply_notifications(app: &mut App, events: Vec<notify::Event>) {
+        let root = PathBuf::from(&app.cwd_raw);
+        let normalized = normalize_watch_events(
+            &root,
+            app.file_index.generation,
+            app.file_index.respect_gitignore,
+            events.into_iter().map(Ok),
+        );
+        send_index_events(app, normalized);
+    }
     #[test]
-    fn batched_watch_events_emit_single_fs_batch() {
-        use notify::Event;
-        use notify::event::{CreateKind, EventKind};
-
-        let (_app, tmp) = app_with_temp_files(&["a.rs", "b.rs"]);
-        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        let events = vec![
-            Ok(Event::new(EventKind::Create(CreateKind::File)).add_path(root.join("a.rs"))),
-            Ok(Event::new(EventKind::Create(CreateKind::File)).add_path(root.join("b.rs"))),
-        ];
-
-        let mut normalized = normalize_watch_events(&root, 3, true, events);
-        assert_eq!(normalized.len(), 1);
-        let event = normalized.pop().expect("watch event");
-
-        let FileIndexEvent::FsBatch { generation, changes } = event else {
-            panic!("expected fs batch");
+    fn stale_index_events_preserve_current_content_and_accept_current_changes() {
+        for kind in ["scan", "finish", "filesystem", "rebuild"] {
+            let (mut app, _tmp) = app_with_temp_files(&["current.rs"]);
+            load_fixture_index(&mut app, false);
+            let stale = app.file_index.generation;
+            load_fixture_index(&mut app, false);
+            query_paths(&mut app, "rs", &["current.rs"]);
+            let draft = app.input.text();
+            let generation = app.file_index.generation;
+            let event = match kind {
+                "scan" => FileIndexEvent::ScanBatch {
+                    generation: stale,
+                    entries: vec![candidate("obsolete.rs")],
+                },
+                "finish" => FileIndexEvent::ScanFinished { generation: stale, limited: true },
+                "filesystem" => FileIndexEvent::FsBatch {
+                    generation: stale,
+                    changes: vec![
+                        FileIndexChange::RemoveExact { rel_path: "current.rs".into() },
+                        FileIndexChange::Upsert(candidate("obsolete.rs")),
+                    ],
+                },
+                _ => FileIndexEvent::RebuildRequested { generation: stale },
+            };
+            send_index_events(&mut app, [event]);
+            assert_eq!(visible_paths(&app), ["current.rs"]);
+            assert_eq!(app.input.text(), draft);
+            if kind == "finish" {
+                query_paths(&mut app, "zzzz", &[]);
+                assert!(
+                    !app.mention.as_ref().unwrap().placeholder_message().unwrap().contains("first"),
+                    "stale completion must not mark the current complete index as partial"
+                );
+            }
+            send_index_events(
+                &mut app,
+                [FileIndexEvent::FsBatch {
+                    generation,
+                    changes: vec![FileIndexChange::Upsert(candidate("new.rs"))],
+                }],
+            );
+            query_paths(&mut app, "rs", &["current.rs", "new.rs"]);
+            confirm_path(&mut app, "new.rs");
+        }
+    }
+    #[test]
+    fn live_removal_blocks_late_scan_rows_without_losing_siblings_or_recreation() {
+        for directory in [false, true] {
+            let (mut app, _tmp) = app_with_temp_files(&["src/old.rs", "src-extra/keep.rs"]);
+            load_fixture_index(&mut app, false);
+            app.file_index.status = FileIndexStatus::Scanning;
+            let generation = app.file_index.generation;
+            let removal = if directory {
+                FileIndexChange::RemovePrefix { rel_prefix: "src/".into() }
+            } else {
+                FileIndexChange::RemoveExact { rel_path: "src/old.rs".into() }
+            };
+            send_index_events(
+                &mut app,
+                [
+                    FileIndexEvent::FsBatch { generation, changes: vec![removal] },
+                    FileIndexEvent::ScanBatch {
+                        generation,
+                        entries: vec![candidate("src/old.rs"), candidate("late.rs")],
+                    },
+                    FileIndexEvent::ScanFinished { generation, limited: false },
+                ],
+            );
+            query_paths(&mut app, "rs", &["late.rs", "src-extra/keep.rs"]);
+            send_index_events(
+                &mut app,
+                [FileIndexEvent::FsBatch {
+                    generation,
+                    changes: vec![FileIndexChange::Upsert(candidate("src/old.rs"))],
+                }],
+            );
+            query_paths(&mut app, "rs", &["late.rs", "src-extra/keep.rs", "src/old.rs"]);
+            confirm_path(&mut app, "src/old.rs");
+        }
+    }
+    #[test]
+    fn matcher_mutations_preserve_searchable_survivors_and_recreated_paths() {
+        let mut matcher = MentionMatcher::default();
+        matcher.reset(vec![
+            candidate("src/old.rs"),
+            candidate("src-extra/keep.rs"),
+            candidate("other.rs"),
+        ]);
+        assert!(mention_matcher_paths(&mut matcher, "rs").contains(&"src/old.rs".into()));
+        matcher.apply_change_batch(vec![
+            FileIndexChange::RemoveExact { rel_path: "other.rs".into() },
+            FileIndexChange::RemovePrefix { rel_prefix: "src/".into() },
+        ]);
+        assert_eq!(mention_matcher_paths(&mut matcher, "rs"), ["src-extra/keep.rs"]);
+        matcher.apply_change_batch(vec![FileIndexChange::Upsert(candidate("src/new.rs"))]);
+        let mut paths = mention_matcher_paths(&mut matcher, "rs");
+        paths.sort();
+        assert_eq!(paths, ["src-extra/keep.rs", "src/new.rs"]);
+        assert_eq!(mention_matcher_paths(&mut matcher, "old"), Vec::<String>::new());
+        assert_eq!(mention_matcher_paths(&mut matcher, "new"), ["src/new.rs"]);
+    }
+    #[test]
+    fn incremental_matcher_searches_real_directory_and_spaced_path_candidates() {
+        let (app, tmp) = app_with_temp_files(&["root.rs", "docs/my folder/read me.md", "xyz.bin"]);
+        let root = Path::new(&app.cwd_raw);
+        let mut matcher = MentionMatcher::default();
+        matcher.upsert_scan_batch(collect_candidates(root, root, false, None));
+        assert_eq!(mention_matcher_paths(&mut matcher, "root"), ["root.rs"]);
+        let mut directories = mention_matcher_paths(&mut matcher, "docs");
+        directories.sort();
+        assert_eq!(directories, ["docs/", "docs/my folder/", "docs/my folder/read me.md"]);
+        assert_eq!(mention_matcher_paths(&mut matcher, "read me"), ["docs/my folder/read me.md"]);
+        std::fs::write(tmp.path().join("new.rs"), "").unwrap();
+        matcher.upsert_scan_batch(scan_subtree(root, &root.join("new.rs"), false));
+        let mut paths = mention_matcher_paths(&mut matcher, "rs");
+        paths.sort();
+        assert_eq!(paths, ["new.rs", "root.rs"]);
+        assert_eq!(mention_matcher_paths(&mut matcher, "read"), ["docs/my folder/read me.md"]);
+        assert_eq!(mention_matcher_paths(&mut matcher, "read me"), ["docs/my folder/read me.md"]);
+        assert_eq!(mention_matcher_paths(&mut matcher, "new"), ["new.rs"]);
+    }
+    #[test]
+    fn matcher_ranking_preserves_depth_explicit_prefix_and_equal_depth_relevance() {
+        for (query, preferred, rival) in [
+            (
+                "supabase error module",
+                "docs/supabase error module.md",
+                "tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js",
+            ),
+            (
+                "tester/node_modules",
+                "tester/node_modules/@supabase/auth-js/dist/module/lib/errors.js",
+                "docs/tester/node_modules note.md",
+            ),
+            ("rs", "zzzzzz/rs-long-helper.txt", "a/xrs.txt"),
+        ] {
+            let mut matcher = MentionMatcher::default();
+            matcher.reset(vec![candidate(rival), candidate(preferred)]);
+            let paths = mention_matcher_paths(&mut matcher, query);
+            let first = paths
+                .iter()
+                .position(|p| p == preferred)
+                .unwrap_or_else(|| panic!("missing preferred {preferred} for {query}: {paths:?}"));
+            let second = paths
+                .iter()
+                .position(|p| p == rival)
+                .unwrap_or_else(|| panic!("missing rival {rival} for {query}: {paths:?}"));
+            assert!(first < second, "{query}: {paths:?}");
+        }
+    }
+    #[test]
+    fn matcher_queries_precede_backlog_and_deferred_mutations_remain_searchable() {
+        let (index_tx, index_rx) = mpsc::channel();
+        let (query_tx, query_rx) = mpsc::channel();
+        let (tx, rx) = event_channel();
+        let mut runtime = FileIndexMatcherRuntime::new(7, index_rx, query_rx, tx);
+        runtime.reset(7, 1, vec![candidate("ready.rs")], FileIndexStatus::Scanning);
+        for (version, path) in [(2, "later-one.rs"), (3, "later-two.rs")] {
+            index_tx
+                .send(FileIndexMatcherCommand::ScanBatch {
+                    generation: 7,
+                    index_version: version,
+                    entries: vec![candidate(path)],
+                })
+                .unwrap();
+        }
+        for (sequence, query) in [(41, "obsolete"), (42, "ready")] {
+            query_tx
+                .send(MentionMatchRequest {
+                    generation: 7,
+                    index_version: 3,
+                    sequence,
+                    query: query.into(),
+                })
+                .unwrap();
+        }
+        assert!(runtime.handle_next_command());
+        let FileIndexEvent::MatchResult(result) = rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("query result")
         };
-        assert_eq!(generation, 3);
-        assert_eq!(changes.len(), 2);
-        assert!(changes.iter().any(|change| {
-            matches!(change, FileIndexChange::Upsert(candidate) if candidate.rel_path == "a.rs")
-        }));
-        assert!(changes.iter().any(|change| {
-            matches!(change, FileIndexChange::Upsert(candidate) if candidate.rel_path == "b.rs")
-        }));
+        assert_eq!((result.generation, result.sequence, result.query.as_str()), (7, 42, "ready"));
+        assert_eq!(
+            result.candidates.iter().map(|c| c.rel_path.as_str()).collect::<Vec<_>>(),
+            ["ready.rs"]
+        );
+        assert!(result.index_version < 3, "query must not wait for queued index work");
+        assert!(rx.try_recv().is_err());
+        runtime.handle_next_command();
+        runtime.handle_next_command();
+        query_tx
+            .send(MentionMatchRequest {
+                generation: 7,
+                index_version: 3,
+                sequence: 43,
+                query: "later".into(),
+            })
+            .unwrap();
+        runtime.handle_next_command();
+        let FileIndexEvent::MatchResult(result) = rx.recv_timeout(Duration::from_secs(5)).unwrap()
+        else {
+            panic!("follow-up result")
+        };
+        let mut paths = result.candidates.iter().map(|c| c.rel_path.as_str()).collect::<Vec<_>>();
+        paths.sort_unstable();
+        assert_eq!(paths, ["later-one.rs", "later-two.rs"]);
+        assert_eq!((result.generation, result.sequence, result.query.as_str()), (7, 43, "later"));
+    }
+    #[test]
+    fn scan_streams_before_producer_completion_and_delivers_every_path_once() {
+        let files =
+            (0..SCAN_BATCH_SIZE + 2).map(|n| format!("nested/file-{n:03}.rs")).collect::<Vec<_>>();
+        let refs = files.iter().map(String::as_str).collect::<Vec<_>>();
+        let (app, _tmp) = app_with_temp_files(&refs);
+        let root = PathBuf::from(&app.cwd_raw);
+        let mut expected = files;
+        expected.push("nested/".into());
+        expected.sort();
+        std::thread::scope(|scope| {
+            let (tx, rx) = mpsc::sync_channel(0);
+            let (release_tx, release_rx) = mpsc::channel();
+            let scan_root = &root;
+            let worker = scope.spawn(move || {
+                let cancel = Arc::new(AtomicBool::new(false));
+                let mut emitted = 0;
+                run_scan_from(scan_root, 91, false, &cancel, &tx, MAX_INDEX_ENTRIES, |emit| {
+                    for_each_candidate(scan_root, scan_root, false, None, &mut |c| {
+                        if emitted == SCAN_BATCH_SIZE
+                            && release_rx.recv_timeout(Duration::from_secs(5)).is_err()
+                        {
+                            return false;
+                        }
+                        emitted += 1;
+                        emit(c)
+                    })
+                });
+            });
+            let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let FileIndexEvent::ScanBatch { generation, entries } = first else {
+                panic!("incremental batch before finish")
+            };
+            assert_eq!(generation, 91);
+            assert!(!entries.is_empty());
+            release_tx.send(()).unwrap();
+            let mut paths = entries.into_iter().map(|c| c.rel_path).collect::<Vec<_>>();
+            let mut finished = false;
+            while !finished {
+                match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    FileIndexEvent::ScanBatch { generation, entries } => {
+                        assert_eq!(generation, 91);
+                        paths.extend(entries.into_iter().map(|c| c.rel_path));
+                    }
+                    FileIndexEvent::ScanFinished { generation, limited } => {
+                        assert_eq!(generation, 91);
+                        assert!(!limited);
+                        finished = true;
+                    }
+                    _ => panic!("scan event"),
+                }
+            }
+            worker.join().unwrap();
+            assert!(rx.try_recv().is_err());
+            paths.sort();
+            assert_eq!(paths, expected);
+        });
+        std::thread::scope(|scope| {
+            let (tx, rx) = mpsc::sync_channel(0);
+            let scan_root = &root;
+            let worker = scope.spawn(move || {
+                run_scan_with_limit(
+                    scan_root,
+                    92,
+                    false,
+                    &Arc::new(AtomicBool::new(false)),
+                    &tx,
+                    MAX_INDEX_ENTRIES,
+                );
+            });
+            drop(rx);
+            worker.join().unwrap();
+        });
+    }
+    #[test]
+    fn scan_limit_preserves_admitted_paths_and_distinguishes_partial_search() {
+        for count in [2, 3, 4] {
+            let names = ["alpha.rs", "beta.rs", "gamma.rs", "omega.rs"];
+            let (mut app, _tmp) = app_with_temp_files(&names[..count]);
+            reset(&mut app);
+            app.file_index.root = Some(PathBuf::from(&app.cwd_raw));
+            app.file_index.status = FileIndexStatus::Scanning;
+            let generation = app.file_index.generation;
+            let (tx, rx) = event_channel();
+            run_scan_with_limit(
+                Path::new(&app.cwd_raw),
+                generation,
+                false,
+                &Arc::new(AtomicBool::new(false)),
+                &tx,
+                3,
+            );
+            drop(tx);
+            send_index_events(&mut app, rx);
+            let expected = &names[..count.min(3)];
+            query_paths(&mut app, "rs", expected);
+            confirm_path(&mut app, "alpha.rs");
+            query_paths(&mut app, "zzzz", &[]);
+            let guidance = app.mention.as_ref().unwrap().placeholder_message().unwrap();
+            assert_eq!(guidance.contains("first"), count > 3);
+            if count > 3 {
+                send_index_events(
+                    &mut app,
+                    [FileIndexEvent::ScanFinished { generation, limited: false }],
+                );
+                query_paths(&mut app, "zzzz", &[]);
+                assert!(
+                    app.mention.as_ref().unwrap().placeholder_message().unwrap().contains("first")
+                );
+            }
+            query_paths(&mut app, "rs", expected);
+        }
     }
 
     #[test]
-    fn watcher_changes_are_split_into_bounded_batches() {
-        let changes = (0..=SCAN_BATCH_SIZE)
-            .map(|idx| FileIndexChange::Upsert(candidate(&format!("file-{idx}.rs"))))
-            .collect();
-
-        let events = chunk_fs_changes(3, changes);
-
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|event| {
-            matches!(event, FileIndexEvent::FsBatch { changes, .. } if changes.len() <= SCAN_BATCH_SIZE)
-        }));
+    fn normalized_creates_update_open_and_later_completion_without_duplicate_paths() {
+        use notify::event::{CreateKind, DataChange, EventKind, ModifyKind};
+        for open in [false, true] {
+            let (mut app, tmp) = app_with_temp_files(&["keep.rs", ".gitignore"]);
+            std::fs::create_dir(tmp.path().join(".git")).unwrap();
+            std::fs::write(tmp.path().join(".gitignore"), "hidden.rs\n").unwrap();
+            load_fixture_index(&mut app, true);
+            if open {
+                query_paths(&mut app, "rs", &["keep.rs"]);
+            } else {
+                app.input.set_text("untouched draft");
+            }
+            for name in ["first.rs", "second.rs", "hidden.rs"] {
+                std::fs::write(tmp.path().join(name), "").unwrap();
+            }
+            let root = PathBuf::from(&app.cwd_raw);
+            apply_notifications(
+                &mut app,
+                vec![
+                    watch_event(
+                        EventKind::Create(CreateKind::File),
+                        &[root.join("first.rs"), root.join("second.rs"), root.join("hidden.rs")],
+                    ),
+                    watch_event(
+                        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                        &[root.join("first.rs")],
+                    ),
+                ],
+            );
+            if open {
+                wait_for(&mut app, Duration::from_secs(10), |a| {
+                    visible_paths(a) == ["first.rs", "keep.rs", "second.rs"]
+                });
+                assert_eq!(app.input.text(), "@rs");
+            } else {
+                assert!(app.mention.is_none());
+                assert_eq!(app.input.text(), "untouched draft");
+                query_paths(&mut app, "rs", &["first.rs", "keep.rs", "second.rs"]);
+            }
+            confirm_path(&mut app, "second.rs");
+        }
     }
-
     #[test]
-    fn batched_watch_events_prefer_rebuild_for_ignore_semantics_change() {
-        use notify::Event;
-        use notify::event::{CreateKind, EventKind};
-
-        let (_app, tmp) = app_with_temp_files(&["a.rs"]);
-        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        let events = vec![
-            Ok(Event::new(EventKind::Create(CreateKind::File)).add_path(root.join("a.rs"))),
-            Ok(Event::new(EventKind::Create(CreateKind::File)).add_path(root.join(".gitignore"))),
-        ];
-
-        let mut normalized = normalize_watch_events(&root, 5, true, events);
-        assert_eq!(normalized.len(), 1);
-        let event = normalized.pop().expect("watch event");
-
-        assert!(matches!(event, FileIndexEvent::RebuildRequested { generation: 5 }));
+    fn normalized_rename_shapes_replace_only_the_renamed_path_and_children() {
+        use notify::event::{EventKind, ModifyKind, RenameMode};
+        for shape in [
+            "paired",
+            "single-any",
+            "single-any-reversed",
+            "batch-any-reversed",
+            "split",
+            "split-reversed",
+            "directory",
+        ] {
+            let directory = shape == "directory";
+            let (mut app, _tmp) = app_with_temp_files(if directory {
+                &["before/child.rs", "before-extra/keep.rs"]
+            } else {
+                &["before.rs", "keep.rs"]
+            });
+            load_fixture_index(&mut app, false);
+            let root = PathBuf::from(&app.cwd_raw);
+            let from = root.join(if directory { "before" } else { "before.rs" });
+            let to = root.join(if directory { "after" } else { "after.rs" });
+            std::fs::rename(&from, &to).unwrap();
+            if shape == "paired" || directory {
+                apply_notifications(
+                    &mut app,
+                    vec![watch_event(
+                        EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                        &[from, to],
+                    )],
+                );
+            } else {
+                let modes = if shape.contains("any") {
+                    [RenameMode::Any, RenameMode::Any]
+                } else {
+                    [RenameMode::From, RenameMode::To]
+                };
+                let mut notifications = [(from, modes[0]), (to, modes[1])]
+                    .into_iter()
+                    .map(|(path, mode)| {
+                        watch_event(EventKind::Modify(ModifyKind::Name(mode)), &[path])
+                    })
+                    .collect::<Vec<_>>();
+                if shape.ends_with("reversed") {
+                    notifications.reverse();
+                }
+                if shape.starts_with("batch") {
+                    apply_notifications(&mut app, notifications);
+                } else {
+                    for notification in notifications {
+                        apply_notifications(&mut app, vec![notification]);
+                    }
+                }
+            }
+            if directory {
+                query_paths(&mut app, "rs", &["after/child.rs", "before-extra/keep.rs"]);
+                confirm_path(&mut app, "after/child.rs");
+            } else {
+                query_paths(&mut app, "rs", &["after.rs", "keep.rs"]);
+                confirm_path(&mut app, "after.rs");
+            }
+        }
     }
-
     #[test]
-    fn root_file_rename_emits_bounded_remove_and_upsert_changes() {
-        let (_app, tmp) = app_with_temp_files(&["before.rs", "keep.rs"]);
-        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        std::fs::rename(root.join("before.rs"), root.join("after.rs"))
-            .expect("rename watched file");
-
-        let changes =
-            collect_rename_changes(&root, true, &[root.join("before.rs"), root.join("after.rs")])
-                .expect("file rename should not require rebuild");
-
-        assert!(changes.iter().any(|change| {
-            matches!(change, FileIndexChange::RemoveExact { rel_path } if rel_path == "before.rs")
-        }));
-        assert!(changes.iter().any(|change| {
-            matches!(change, FileIndexChange::Upsert(candidate) if candidate.rel_path == "after.rs")
-        }));
+    fn watcher_chunking_preserves_generation_payloads_and_same_path_order() {
+        let (mut app, _tmp) = app_with_temp_files(&["keep.rs"]);
+        load_fixture_index(&mut app, false);
+        let generation = app.file_index.generation;
+        let mut changes = (0..SCAN_BATCH_SIZE - 1)
+            .map(|n| FileIndexChange::Upsert(candidate(&format!("bulk-{n:03}.txt"))))
+            .collect::<Vec<_>>();
+        changes.push(FileIndexChange::Upsert(candidate("cross.rs")));
+        changes.push(FileIndexChange::RemoveExact { rel_path: "cross.rs".into() });
+        changes.push(FileIndexChange::Upsert(candidate("final.rs")));
+        let events = chunk_fs_changes(generation, changes);
+        let mut actual = Vec::new();
+        for event in &events {
+            let FileIndexEvent::FsBatch { generation: g, changes } = event else {
+                panic!("filesystem batch")
+            };
+            assert_eq!(*g, generation);
+            assert!(changes.len() <= SCAN_BATCH_SIZE);
+            for c in changes {
+                actual.push(match c {
+                    FileIndexChange::Upsert(c) => format!("+{}", c.rel_path),
+                    FileIndexChange::RemoveExact { rel_path } => format!("-{rel_path}"),
+                    FileIndexChange::RemovePrefix { .. } => panic!("unexpected prefix change"),
+                });
+            }
+        }
+        let mut expected =
+            (0..SCAN_BATCH_SIZE - 1).map(|n| format!("+bulk-{n:03}.txt")).collect::<Vec<_>>();
+        expected.extend(["+cross.rs".into(), "-cross.rs".into(), "+final.rs".into()]);
+        assert_eq!(actual, expected);
+        send_index_events(&mut app, events);
+        query_paths(&mut app, "rs", &["final.rs", "keep.rs"]);
+        confirm_path(&mut app, "final.rs");
+    }
+    #[test]
+    fn changed_ignore_rules_rebuild_visible_candidates_and_restore_unignored_paths() {
+        use notify::event::{CreateKind, DataChange, EventKind, ModifyKind};
+        let (mut app, tmp) = app_with_temp_files(&["target.rs", "keep.rs", ".gitignore"]);
+        std::fs::create_dir(tmp.path().join(".git")).unwrap();
+        load_fixture_index(&mut app, true);
+        query_paths(&mut app, "rs", &["keep.rs", "target.rs"]);
+        for hidden in [true, false] {
+            std::fs::write(tmp.path().join(".gitignore"), if hidden { "target.rs\n" } else { "" })
+                .unwrap();
+            std::fs::write(tmp.path().join("new.rs"), "").unwrap();
+            let root = PathBuf::from(&app.cwd_raw);
+            apply_notifications(
+                &mut app,
+                vec![
+                    watch_event(
+                        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                        &[root.join(".gitignore")],
+                    ),
+                    watch_event(EventKind::Create(CreateKind::File), &[root.join("new.rs")]),
+                ],
+            );
+            query_paths(
+                &mut app,
+                "rs",
+                if hidden { &["keep.rs", "new.rs"] } else { &["keep.rs", "new.rs", "target.rs"] },
+            );
+            confirm_path(&mut app, if hidden { "new.rs" } else { "target.rs" });
+            app.file_index.watch = None;
+        }
+    }
+    #[test]
+    fn conflicting_watcher_notifications_follow_final_file_and_directory_state() {
+        use notify::event::{CreateKind, EventKind, RemoveKind};
+        for (directory, present, replacement_directory) in [
+            (false, true, false),
+            (false, false, false),
+            (true, true, true),
+            (true, false, false),
+            (true, true, false),
+            (false, true, true),
+        ] {
+            let names = if directory {
+                vec!["target.rs/old.rs", "sibling.rs"]
+            } else {
+                vec!["target.rs", "sibling.rs"]
+            };
+            let (mut app, _tmp) = app_with_temp_files(&names);
+            load_fixture_index(&mut app, false);
+            let path = PathBuf::from(&app.cwd_raw).join("target.rs");
+            if directory {
+                std::fs::remove_file(path.join("old.rs")).unwrap();
+                std::fs::remove_dir(&path).unwrap();
+            } else {
+                std::fs::remove_file(&path).unwrap();
+            }
+            if present {
+                if replacement_directory {
+                    std::fs::create_dir(&path).unwrap();
+                    std::fs::write(path.join("new.rs"), "").unwrap();
+                } else {
+                    std::fs::write(&path, "replacement").unwrap();
+                }
+            }
+            let remove = watch_event(
+                EventKind::Remove(if directory { RemoveKind::Folder } else { RemoveKind::File }),
+                std::slice::from_ref(&path),
+            );
+            let create = watch_event(
+                EventKind::Create(if replacement_directory {
+                    CreateKind::Folder
+                } else {
+                    CreateKind::File
+                }),
+                std::slice::from_ref(&path),
+            );
+            apply_notifications(
+                &mut app,
+                if present { vec![remove, create] } else { vec![create, remove] },
+            );
+            let expected = if !present {
+                vec!["sibling.rs"]
+            } else if replacement_directory {
+                vec!["sibling.rs", "target.rs/", "target.rs/new.rs"]
+            } else {
+                vec!["sibling.rs", "target.rs"]
+            };
+            query_paths(&mut app, "rs", &expected);
+            confirm_path(
+                &mut app,
+                if !present {
+                    "sibling.rs"
+                } else if replacement_directory {
+                    "target.rs/new.rs"
+                } else {
+                    "target.rs"
+                },
+            );
+        }
+    }
+    #[test]
+    fn unavailable_matcher_index_channel_recovers_from_the_authoritative_snapshot() {
+        for disconnected in [false, true] {
+            let (mut app, _tmp) = app_with_temp_files(&["old.rs", "keep.rs"]);
+            load_fixture_index(&mut app, false);
+            query_paths(&mut app, "rs", &["keep.rs", "old.rs"]);
+            mention::deactivate(&mut app);
+            let generation = app.file_index.generation;
+            let (index_tx, index_rx) = mpsc::sync_channel(MATCHER_INDEX_QUEUE_CAPACITY);
+            let (query_tx, _query_rx) = mpsc::channel();
+            if !disconnected {
+                for _ in 0..MATCHER_INDEX_QUEUE_CAPACITY {
+                    index_tx
+                        .try_send(FileIndexMatcherCommand::ScanFinished {
+                            generation,
+                            index_version: app.file_index.index_version,
+                            status: FileIndexStatus::Complete,
+                        })
+                        .unwrap();
+                }
+            }
+            let receiver = if disconnected {
+                drop(index_rx);
+                None
+            } else {
+                Some(index_rx)
+            };
+            app.file_index.matcher = Some(FileIndexMatcherHandle { index_tx, query_tx });
+            send_index_events(
+                &mut app,
+                [FileIndexEvent::FsBatch {
+                    generation,
+                    changes: vec![
+                        FileIndexChange::RemoveExact { rel_path: "old.rs".into() },
+                        FileIndexChange::Upsert(candidate("new.rs")),
+                    ],
+                }],
+            );
+            query_paths(&mut app, "rs", &["keep.rs", "new.rs"]);
+            confirm_path(&mut app, "new.rs");
+            drop(receiver);
+        }
+    }
+    #[test]
+    fn watcher_overload_rebuilds_searchable_contents_and_rejects_old_events() {
+        use notify::event::{DataChange, EventKind, ModifyKind};
+        for callback_overflow in [false, true] {
+            let (mut app, _tmp) = app_with_temp_files(&["old.rs", "keep.rs"]);
+            load_fixture_index(&mut app, false);
+            query_paths(&mut app, "rs", &["keep.rs", "old.rs"]);
+            let root = PathBuf::from(&app.cwd_raw);
+            std::fs::remove_file(root.join("old.rs")).unwrap();
+            std::fs::write(root.join("new.rs"), "").unwrap();
+            let generation = app.file_index.generation;
+            let (watch_tx, watch_rx) = mpsc::channel();
+            if !callback_overflow {
+                for _ in 0..WATCH_EVENT_QUEUE_CAPACITY {
+                    watch_tx
+                        .send(Ok(watch_event(
+                            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+                            &[root.join("keep.rs")],
+                        )))
+                        .unwrap();
+                }
+            }
+            drop(watch_tx);
+            let (tx, rx) = event_channel();
+            run_watch_loop(
+                &root,
+                generation,
+                false,
+                &AtomicBool::new(false),
+                &AtomicBool::new(callback_overflow),
+                &watch_rx,
+                &tx,
+            );
+            drop(tx);
+            send_index_events(&mut app, rx);
+            query_paths(&mut app, "rs", &["keep.rs", "new.rs"]);
+            send_index_events(
+                &mut app,
+                [
+                    FileIndexEvent::ScanBatch { generation, entries: vec![candidate("old.rs")] },
+                    FileIndexEvent::FsBatch {
+                        generation,
+                        changes: vec![FileIndexChange::RemoveExact { rel_path: "new.rs".into() }],
+                    },
+                ],
+            );
+            query_paths(&mut app, "rs", &["keep.rs", "new.rs"]);
+            confirm_path(&mut app, "new.rs");
+        }
     }
 }

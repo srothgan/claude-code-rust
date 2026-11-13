@@ -151,6 +151,16 @@ pub(crate) fn apply_settings_result(
             .snapshot
             .as_ref()
             .map_or(0, |previous| app.config.settings.selected_index(previous));
+        // The first filtered row is selectable even before explicit cursor movement.
+        // Capture its identity before a refreshed catalog changes the row order.
+        if let Some(id) = app
+            .config
+            .selected_setting()
+            .filter(|setting| setting.id != crate::app::footer::SETTING_ID)
+            .map(|setting| setting.id.clone())
+        {
+            app.config.settings.select(id);
+        }
         app.config.settings.reconcile(&snapshot, previous_index);
         if result.persistence == SettingsPersistence::Conflict
             && let Some(editor) = app.config.setting_overlay_mut()

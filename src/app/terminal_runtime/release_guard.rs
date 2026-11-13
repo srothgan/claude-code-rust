@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::modes::{apply_actions, release_to_child_actions, return_from_child_actions};
+use super::modes::{TerminalModes, release_to_child_actions, return_from_child_actions};
 use crate::app::ReleaseReason;
 
 pub(crate) struct TerminalReleaseGuard {
     reason: ReleaseReason,
     command: &'static str,
     restored: bool,
+    modes: TerminalModes,
 }
 
 impl TerminalReleaseGuard {
     pub(crate) fn release(reason: ReleaseReason, command: &'static str) -> std::io::Result<Self> {
-        let guard = Self { reason, command, restored: false };
-        let mut stdout = std::io::stdout();
-        if let Err(err) = apply_actions(&mut stdout, release_to_child_actions()) {
+        let guard = Self {
+            reason,
+            command,
+            restored: false,
+            modes: TerminalModes::new(super::chat_terminal::NativeTerminalIo),
+        };
+        if let Err(err) = guard.modes.apply(release_to_child_actions()) {
             drop(guard);
             return Err(err);
         }
@@ -37,8 +42,7 @@ impl TerminalReleaseGuard {
             return Ok(());
         }
 
-        let mut stdout = std::io::stdout();
-        let result = apply_actions(&mut stdout, return_from_child_actions());
+        let result = self.modes.apply(return_from_child_actions());
         match &result {
             Ok(()) => {
                 tracing::debug!(

@@ -1,6 +1,5 @@
 import type { Json, ToolCall, ToolCallUpdateFields, ToolResultPresentation } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
-import { CACHE_SPLIT_POLICY, previewKilobyteLabel } from "./cache_policy.js";
 import {
   isTaskToolName,
   taskCreateResult,
@@ -736,14 +735,12 @@ function extractToolOutputMetadata(
       const backgroundCwdHint = nonEmptyString(candidate.backgroundCwdHint);
       const hasBackgroundEndsWithFinalResponse =
         typeof candidate.backgroundEndsWithFinalResponse === "boolean";
-      const hasBackgroundWakesOwner =
-        typeof candidate.backgroundWakesOwner === "boolean";
+      const hasBackgroundWakesOwner = typeof candidate.backgroundWakesOwner === "boolean";
       if (
         hasAssistantAutoBackgrounded ||
         timedOutAfterMs !== undefined ||
         backgroundCwdHint ||
-        hasBackgroundEndsWithFinalResponse ||
-        hasBackgroundWakesOwner
+        hasBackgroundEndsWithFinalResponse || hasBackgroundWakesOwner
       ) {
         const bashMetadata: import("../types.js").BashOutputMetadata = {};
         if (hasAssistantAutoBackgrounded) {
@@ -760,9 +757,7 @@ function extractToolOutputMetadata(
           bashMetadata.background_ends_with_final_response =
             candidate.backgroundEndsWithFinalResponse as boolean;
         }
-        if (hasBackgroundWakesOwner) {
-          bashMetadata.background_wakes_owner = candidate.backgroundWakesOwner as boolean;
-        }
+        if (hasBackgroundWakesOwner) bashMetadata.background_wakes_owner = candidate.backgroundWakesOwner as boolean;
         metadata.bash = bashMetadata;
         break;
       }
@@ -911,20 +906,12 @@ export function extractText(value: unknown): string {
 
 const PERSISTED_OUTPUT_OPEN_TAG = "<persisted-output>";
 const PERSISTED_OUTPUT_CLOSE_TAG = "</persisted-output>";
-const EXPECTED_PREVIEW_LINE = `preview (first ${previewKilobyteLabel(CACHE_SPLIT_POLICY).toLowerCase()}):`;
 
 function extractPersistedOutputInnerText(text: string): string | null {
-  const lower = text.toLowerCase();
-  const openIdx = lower.indexOf(PERSISTED_OUTPUT_OPEN_TAG);
-  if (openIdx < 0) {
-    return null;
-  }
-  const bodyStart = openIdx + PERSISTED_OUTPUT_OPEN_TAG.length;
-  const closeIdx = lower.indexOf(PERSISTED_OUTPUT_CLOSE_TAG, bodyStart);
-  if (closeIdx < 0) {
-    return null;
-  }
-  return text.slice(bodyStart, closeIdx);
+  const envelope = text.trim();
+  const lower = envelope.toLowerCase();
+  if (!lower.startsWith(PERSISTED_OUTPUT_OPEN_TAG) || !lower.endsWith(PERSISTED_OUTPUT_CLOSE_TAG)) return null;
+  return envelope.slice(PERSISTED_OUTPUT_OPEN_TAG.length, -PERSISTED_OUTPUT_CLOSE_TAG.length);
 }
 
 function persistedOutputFirstLine(text: string): string | null {
@@ -936,10 +923,8 @@ function persistedOutputFirstLine(text: string): string | null {
   for (const line of inner.split(/\r?\n/)) {
     const cleaned = line.replace(/^[\s|│┃║]+/u, "").trim();
     if (cleaned.length > 0) {
-      if (cleaned.toLowerCase() === EXPECTED_PREVIEW_LINE) {
-        continue;
-      }
-      return cleaned;
+      // Only the SDK receipt identifies persisted output; ordinary examples remain literal.
+      return /^Output too large \([^)]+\)\. Full output saved to: \S.*$/.test(cleaned) ? cleaned : null;
     }
   }
   return null;
@@ -1062,14 +1047,10 @@ function boundedDisplayText(value: string, maxCharacters = 240): string {
 }
 
 function writeResultPresentation(
+  rawResult: unknown,
   rawContent: unknown,
 ): WriteResultPresentation | undefined {
-  const candidates = resultRecordCandidates(rawContent, undefined);
-  const parsed = parseJsonCandidate(rawContent);
-  if (parsed !== undefined) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
-  for (const candidate of candidates) {
+  for (const candidate of collectResultCandidates(rawResult, rawContent)) {
     const record = candidate;
     const filePath =
       typeof record.filePath === "string"
@@ -1476,7 +1457,7 @@ function truncateList(
 
 function globResultText(record: Record<string, unknown>): string | undefined {
   const filenames = searchFilenames(record);
-  const numFiles = recordNumber(record, "numFiles") ?? filenames.length;
+  const numFiles = recordNonNegativeInteger(record, "numFiles") ?? filenames.length;
   const truncated = record.truncated === true;
   const lines: string[] = [];
 
@@ -1579,43 +1560,69 @@ function searchResultText(
 }
 
 function worktreeResultFields(
-  toolName: string,
-  rawResult: unknown,
-  rawContent: unknown,
-): { output?: string } | undefined {
-  if (toolName !== "EnterWorktree" && toolName !== "ExitWorktree") {
-    return undefined;
-  }
+	toolName: string,
+	rawResult: unknown,
+	rawContent: unknown,
+): { output?: string; presentation?: ToolResultPresentation } | undefined {
+	if (toolName !== "EnterWorktree" && toolName !== "ExitWorktree") {
+		return undefined;
+	}
 
-  const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [
-    parseJsonCandidate(rawResult),
-    parseJsonCandidate(rawContent),
-  ]) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
+	const candidates = resultRecordCandidates(rawResult, rawContent);
+	for (const parsed of [
+		parseJsonCandidate(rawResult),
+		parseJsonCandidate(rawContent),
+	]) {
+		candidates.push(...resultRecordCandidates(parsed, undefined));
+	}
 
-  for (const candidate of candidates) {
-    const branch =
-      typeof candidate.worktreeBranch === "string"
-        ? candidate.worktreeBranch.trim()
-        : "";
-    const path =
-      typeof candidate.worktreePath === "string"
-        ? candidate.worktreePath.trim()
-        : "";
-    const output = branch ? `Branch: ${branch}` : path ? `Path: ${path}` : "";
-    const isStructuredWorktreeOutput =
-      "message" in candidate ||
-      "worktreeBranch" in candidate ||
-      "worktreePath" in candidate ||
-      "originalCwd" in candidate;
-    if (output || isStructuredWorktreeOutput) {
-      return output ? { output } : {};
-    }
-  }
+	for (const candidate of candidates) {
+		if (
+			toolName === "ExitWorktree" &&
+			(candidate.action === "keep" || candidate.action === "remove")
+		) {
+			const fields = [resultField("Action", candidate.action)];
+			for (const [key, label] of [
+				["worktreePath", "Worktree"],
+				["originalCwd", "Restored directory"],
+				["worktreeBranch", "Branch"],
+			]) {
+				const value = nonEmptyString(candidate[key]);
+				if (value) fields.push(resultField(label, value));
+			}
+			for (const [key, label] of [
+				["discardedFiles", "Discarded files"],
+				["discardedCommits", "Discarded commits"],
+			]) {
+				const count = recordNonNegativeInteger(candidate, key);
+				if (count !== undefined) fields.push(resultField(label, String(count)));
+			}
+			const presentation = { sections: [{ fields }] };
+			return {
+				output: resultPresentationText(presentation, false),
+				presentation,
+			};
+		}
+		const branch =
+			typeof candidate.worktreeBranch === "string"
+				? candidate.worktreeBranch.trim()
+				: "";
+		const path =
+			typeof candidate.worktreePath === "string"
+				? candidate.worktreePath.trim()
+				: "";
+		const output = branch ? `Branch: ${branch}` : path ? `Path: ${path}` : "";
+		const isStructuredWorktreeOutput =
+			"message" in candidate ||
+			"worktreeBranch" in candidate ||
+			"worktreePath" in candidate ||
+			"originalCwd" in candidate;
+		if (output || isStructuredWorktreeOutput) {
+			return output ? { output } : {};
+		}
+	}
 
-  return undefined;
+	return undefined;
 }
 
 function booleanLabel(value: boolean): string {
@@ -2053,10 +2060,7 @@ function cronResultPresentation(
   }
   if (toolName === "CronDelete")
     return typeof candidate.id === "string"
-      ? { sections: [{ fields: [
-        resultField("Schedule ID", candidate.id),
-        ...(candidate.endedLoopWakeup === true ? [resultField("Loop wakeup ended", "yes")] : []),
-      ] }] }
+      ? { sections: [{ fields: [resultField("Schedule ID", candidate.id), ...(candidate.endedLoopWakeup === true ? [resultField("Loop wakeup ended", "yes")] : [])] }] }
       : undefined;
   if (toolName !== "CronList" || !Array.isArray(candidate.jobs))
     return undefined;
@@ -2203,47 +2207,60 @@ function formatIsoTimestamp(value: unknown): string | undefined {
   return Number.isFinite(parsed) ? formatLocalTimestamp(parsed) : raw;
 }
 
-function scheduleWakeupResultText(
-  toolName: string,
-  rawResult: unknown,
-  rawContent: unknown,
-): string | undefined {
-  if (toolName !== SCHEDULE_WAKEUP_TOOL_NAME) {
-    return undefined;
-  }
+function scheduleWakeupResultPresentation(
+	toolName: string,
+	rawResult: unknown,
+	rawContent: unknown,
+): ToolResultPresentation | undefined {
+	if (toolName !== SCHEDULE_WAKEUP_TOOL_NAME) {
+		return undefined;
+	}
 
-  const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [
-    parseJsonCandidate(rawResult),
-    parseJsonCandidate(rawContent),
-  ]) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
+	const candidates = resultRecordCandidates(rawResult, rawContent);
+	for (const parsed of [
+		parseJsonCandidate(rawResult),
+		parseJsonCandidate(rawContent),
+	]) {
+		candidates.push(...resultRecordCandidates(parsed, undefined));
+	}
 
-  for (const candidate of candidates) {
-    const scheduledFor =
-      typeof candidate.scheduledFor === "number"
-        ? formatLocalTimestamp(candidate.scheduledFor)
-        : undefined;
-    const clampedDelaySeconds =
-      typeof candidate.clampedDelaySeconds === "number"
-        ? formatDurationSeconds(candidate.clampedDelaySeconds)
-        : undefined;
-    if (
-      !scheduledFor ||
-      !clampedDelaySeconds ||
-      typeof candidate.wasClamped !== "boolean"
-    ) {
-      continue;
-    }
-    return [
-      `Scheduled for: ${scheduledFor}`,
-      `Actual delay: ${clampedDelaySeconds}`,
-      `Clamped: ${booleanLabel(candidate.wasClamped)}`,
-    ].join("\n");
-  }
+	for (const candidate of candidates) {
+		if (candidate.stopped === true) {
+			const fields = [resultField("Stopped", "yes")];
+			const cancelled = recordNonNegativeInteger(candidate, "cancelledWakeups");
+			if (cancelled !== undefined)
+				fields.push(resultField("Cancelled wakeups", String(cancelled)));
+			return { sections: [{ fields }] };
+		}
+		const scheduledFor =
+			typeof candidate.scheduledFor === "number"
+				? formatLocalTimestamp(candidate.scheduledFor)
+				: undefined;
+		const clampedDelaySeconds =
+			typeof candidate.clampedDelaySeconds === "number"
+				? formatDurationSeconds(candidate.clampedDelaySeconds)
+				: undefined;
+		if (
+			!scheduledFor ||
+			!clampedDelaySeconds ||
+			typeof candidate.wasClamped !== "boolean"
+		) {
+			continue;
+		}
+		return {
+			sections: [
+				{
+					fields: [
+						resultField("Scheduled for", scheduledFor),
+						resultField("Actual delay", clampedDelaySeconds),
+						resultField("Clamped", booleanLabel(candidate.wasClamped)),
+					],
+				},
+			],
+		};
+	}
 
-  return undefined;
+	return undefined;
 }
 
 function pushNotificationDisabledReason(value: unknown): string | undefined {
@@ -2428,114 +2445,131 @@ function isReplOutputRecord(record: Record<string, unknown>): boolean {
 }
 
 function replResultFields(
-  toolName: string,
-  rawResult: unknown,
-  rawContent: unknown,
-): { output?: string; failed: boolean } | undefined {
-  if (toolName !== REPL_TOOL_NAME) {
-    return undefined;
-  }
+	toolName: string,
+	rawResult: unknown,
+	rawContent: unknown,
+):
+	| { output?: string; failed: boolean; presentation?: ToolResultPresentation }
+	| undefined {
+	if (toolName !== REPL_TOOL_NAME) {
+		return undefined;
+	}
 
-  const candidates = resultRecordCandidates(rawResult, rawContent);
-  for (const parsed of [
-    parseJsonCandidate(rawResult),
-    parseJsonCandidate(rawContent),
-  ]) {
-    candidates.push(...resultRecordCandidates(parsed, undefined));
-  }
+	const candidates = resultRecordCandidates(rawResult, rawContent);
+	for (const parsed of [
+		parseJsonCandidate(rawResult),
+		parseJsonCandidate(rawContent),
+	]) {
+		candidates.push(...resultRecordCandidates(parsed, undefined));
+	}
 
-  for (const candidate of candidates) {
-    if (!isReplOutputRecord(candidate)) {
-      continue;
-    }
+	for (const candidate of candidates) {
+		if (!isReplOutputRecord(candidate)) {
+			continue;
+		}
 
-    const lines: string[] = [];
-    let failed = false;
-    if ("error" in candidate) {
-      failed = true;
-      const error = compactJson(candidate.error);
-      if (error) {
-        lines.push(`Error: ${error}`);
-      }
-    }
+		const fields: ToolResultPresentation["sections"][number]["fields"] = [];
+		let failed = false;
+		if ("error" in candidate) {
+			failed = true;
+			const error = compactJson(candidate.error);
+			if (error) {
+				fields.push(resultField("Error", error));
+			}
+		}
 
-    const stdout = typeof candidate.stdout === "string" ? candidate.stdout : "";
-    if (stdout) {
-      lines.push(`Stdout: ${stdout}`);
-    }
-    const stderr = typeof candidate.stderr === "string" ? candidate.stderr : "";
-    if (stderr) {
-      lines.push(`Stderr: ${stderr}`);
-    }
-    const result = compactJson(candidate.result);
-    if (result) {
-      lines.push(`Result: ${result}`);
-    }
+		const stdout = typeof candidate.stdout === "string" ? candidate.stdout : "";
+		if (stdout) {
+			fields.push(resultField("Stdout", stdout));
+		}
+		const stderr = typeof candidate.stderr === "string" ? candidate.stderr : "";
+		if (stderr) {
+			fields.push(resultField("Stderr", stderr));
+		}
+		const result = compactJson(candidate.result);
+		if (result) {
+			fields.push(resultField("Result", result));
+		}
 
-    if (Array.isArray(candidate.registeredTools)) {
-      const registeredTools = candidate.registeredTools.filter(
-        (tool): tool is string =>
-          typeof tool === "string" && tool.trim().length > 0,
-      );
-      if (registeredTools.length > 0) {
-        lines.push(`Registered tools: ${registeredTools.join(", ")}`);
-      }
-    }
-    if (Array.isArray(candidate.images) && candidate.images.length > 0) {
-      lines.push(`Images: ${candidate.images.length}`);
-    }
-    if (Array.isArray(candidate.documents) && candidate.documents.length > 0) {
-      lines.push(`Documents: ${candidate.documents.length}`);
-    }
-    const imagesOmitted = nonNegativeInteger(candidate.imagesOmitted);
-    if (imagesOmitted !== undefined && imagesOmitted > 0) {
-      lines.push(`Images omitted: ${imagesOmitted}`);
-    }
-    const failedPages = Array.isArray(candidate.imagePagesFailed)
-      ? candidate.imagePagesFailed
-      : [];
-    const failedPageLimit = 20;
-    let renderedFailedPages = 0;
-    let locallyOmittedFailedPages = 0;
-    for (const value of failedPages) {
-      const failedPage = asRecordOrNull(value);
-      const page = nonNegativeInteger(failedPage?.page);
-      if (!failedPage || page === undefined) {
-        continue;
-      }
-      if (renderedFailedPages >= failedPageLimit) {
-        locallyOmittedFailedPages += 1;
-        continue;
-      }
-      const file = nonEmptyString(failedPage.file);
-      const error = nonEmptyString(failedPage.error);
-      const context = [
-        file ? `file ${boundedDisplayText(file)}` : undefined,
-        error ? boundedDisplayText(error) : undefined,
-      ]
-        .filter((value): value is string => value !== undefined)
-        .join(": ");
-      lines.push(
-        `Failed image page: ${page}${context ? ` (${context})` : ""}`,
-      );
-      renderedFailedPages += 1;
-    }
-    const upstreamFailedPagesOmitted =
-      nonNegativeInteger(candidate.imagePagesFailedOmitted) ?? 0;
-    const failedPagesOmitted =
-      upstreamFailedPagesOmitted + locallyOmittedFailedPages;
-    if (failedPagesOmitted > 0) {
-      lines.push(`Failed image pages omitted: ${failedPagesOmitted}`);
-    }
-    const documentsOmitted = nonNegativeInteger(candidate.documentsOmitted);
-    if (documentsOmitted !== undefined && documentsOmitted > 0) {
-      lines.push(`Documents omitted: ${documentsOmitted}`);
-    }
+		if (Array.isArray(candidate.registeredTools)) {
+			const registeredTools = candidate.registeredTools.filter(
+				(tool): tool is string =>
+					typeof tool === "string" && tool.trim().length > 0,
+			);
+			if (registeredTools.length > 0) {
+				fields.push(
+					resultField("Registered tools", registeredTools.join(", ")),
+				);
+			}
+		}
+		if (Array.isArray(candidate.images) && candidate.images.length > 0) {
+			fields.push(resultField("Images", String(candidate.images.length)));
+		}
+		if (Array.isArray(candidate.documents) && candidate.documents.length > 0) {
+			fields.push(resultField("Documents", String(candidate.documents.length)));
+		}
+		const imagesOmitted = nonNegativeInteger(candidate.imagesOmitted);
+		if (imagesOmitted !== undefined && imagesOmitted > 0) {
+			fields.push(resultField("Images omitted", String(imagesOmitted)));
+		}
+		const failedPages = Array.isArray(candidate.imagePagesFailed)
+			? candidate.imagePagesFailed
+			: [];
+		const failedPageLimit = 20;
+		let renderedFailedPages = 0;
+		let locallyOmittedFailedPages = 0;
+		for (const value of failedPages) {
+			const failedPage = asRecordOrNull(value);
+			const page = nonNegativeInteger(failedPage?.page);
+			if (!failedPage || page === undefined) {
+				continue;
+			}
+			if (renderedFailedPages >= failedPageLimit) {
+				locallyOmittedFailedPages += 1;
+				continue;
+			}
+			const file = nonEmptyString(failedPage.file);
+			const error = nonEmptyString(failedPage.error);
+			const context = [
+				file ? `file ${boundedDisplayText(file)}` : undefined,
+				error ? boundedDisplayText(error) : undefined,
+			]
+				.filter((value): value is string => value !== undefined)
+				.join(": ");
+			fields.push(
+				resultField(
+					"Failed image page",
+					`${page}${context ? ` (${context})` : ""}`,
+				),
+			);
+			renderedFailedPages += 1;
+		}
+		const upstreamFailedPagesOmitted =
+			nonNegativeInteger(candidate.imagePagesFailedOmitted) ?? 0;
+		const failedPagesOmitted =
+			upstreamFailedPagesOmitted + locallyOmittedFailedPages;
+		if (failedPagesOmitted > 0) {
+			fields.push(
+				resultField("Failed image pages omitted", String(failedPagesOmitted)),
+			);
+		}
+		const documentsOmitted = nonNegativeInteger(candidate.documentsOmitted);
+		if (documentsOmitted !== undefined && documentsOmitted > 0) {
+			fields.push(resultField("Documents omitted", String(documentsOmitted)));
+		}
 
-    return { output: lines.length > 0 ? lines.join("\n") : undefined, failed };
-  }
+		const presentation =
+			fields.length > 0 ? { sections: [{ fields }] } : undefined;
+		return {
+			output: presentation
+				? resultPresentationText(presentation, false)
+				: undefined,
+			failed,
+			presentation,
+		};
+	}
 
-  return undefined;
+	return undefined;
 }
 
 type BackgroundLaunchResult = {
@@ -2987,33 +3021,33 @@ export function parseDetachedToolNotification(message: Record<string, unknown>):
 }
 
 export function buildToolResultFields(
-  isError: boolean,
-  rawContent: unknown,
-  base?: ToolCall,
-  rawResult?: unknown,
-  _context: TaskTitleContext = {},
+	isError: boolean,
+	rawContent: unknown,
+	base?: ToolCall,
+	rawResult?: unknown,
+	_context: TaskTitleContext = {},
 ): ToolCallUpdateFields {
-  const toolName = resolveToolName(base);
-  if (
-    !isError &&
-    (toolName === "WebFetch" || toolName === "WebSearch") &&
-    resultRecordCandidates(rawResult, rawContent).some(
-      (candidate) => candidate.detachedToolCall === true,
-    )
-  ) {
-    return { status: "detached", raw_output: "", content: [] };
-  }
-  const fields: ToolCallUpdateFields = {
-    status: isError ? "failed" : "completed",
-  };
-  const outputMetadata = extractToolOutputMetadata(
-    toolName,
-    rawResult,
-    rawContent,
-  );
-  if (outputMetadata) {
-    fields.output_metadata = outputMetadata;
-  }
+	const toolName = resolveToolName(base);
+	if (
+		!isError &&
+		(toolName === "WebFetch" || toolName === "WebSearch") &&
+		resultRecordCandidates(rawResult, rawContent).some(
+			(candidate) => candidate.detachedToolCall === true,
+		)
+	) {
+		return { status: "detached", raw_output: "", content: [] };
+	}
+	const fields: ToolCallUpdateFields = {
+		status: isError ? "failed" : "completed",
+	};
+	const outputMetadata = extractToolOutputMetadata(
+		toolName,
+		rawResult,
+		rawContent,
+	);
+	if (outputMetadata) {
+		fields.output_metadata = outputMetadata;
+	}
   if (!isError && toolName === "TaskCreate") {
     const task = taskCreateResult(rawResult, rawContent, base?.raw_input, base?.tool_call_id ?? "");
     if (task) {
@@ -3029,322 +3063,350 @@ export function buildToolResultFields(
       return fields;
     }
   }
-  const skillResult = !isError
-    ? parseSkillResult(toolName, rawResult, rawContent)
-    : undefined;
-  if (skillResult) {
-    fields.title = `${SKILL_TOOL_NAME}: ${skillDisplayName(skillResult.commandName)}`;
-    if (!skillResult.success) {
-      fields.status = "failed";
-    } else if (skillResult.status === "inline") {
-      return fields;
-    } else {
-      const output = skillResult.result.trim();
-      if (output) {
-        fields.raw_output = output;
-        fields.content = [
-          { type: "content", content: { type: "text", text: output } },
-        ];
-      }
-      return fields;
-    }
-  }
-  const imageReadText =
-    !isError && toolName === "Read"
-      ? imageReadResultText(rawResult, rawContent, base?.raw_input)
-      : undefined;
-  if (imageReadText !== undefined) {
-    fields.raw_output = imageReadText;
-    fields.content = [
-      { type: "content", content: { type: "text", text: imageReadText } },
-    ];
-    return fields;
-  }
-  const readText =
-    !isError && toolName === "Read"
-      ? readTextResult(rawResult, rawContent)
-      : undefined;
-  if (readText) {
-    // The body carries the file source; line numbers come from the metadata.
-    fields.output_metadata = {
-      ...fields.output_metadata,
-      read: { file_path: readText.filePath, start_line: readText.startLine },
-    };
-    fields.raw_output = readText.content;
-    fields.content = [
-      { type: "content", content: { type: "text", text: readText.content } },
-    ];
-    return fields;
-  }
-  const fileUnchangedText =
-    !isError && toolName === "Read"
-      ? fileUnchangedResultText(rawResult, rawContent)
-      : "";
-  if (fileUnchangedText) {
-    fields.raw_output = fileUnchangedText;
-    fields.content = [
-      { type: "content", content: { type: "text", text: fileUnchangedText } },
-    ];
-    return fields;
-  }
-  const agentTitle =
-    !isError && toolName === "Agent"
-      ? agentTitleFromAgentOutput(rawResult, rawContent, base)
-      : "";
-  if (agentTitle) {
-    fields.title = agentTitle;
-  }
-  const readMcpResourceError = mcpResourceReadErrorText(
-    toolName,
-    rawResult,
-    rawContent,
-  );
-  if (readMcpResourceError) {
-    fields.status = "failed";
-    fields.raw_output = readMcpResourceError;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: readMcpResourceError },
-      },
-    ];
-    return fields;
-  }
-  const readMcpResourceDirOutput = !isError
-    ? mcpResourceDirTextFromResult(toolName, rawResult, rawContent)
-    : undefined;
-  if (readMcpResourceDirOutput !== undefined) {
-    fields.raw_output = readMcpResourceDirOutput;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: readMcpResourceDirOutput },
-      },
-    ];
-    return fields;
-  }
-  const searchOutput = !isError
-    ? searchResultText(toolName, rawResult, rawContent)
-    : undefined;
-  if (searchOutput !== undefined) {
-    fields.raw_output = searchOutput;
-    fields.content = [
-      { type: "content", content: { type: "text", text: searchOutput } },
-    ];
-    return fields;
-  }
-  const webFetchOutput = !isError
-    ? webFetchResultText(toolName, rawResult, rawContent)
-    : undefined;
-  if (webFetchOutput !== undefined) {
-    fields.raw_output = webFetchOutput;
-    fields.content = [
-      { type: "content", content: { type: "text", text: webFetchOutput } },
-    ];
-    return fields;
-  }
-  const worktreeOutput = !isError
-    ? worktreeResultFields(toolName, rawResult, rawContent)
-    : undefined;
-  if (worktreeOutput) {
-    if (worktreeOutput.output) {
-      fields.raw_output = worktreeOutput.output;
-      fields.content = [
-        {
-          type: "content",
-          content: { type: "text", text: worktreeOutput.output },
-        },
-      ];
-    }
-    return fields;
-  }
-  const presentation = !isError
-    ? timedToolResultPresentation(toolName, rawResult, rawContent, base?.raw_input)
-    : undefined;
-  if (presentation) {
-    fields.output_metadata = { ...fields.output_metadata, presentation };
-    const output = resultPresentationText(presentation, isCronToolName(toolName));
-    fields.raw_output = output;
-    fields.content = [{ type: "content", content: { type: "text", text: output } }];
-    return fields;
-  }
-  const scheduleWakeupOutput = !isError
-    ? scheduleWakeupResultText(toolName, rawResult, rawContent)
-    : undefined;
-  if (scheduleWakeupOutput !== undefined) {
-    fields.raw_output = scheduleWakeupOutput;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: scheduleWakeupOutput },
-      },
-    ];
-    return fields;
-  }
-  const pushNotificationOutput = !isError
-    ? pushNotificationResultText(
-        toolName,
-        rawResult,
-        rawContent,
-        base?.raw_input,
-      )
-    : undefined;
-  if (pushNotificationOutput !== undefined) {
-    fields.raw_output = pushNotificationOutput;
-    fields.content = [
-      {
-        type: "content",
-        content: { type: "text", text: pushNotificationOutput },
-      },
-    ];
-    return fields;
-  }
-  if (
-    !isError &&
-    enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
-  ) {
-    return fields;
-  }
-  const remoteTriggerOutput = remoteTriggerResultFields(
-    toolName,
-    rawResult,
-    rawContent,
-  );
-  if (remoteTriggerOutput !== undefined) {
-    if (remoteTriggerOutput.failed) {
-      fields.status = "failed";
-    }
-    if (remoteTriggerOutput.output) {
-      fields.raw_output = remoteTriggerOutput.output;
-      fields.content = [
-        {
-          type: "content",
-          content: { type: "text", text: remoteTriggerOutput.output },
-        },
-      ];
-    }
-    return fields;
-  }
-  const replOutput = replResultFields(toolName, rawResult, rawContent);
-  if (replOutput !== undefined) {
-    if (replOutput.failed) {
-      fields.status = "failed";
-    }
-    if (replOutput.output) {
-      fields.raw_output = replOutput.output;
-      fields.content = [
-        { type: "content", content: { type: "text", text: replOutput.output } },
-      ];
-    }
-    return fields;
-  }
-  const backgroundLaunchOutput = !isError
-    ? backgroundLaunchResultFields(toolName, rawResult, rawContent)
-    : undefined;
-  if (backgroundLaunchOutput !== undefined) {
-    fields.status = backgroundLaunchOutput.failed
-      ? "failed"
-      : backgroundLaunchOutput.keepRunning
-        ? "detached"
-        : "completed";
-    if (backgroundLaunchOutput.output) {
-      fields.raw_output = backgroundLaunchOutput.output;
-      fields.content = [
-        {
-          type: "content",
-          content: { type: "text", text: backgroundLaunchOutput.output },
-        },
-      ];
-    }
-    return fields;
-  }
-  const shellResultRecord = isShellToolName(toolName)
-    ? findShellResultRecord(rawResult, rawContent)
-    : undefined;
-  const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
-  const rawOutput = shellResultRecord
-    ? buildShellDisplayOutput(shellResultRecord)
-    : normalizedRawOutput || JSON.stringify(rawContent);
-  if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
-    fields.raw_output = rawOutput;
-  }
-  if (!isError && isTaskToolName(toolName)) {
-    if (
-      toolName === "TaskUpdate" &&
-      taskUpdateSucceeded(rawResult, rawContent) === false
-    ) {
-      fields.status = "failed";
-    }
-    const taskOutput = taskToolResultText(
-      toolName,
-      rawResult,
-      rawContent,
-      base?.raw_input,
-    );
-    if (taskOutput) {
-      fields.content = [
-        { type: "content", content: { type: "text", text: taskOutput } },
-      ];
-      return fields;
-    }
-    if (
-      toolName === "TaskCreate" ||
-      toolName === "TaskUpdate" ||
-      toolName === "TaskOutput" ||
-      toolName === "TaskStop"
-    ) {
-      return fields;
-    }
-  }
+	const skillResult = !isError
+		? parseSkillResult(toolName, rawResult, rawContent)
+		: undefined;
+	if (skillResult) {
+		fields.title = `${SKILL_TOOL_NAME}: ${skillDisplayName(skillResult.commandName)}`;
+		if (!skillResult.success) {
+			fields.status = "failed";
+		} else if (skillResult.status === "inline") {
+			return fields;
+		} else {
+			const output = skillResult.result.trim();
+			if (output) {
+				fields.raw_output = output;
+				fields.content = [
+					{ type: "content", content: { type: "text", text: output } },
+				];
+			}
+			return fields;
+		}
+	}
+	const imageReadText =
+		!isError && toolName === "Read"
+			? imageReadResultText(rawResult, rawContent, base?.raw_input)
+			: undefined;
+	if (imageReadText !== undefined) {
+		fields.raw_output = imageReadText;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: imageReadText } },
+		];
+		return fields;
+	}
+	const readText =
+		!isError && toolName === "Read"
+			? readTextResult(rawResult, rawContent)
+			: undefined;
+	if (readText) {
+		// The body carries the file source; line numbers come from the metadata.
+		fields.output_metadata = {
+			...fields.output_metadata,
+			read: { file_path: readText.filePath, start_line: readText.startLine },
+		};
+		fields.raw_output = readText.content;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: readText.content } },
+		];
+		return fields;
+	}
+	const fileUnchangedText =
+		!isError && toolName === "Read"
+			? fileUnchangedResultText(rawResult, rawContent)
+			: "";
+	if (fileUnchangedText) {
+		fields.raw_output = fileUnchangedText;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: fileUnchangedText } },
+		];
+		return fields;
+	}
+	const agentTitle =
+		!isError && toolName === "Agent"
+			? agentTitleFromAgentOutput(rawResult, rawContent, base)
+			: "";
+	if (agentTitle) {
+		fields.title = agentTitle;
+	}
+	const readMcpResourceError = mcpResourceReadErrorText(
+		toolName,
+		rawResult,
+		rawContent,
+	);
+	if (readMcpResourceError) {
+		fields.status = "failed";
+		fields.raw_output = readMcpResourceError;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: readMcpResourceError },
+			},
+		];
+		return fields;
+	}
+	const readMcpResourceDirOutput = !isError
+		? mcpResourceDirTextFromResult(toolName, rawResult, rawContent)
+		: undefined;
+	if (readMcpResourceDirOutput !== undefined) {
+		fields.raw_output = readMcpResourceDirOutput;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: readMcpResourceDirOutput },
+			},
+		];
+		return fields;
+	}
+	const searchOutput = !isError
+		? searchResultText(toolName, rawResult, rawContent)
+		: undefined;
+	if (searchOutput !== undefined) {
+		fields.raw_output = searchOutput;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: searchOutput } },
+		];
+		return fields;
+	}
+	const webFetchOutput = !isError
+		? webFetchResultText(toolName, rawResult, rawContent)
+		: undefined;
+	if (webFetchOutput !== undefined) {
+		fields.raw_output = webFetchOutput;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: webFetchOutput } },
+		];
+		return fields;
+	}
+	const worktreeOutput = !isError
+		? worktreeResultFields(toolName, rawResult, rawContent)
+		: undefined;
+	if (worktreeOutput) {
+		if (worktreeOutput.presentation)
+			fields.output_metadata = {
+				...fields.output_metadata,
+				presentation: worktreeOutput.presentation,
+			};
+		if (worktreeOutput.output) {
+			fields.raw_output = worktreeOutput.output;
+			fields.content = [
+				{
+					type: "content",
+					content: { type: "text", text: worktreeOutput.output },
+				},
+			];
+		}
+		return fields;
+	}
+	const presentation = !isError
+		? timedToolResultPresentation(
+				toolName,
+				rawResult,
+				rawContent,
+				base?.raw_input,
+			)
+		: undefined;
+	if (presentation) {
+		fields.output_metadata = { ...fields.output_metadata, presentation };
+		const output = resultPresentationText(
+			presentation,
+			isCronToolName(toolName),
+		);
+		fields.raw_output = output;
+		fields.content = [
+			{ type: "content", content: { type: "text", text: output } },
+		];
+		return fields;
+	}
+	const scheduleWakeupPresentation = !isError
+		? scheduleWakeupResultPresentation(toolName, rawResult, rawContent)
+		: undefined;
+	if (scheduleWakeupPresentation !== undefined) {
+		const scheduleWakeupOutput = resultPresentationText(
+			scheduleWakeupPresentation,
+			false,
+		);
+		fields.output_metadata = {
+			...fields.output_metadata,
+			presentation: scheduleWakeupPresentation,
+		};
+		fields.raw_output = scheduleWakeupOutput;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: scheduleWakeupOutput },
+			},
+		];
+		return fields;
+	}
+	const pushNotificationOutput = !isError
+		? pushNotificationResultText(
+				toolName,
+				rawResult,
+				rawContent,
+				base?.raw_input,
+			)
+		: undefined;
+	if (pushNotificationOutput !== undefined) {
+		fields.raw_output = pushNotificationOutput;
+		fields.content = [
+			{
+				type: "content",
+				content: { type: "text", text: pushNotificationOutput },
+			},
+		];
+		return fields;
+	}
+	if (
+		!isError &&
+		enterPlanModeStructuredOutputHandled(toolName, rawResult, rawContent)
+	) {
+		return fields;
+	}
+	const remoteTriggerOutput = remoteTriggerResultFields(
+		toolName,
+		rawResult,
+		rawContent,
+	);
+	if (remoteTriggerOutput !== undefined) {
+		if (remoteTriggerOutput.failed) {
+			fields.status = "failed";
+		}
+		if (remoteTriggerOutput.output) {
+			fields.raw_output = remoteTriggerOutput.output;
+			fields.content = [
+				{
+					type: "content",
+					content: { type: "text", text: remoteTriggerOutput.output },
+				},
+			];
+		}
+		return fields;
+	}
+	const replOutput = replResultFields(toolName, rawResult, rawContent);
+	if (replOutput !== undefined) {
+		if (replOutput.presentation)
+			fields.output_metadata = {
+				...fields.output_metadata,
+				presentation: replOutput.presentation,
+			};
+		if (replOutput.failed) {
+			fields.status = "failed";
+		}
+		if (replOutput.output) {
+			fields.raw_output = replOutput.output;
+			fields.content = [
+				{ type: "content", content: { type: "text", text: replOutput.output } },
+			];
+		}
+		return fields;
+	}
+	const backgroundLaunchOutput = !isError
+		? backgroundLaunchResultFields(toolName, rawResult, rawContent)
+		: undefined;
+	if (backgroundLaunchOutput !== undefined) {
+		fields.status = backgroundLaunchOutput.failed
+			? "failed"
+			: backgroundLaunchOutput.keepRunning
+				? "detached"
+				: "completed";
+		if (backgroundLaunchOutput.output) {
+			fields.raw_output = backgroundLaunchOutput.output;
+			fields.content = [
+				{
+					type: "content",
+					content: { type: "text", text: backgroundLaunchOutput.output },
+				},
+			];
+		}
+		return fields;
+	}
+	const shellResultRecord = isShellToolName(toolName)
+		? findShellResultRecord(rawResult, rawContent)
+		: undefined;
+	const normalizedRawOutput = normalizeToolResultText(rawContent, isError);
+	const rawOutput = shellResultRecord
+		? buildShellDisplayOutput(shellResultRecord)
+		: normalizedRawOutput || JSON.stringify(rawContent);
+	if (rawOutput && !(isTaskToolName(toolName) && !isError)) {
+		fields.raw_output = rawOutput;
+	}
+	if (!isError && isTaskToolName(toolName)) {
+		if (
+			toolName === "TaskUpdate" &&
+			taskUpdateSucceeded(rawResult, rawContent) === false
+		) {
+			fields.status = "failed";
+		}
+		const taskOutput = taskToolResultText(
+			toolName,
+			rawResult,
+			rawContent,
+			base?.raw_input,
+		);
+		if (taskOutput) {
+			fields.content = [
+				{ type: "content", content: { type: "text", text: taskOutput } },
+			];
+			return fields;
+		}
+		if (
+			toolName === "TaskCreate" ||
+			toolName === "TaskUpdate" ||
+			toolName === "TaskOutput" ||
+			toolName === "TaskStop"
+		) {
+			return fields;
+		}
+	}
 
-  if (!isError && toolName === "Write") {
-    const presentation = writeResultPresentation(rawContent);
-    if (presentation?.kind === "diff") {
-      fields.content = presentation.content;
-      return fields;
-    }
-    if (presentation?.kind === "text") {
-      fields.raw_output = presentation.text;
-      fields.content = [
-        { type: "content", content: { type: "text", text: presentation.text } },
-      ];
-      return fields;
-    }
-    const inputDiff = writeDiffFromInput(base?.raw_input);
-    if (inputDiff.length > 0) {
-      fields.content = inputDiff;
-      return fields;
-    }
-  }
+	if (!isError && toolName === "Write") {
+		const presentation = writeResultPresentation(rawResult, rawContent);
+		if (presentation?.kind === "diff") {
+			fields.content = presentation.content;
+			return fields;
+		}
+		if (presentation?.kind === "text") {
+			fields.raw_output = presentation.text;
+			fields.content = [
+				{ type: "content", content: { type: "text", text: presentation.text } },
+			];
+			return fields;
+		}
+		const inputDiff = writeDiffFromInput(base?.raw_input);
+		if (inputDiff.length > 0) {
+			fields.content = inputDiff;
+			return fields;
+		}
+	}
 
-  if (!isError && toolName === "Edit") {
-    const structuredDiff = editDiffFromResult(rawResult, base?.raw_input);
-    if (structuredDiff.length > 0) {
-      fields.content = structuredDiff;
-      return fields;
-    }
-    if (base?.content.some((entry) => entry.type === "diff")) {
-      return fields;
-    }
-  }
+	if (!isError && toolName === "Edit") {
+		const structuredDiff = editDiffFromResult(rawResult, base?.raw_input);
+		if (structuredDiff.length > 0) {
+			fields.content = structuredDiff;
+			return fields;
+		}
+		if (base?.content.some((entry) => entry.type === "diff")) {
+			return fields;
+		}
+	}
 
-  if (!isError && toolName === READ_MCP_RESOURCE_TOOL_NAME) {
-    const structuredResourceContent = mcpResourceContentFromResult(
-      rawResult,
-      rawContent,
-    );
-    if (structuredResourceContent.length > 0) {
-      fields.content = structuredResourceContent;
-      return fields;
-    }
-  }
+	if (!isError && toolName === READ_MCP_RESOURCE_TOOL_NAME) {
+		const structuredResourceContent = mcpResourceContentFromResult(
+			rawResult,
+			rawContent,
+		);
+		if (structuredResourceContent.length > 0) {
+			fields.content = structuredResourceContent;
+			return fields;
+		}
+	}
 
-  if (rawOutput) {
-    fields.content = [
-      { type: "content", content: { type: "text", text: rawOutput } },
-    ];
-  }
-  return fields;
+	if (rawOutput) {
+		fields.content = [
+			{ type: "content", content: { type: "text", text: rawOutput } },
+		];
+	}
+	return fields;
 }
 
 export function unwrapToolUseResult(rawResult: unknown): {

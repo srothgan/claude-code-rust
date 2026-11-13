@@ -215,8 +215,9 @@ export function emitSystemNoticeUpdate(
 export function emitSessionUpdate(
   sessionId: string,
   update: SessionUpdate,
+  requestId?: string,
 ): void {
-  writeEvent({ event: "session_update", session_id: sessionId, update });
+  writeEvent({ event: "session_update", session_id: sessionId, update }, requestId);
 }
 
 export function emitPermissionRequestEvent(

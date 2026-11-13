@@ -102,266 +102,378 @@ fn left_arrow_opens_agents_only_from_an_empty_composer() {
     let (mut app, mut commands) = connected_app();
     app.input.set_text("draft");
     let cursor = app.input.cursor_col();
-
     press(&mut app, KeyCode::Left);
-    assert_eq!(app.surface_mode, SurfaceMode::Chat, "a draft keeps Left as cursor movement");
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert_eq!(app.input.cursor_col(), cursor - 1);
     assert_eq!(app.input.text(), "draft");
-    assert!(sent(&mut commands).is_empty());
-
+    expect_commands(&mut commands, &[]);
     app.input.clear();
+    handle_terminal_event(&mut app, Event::Paste("queued paste".into()));
     press(&mut app, KeyCode::Left);
-    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Agents));
-    assert_eq!(sent(&mut commands), vec![list_command()], "opening reads the transcript list once");
-
-    press(&mut app, KeyCode::Esc);
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    expect_commands(&mut commands, &[]);
+
+    let (mut app, mut commands) = connected_app();
+    crate::app::test_support::admit_tool(
+        &mut app,
+        model::ToolCall::new("permission", "Permission target"),
+    );
+    let mut permission = crate::app::test_support::request_permission(
+        &mut app,
+        model::RequestPermissionRequest::new(
+            SESSION,
+            model::ToolCallUpdate::new("permission", model::ToolCallUpdateFields::new()),
+            crate::app::test_support::permission_options("target"),
+            None,
+        ),
+    );
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert!(matches!(permission.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+    expect_commands(&mut commands, &[]);
+
+    let (mut app, mut commands) = connected_app();
+    lifecycle(
+        &mut app,
+        vec![
+            task("first", "local_agent", TaskStatus::InProgress, None),
+            task("second", "local_agent", TaskStatus::InProgress, None),
+        ],
+    );
+    press(&mut app, KeyCode::Left);
+    expect_commands(&mut commands, &[list_command()]);
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Agents));
+    press(&mut app, KeyCode::Esc);
     assert!(app.input.is_empty());
-}
-
-#[test]
-fn leaving_the_view_returns_to_the_composer_with_its_draft() {
-    let (mut app, _commands) = connected_app();
-    app.input.set_text("keep this\nsecond line");
+    app.input.set_text("first line\n世界 draft");
+    press(&mut app, KeyCode::Left);
+    let cursor = app.input.cursor_col();
     super::open(&mut app);
-    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Agents));
+    expect_commands(&mut commands, &[list_command()]);
     press(&mut app, KeyCode::Down);
+    assert_eq!(app.agents.selected_task_id.as_deref(), Some("second"));
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.input.text(), "keep this\nsecond line");
+    assert_eq!(app.input.text(), "first line\n世界 draft");
+    assert_eq!(app.input.cursor_col(), cursor);
+    press(&mut app, KeyCode::Char('!'));
+    crate::app::test_support::press(&mut app, KeyCode::Enter);
+    let (prompts, refreshes): (Vec<_>, Vec<_>) = sent_envelopes(&mut commands)
+        .into_iter()
+        .partition(|env| matches!(env.command, BridgeCommand::Prompt { .. }));
+    for refresh in refreshes {
+        assert!(
+            matches!(refresh.command, BridgeCommand::GetContextUsage {ref session_id} if session_id==SESSION)
+        );
+    }
+    let [command] = prompts.as_slice() else { panic!("exactly one submitted prompt: {prompts:?}") };
+    let BridgeCommand::Prompt { session_id, chunks, inline_pastes, .. } = &command.command else {
+        panic!("submitted prompt")
+    };
+    assert_eq!(session_id, SESSION);
+    assert!(inline_pastes.is_empty());
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].kind, "text");
+    assert_eq!(chunks[0].value, serde_json::json!("first line\n\u{4e16}\u{754c} draf!t"));
 }
 
 #[test]
 fn rows_are_subagent_lifecycle_tasks_counted_once_while_running() {
     let (mut app, _commands) = connected_app();
-    let mut detached = task("agent-1", "local_agent", TaskStatus::InProgress, None);
-    detached.source_tool_call_id = Some("tool-1".to_owned());
+    let mut ambient = task("watcher", "local_agent", TaskStatus::InProgress, None);
+    ambient.metadata.as_mut().unwrap()["ambient"] = serde_json::json!(true);
+    let running = task("active", "local_agent", TaskStatus::InProgress, None);
     lifecycle(
         &mut app,
         vec![
-            detached.clone(),
-            task("shell-1", "local_bash", TaskStatus::InProgress, None),
-            task("agent-2", "local_agent", TaskStatus::Completed, Some("completed")),
-            task("agent-3", "local_agent", TaskStatus::InProgress, None),
-            task("agent-4", "local_agent", TaskStatus::Completed, Some("failed")),
+            running.clone(),
+            completed("done"),
+            task("failed", "local_agent", TaskStatus::Completed, Some("failed")),
+            task("other", "local_agent", TaskStatus::InProgress, None),
+            task("shell", "local_bash", TaskStatus::InProgress, None),
+            ambient,
         ],
     );
-    // A repeated report of the same execution is still one row.
-    lifecycle(&mut app, vec![detached]);
-
+    lifecycle(&mut app, vec![running]);
+    let mut observed = statuses(&app);
+    observed.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
-        statuses(&app),
+        observed,
         vec![
-            ("agent-1".to_owned(), SubagentStatus::Running),
-            ("agent-2".to_owned(), SubagentStatus::Completed),
-            ("agent-3".to_owned(), SubagentStatus::Running),
-            ("agent-4".to_owned(), SubagentStatus::Failed),
+            ("active".into(), SubagentStatus::Running),
+            ("done".into(), SubagentStatus::Completed),
+            ("failed".into(), SubagentStatus::Failed),
+            ("other".into(), SubagentStatus::Running)
         ]
     );
     assert_eq!(running_subagent_count(&app), 2);
-
-    lifecycle(
-        &mut app,
-        vec![task("agent-3", "local_agent", TaskStatus::Completed, Some("completed"))],
-    );
+    lifecycle(&mut app, vec![completed("active")]);
+    assert_eq!(status(&app, "active"), SubagentStatus::Completed);
+    assert_eq!(status(&app, "other"), SubagentStatus::Running);
     assert_eq!(running_subagent_count(&app), 1);
 }
 
 #[test]
 fn stop_is_sent_for_a_running_subagent_and_only_the_lifecycle_reports_it_stopped() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(
-        &mut app,
-        vec![
-            task("agent-2", "local_agent", TaskStatus::Completed, Some("completed")),
-            task("agent-1", "local_agent", TaskStatus::InProgress, None),
-        ],
-    );
-    super::open(&mut app);
-    let _ = sent(&mut commands);
-
-    // The view opens on the running subagent.
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Char('s'));
-    assert_eq!(
-        sent(&mut commands),
-        vec![BridgeCommand::StopSubagent {
-            session_id: SESSION.to_owned(),
-            task_id: "agent-1".to_owned(),
-            expected_run_id: None,
-        }],
-        "one request per running subagent"
-    );
-    assert_eq!(statuses(&app)[1].1, SubagentStatus::Stopping);
-    assert_eq!(running_subagent_count(&app), 1, "a subagent asked to stop is still running");
-
-    let stop_request = app.agents.stop_requested.get("agent-1").map(|stop| stop.request_id.clone());
-    handle_client_event(
-        &mut app,
-        ClientEvent::SubagentStopResult {
-            request_id: stop_request,
-            run_id: None,
-            session_id: SESSION.to_owned(),
-            task_id: "agent-1".to_owned(),
-            error: None,
-        },
-    );
-    assert_eq!(
-        statuses(&app)[1].1,
-        SubagentStatus::Stopping,
-        "an acknowledgement is not the outcome"
-    );
-
-    lifecycle(
-        &mut app,
-        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("killed"))],
-    );
-    assert_eq!(statuses(&app)[1].1, SubagentStatus::Stopped);
-    assert_eq!(running_subagent_count(&app), 0);
-    assert_eq!(
-        app.agents.selected_task_id.as_deref(),
-        Some("agent-1"),
-        "the stopped row stays selected"
-    );
-
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Up);
-    press(&mut app, KeyCode::Char('s'));
-    assert!(sent(&mut commands).is_empty(), "a finished subagent cannot be stopped");
+    for rejected in [false, true] {
+        let (mut app, mut commands) = connected_app();
+        lifecycle(
+            &mut app,
+            vec![
+                completed("done"),
+                execution("run-stop", TaskStatus::InProgress),
+                task("interrupted", "local_agent", TaskStatus::Completed, Some("interrupted")),
+            ],
+        );
+        super::open(&mut app);
+        expect_commands(&mut commands, &[list_command()]);
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('s'));
+        let first = expect_stop(&mut commands, "worker", Some("run-stop"));
+        assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
+        assert_eq!(running_subagent_count(&app), 1);
+        stop_result(
+            &mut app,
+            SESSION,
+            "worker",
+            Some("run-stop"),
+            &first,
+            rejected.then_some("SDK stop failure"),
+        );
+        if rejected {
+            assert_eq!(status(&app, "worker"), SubagentStatus::Running);
+            assert!(screen(&mut app).contains("SDK stop failure"));
+            press(&mut app, KeyCode::Char('s'));
+            let second = expect_stop(&mut commands, "worker", Some("run-stop"));
+            assert_ne!(first, second);
+            stop_result(&mut app, SESSION, "worker", Some("run-stop"), &second, None);
+        }
+        assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
+        assert_eq!(running_subagent_count(&app), 1);
+        let mut stopped = execution("run-stop", TaskStatus::Completed);
+        stopped.metadata.as_mut().unwrap()["terminal_status"] = serde_json::json!("killed");
+        lifecycle(&mut app, vec![stopped]);
+        assert_eq!(status(&app, "worker"), SubagentStatus::Stopped);
+        assert_eq!(app.agents.selected_task_id.as_deref(), Some("worker"));
+        assert_eq!(running_subagent_count(&app), 0);
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(status(&app, "interrupted"), SubagentStatus::Interrupted);
+        expect_commands(&mut commands, &[]);
+    }
 }
 
 #[test]
-fn a_rejected_stop_reports_the_error_and_leaves_the_row_running() {
+fn ctrl_c_closes_the_saved_agent_reader_without_stopping_or_submitting() {
     let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
+    app.status = crate::app::AppStatus::Ready;
+    app.input.set_text("agents draft 界");
+    lifecycle(&mut app, vec![completed("target")]);
     super::open(&mut app);
-    press(&mut app, KeyCode::Char('s'));
-    assert!(sent(&mut commands).contains(&BridgeCommand::StopSubagent {
-        session_id: SESSION.to_owned(),
-        task_id: "agent-1".to_owned(),
-        expected_run_id: None,
-    }));
-
-    let stop_request = app.agents.stop_requested.get("agent-1").map(|stop| stop.request_id.clone());
-    handle_client_event(
+    expect_commands(&mut commands, &[list_command()]);
+    listed(&mut app, &["target"]);
+    let request = expect_read(&mut commands, "target");
+    handle_client_event(&mut app, answer("target", &request, vec![reply("AGENT_READER_CEDAR")]));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.agents.transcript.is_some());
+    handle_terminal_event(
         &mut app,
-        ClientEvent::SubagentStopResult {
-            request_id: stop_request,
-            run_id: None,
-            session_id: SESSION.to_owned(),
-            task_id: "agent-1".to_owned(),
-            error: Some("Query closed before response received".to_owned()),
-        },
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
     );
-    assert_eq!(statuses(&app)[0].1, SubagentStatus::Running);
-    let notice = app.agents.notice.as_ref().expect("error notice");
-    assert_eq!(notice.kind, super::NoticeKind::Error);
-    assert!(notice.text.contains("Query closed before response received"), "{}", notice.text);
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert!(app.agents.transcript.is_none());
+    assert_eq!(status(&app, "target"), SubagentStatus::Completed);
+    assert!(!app.shutdown_requested());
+    assert_eq!(app.input.text(), "agents draft 界");
+    expect_commands(&mut commands, &[]);
+    super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
+    assert!(app.agents.transcript.is_none(), "reopen must show the list, not the cancelled reader");
+    handle_terminal_event(
+        &mut app,
+        Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+    );
+    handle_terminal_event(&mut app, Event::Paste("!".into()));
+    crate::app::finalize_pending_paste_event(&mut app);
+    crate::app::test_support::press(&mut app, KeyCode::Enter);
+    crate::app::test_support::expect_session_prompt(
+        &mut commands,
+        SESSION,
+        "agents draft 界!",
+        &[],
+        &[],
+    );
 }
 
 #[test]
 fn only_a_listed_id_has_a_transcript_and_reading_it_leaves_status_alone() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(
-        &mut app,
-        vec![
-            task("agent-1", "local_agent", TaskStatus::InProgress, None),
-            task("agent-2", "local_agent", TaskStatus::Completed, Some("completed")),
-        ],
-    );
-    press(&mut app, KeyCode::Left);
-    assert_eq!(sent(&mut commands), vec![list_command()]);
-
-    press(&mut app, KeyCode::Enter);
-    assert!(
-        app.agents.transcript.is_none(),
-        "nothing is inferred before the SDK lists transcripts"
-    );
-    assert!(sent(&mut commands).is_empty());
-
-    handle_client_event(
-        &mut app,
-        ClientEvent::SubagentsListed {
-            session_id: SESSION.to_owned(),
-            agent_ids: vec!["agent-2".to_owned(), "tool-use-id".to_owned()],
-            error: None,
-        },
-    );
-    assert_eq!(app.agents.has_transcript("agent-1"), Some(false));
-    assert_eq!(app.agents.has_transcript("agent-2"), Some(true));
-    press(&mut app, KeyCode::Enter);
-    assert!(app.agents.transcript.is_none(), "a running subagent not yet listed has no transcript");
-    assert!(sent(&mut commands).is_empty());
-
-    // Selecting the completed subagent reads its transcript for the response,
-    // and opening it shows that same read.
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Enter);
-    let reads = sent_reads(&mut commands);
-    assert_eq!(
-        reads.iter().map(|(command, _)| command.clone()).collect::<Vec<_>>(),
-        [read_command("agent-2")],
-        "a completed subagent's transcript is not read twice"
-    );
-    handle_client_event(
-        &mut app,
-        answer("agent-1", "another-request", vec![reply("someone else's")]),
-    );
-    handle_client_event(&mut app, answer("agent-2", &reads[0].1, vec![reply("Parser checked")]));
-    assert!(app.agents.transcript.is_some(), "transcript open");
-    let read = app.agents.read.as_ref().expect("transcript read");
-    assert_eq!(read.messages.as_deref(), Some(&[reply("Parser checked")][..]));
-    assert_eq!(
-        statuses(&app)[0].1,
-        SubagentStatus::Running,
-        "a transcript read never changes status"
-    );
-
-    press(&mut app, KeyCode::Left);
-    assert!(app.agents.transcript.is_none());
-    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Agents));
-
-    press(&mut app, KeyCode::Char('r'));
-    assert_eq!(
-        sent(&mut commands),
-        vec![list_command(), read_command("agent-2")],
-        "r checks transcripts again and reads the selected response again"
-    );
-    handle_client_event(
-        &mut app,
-        ClientEvent::SubagentsListed {
-            session_id: SESSION.to_owned(),
-            agent_ids: Vec::new(),
-            error: Some("subagent directory unreadable".to_owned()),
-        },
-    );
-    assert_eq!(
-        app.agents.has_transcript("agent-2"),
-        Some(true),
-        "a failed re-check keeps the last list"
-    );
-    assert!(app.agents.list_error.as_ref().is_some_and(|error| error.contains("unreadable")));
+    for completed_first in [false, true] {
+        let (mut app, mut commands) = connected_app();
+        let mut target = task("target", "local_agent", TaskStatus::InProgress, None);
+        target.source_tool_call_id = Some("launch-id".into());
+        lifecycle(
+            &mut app,
+            vec![target, task("neighbor", "local_agent", TaskStatus::InProgress, None)],
+        );
+        super::open(&mut app);
+        expect_commands(&mut commands, &[list_command()]);
+        press(&mut app, KeyCode::Enter);
+        expect_commands(&mut commands, &[]);
+        assert!(app.agents.transcript.is_none());
+        listed(&mut app, &["launch-id", "neighbor"]);
+        press(&mut app, KeyCode::Enter);
+        expect_commands(&mut commands, &[]);
+        assert!(app.agents.transcript.is_none());
+        if completed_first {
+            lifecycle(&mut app, vec![completed("target")]);
+        } else {
+            listed(&mut app, &["target", "neighbor"]);
+        }
+        expect_commands(&mut commands, &[]);
+        if completed_first {
+            listed(&mut app, &["target", "neighbor"]);
+        } else {
+            lifecycle(&mut app, vec![completed("target")]);
+        }
+        let request = expect_read(&mut commands, "target");
+        handle_client_event(
+            &mut app,
+            answer("target", &request, vec![reply("Target saved content")]),
+        );
+        assert_eq!(response(&app, "target"), Some(Ok("Target saved content".into())));
+        assert_eq!(status(&app, "target"), SubagentStatus::Completed);
+        assert_eq!(status(&app, "neighbor"), SubagentStatus::Running);
+        press(&mut app, KeyCode::Enter);
+        expect_commands(&mut commands, &[]);
+        assert_eq!(
+            app.agents.read.as_ref().unwrap().messages,
+            Some(vec![reply("Target saved content")])
+        );
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('r'));
+        let envelopes = expect_commands(&mut commands, &[list_command(), read_command("target")]);
+        let refreshed = envelopes[1].request_id.as_deref().unwrap();
+        handle_client_event(
+            &mut app,
+            ClientEvent::SubagentsListed {
+                session_id: SESSION.into(),
+                agent_ids: vec![],
+                error: Some("directory refused".into()),
+            },
+        );
+        assert!(screen(&mut app).contains("directory refused"));
+        handle_client_event(
+            &mut app,
+            answer("target", refreshed, vec![reply("Accessible after list failure")]),
+        );
+        press(&mut app, KeyCode::Enter);
+        expect_commands(&mut commands, &[]);
+        assert!(app.agents.transcript.is_some());
+        assert_eq!(
+            app.agents.read.as_ref().unwrap().messages,
+            Some(vec![reply("Accessible after list failure")])
+        );
+        assert_eq!(status(&app, "target"), SubagentStatus::Completed);
+        assert_eq!(status(&app, "neighbor"), SubagentStatus::Running);
+    }
 }
 
 #[test]
 fn a_new_session_forgets_stop_requests_and_transcripts() {
     let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
+    lifecycle(&mut app, vec![execution("old-run", TaskStatus::InProgress)]);
     super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
     press(&mut app, KeyCode::Char('s'));
-    let _ = sent(&mut commands);
+    let old_stop = expect_stop(&mut commands, "worker", Some("old-run"));
+    listed(&mut app, &["worker"]);
+    press(&mut app, KeyCode::Enter);
+    let old_read = expect_read(&mut commands, "worker");
+    handle_client_event(
+        &mut app,
+        answer("worker", &old_read, vec![reply("Old session transcript")]),
+    );
+    press(&mut app, KeyCode::Char('r'));
+    let outstanding = expect_read(&mut commands, "worker");
+    replace_session_with_new_worker(&mut app, &mut commands);
+    super::open(&mut app);
+    expect_commands(
+        &mut commands,
+        &[BridgeCommand::ListSubagents { session_id: "replacement".into() }],
+    );
+    handle_client_event(
+        &mut app,
+        answer("worker", &outstanding, vec![reply("Late old transcript")]),
+    );
+    stop_result(
+        &mut app,
+        SESSION,
+        "worker",
+        Some("old-run"),
+        &old_stop,
+        Some("Late old stop failure"),
+    );
+    listed(&mut app, &["new-worker", "worker"]);
+    press(&mut app, KeyCode::Enter);
+    expect_commands(&mut commands, &[]);
+    assert!(app.agents.transcript.is_none());
+    assert!(app.agents.read.is_none());
+    assert_eq!(status(&app, "new-worker"), SubagentStatus::Running);
+    assert!(!screen(&mut app).contains("Late old stop failure"));
     handle_client_event(
         &mut app,
         ClientEvent::SubagentsListed {
-            session_id: SESSION.to_owned(),
-            agent_ids: vec!["agent-1".to_owned()],
+            session_id: "replacement".into(),
+            agent_ids: vec!["new-worker".into()],
             error: None,
         },
     );
-
-    app.bump_session_scope_epoch();
-    assert_eq!(app.agents.has_transcript("agent-1"), None);
-    assert_eq!(statuses(&app)[0].1, SubagentStatus::Running);
+    press(&mut app, KeyCode::Enter);
+    let env = expect_commands(
+        &mut commands,
+        &[BridgeCommand::GetSubagentMessages {
+            session_id: "replacement".into(),
+            agent_id: "new-worker".into(),
+        }],
+    );
+    handle_client_event(
+        &mut app,
+        ClientEvent::SubagentMessagesReceived {
+            session_id: "replacement".into(),
+            agent_id: "new-worker".into(),
+            request_id: env[0].request_id.clone(),
+            messages: vec![reply("New session content")],
+            error: None,
+        },
+    );
+    assert_eq!(
+        app.agents.read.as_ref().unwrap().messages,
+        Some(vec![reply("New session content")])
+    );
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('s'));
+    let env = expect_commands(
+        &mut commands,
+        &[BridgeCommand::StopSubagent {
+            session_id: "replacement".into(),
+            task_id: "new-worker".into(),
+            expected_run_id: None,
+        }],
+    );
+    stop_result(
+        &mut app,
+        "replacement",
+        "new-worker",
+        None,
+        env[0].request_id.as_deref().unwrap(),
+        None,
+    );
+    assert_eq!(status(&app, "new-worker"), SubagentStatus::Stopping);
+    expect_commands(&mut commands, &[]);
 }
 
 #[test]
@@ -403,92 +515,56 @@ fn a_selection_whose_subagent_leaves_is_not_moved_to_another_row() {
 
 #[test]
 fn answers_for_another_session_and_a_stop_that_lost_the_race_change_nothing() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
-    super::open(&mut app);
-    press(&mut app, KeyCode::Char('s'));
-    let _ = sent(&mut commands);
-    handle_client_event(
-        &mut app,
-        ClientEvent::SubagentsListed {
-            session_id: "previous-session".to_owned(),
-            agent_ids: vec!["agent-1".to_owned()],
-            error: None,
-        },
-    );
-    assert_eq!(app.agents.has_transcript("agent-1"), None, "another session's list is ignored");
-
-    lifecycle(
-        &mut app,
-        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("completed"))],
-    );
-    let stop_request = app.agents.stop_requested.get("agent-1").map(|stop| stop.request_id.clone());
-    handle_client_event(
-        &mut app,
-        ClientEvent::SubagentStopResult {
-            request_id: stop_request,
-            run_id: None,
-            session_id: SESSION.to_owned(),
-            task_id: "agent-1".to_owned(),
-            error: Some("Task agent-1 is not running".to_owned()),
-        },
-    );
-    assert!(app.agents.notice.is_none(), "the row already shows how the subagent ended");
-    assert_eq!(statuses(&app)[0].1, SubagentStatus::Completed);
-}
-
-#[test]
-fn ambient_subagents_are_neither_listed_nor_counted() {
-    let (mut app, _commands) = connected_app();
-    let mut watcher = task("watch-1", "local_agent", TaskStatus::InProgress, None);
-    if let Some(metadata) = watcher.metadata.as_mut() {
-        metadata["ambient"] = serde_json::json!(true);
+    for error in [None, Some("Late stopped-task failure")] {
+        let (mut app, mut commands) = connected_app();
+        lifecycle(&mut app, vec![execution("run", TaskStatus::InProgress)]);
+        super::open(&mut app);
+        expect_commands(&mut commands, &[list_command()]);
+        press(&mut app, KeyCode::Char('s'));
+        let stop = expect_stop(&mut commands, "worker", Some("run"));
+        handle_client_event(
+            &mut app,
+            ClientEvent::SubagentsListed {
+                session_id: "previous-session".into(),
+                agent_ids: vec!["worker".into()],
+                error: None,
+            },
+        );
+        press(&mut app, KeyCode::Enter);
+        expect_commands(&mut commands, &[]);
+        assert!(app.agents.transcript.is_none());
+        stop_result(
+            &mut app,
+            "previous-session",
+            "worker",
+            Some("run"),
+            &stop,
+            Some("Wrong-session stop"),
+        );
+        assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
+        listed(&mut app, &["worker"]);
+        press(&mut app, KeyCode::Enter);
+        let read = expect_read(&mut commands, "worker");
+        let mut wrong = answer("worker", &read, vec![reply("Wrong session text")]);
+        if let ClientEvent::SubagentMessagesReceived { session_id, .. } = &mut wrong {
+            *session_id = "previous-session".into();
+        }
+        handle_client_event(&mut app, wrong);
+        assert!(app.agents.read.as_ref().unwrap().messages.is_none());
+        handle_client_event(&mut app, answer("worker", &read, vec![reply("Current session text")]));
+        assert_eq!(
+            app.agents.read.as_ref().unwrap().messages,
+            Some(vec![reply("Current session text")])
+        );
+        stop_result(&mut app, SESSION, "worker", Some("run"), &stop, None);
+        assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
+        lifecycle(&mut app, vec![execution("run", TaskStatus::Completed)]);
+        let notice = app.agents.notice.clone();
+        stop_result(&mut app, SESSION, "worker", Some("run"), &stop, error);
+        assert_eq!(status(&app, "worker"), SubagentStatus::Completed);
+        assert_eq!(app.agents.notice, notice);
+        expect_commands(&mut commands, &[]);
     }
-    lifecycle(
-        &mut app,
-        vec![watcher, task("agent-1", "local_agent", TaskStatus::InProgress, None)],
-    );
-
-    assert_eq!(statuses(&app), vec![("agent-1".to_owned(), SubagentStatus::Running)]);
-    assert_eq!(running_subagent_count(&app), 1);
-}
-
-#[test]
-fn an_interrupted_subagent_is_shown_as_such_not_counted_and_cannot_be_stopped() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(
-        &mut app,
-        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("interrupted"))],
-    );
-
-    assert_eq!(statuses(&app), vec![("agent-1".to_owned(), SubagentStatus::Interrupted)]);
-    assert_eq!(running_subagent_count(&app), 0);
-
-    press(&mut app, KeyCode::Left);
-    sent(&mut commands);
-    press(&mut app, KeyCode::Char('s'));
-    assert!(sent(&mut commands).is_empty(), "no stop request for a task no process owns");
-}
-
-#[test]
-fn a_new_transcript_answer_replaces_what_was_wrapped_for_the_old_one() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(
-        &mut app,
-        vec![task("agent-1", "local_agent", TaskStatus::Completed, Some("completed"))],
-    );
-    super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
-    press(&mut app, KeyCode::Enter);
-    let first = sent_reads(&mut commands).pop().expect("read sent").1;
-    handle_client_event(&mut app, answer("agent-1", &first, vec![reply("first")]));
-    if let Some(view) = app.agents.transcript.as_mut() {
-        view.wrapped = Some(super::WrappedTranscript { width: 80, rows: Vec::new() });
-    }
-    press(&mut app, KeyCode::Char('r'));
-    let second = sent_reads(&mut commands).pop().expect("read sent").1;
-    handle_client_event(&mut app, answer("agent-1", &second, vec![reply("second")]));
-    assert!(app.agents.transcript.is_some_and(|view| view.wrapped.is_none()));
 }
 
 #[test]
@@ -545,98 +621,97 @@ fn execution(run: &str, status: TaskStatus) -> TaskItem {
 
 #[test]
 fn background_snapshots_preserve_lifecycle_order_and_task_selection() {
-    let (mut app, _commands) = connected_app();
+    let (mut app, mut commands) = connected_app();
     let mut first = task("first", "local_agent", TaskStatus::InProgress, None);
     let mut second = task("second", "local_agent", TaskStatus::InProgress, None);
-    for row in [&mut first, &mut second] {
-        row.metadata.as_mut().unwrap()["sdk_background_task"] = serde_json::json!(true);
+    for t in [&mut first, &mut second] {
+        t.metadata.as_mut().unwrap()["sdk_background_task"] = serde_json::json!(true);
     }
     lifecycle(&mut app, vec![first.clone(), second.clone()]);
-    app.agents.selected_task_id = Some("first".to_owned());
-    handle_client_event(
-        &mut app,
-        ClientEvent::SessionUpdate {
-            session_id: SESSION.to_owned(),
-            update: model::SessionUpdate::TaskStateUpdate(
-                model::TaskStateUpdate::new(TaskUpdateSource::BackgroundTasks)
-                    .tasks(vec![second, first])
-                    .complete_snapshot(true),
-            ),
-        },
-    );
+    super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
+    press(&mut app, KeyCode::Down);
+    first.subject = "Updated first task".into();
+    second.subject = "Updated second task".into();
+    second.metadata.as_mut().unwrap()["summary"] = serde_json::json!("Second progress sentinel");
+    lifecycle_snapshot(&mut app, vec![second, first]);
     assert_eq!(
-        subagent_rows(&app).iter().map(|row| row.task.task_id.as_str()).collect::<Vec<_>>(),
+        subagent_rows(&app).iter().map(|r| r.task.task_id.as_str()).collect::<Vec<_>>(),
         ["first", "second"]
     );
-    assert_eq!(app.agents.selected_task_id.as_deref(), Some("first"));
+    assert_eq!(app.agents.selected_task_id.as_deref(), Some("second"));
+    let rendered = screen(&mut app);
+    assert!(rendered.contains("Second progress sentinel"));
+    assert!(rendered.contains("Updated second task"));
+    press(&mut app, KeyCode::Char('s'));
+    expect_stop(&mut commands, "second", None);
+    assert_eq!(status(&app, "first"), SubagentStatus::Running);
+    assert_eq!(status(&app, "second"), SubagentStatus::Stopping);
 }
 
 #[test]
 fn a_new_completed_run_invalidates_the_preview_even_without_a_running_transition() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
-    super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
-    let (_, first) = sent_reads(&mut commands).pop().expect("read A");
-    handle_client_event(&mut app, answer("worker", &first, vec![reply("A report")]));
-    assert_eq!(response(&app, "worker"), Some(Ok("A report".to_owned())));
-    lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
-    assert_eq!(response(&app, "worker"), None);
-    let (_, second) = sent_reads(&mut commands).pop().expect("read B");
-    handle_client_event(&mut app, answer("worker", &first, vec![reply("stale A")]));
-    assert_eq!(response(&app, "worker"), None);
-    // Saved persistence can still contain A. Keep the SDK's conversation
-    // intact, while the row's lifecycle summary owns the current outcome.
-    handle_client_event(&mut app, answer("worker", &second, vec![reply("A report")]));
-    assert_eq!(response(&app, "worker"), Some(Ok("A report".to_owned())));
-    assert_eq!(app.sdk_inventory.tasks[0].run_id.as_deref(), Some("B"));
-}
-
-#[test]
-fn a_run_change_releases_only_its_old_read_and_never_applies_its_content_or_error() {
-    for failed in [false, true] {
+    for versioned in [false, true] {
         let (mut app, mut commands) = connected_app();
-        lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
+        lifecycle(
+            &mut app,
+            vec![if versioned {
+                execution("A", TaskStatus::Completed)
+            } else {
+                completed("worker")
+            }],
+        );
         super::open(&mut app);
-        super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
-        let (_, first) = sent_reads(&mut commands).pop().expect("read A");
-        lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
-        assert!(sent_reads(&mut commands).is_empty(), "one response-read lane");
-        let mut event = answer("worker", &first, vec![reply("A report")]);
-        if let ClientEvent::SubagentMessagesReceived { error, .. } = &mut event {
-            *error = failed.then(|| "A read failed".to_owned());
+        expect_commands(&mut commands, &[list_command()]);
+        listed(&mut app, &["worker"]);
+        let old = expect_read(&mut commands, "worker");
+        handle_client_event(&mut app, answer("worker", &old, vec![reply("A report")]));
+        assert_eq!(response(&app, "worker"), Some(Ok("A report".into())));
+        if !versioned {
+            lifecycle(&mut app, vec![task("worker", "local_agent", TaskStatus::InProgress, None)]);
+            assert_eq!(response(&app, "worker"), None);
+            expect_commands(&mut commands, &[]);
         }
-        handle_client_event(&mut app, event);
-        let (_, second) =
-            sent_reads(&mut commands).pop().expect("read B after A releases its lane");
+        lifecycle(
+            &mut app,
+            vec![if versioned {
+                execution("B", TaskStatus::Completed)
+            } else {
+                completed("worker")
+            }],
+        );
+        let new = expect_read(&mut commands, "worker");
+        assert_ne!(old, new);
         assert_eq!(response(&app, "worker"), None);
-        handle_client_event(&mut app, answer("worker", &second, vec![reply("B report")]));
-        handle_client_event(&mut app, answer("worker", &first, vec![reply("late A")]));
-        assert_eq!(response(&app, "worker"), Some(Ok("B report".to_owned())));
+        handle_client_event(&mut app, answer("worker", &old, vec![reply("Superseded answer")]));
+        assert_eq!(response(&app, "worker"), None);
+        expect_commands(&mut commands, &[]);
+        let messages = if versioned {
+            vec![reply("A report")]
+        } else {
+            vec![
+                reply("A report"),
+                SubagentMessage { role: SubagentMessageRole::User, text: "Next request".into() },
+                reply("Latest resumed answer"),
+            ]
+        };
+        handle_client_event(&mut app, answer("worker", &new, messages));
+        assert_eq!(
+            response(&app, "worker"),
+            Some(Ok(if versioned { "A report" } else { "Latest resumed answer" }.into()))
+        );
+        assert_eq!(
+            app.sdk_inventory
+                .tasks
+                .iter()
+                .find(|t| t.task_id == "worker")
+                .unwrap()
+                .run_id
+                .as_deref(),
+            versioned.then_some("B")
+        );
+        assert_eq!(status(&app, "worker"), SubagentStatus::Completed);
     }
-}
-
-#[test]
-fn open_transcripts_keep_old_content_and_scroll_across_runs_until_refresh() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
-    super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
-    let (_, first) = sent_reads(&mut commands).pop().expect("read A");
-    handle_client_event(&mut app, answer("worker", &first, vec![reply("A report")]));
-    press(&mut app, KeyCode::Enter);
-    app.agents.transcript.as_mut().unwrap().scroll = 12;
-    lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
-    assert!(app.agents.read.as_ref().unwrap().saved_snapshot);
-    assert_eq!(app.agents.read.as_ref().unwrap().messages, Some(vec![reply("A report")]));
-    assert_eq!(app.agents.transcript.as_ref().unwrap().scroll, 12);
-    assert_eq!(response(&app, "worker"), None);
-    assert!(sent_reads(&mut commands).is_empty());
-    press(&mut app, KeyCode::Char('r'));
-    let (_, second) = sent_reads(&mut commands).pop().expect("explicit refresh reads B");
-    handle_client_event(&mut app, answer("worker", &second, vec![reply("B report")]));
-    assert_eq!(app.agents.read.as_ref().unwrap().run_id.as_deref(), Some("B"));
-    assert_eq!(app.agents.transcript.as_ref().unwrap().scroll, 12);
 }
 
 #[test]
@@ -644,110 +719,67 @@ fn a_run_change_while_the_view_is_closed_invalidates_old_preview_and_stop_state(
     let (mut app, mut commands) = connected_app();
     lifecycle(&mut app, vec![execution("A", TaskStatus::InProgress)]);
     super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
     press(&mut app, KeyCode::Char('s'));
-    let stop_a = sent_envelopes(&mut commands)
-        .into_iter()
-        .find(|env| matches!(env.command, BridgeCommand::StopSubagent { .. }))
-        .unwrap();
-    let BridgeCommand::StopSubagent { expected_run_id, .. } = stop_a.command else {
-        unreachable!()
-    };
-    assert_eq!(expected_run_id.as_deref(), Some("A"));
+    let stop_a = expect_stop(&mut commands, "worker", Some("A"));
     lifecycle(&mut app, vec![execution("A", TaskStatus::Completed)]);
-    super::apply_transcript_list(&mut app, vec!["worker".to_owned()], None);
-    let (_, read_a) = sent_reads(&mut commands).pop().expect("read A");
-    handle_client_event(&mut app, answer("worker", &read_a, vec![reply("A report")]));
+    listed(&mut app, &["worker"]);
+    let read = expect_read(&mut commands, "worker");
+    handle_client_event(&mut app, answer("worker", &read, vec![reply("A report")]));
     press(&mut app, KeyCode::Esc);
     lifecycle(&mut app, vec![execution("B", TaskStatus::InProgress)]);
     assert_eq!(response(&app, "worker"), None);
-    assert!(sent_envelopes(&mut commands).is_empty());
+    expect_commands(&mut commands, &[]);
     super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
     press(&mut app, KeyCode::Char('s'));
-    let stop_b = sent_envelopes(&mut commands)
-        .into_iter()
-        .find(|env| matches!(env.command, BridgeCommand::StopSubagent { .. }))
-        .unwrap();
-    for error in [None, Some("old rejection".to_owned())] {
-        handle_client_event(
-            &mut app,
-            ClientEvent::SubagentStopResult {
-                session_id: SESSION.to_owned(),
-                task_id: "worker".to_owned(),
-                run_id: Some("A".to_owned()),
-                request_id: stop_a.request_id.clone(),
-                error,
-            },
-        );
+    let stop_b = expect_stop(&mut commands, "worker", Some("B"));
+    for error in [None, Some("Old A failure")] {
+        stop_result(&mut app, SESSION, "worker", Some("A"), &stop_a, error);
+        assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
         assert!(app.agents.notice.is_none());
-        assert_eq!(statuses(&app), [("worker".to_owned(), SubagentStatus::Stopping)]);
     }
-    handle_client_event(
-        &mut app,
-        ClientEvent::SubagentStopResult {
-            session_id: SESSION.to_owned(),
-            task_id: "worker".to_owned(),
-            run_id: Some("B".to_owned()),
-            request_id: stop_b.request_id,
-            error: Some("B rejection".to_owned()),
-        },
-    );
-    assert_eq!(statuses(&app), [("worker".to_owned(), SubagentStatus::Running)]);
-    assert!(app.agents.notice.as_ref().unwrap().text.contains("B rejection"));
-}
-
-#[test]
-fn a_selected_subagent_that_completes_in_the_list_is_read_for_its_response() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
-    super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
-    assert!(sent_reads(&mut commands).is_empty(), "a running subagent has no response yet");
-
-    lifecycle(&mut app, vec![completed("agent-1")]);
-    let reads = sent_reads(&mut commands);
-    assert_eq!(
-        reads.iter().map(|(command, _)| command.clone()).collect::<Vec<_>>(),
-        [read_command("agent-1")]
-    );
-    handle_client_event(&mut app, answer("agent-1", &reads[0].1, vec![reply("All checked")]));
-    assert_eq!(response(&app, "agent-1"), Some(Ok("All checked".to_owned())));
+    stop_result(&mut app, SESSION, "worker", Some("B"), &stop_b, Some("B rejection"));
+    assert_eq!(status(&app, "worker"), SubagentStatus::Running);
+    assert!(screen(&mut app).contains("B rejection"));
+    press(&mut app, KeyCode::Char('s'));
+    let retry = expect_stop(&mut commands, "worker", Some("B"));
+    assert_ne!(retry, stop_b);
+    for error in [None, Some("Old B rejection")] {
+        stop_result(&mut app, SESSION, "worker", Some("B"), &stop_b, error);
+        assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
+        assert!(app.agents.notice.is_none());
+    }
+    stop_result(&mut app, SESSION, "worker", Some("B"), &retry, None);
+    assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
+    assert!(app.agents.notice.is_some());
+    expect_commands(&mut commands, &[]);
 }
 
 #[test]
 fn a_read_made_while_a_subagent_ran_never_stands_as_its_response() {
     let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
+    lifecycle(&mut app, vec![task("worker", "local_agent", TaskStatus::InProgress, None)]);
     super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
+    expect_commands(&mut commands, &[list_command()]);
+    listed(&mut app, &["worker"]);
     press(&mut app, KeyCode::Enter);
-    let (_, request) = sent_reads(&mut commands).pop().expect("read sent");
-    handle_client_event(&mut app, answer("agent-1", &request, vec![reply("Halfway there")]));
+    let old = expect_read(&mut commands, "worker");
+    handle_client_event(&mut app, answer("worker", &old, vec![reply("Running-time reply")]));
     press(&mut app, KeyCode::Esc);
-
-    // The bridge is gone, so the read after completion cannot be sent.
-    drop(commands);
-    lifecycle(&mut app, vec![completed("agent-1")]);
-    assert_eq!(response(&app, "agent-1"), None, "the running-time read is not its response");
-    assert!(
-        app.agents.notice.as_ref().is_some_and(|notice| notice.text.contains("Could not read"))
-    );
-}
-
-#[test]
-fn the_first_transcript_list_reads_the_selected_completed_subagent() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![completed("agent-1")]);
-    super::open(&mut app);
-    assert_eq!(sent(&mut commands), vec![list_command()], "nothing is read before the list");
-    handle_client_event(
-        &mut app,
-        ClientEvent::SubagentsListed {
-            session_id: SESSION.to_owned(),
-            agent_ids: vec!["agent-1".to_owned()],
-            error: None,
-        },
-    );
-    assert_eq!(sent(&mut commands), vec![read_command("agent-1")]);
+    let filler = saturate(&app);
+    lifecycle(&mut app, vec![completed("worker")]);
+    assert_eq!(response(&app, "worker"), None);
+    let rendered = screen(&mut app);
+    assert!(!rendered.contains("Running-time reply"));
+    assert!(rendered.contains("regular command queue is full"));
+    expect_commands(&mut commands, &filler);
+    press(&mut app, KeyCode::Char('r'));
+    let env = expect_commands(&mut commands, &[list_command(), read_command("worker")]);
+    let request = env[1].request_id.as_deref().unwrap();
+    handle_client_event(&mut app, answer("worker", request, vec![reply("Completed saved reply")]));
+    assert_eq!(response(&app, "worker"), Some(Ok("Completed saved reply".into())));
+    assert!(screen(&mut app).contains("Completed saved reply"));
 }
 
 #[test]
@@ -780,75 +812,311 @@ fn a_failed_response_read_is_retried_by_r_and_not_by_every_lifecycle_update() {
 
 #[test]
 fn moving_along_the_list_keeps_one_response_read_in_flight() {
-    let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![completed("agent-a"), completed("agent-b"), completed("agent-c")]);
-    super::open(&mut app);
-    super::apply_transcript_list(
-        &mut app,
-        ["agent-a", "agent-b", "agent-c"].map(str::to_owned).to_vec(),
-        None,
-    );
-    let (_, first) = sent_reads(&mut commands).pop().expect("the first row is read");
-
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Down);
-    assert!(sent_reads(&mut commands).is_empty(), "rows passed over wait for the read in flight");
-
-    handle_client_event(&mut app, answer("agent-a", &first, vec![reply("a done")]));
-    let reads = sent_reads(&mut commands);
-    assert_eq!(
-        reads.iter().map(|(command, _)| command.clone()).collect::<Vec<_>>(),
-        [read_command("agent-c")]
-    );
-    assert_eq!(response(&app, "agent-a"), None, "a passed-over answer is not shown");
-    handle_client_event(&mut app, answer("agent-c", &reads[0].1, vec![reply("c done")]));
-    assert_eq!(response(&app, "agent-c"), Some(Ok("c done".to_owned())));
+    for run_change in [false, true] {
+        for failed in [false, true] {
+            let (mut app, mut commands) = connected_app();
+            let (initial, current) =
+                if run_change { ("worker", "worker") } else { ("agent-a", "agent-c") };
+            lifecycle(
+                &mut app,
+                if run_change {
+                    vec![execution("A", TaskStatus::Completed)]
+                } else {
+                    vec![completed("agent-a"), completed("agent-b"), completed("agent-c")]
+                },
+            );
+            super::open(&mut app);
+            expect_commands(&mut commands, &[list_command()]);
+            listed(&mut app, &["worker", "agent-a", "agent-b", "agent-c"]);
+            let old = expect_read(&mut commands, initial);
+            if run_change {
+                lifecycle(&mut app, vec![execution("B", TaskStatus::Completed)]);
+            } else {
+                press(&mut app, KeyCode::Down);
+                press(&mut app, KeyCode::Down);
+            }
+            expect_commands(&mut commands, &[]);
+            handle_client_event(
+                &mut app,
+                answer("unrelated", "unrelated-request", vec![reply("Unrelated answer")]),
+            );
+            expect_commands(&mut commands, &[]);
+            assert_eq!(response(&app, current), None);
+            let mut event = answer(initial, &old, vec![reply("Superseded answer")]);
+            if failed && let ClientEvent::SubagentMessagesReceived { error, .. } = &mut event {
+                *error = Some("Superseded failure".into());
+            }
+            handle_client_event(&mut app, event);
+            let new = expect_read(&mut commands, current);
+            assert_ne!(old, new);
+            assert_eq!(response(&app, current), None);
+            handle_client_event(
+                &mut app,
+                answer(current, &new, vec![reply("Selected current answer")]),
+            );
+            handle_client_event(&mut app, answer(initial, &old, vec![reply("Late old answer")]));
+            assert_eq!(response(&app, current), Some(Ok("Selected current answer".into())));
+            expect_commands(&mut commands, &[]);
+        }
+    }
 }
 
 #[test]
 fn an_open_transcript_changes_only_when_the_user_asks_and_a_closed_view_reads_nothing() {
     let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
+    lifecycle(&mut app, vec![task("worker", "local_agent", TaskStatus::InProgress, None)]);
     super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
+    expect_commands(&mut commands, &[list_command()]);
+    listed(&mut app, &["worker"]);
     press(&mut app, KeyCode::Enter);
-    let (_, request) = sent_reads(&mut commands).pop().expect("read sent");
-    handle_client_event(&mut app, answer("agent-1", &request, vec![reply("Halfway there")]));
-
-    // Completing while its transcript is read leaves the reader as it is.
-    lifecycle(&mut app, vec![completed("agent-1")]);
-    assert!(sent_reads(&mut commands).is_empty());
-    let shown = app.agents.read.as_ref().and_then(|read| read.messages.clone());
-    assert_eq!(shown, Some(vec![reply("Halfway there")]));
+    let old = expect_read(&mut commands, "worker");
+    handle_client_event(&mut app, answer("worker", &old, vec![reply("Running snapshot")]));
+    lifecycle(&mut app, vec![completed("worker")]);
+    expect_commands(&mut commands, &[]);
+    assert_eq!(app.agents.read.as_ref().unwrap().messages, Some(vec![reply("Running snapshot")]));
     press(&mut app, KeyCode::Esc);
-    assert_eq!(sent(&mut commands), vec![read_command("agent-1")], "back in the list it is read");
-
-    // A list answer that arrives after the view closed reads nothing.
-    press(&mut app, KeyCode::Esc);
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    app.agents.read = None;
-    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
-    assert!(sent(&mut commands).is_empty());
+    let new = expect_read(&mut commands, "worker");
+    assert_eq!(response(&app, "worker"), None);
+    handle_client_event(&mut app, answer("worker", &new, vec![reply("Completed snapshot")]));
+    assert_eq!(response(&app, "worker"), Some(Ok("Completed snapshot".into())));
+    for read_pending in [false, true] {
+        let (mut app, mut commands) = connected_app();
+        lifecycle(&mut app, vec![completed("worker")]);
+        super::open(&mut app);
+        expect_commands(&mut commands, &[list_command()]);
+        let request = if read_pending {
+            listed(&mut app, &["worker"]);
+            Some(expect_read(&mut commands, "worker"))
+        } else {
+            None
+        };
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        if let Some(request) = &request {
+            handle_client_event(
+                &mut app,
+                answer("worker", request, vec![reply("Arrived while closed")]),
+            );
+        } else {
+            listed(&mut app, &["worker"]);
+        }
+        expect_commands(&mut commands, &[]);
+        super::open(&mut app);
+        if read_pending {
+            expect_commands(&mut commands, &[list_command()]);
+            assert_eq!(response(&app, "worker"), Some(Ok("Arrived while closed".into())));
+        } else {
+            let env = expect_commands(&mut commands, &[list_command(), read_command("worker")]);
+            handle_client_event(
+                &mut app,
+                answer(
+                    "worker",
+                    env[1].request_id.as_deref().unwrap(),
+                    vec![reply("Visible fresh read")],
+                ),
+            );
+            assert_eq!(response(&app, "worker"), Some(Ok("Visible fresh read".into())));
+        }
+    }
 }
 
+fn listed(app: &mut App, ids: &[&str]) {
+    handle_client_event(
+        app,
+        ClientEvent::SubagentsListed {
+            session_id: SESSION.into(),
+            agent_ids: ids.iter().map(|id| (*id).into()).collect(),
+            error: None,
+        },
+    );
+}
+fn expect_commands(
+    commands: &mut CommandReceiver,
+    expected: &[BridgeCommand],
+) -> Vec<CommandEnvelope> {
+    let envelopes = sent_envelopes(commands);
+    assert_eq!(
+        envelopes.iter().map(|e| &e.command).collect::<Vec<_>>(),
+        expected.iter().collect::<Vec<_>>()
+    );
+    envelopes
+}
+fn expect_read(commands: &mut CommandReceiver, id: &str) -> String {
+    expect_commands(commands, &[read_command(id)]).remove(0).request_id.expect("correlated read")
+}
 #[test]
-fn a_subagent_resumed_after_it_completed_is_read_again_for_its_new_response() {
+fn resumed_unversioned_agent_requires_a_fresh_response_after_leaving_its_open_reader() {
     let (mut app, mut commands) = connected_app();
-    lifecycle(&mut app, vec![completed("agent-1")]);
+    lifecycle(&mut app, vec![completed("worker")]);
     super::open(&mut app);
-    super::apply_transcript_list(&mut app, vec!["agent-1".to_owned()], None);
-    let (_, request) = sent_reads(&mut commands).pop().expect("read sent");
-    handle_client_event(&mut app, answer("agent-1", &request, vec![reply("First report")]));
-    assert_eq!(response(&app, "agent-1"), Some(Ok("First report".to_owned())));
-
-    lifecycle(&mut app, vec![task("agent-1", "local_agent", TaskStatus::InProgress, None)]);
-    assert_eq!(response(&app, "agent-1"), None, "a running subagent shows no response");
-    lifecycle(&mut app, vec![completed("agent-1")]);
-    let (_, request) = sent_reads(&mut commands).pop().expect("read again once it completes");
-    assert_eq!(response(&app, "agent-1"), None, "the first report is not its new response");
+    expect_commands(&mut commands, &[list_command()]);
+    listed(&mut app, &["worker"]);
+    let old = expect_read(&mut commands, "worker");
+    handle_client_event(&mut app, answer("worker", &old, vec![reply("Previous saved response")]));
+    press(&mut app, KeyCode::Enter);
+    expect_commands(&mut commands, &[]);
+    lifecycle(&mut app, vec![task("worker", "local_agent", TaskStatus::InProgress, None)]);
+    lifecycle(&mut app, vec![completed("worker")]);
+    assert_eq!(
+        app.agents.read.as_ref().unwrap().messages,
+        Some(vec![reply("Previous saved response")])
+    );
+    assert!(app.agents.transcript.is_some());
+    expect_commands(&mut commands, &[]);
+    press(&mut app, KeyCode::Esc);
+    let current = expect_read(&mut commands, "worker");
+    assert_ne!(current, old);
+    assert_eq!(response(&app, "worker"), None, "the old report is not a new completion preview");
     handle_client_event(
         &mut app,
-        answer("agent-1", &request, vec![reply("First report"), reply("Second report")]),
+        answer(
+            "worker",
+            &current,
+            vec![reply("Previous saved response"), reply("Resumed saved response")],
+        ),
     );
-    assert_eq!(response(&app, "agent-1"), Some(Ok("Second report".to_owned())));
+    assert_eq!(response(&app, "worker"), Some(Ok("Resumed saved response".into())));
+}
+
+fn status(app: &App, id: &str) -> SubagentStatus {
+    subagent_rows(app).iter().find(|r| r.task.task_id == id).expect("named task").status
+}
+fn expect_stop(commands: &mut CommandReceiver, id: &str, run: Option<&str>) -> String {
+    expect_commands(
+        commands,
+        &[BridgeCommand::StopSubagent {
+            session_id: SESSION.into(),
+            task_id: id.into(),
+            expected_run_id: run.map(str::to_owned),
+        }],
+    )
+    .remove(0)
+    .request_id
+    .expect("correlated stop")
+}
+fn stop_result(
+    app: &mut App,
+    session: &str,
+    id: &str,
+    run: Option<&str>,
+    request: &str,
+    error: Option<&str>,
+) {
+    handle_client_event(
+        app,
+        ClientEvent::SubagentStopResult {
+            session_id: session.into(),
+            task_id: id.into(),
+            run_id: run.map(str::to_owned),
+            request_id: Some(request.into()),
+            error: error.map(str::to_owned),
+        },
+    );
+}
+fn screen(app: &mut App) -> String {
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).unwrap();
+    terminal.draw(|frame| crate::ui::render_fullscreen_surface(frame, app)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(100)
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+fn saturate(app: &App) -> Vec<BridgeCommand> {
+    let conn = app.session_runtime.conn.as_ref().unwrap();
+    let mut admitted = Vec::new();
+    for n in 0..4096 {
+        let model = format!("capacity-fixture-{n}");
+        match conn.set_model(SESSION.into(), model.clone()) {
+            Ok(()) => admitted.push(BridgeCommand::SetModel { session_id: SESSION.into(), model }),
+            Err(error) => {
+                assert!(error.to_string().contains("regular command queue is full"));
+                return admitted;
+            }
+        }
+    }
+    panic!("bounded saturation fixture did not reach refusal")
+}
+#[test]
+fn a_locally_refused_stop_keeps_the_selected_execution_retryable() {
+    let (mut app, mut commands) = connected_app();
+    lifecycle(&mut app, vec![execution("run-admission", TaskStatus::InProgress)]);
+    super::open(&mut app);
+    expect_commands(&mut commands, &[list_command()]);
+    let filler = saturate(&app);
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(status(&app, "worker"), SubagentStatus::Running);
+    assert!(screen(&mut app).contains("regular command queue is full"));
+    expect_commands(&mut commands, &filler);
+    press(&mut app, KeyCode::Char('s'));
+    let request = expect_stop(&mut commands, "worker", Some("run-admission"));
+    stop_result(&mut app, SESSION, "worker", Some("run-admission"), &request, None);
+    assert_eq!(status(&app, "worker"), SubagentStatus::Stopping);
+    assert_eq!(running_subagent_count(&app), 1);
+    press(&mut app, KeyCode::Char('s'));
+    expect_commands(&mut commands, &[]);
+}
+
+fn lifecycle_snapshot(app: &mut App, tasks: Vec<TaskItem>) {
+    handle_client_event(
+        app,
+        ClientEvent::SessionUpdate {
+            session_id: SESSION.into(),
+            update: model::SessionUpdate::TaskStateUpdate(
+                model::TaskStateUpdate::new(TaskUpdateSource::BackgroundTasks)
+                    .tasks(tasks)
+                    .complete_snapshot(true),
+            ),
+        },
+    );
+}
+
+fn replace_session_with_new_worker(app: &mut App, commands: &mut CommandReceiver) {
+    handle_client_event(
+        app,
+        ClientEvent::SessionReplaced {
+            session_id: SessionId::new("replacement"),
+            cwd: "/replacement".into(),
+            current_model: model::CurrentModel::new("new", "new", "new").authoritative(true),
+            available_models: vec![],
+            mode: None,
+            fast_mode_state: model::FastModeState::Off,
+            fast_mode_disabled_reason: None,
+            ultracode: None,
+            history_updates: vec![],
+            restored_input: None,
+        },
+    );
+    assert!(app.agents.read.is_none());
+    assert!(app.agents.transcript.is_none());
+    let setup = sent(commands);
+    let expected = [
+        BridgeCommand::GetMcpSnapshot { session_id: "replacement".into() },
+        BridgeCommand::GetStatusSnapshot { session_id: "replacement".into() },
+        BridgeCommand::GetContextUsage { session_id: "replacement".into() },
+        BridgeCommand::InspectSettings {
+            session_id: "replacement".into(),
+            app_settings_path: None,
+        },
+    ];
+    for command in setup {
+        assert!(expected.contains(&command), "only current-session setup reads: {command:?}");
+    }
+    handle_client_event(
+        app,
+        ClientEvent::SessionUpdate {
+            session_id: "replacement".into(),
+            update: model::SessionUpdate::TaskStateUpdate(
+                model::TaskStateUpdate::new(TaskUpdateSource::Lifecycle).tasks(vec![task(
+                    "new-worker",
+                    "local_agent",
+                    TaskStatus::InProgress,
+                    None,
+                )]),
+            ),
+        },
+    );
 }

@@ -29,7 +29,18 @@ export async function dispatchCancelTurnCommand(
     );
     return;
   }
-  const receipt = await session.query.interrupt();
+  let receipt: Awaited<ReturnType<InterruptibleSession["query"]["interrupt"]>>;
+  try {
+    receipt = await session.query.interrupt();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    deps.slashError(
+      command.session_id,
+      `failed to interrupt turn: ${message}`,
+      deps.requestId,
+    );
+    return;
+  }
   const stillQueued = Array.isArray(receipt?.still_queued)
     ? receipt.still_queued.filter(
         (entry): entry is string => typeof entry === "string",

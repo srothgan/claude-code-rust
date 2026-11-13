@@ -9,6 +9,7 @@ pub mod agent;
 pub mod app;
 mod claude_paths;
 pub mod cli;
+mod epoch_time;
 pub mod error;
 pub mod failure;
 pub mod install_method;
@@ -510,11 +511,8 @@ pub enum ConfigFileSelector {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Cli, Command, ConfigArgs, ConfigCommand, ConfigExportArgs, ConfigFileSelector,
-        ConfigPathArgs, ConfigShowArgs, DoctorArgs, LogsArgs,
-    };
-    use clap::{CommandFactory, Parser};
+    use super::Cli;
+    use clap::Parser;
 
     /// The fixture root as the platform spells its own working directory: physical on Unix
     /// (macOS temp dirs sit behind a symlink), as given on Windows.
@@ -562,146 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn cli_without_subcommand_starts_new_session() {
-        let cli = Cli::try_parse_from(["claude-rs"]).expect("parse");
-        assert!(cli.command.is_none());
-    }
-
-    #[test]
-    fn cli_resume_without_id_requests_picker() {
-        let cli = Cli::try_parse_from(["claude-rs", "resume"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Resume { session_id: None, prompt: None }));
-    }
-
-    #[test]
-    fn cli_resume_with_id_resumes_directly() {
-        let cli = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Resume { session_id: Some("abc-123".to_owned()), prompt: None })
-        );
-    }
-
-    #[test]
-    fn cli_resume_flag_selects_the_same_session_as_the_subcommand() {
-        let flag = Cli::try_parse_from(["claude-rs", "--resume", "abc-123"]).expect("flag");
-        let command = Cli::try_parse_from(["claude-rs", "resume", "abc-123"]).expect("command");
-        assert_eq!(flag.startup_launch(), command.startup_launch());
-    }
-
-    #[test]
-    fn system_prompt_text_and_file_are_mutually_exclusive() {
-        for args in [
-            ["claude-rs", "--system-prompt", "a", "--system-prompt-file", "p.md"],
-            ["claude-rs", "--system-prompt-file", "p.md", "--system-prompt", "a"],
-        ] {
-            let error = Cli::try_parse_from(args).expect_err("conflicting prompt spellings");
-            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
-        }
-    }
-
-    #[test]
-    fn append_system_prompt_text_and_file_are_mutually_exclusive() {
-        for args in [
-            ["claude-rs", "--append-system-prompt", "a", "--append-system-prompt-file", "a.md"],
-            ["claude-rs", "--append-system-prompt-file", "a.md", "--append-system-prompt", "a"],
-        ] {
-            let error = Cli::try_parse_from(args).expect_err("conflicting append spellings");
-            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
-        }
-    }
-
-    #[test]
-    fn replacing_and_appending_the_system_prompt_can_be_combined() {
-        let cli = Cli::try_parse_from([
-            "claude-rs",
-            "--system-prompt",
-            "a",
-            "--append-system-prompt-file",
-            "a.md",
-        ])
-        .expect("one of each pair");
-        cli.validate().expect("valid launch");
-    }
-
-    #[test]
-    fn fork_session_is_accepted_with_every_resume_spelling() {
-        let cases: &[&[&str]] = &[
-            &["claude-rs", "--resume", "--fork-session"],
-            &["claude-rs", "-r", "session-1", "--fork-session"],
-            &["claude-rs", "--continue", "--fork-session"],
-            &["claude-rs", "resume", "--fork-session"],
-            &["claude-rs", "resume", "session-1", "--fork-session"],
-        ];
-        for args in cases {
-            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
-            cli.validate().expect("fork with a resume");
-            assert!(cli.session_options.fork_session, "{args:?}");
-        }
-    }
-
-    #[test]
-    fn fork_session_without_a_resume_is_rejected() {
-        for args in [
-            &["claude-rs", "--fork-session"][..],
-            &["claude-rs", "--fork-session", "explain this project"][..],
-            &["claude-rs", "--fork-session", "--name", "Experiment"][..],
-        ] {
-            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
-            let error = cli.validate().expect_err("fork needs a resume");
-            assert!(error.to_string().contains("--fork-session requires"), "{error}");
-        }
-    }
-
-    #[test]
-    fn launch_flags_belong_to_interactive_launches_only() {
-        let cases: &[&[&str]] = &[
-            &["claude-rs", "doctor", "--name", "Experiment"],
-            &["claude-rs", "doctor", "--fork-session"],
-            &["claude-rs", "logs", "--add-dir", "src"],
-            &["claude-rs", "config", "--settings", "{}"],
-            &["claude-rs", "doctor", "--mcp-config", "{\"mcpServers\":{}}"],
-            &["claude-rs", "doctor", "--strict-mcp-config"],
-            &["claude-rs", "doctor", "--append-system-prompt", "a"],
-            &["claude-rs", "doctor", "--system-prompt-file", "p.md"],
-        ];
-        for args in cases {
-            let cli = Cli::try_parse_from(args.iter().copied()).expect("parse");
-            let error = cli.validate().expect_err("launch flag with a support command");
-            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict, "{args:?}");
-        }
-    }
-
-    #[test]
-    fn launch_flags_before_and_after_resume_parse_to_the_same_launch() {
-        let before = Cli::try_parse_from([
-            "claude-rs",
-            "--add-dir",
-            "src",
-            "-n",
-            "Experiment",
-            "resume",
-            "session-1",
-        ])
-        .expect("before");
-        let after = Cli::try_parse_from([
-            "claude-rs",
-            "resume",
-            "session-1",
-            "--add-dir",
-            "src",
-            "-n",
-            "Experiment",
-        ])
-        .expect("after");
-        for cli in [&before, &after] {
-            cli.validate().expect("valid launch");
-            assert_eq!(cli.session_config.add_dirs, [std::path::PathBuf::from("src")]);
-            assert_eq!(cli.session_options.name.as_deref(), Some("Experiment"));
-        }
-    }
-
-    #[test]
     fn session_names_lose_control_characters_and_must_keep_visible_text() {
         let cli = Cli::try_parse_from(["claude-rs", "-n", "Release\u{7} prep "]).expect("name");
         assert_eq!(cli.session_options.name.as_deref(), Some("Release prep"));
@@ -729,155 +587,42 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_removed_perf_flags() {
-        let cases: &[&[&str]] = &[
-            &["claude-rs", "--enable-perf"],
-            &["claude-rs", "--perf-log", "perf.jsonl"],
-            &["claude-rs", "--perf-append"],
-        ];
-        for args in cases {
-            let error = Cli::try_parse_from(args.iter().copied()).expect_err("removed flag");
-            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    fn logs_modes_reject_only_declared_conflicts_and_require_bundle_for_output() {
+        use clap::error::ErrorKind;
+        let modes: &[&[&str]] = &[&["--path"], &["--latest"], &["--tail", "2"], &["--bundle"]];
+        for (index, mode) in modes.iter().enumerate() {
+            let mut args = vec!["claude-rs", "logs"];
+            args.extend_from_slice(mode);
+            assert!(Cli::try_parse_from(&args).is_ok());
+            for other in &modes[index + 1..] {
+                let mut conflicting = args.clone();
+                conflicting.extend_from_slice(other);
+                assert_eq!(
+                    Cli::try_parse_from(conflicting).unwrap_err().kind(),
+                    ErrorKind::ArgumentConflict
+                );
+            }
         }
-    }
-
-    #[test]
-    fn cli_help_omits_perf_flags_and_retains_runtime_logging() {
-        let help = Cli::command().render_long_help().to_string();
-        for flag in ["--enable-perf", "--perf-log", "--perf-append"] {
-            assert!(!help.contains(flag), "help still advertises {flag}");
-        }
-        for flag in ["--enable-logs", "--log-file", "--log-append", "--diagnostics-preset"] {
-            assert!(help.contains(flag), "runtime logging flag {flag} missing");
-        }
-    }
-
-    #[test]
-    fn cli_doctor_defaults_to_human_output() {
-        let cli = Cli::try_parse_from(["claude-rs", "doctor"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: false, strict: false })));
-    }
-
-    #[test]
-    fn cli_doctor_accepts_json_and_strict() {
-        let cli =
-            Cli::try_parse_from(["claude-rs", "doctor", "--json", "--strict"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Doctor(DoctorArgs { json: true, strict: true })));
-    }
-
-    #[test]
-    fn cli_logs_defaults_to_summary() {
-        let cli = Cli::try_parse_from(["claude-rs", "logs"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: None,
-                bundle: false,
-                output: None,
-                yes: false,
-            }))
+        let error =
+            Cli::try_parse_from(["claude-rs", "logs", "--output", "selected.zip"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(error.to_string().contains("--bundle"));
+        assert!(
+            Cli::try_parse_from([
+                "claude-rs",
+                "logs",
+                "--bundle",
+                "--yes",
+                "--output",
+                "selected.zip"
+            ])
+            .is_ok()
         );
-    }
-
-    #[test]
-    fn cli_logs_accepts_modes() {
-        let cli = Cli::try_parse_from(["claude-rs", "logs", "--tail", "200"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: Some(200),
-                bundle: false,
-                output: None,
-                yes: false,
-            }))
-        );
-
-        let cli =
-            Cli::try_parse_from(["claude-rs", "logs", "--bundle", "--yes", "--output", "out.zip"])
-                .expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: None,
-                bundle: true,
-                output: Some(std::path::PathBuf::from("out.zip")),
-                yes: true,
-            }))
-        );
-    }
-
-    #[test]
-    fn cli_logs_rejects_conflicting_modes() {
-        assert!(Cli::try_parse_from(["claude-rs", "logs", "--path", "--latest"]).is_err());
-        assert!(Cli::try_parse_from(["claude-rs", "logs", "--output", "out.zip"]).is_err());
-    }
-
-    #[test]
-    fn cli_config_accepts_path_modes() {
-        let cli = Cli::try_parse_from(["claude-rs", "config", "path"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Path(ConfigPathArgs { json: false, which: None })),
-            }))
-        );
-
-        let cli = Cli::try_parse_from([
-            "claude-rs",
-            "config",
-            "path",
-            "--json",
-            "--which",
-            "local-settings",
-        ])
-        .expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Path(ConfigPathArgs {
-                    json: true,
-                    which: Some(ConfigFileSelector::LocalSettings),
-                })),
-            }))
-        );
-    }
-
-    #[test]
-    fn cli_config_defaults_to_summary() {
-        let cli = Cli::try_parse_from(["claude-rs", "config"]).expect("parse");
-        assert_eq!(cli.command, Some(Command::Config(ConfigArgs { command: None })));
-    }
-
-    #[test]
-    fn cli_config_accepts_show_and_export() {
-        let cli = Cli::try_parse_from(["claude-rs", "config", "show", "--json"]).expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Show(ConfigShowArgs { json: true })),
-            }))
-        );
-
-        let cli = Cli::try_parse_from(["claude-rs", "config", "export", "--output", "config.json"])
-            .expect("parse");
-        assert_eq!(
-            cli.command,
-            Some(Command::Config(ConfigArgs {
-                command: Some(ConfigCommand::Export(ConfigExportArgs {
-                    output: Some(std::path::PathBuf::from("config.json")),
-                })),
-            }))
-        );
-    }
-
-    #[test]
-    fn cli_exposes_package_version() {
-        assert_eq!(Cli::command().get_version(), Some(env!("CARGO_PKG_VERSION")));
     }
 }
+
+#[cfg(test)]
+mod cli_launch_audit_tests;
+
+#[cfg(test)]
+mod diagnostics_test_support;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 use super::clipboard_image::{ClipboardRead, encode_clipboard_image};
+use super::input::InputYankPart;
 use super::paste_burst::CharAction;
 use super::{App, AppStatus, FocusOwner};
 use crate::app::SystemSeverity;
@@ -15,8 +16,6 @@ use crate::app::state::AutocompleteKind;
 use crate::app::{input_atoms, input_atoms::InputAtomKind};
 use crate::app::{mention, permissions, questions, slash, subagent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::time::Instant;
-use tui_textarea::AtomicDeleteDirection;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RuntimeCommand {
@@ -56,9 +55,6 @@ impl From<bool> for KeyOutcome {
         Self::Handled(changed)
     }
 }
-
-#[cfg(all(test, target_os = "macos"))]
-pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
 
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::ALT;
@@ -170,6 +166,16 @@ pub(super) fn is_printable_text_modifiers(modifiers: KeyModifiers) -> bool {
     !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) || ctrl_alt
 }
 
+/// Raw character/Return records may still be one clipboard burst. Its cursor
+/// relationship decides continuation once the detector publishes the payload.
+pub(super) fn can_extend_paste_burst(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(ch) => !ch.is_control() && is_printable_text_modifiers(key.modifiers),
+        KeyCode::Enter => key.modifiers.is_empty(),
+        _ => false,
+    }
+}
+
 pub(super) fn handle_normal_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
     let input_version_before = app.input.version;
 
@@ -260,6 +266,10 @@ fn handle_chat_input_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 }
 
 fn execute_key_action(app: &mut App, action: KeyAction, key: KeyEvent) -> KeyOutcome {
+    // A character mapped to an action is an intentional key, not burst text.
+    if matches!(key.code, KeyCode::Char(_)) {
+        app.paste.clear_active_session();
+    }
     if action == KeyAction::Input(InputAction::MoveCharLeft)
         && key.code == KeyCode::Left
         && open_agents_from_empty_composer(app)
@@ -318,8 +328,9 @@ fn execute_app_action(app: &mut App, action: AppAction) -> KeyOutcome {
 
 fn has_local_draft(app: &App) -> bool {
     !app.input.is_empty()
-        || !app.pending_images.is_empty()
+        || !app.input.images().is_empty()
         || app.paste.has_pending_text()
+        || app.paste.burst.has_held_input()
         || app.pending_submit.is_some()
 }
 
@@ -341,8 +352,7 @@ fn clear_input_or_quit(app: &mut App) -> bool {
     }
 
     app.input.clear();
-    app.pending_images.clear();
-    app.paste.clear_all_sessions();
+    app.paste.discard_input();
     app.pending_submit = None;
     app.request_chat_repaint();
     true
@@ -350,6 +360,7 @@ fn clear_input_or_quit(app: &mut App) -> bool {
 
 fn execute_input_action(app: &mut App, action: InputAction) -> KeyOutcome {
     reclaim_input_from_inline_prompt_if_needed(app);
+    let flushed = !matches!(action, InputAction::InsertNewline) && super::flush_held_input(app);
     let handled = match action {
         InputAction::MoveCharLeft => app.input.textarea_move_left(),
         InputAction::MoveCharRight => app.input.textarea_move_right(),
@@ -371,9 +382,13 @@ fn execute_input_action(app: &mut App, action: InputAction) -> KeyOutcome {
         InputAction::DeleteCharAfter => delete_input_char_after(app),
         InputAction::DeleteWordBefore => delete_input_word_before(app),
         InputAction::DeleteWordAfter => delete_input_word_after(app),
-        InputAction::KillLineStart => app.input.textarea_delete_line_before(),
-        InputAction::KillLineEnd => app.input.textarea_delete_line_after(),
-        InputAction::Yank => app.input.textarea_yank(),
+        InputAction::KillLineStart => {
+            delete_input_content(app, super::InputState::textarea_delete_line_before)
+        }
+        InputAction::KillLineEnd => {
+            delete_input_content(app, super::InputState::textarea_delete_line_after)
+        }
+        InputAction::Yank => yank_input_content(app),
         InputAction::Undo => {
             let _ = app.input.textarea_undo();
             true
@@ -384,39 +399,104 @@ fn execute_input_action(app: &mut App, action: InputAction) -> KeyOutcome {
         }
         InputAction::InsertNewline => insert_explicit_newline(app),
     };
-    handled.into()
+    (handled || flushed).into()
 }
 
 fn delete_input_char_before(app: &mut App) -> bool {
-    if try_delete_input_atom(app, AtomicDeleteDirection::Backward) {
-        return true;
-    }
-    app.input.textarea_delete_char_before()
+    delete_input_content(app, super::InputState::textarea_delete_char_before)
 }
 
 fn delete_input_char_after(app: &mut App) -> bool {
-    if try_delete_input_atom(app, AtomicDeleteDirection::Forward) {
-        return true;
-    }
-    app.input.textarea_delete_char_after()
+    delete_input_content(app, super::InputState::textarea_delete_char_after)
 }
 
 fn delete_input_word_before(app: &mut App) -> bool {
-    if try_delete_input_atom(app, AtomicDeleteDirection::Backward) {
-        return true;
-    }
-    app.input.textarea_delete_word_before()
+    delete_input_content(app, super::InputState::textarea_delete_word_before)
 }
 
 fn delete_input_word_after(app: &mut App) -> bool {
-    if try_delete_input_atom(app, AtomicDeleteDirection::Forward) {
-        return true;
+    delete_input_content(app, super::InputState::textarea_delete_word_after)
+}
+
+fn capture_input_yank(app: &App, text: &str) -> Vec<InputYankPart> {
+    let mut parts = Vec::new();
+    for (row, line) in text.split('\n').enumerate() {
+        if row > 0 {
+            parts.push(InputYankPart::Text("\n".to_owned()));
+        }
+        let mut offset = 0;
+        for atom in input_atoms::resolve_line_atoms(row, line) {
+            parts.push(InputYankPart::Text(line[offset..atom.start_byte].to_owned()));
+            let part = match atom.kind {
+                InputAtomKind::ImageBadge { one_based_index } => app
+                    .input
+                    .image_payloads
+                    .get(one_based_index - 1)
+                    .cloned()
+                    .map(InputYankPart::Image),
+                InputAtomKind::PasteBlock { index, .. } => {
+                    app.input.paste_blocks.get(index).cloned().map(InputYankPart::Paste)
+                }
+            };
+            parts.push(part.unwrap_or_else(|| {
+                InputYankPart::Text(line[atom.start_byte..atom.end_byte].to_owned())
+            }));
+            offset = atom.end_byte;
+        }
+        parts.push(InputYankPart::Text(line[offset..].to_owned()));
     }
-    app.input.textarea_delete_word_after()
+    parts
+}
+
+fn delete_input_content(app: &mut App, edit: impl FnOnce(&mut super::InputState) -> bool) -> bool {
+    let before = input_atoms::resolve_input_atoms(app.input.lines());
+    if !edit(&mut app.input) {
+        return false;
+    }
+    let killed = app.input.take_yank_text();
+    if !killed.is_empty() {
+        app.input_yank = capture_input_yank(app, &killed);
+    }
+    let after = input_atoms::resolve_input_atoms(app.input.lines());
+    let mut removed_image = false;
+    for atom in before {
+        if after.iter().any(|remaining| remaining.kind == atom.kind) {
+            continue;
+        }
+        match atom.kind {
+            InputAtomKind::ImageBadge { .. } => removed_image = true,
+            InputAtomKind::PasteBlock { index, .. } => {
+                app.paste.clear_sessions_for_placeholder(index);
+            }
+        }
+    }
+    if removed_image {
+        // Resolve old badge identities before renumbering, including cursor-positioned pastes.
+        app.input.image_payloads = after
+            .iter()
+            .filter_map(|atom| match atom.kind {
+                InputAtomKind::ImageBadge { one_based_index } => {
+                    app.input.image_payloads.get(one_based_index - 1).cloned()
+                }
+                InputAtomKind::PasteBlock { .. } => None,
+            })
+            .collect();
+        app.input.renumber_image_badges();
+    }
+    app.request_chat_repaint();
+    true
+}
+
+fn yank_input_content(app: &mut App) -> bool {
+    if app.input_yank.is_empty() {
+        return false;
+    }
+    app.input.insert_parts(app.input_yank.clone());
+    true
 }
 
 fn insert_explicit_newline(app: &mut App) -> bool {
-    if app.paste.burst.on_enter(Instant::now()) {
+    if app.paste.burst.on_enter(super::input_event_now()) {
         tracing::debug!(
             target: crate::logging::targets::APP_INPUT,
             event_name = "enter_routed_to_paste_buffer",
@@ -521,8 +601,8 @@ fn execute_terminal_action(action: TerminalAction) -> KeyOutcome {
 fn handle_turn_control(app: &mut App) -> bool {
     app.pending_submit = None;
     // Clear any pending image attachments on Escape.
-    if !app.pending_images.is_empty() {
-        app.pending_images.clear();
+    if !app.input.image_payloads.is_empty() {
+        app.input.image_payloads.clear();
         app.request_chat_repaint();
     }
     if matches!(app.status, AppStatus::Thinking | AppStatus::Running)
@@ -544,7 +624,7 @@ fn handle_submit(app: &mut App) -> bool {
         app.pending_submit = None;
         return true;
     }
-    let now = Instant::now();
+    let now = super::input_event_now();
 
     // During an active burst or the post-burst suppression window, Enter
     // becomes a newline to keep multi-line pastes grouped.
@@ -558,6 +638,7 @@ fn handle_submit(app: &mut App) -> bool {
         return true;
     }
 
+    app.paste.clear_active_session();
     if !slash::prepare_submit(app) {
         return true;
     }
@@ -688,15 +769,11 @@ fn handle_clipboard_paste_key(app: &mut App, key: KeyEvent) -> bool {
     };
     match encode_clipboard_image(image) {
         Ok(attachment) => {
-            app.pending_images.push(attachment);
-            // Insert badge text at the cursor position so the user (and
-            // the model) can see where images are relative to text.
-            let idx = app.pending_images.len();
-            let badge = format!("[Image #{idx}]");
-            app.input.insert_str(&badge);
+            super::flush_held_input(app);
+            app.input.insert_parts([InputYankPart::Image(attachment)]);
             app.request_chat_repaint();
             tracing::debug!(
-                count = app.pending_images.len(),
+                count = app.input.image_payloads.len(),
                 "clipboard_paste: attached image from clipboard"
             );
         }
@@ -725,78 +802,44 @@ pub(super) fn reclaim_input_from_inline_prompt_if_needed(app: &mut App) {
     }
 }
 
-fn try_delete_input_atom(app: &mut App, direction: AtomicDeleteDirection) -> bool {
-    let (cursor_row, cursor_col) = app.input.cursor();
-    let Some(atom) =
-        input_atoms::atom_at_cursor(app.input.lines(), cursor_row, cursor_col, direction)
-    else {
-        return false;
-    };
-    if app.input.textarea_delete_atomic_range_at_cursor(direction).is_none() {
-        return false;
-    }
-
-    match atom.kind {
-        InputAtomKind::ImageBadge { one_based_index } => {
-            let array_idx = one_based_index - 1;
-            if array_idx < app.pending_images.len() {
-                app.pending_images.remove(array_idx);
-            }
-            app.input.renumber_image_badges();
-            app.request_chat_repaint();
-        }
-        InputAtomKind::PasteBlock { index, .. } => {
-            app.paste.clear_sessions_for_placeholder(index);
-            app.request_chat_repaint();
-        }
-    }
-    true
-}
-
 fn handle_printable_key(app: &mut App, key: KeyEvent) -> bool {
     let (KeyCode::Char(c), m) = (key.code, key.modifiers) else {
         // A non-character key ends the burst but must not consume its text.
-        if let Some(action) = app.paste.burst.on_non_char_key(Instant::now()) {
-            super::apply_paste_burst_flush(app, action);
-            return true;
-        }
-        return false;
+        return super::flush_held_input(app);
     };
-    if !is_printable_text_modifiers(m) {
+    if c.is_control() || !is_printable_text_modifiers(m) {
         return false;
     }
     reclaim_input_from_inline_prompt_if_needed(app);
 
-    let now = Instant::now();
+    let now = super::input_clock::received_at();
     match app.paste.burst.on_char(c, now) {
         CharAction::Consumed => {
             // Character absorbed into burst buffer. Don't insert.
             return false;
         }
-        CharAction::RetroCapture(delete_count) => {
+        CharAction::RetroCapture(requested_prefix_count) => {
             // Burst confirmation retro-captured already-inserted leading chars.
-            for _ in 0..delete_count {
-                let _ = delete_input_char_before(app);
-            }
+            let removed_prefix_count =
+                (0..requested_prefix_count).take_while(|_| delete_input_char_before(app)).count();
+            let outcome =
+                if removed_prefix_count == requested_prefix_count { "success" } else { "partial" };
             tracing::debug!(
                 target: crate::logging::targets::APP_PASTE,
                 event_name = "paste_retro_capture_applied",
-                message = "retro-captured leaked characters from a confirmed paste burst",
-                outcome = "success",
-                delete_count,
+                message = "paste burst retro-capture attempted to remove its inserted prefix",
+                outcome,
+                requested_count = requested_prefix_count,
+                removed_count = removed_prefix_count,
             );
             return true;
         }
         CharAction::Passthrough(ch) => {
-            // Normal typing or a previously-held char released.
-            // If `ch == c`, single normal insert. Otherwise the detector
-            // emitted a held char; insert it first, then the current char.
-            if ch == c {
-                let _ = app.input.textarea_insert_char(c);
-            } else {
-                let _ = app.input.textarea_insert_char(ch);
-                let _ = app.input.textarea_insert_char(c);
-            }
+            let _ = app.input.textarea_insert_char(ch);
+        }
+        CharAction::ReleaseHeld(held) => {
+            let _ = app.input.textarea_insert_char(held);
+            let _ = app.input.textarea_insert_char(c);
         }
     }
 
@@ -1004,109 +1047,8 @@ fn handle_subagent_key(app: &mut App, key: KeyEvent) -> KeyOutcome {
 mod tests {
     use super::*;
     use crate::app::keymap::{KeyBinding, KeyBindingSource, KeyCodeSpec, KeySpec, ResolvedKeymap};
-    use crate::app::{ChatMessage, FocusTarget, MessageBlock, MessageRole, TextBlock};
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::{Duration, Instant};
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn mode_shortcut_preserves_the_confirmed_mode_until_sdk_acknowledgement() {
-        tokio::task::LocalSet::new().run_until(async {
-            let mut app = App::test_default();
-            let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
-            app.session_runtime.conn = Some(std::rc::Rc::new(connection));
-            app.session_runtime.session_id = Some("session-1".into());
-            let available_modes = vec![crate::app::ModeInfo { id: "default".into(), name: "Default".into() }, crate::app::ModeInfo { id: "plan".into(), name: "Plan".into() }];
-            app.session_runtime.mode = Some(crate::app::ModeState { current_mode_id: "default".into(), current_mode_name: "Default".into(), available_modes: available_modes.clone() });
-            app.input.set_text("keep my draft");
-            let cycle = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
-            handle_normal_key(&mut app, cycle);
-            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "default");
-            assert_eq!(app.status, AppStatus::CommandPending);
-            tokio::task::yield_now().await;
-            assert!(matches!(commands.try_recv().expect("mode change").command, crate::agent::wire::BridgeCommand::SetMode { mode, .. } if mode == "plan"));
-            crate::app::handle_client_event(&mut app, crate::agent::events::ClientEvent::SessionUpdate { session_id: "session-1".into(), update: crate::agent::model::SessionUpdate::ModeStateUpdate(crate::app::ModeState { current_mode_id: "plan".into(), current_mode_name: "Plan".into(), available_modes }) });
-            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "plan");
-            assert_eq!(app.status, AppStatus::Ready);
-            handle_normal_key(&mut app, cycle);
-            tokio::task::yield_now().await;
-            assert!(matches!(commands.try_recv().expect("second change").command, crate::agent::wire::BridgeCommand::SetMode { mode, .. } if mode == "default"));
-            crate::app::handle_client_event(&mut app, crate::agent::events::ClientEvent::SlashCommandError { session_id: Some("session-1".into()), message: "SDK rejected mode".into() });
-            assert_eq!(app.session_runtime.mode.as_ref().expect("mode").current_mode_id, "plan");
-            assert_eq!(app.status, AppStatus::Ready);
-            assert_eq!(app.input.text(), "keep my draft");
-        }).await;
-    }
-
-    #[test]
-    fn ctrl_shortcut_accepts_standard_ctrl_v_encoding() {
-        let key = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-        assert!(is_ctrl_char_shortcut(key, 'v'));
-    }
-
-    #[test]
-    fn ctrl_shortcut_accepts_raw_control_character_encoding() {
-        let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::NONE);
-        assert!(is_ctrl_char_shortcut(key, 'v'));
-    }
-
-    #[test]
-    fn ctrl_shortcut_rejects_raw_control_character_with_alt() {
-        let key = KeyEvent::new(KeyCode::Char('\u{16}'), KeyModifiers::ALT);
-        assert!(!is_ctrl_char_shortcut(key, 'v'));
-    }
-
-    #[test]
-    fn queued_paste_still_blocks_overlapping_key_text() {
-        let mut app = App::test_default();
-        app.paste.pending_text = "clipboard".to_owned();
-
-        let blocked = should_ignore_key_during_paste(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
-        );
-        assert!(blocked);
-    }
-
-    #[test]
-    fn queued_paste_allows_app_control_shortcuts() {
-        let mut app = App::test_default();
-        app.paste.pending_text = "clipboard".to_owned();
-
-        let blocked = should_ignore_key_during_paste(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        );
-        assert!(!blocked);
-    }
-
-    #[test]
-    fn terminal_suspend_action_returns_runtime_command() {
-        let mut app = App::test_default();
-
-        let outcome = execute_key_action(
-            &mut app,
-            KeyAction::Terminal(TerminalAction::Suspend),
-            KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
-        );
-
-        assert_eq!(outcome, KeyOutcome::Runtime(RuntimeCommand::SuspendProcess));
-    }
-
-    #[test]
-    fn input_action_returns_handled_outcome() {
-        let mut app = App::test_default();
-        app.input.set_text("ab");
-        let _ = app.input.set_cursor(0, 2);
-
-        let outcome = execute_key_action(
-            &mut app,
-            KeyAction::Input(InputAction::MoveCharLeft),
-            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
-        );
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor_col(), 1);
-    }
 
     fn user_message(text: &str) -> ChatMessage {
         ChatMessage::new(
@@ -1114,185 +1056,6 @@ mod tests {
             vec![MessageBlock::Text(TextBlock::from_complete(text))],
             None,
         )
-    }
-
-    #[test]
-    fn up_on_empty_input_recalls_latest_user_message_at_end() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(user_message("older prompt"));
-        app.transcript.messages.push(ChatMessage::new(
-            MessageRole::Assistant,
-            vec![MessageBlock::Text(TextBlock::from_complete("reply"))],
-            None,
-        ));
-        app.transcript.messages.push(user_message("first line\nlatest \u{1F980}"));
-
-        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.text(), "first line\nlatest \u{1F980}");
-        assert_eq!(app.input.cursor(), (1, "latest \u{1F980}".chars().count()));
-    }
-
-    #[test]
-    fn up_on_empty_input_removes_unrecoverable_image_badges() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(user_message("review [Image #1]\n[Image #2] keep [Image #0]"));
-
-        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.text(), "review \n keep [Image #0]");
-        assert_eq!(app.input.cursor(), (1, " keep [Image #0]".chars().count()));
-        assert!(app.pending_images.is_empty());
-    }
-
-    #[test]
-    fn up_on_nonempty_input_moves_cursor_without_recalling_history() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(user_message("history prompt"));
-        app.input.set_text("draft first\ndraft second");
-
-        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.text(), "draft first\ndraft second");
-        assert_eq!(app.input.cursor_row(), 0);
-    }
-
-    #[test]
-    fn up_on_whitespace_input_does_not_recall_history() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(user_message("history prompt"));
-        app.input.set_text(" ");
-
-        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.text(), " ");
-    }
-
-    #[test]
-    fn up_on_empty_input_without_user_history_is_a_noop() {
-        let mut app = App::test_default();
-
-        let outcome = handle_normal_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert!(app.input.is_empty());
-        assert_eq!(app.input.cursor(), (0, 0));
-    }
-
-    #[test]
-    fn ctrl_a_moves_to_line_start_then_previous_line_start() {
-        let mut app = App::test_default();
-        app.input.set_text("alpha\nbeta\ngamma");
-        let _ = app.input.set_cursor(1, 2);
-        let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
-
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (1, 0));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (0, 0));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(false));
-        assert_eq!(app.input.cursor(), (0, 0));
-    }
-
-    #[test]
-    fn ctrl_e_moves_to_line_end_then_next_line_end() {
-        let mut app = App::test_default();
-        app.input.set_text("alpha\nbeta\ngamma");
-        let _ = app.input.set_cursor(1, 2);
-        let key = KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL);
-
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (1, 4));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(true));
-        assert_eq!(app.input.cursor(), (2, 5));
-        assert_eq!(handle_normal_key(&mut app, key), KeyOutcome::Handled(false));
-        assert_eq!(app.input.cursor(), (2, 5));
-    }
-
-    #[test]
-    fn backspace_after_image_atom_removes_pending_image_and_renumbers_badges() {
-        let mut app = App::test_default();
-        app.input.set_text("[Image #1] text [Image #2]");
-        let _ = app.input.set_cursor_col("[Image #1]".chars().count());
-        app.pending_images = vec![
-            crate::app::clipboard_image::ImageAttachment {
-                data: "first".to_owned(),
-                mime_type: "image/png".to_owned(),
-            },
-            crate::app::clipboard_image::ImageAttachment {
-                data: "second".to_owned(),
-                mime_type: "image/png".to_owned(),
-            },
-        ];
-        app.surface_dirty.chat.repaint = false;
-
-        let outcome = execute_key_action(
-            &mut app,
-            KeyAction::Input(InputAction::DeleteCharBefore),
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.text(), " text [Image #1]");
-        assert_eq!(app.pending_images.len(), 1);
-        assert_eq!(app.pending_images[0].data, "second");
-        assert!(app.surface_dirty.chat.repaint);
-    }
-
-    #[test]
-    fn delete_before_paste_atom_removes_placeholder_only_and_clears_session() {
-        let mut app = App::test_default();
-        app.input.insert_str("before ");
-        app.input.insert_paste_block("a\r\nb\rc");
-        app.input.insert_str(" after");
-        let _ = app.input.set_cursor_col("before ".chars().count());
-        app.paste.active_session = Some(crate::app::PasteSessionState {
-            id: 1,
-            start: crate::app::SelectionPoint { row: 0, col: "before ".chars().count() },
-            placeholder_index: Some(0),
-        });
-        app.paste.pending_session = app.paste.active_session;
-        app.surface_dirty.chat.repaint = false;
-
-        let outcome = execute_key_action(
-            &mut app,
-            KeyAction::Input(InputAction::DeleteCharAfter),
-            KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
-        );
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert_eq!(app.input.lines(), vec!["before  after"]);
-        assert_eq!(app.input.text(), "before  after");
-        assert_eq!(app.input.paste_blocks, vec!["a\nb\nc"]);
-        assert!(app.paste.active_session.is_none());
-        assert!(app.paste.pending_session.is_none());
-        assert!(app.surface_dirty.chat.repaint);
-    }
-
-    #[test]
-    fn autocomplete_backspace_uses_atom_side_effects() {
-        let mut app = App::test_default();
-        app.input.set_text("[Image #1]");
-        let _ = app.input.set_cursor_col("[Image #1]".chars().count());
-        app.pending_images = vec![crate::app::clipboard_image::ImageAttachment {
-            data: "image".to_owned(),
-            mime_type: "image/png".to_owned(),
-        }];
-        app.mention = Some(mention::MentionState::new(0, 0, String::new(), Vec::new()));
-        app.claim_focus_target(FocusTarget::Mention);
-        app.surface_dirty.chat.repaint = false;
-
-        let outcome =
-            handle_mention_key(&mut app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert!(app.input.is_empty());
-        assert!(app.pending_images.is_empty());
-        assert!(app.surface_dirty.chat.repaint);
     }
 
     #[test]
@@ -1314,133 +1077,320 @@ mod tests {
     }
 
     #[test]
-    fn autocomplete_focus_routes_keys_to_active_slash_state() {
-        let mut app = App::test_default();
-        app.slash.show(slash::SlashState {
-            trigger_row: 0,
-            trigger_col: 0,
-            query: "d".to_owned(),
-            context: slash::SlashContext::CommandName,
-            candidates: vec![
-                slash::SlashCandidate {
-                    insert_value: "/config".to_owned(),
-                    primary: "/config".to_owned(),
-                    secondary: None,
-                },
-                slash::SlashCandidate {
-                    insert_value: "/docs".to_owned(),
-                    primary: "/docs".to_owned(),
-                    secondary: None,
-                },
-            ],
-            placeholder: None,
-            dialog: crate::app::dialog::DialogState::default(),
-        });
-        app.claim_focus_target(FocusTarget::Mention);
-
-        let handled =
-            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-
-        assert!(handled.changed());
-        let slash = app.slash.visible().expect("slash autocomplete should stay active");
-        assert_eq!(slash.dialog.selected, 1);
+    fn physical_line_keys_preserve_logical_boundaries_and_the_next_edit_position() {
+        use crate::app::test_support::{app_with_connection, press};
+        for (code, modifiers, positions, edited) in [
+            (
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL,
+                [(1, 0), (0, 0), (0, 0)],
+                [
+                    "\u{3b1}\u{3b2}\n!caf\u{e9}\n\u{732b}\u{5c3e}",
+                    "!\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}",
+                    "!\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}",
+                ],
+            ),
+            (
+                KeyCode::Char('e'),
+                KeyModifiers::CONTROL,
+                [(1, 4), (2, 2), (2, 2)],
+                [
+                    "\u{3b1}\u{3b2}\ncaf\u{e9}!\n\u{732b}\u{5c3e}",
+                    "\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}!",
+                    "\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}!",
+                ],
+            ),
+            (
+                KeyCode::Home,
+                KeyModifiers::NONE,
+                [(1, 0); 3],
+                ["\u{3b1}\u{3b2}\n!caf\u{e9}\n\u{732b}\u{5c3e}"; 3],
+            ),
+            (
+                KeyCode::End,
+                KeyModifiers::NONE,
+                [(1, 4); 3],
+                ["\u{3b1}\u{3b2}\ncaf\u{e9}!\n\u{732b}\u{5c3e}"; 3],
+            ),
+        ] {
+            for (count, (position, expected_text)) in positions.into_iter().zip(edited).enumerate()
+            {
+                let (mut app, mut commands) = app_with_connection();
+                app.status = AppStatus::Ready;
+                app.input.set_text("\u{3b1}\u{3b2}\ncaf\u{e9}\n\u{732b}\u{5c3e}");
+                app.input.set_cursor(1, 2);
+                for _ in 0..=count {
+                    crate::app::handle_terminal_event(
+                        &mut app,
+                        crossterm::event::Event::Key(KeyEvent::new(code, modifiers)),
+                    );
+                }
+                assert_eq!(app.input.cursor(), position, "{code:?} press {}", count + 1);
+                press(&mut app, KeyCode::Char('!'));
+                assert_eq!(app.input.text(), expected_text);
+                assert!(commands.try_recv().is_err());
+            }
+        }
     }
 
     #[test]
-    fn mention_space_key_remains_part_of_active_query() {
-        let mut app = App::test_default();
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-        mention::activate(&mut app);
+    fn physical_up_recalls_only_user_text_and_preserves_existing_drafts() {
+        use crate::agent::wire::BridgeCommand;
+        use crate::app::test_support::{app_with_connection, press};
+        // History text, starting draft/cursor, recalled draft/cursor, then an independently expected edit.
+        for (history, draft, cursor, expected, expected_cursor, edited) in [
+            (
+                Some("first line\nlatest \u{1f980}"),
+                "",
+                (0, 0),
+                "first line\nlatest \u{1f980}",
+                (1, 8),
+                Some("first line\nlatest \u{1f980}!"),
+            ),
+            (
+                Some("review [Image #1]\n[Image #2] keep [Image #0] [Image #x]"),
+                "",
+                (0, 0),
+                "review \n keep [Image #0] [Image #x]",
+                (1, 27),
+                Some("review \n keep [Image #0] [Image #x]!"),
+            ),
+            (
+                Some("history prompt"),
+                "\u{e9}abc\nsecond",
+                (1, 3),
+                "\u{e9}abc\nsecond",
+                (0, 3),
+                Some("\u{e9}ab!c\nsecond"),
+            ),
+            (Some("history prompt"), " ", (0, 1), " ", (0, 1), Some(" !")),
+            (None, "", (0, 0), "", (0, 0), None),
+        ] {
+            let (mut app, mut commands) = app_with_connection();
+            app.status = AppStatus::Ready;
+            if let Some(text) = history {
+                app.transcript.messages.push(user_message("older prompt"));
+                app.transcript.messages.push(user_message(text));
+            }
+            for role in [MessageRole::Assistant, MessageRole::System(None)] {
+                app.transcript.messages.push(ChatMessage::new(
+                    role,
+                    vec![MessageBlock::Text(TextBlock::from_complete("newer non-user text"))],
+                    None,
+                ));
+            }
+            app.input.set_text(draft);
+            app.input.set_cursor(cursor.0, cursor.1);
+            press(&mut app, KeyCode::Up);
+            assert_eq!(app.input.text(), expected);
+            assert_eq!(app.input.cursor(), expected_cursor);
+            assert!(commands.try_recv().is_err());
+            if let Some(edited) = edited {
+                press(&mut app, KeyCode::Char('!'));
+                assert_eq!(app.input.text(), edited);
+                press(&mut app, KeyCode::Enter);
+                let BridgeCommand::Prompt { session_id, chunks, inline_pastes, .. } =
+                    commands.try_recv().expect("submitted recalled or preserved draft").command
+                else {
+                    panic!("expected Prompt")
+                };
+                assert_eq!(session_id, "session-1");
+                assert_eq!(chunks.len(), 1, "no historical image may be resurrected");
+                assert_eq!(chunks[0].kind, "text");
+                assert_eq!(chunks[0].value, serde_json::json!(edited));
+                assert!(inline_pastes.is_empty());
+                while let Ok(envelope) = commands.try_recv() {
+                    assert!(
+                        !matches!(envelope.command, BridgeCommand::Prompt { .. }),
+                        "no duplicate prompt"
+                    );
+                }
+            } else {
+                press(&mut app, KeyCode::Enter);
+                assert!(commands.try_recv().is_err(), "non-user history cannot invent a prompt");
+            }
+        }
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.input.text(), "");
+        assert_eq!(app.input.cursor(), (0, 0));
+        press(&mut app, KeyCode::Enter);
+        assert!(commands.try_recv().is_err());
+    }
 
-        let outcome =
-            handle_mention_key(&mut app, KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-
-        assert!(outcome.changed());
-        let mention = app.mention.as_ref().expect("mention should stay active");
-        assert_eq!(mention.query, " ");
+    fn assert_deleted_image_prompt(
+        command: crate::agent::wire::BridgeCommand,
+        expected: &str,
+        surviving: &[usize],
+    ) {
+        use crate::agent::wire::BridgeCommand;
+        use base64::Engine as _;
+        let BridgeCommand::Prompt { session_id, chunks, .. } = command else {
+            panic!("expected Prompt")
+        };
+        assert_eq!(session_id, "session-1");
+        let texts: Vec<_> = chunks.iter().filter(|c| c.kind == "text").map(|c| &c.value).collect();
+        assert_eq!(texts, vec![&serde_json::json!(expected)]);
+        let images: Vec<_> = chunks.iter().filter(|c| c.kind == "image").collect();
+        assert_eq!(images.len(), surviving.len(), "removed images must not travel in Prompt");
+        for (chunk, identity) in images.iter().zip(surviving.iter().copied()) {
+            assert_eq!(chunk.value["mime_type"], "image/png");
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(chunk.value["data"].as_str().expect("image data"))
+                .expect("base64");
+            let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                .expect("PNG")
+                .into_rgba8();
+            let (width, pixels) = if identity == 0 {
+                (1, vec![231, 12, 34, 255])
+            } else {
+                (2, vec![10, 20, 220, 128, 30, 40, 210, 255])
+            };
+            assert_eq!((image.width(), image.height(), image.into_raw()), (width, 1, pixels));
+        }
     }
 
     #[test]
-    fn chat_input_tab_commits_literal_mention_without_candidates() {
-        let mut app = App::test_default();
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-        mention::activate(&mut app);
-        app.input.set_text("@docs/manual path");
-        let _ = app.input.set_cursor(0, "@docs/manual path".chars().count());
-        mention::update_query(&mut app);
+    fn physical_deletion_preserves_badge_payload_identity_in_the_submitted_prompt() {
+        use crate::agent::wire::BridgeCommand;
+        use crate::app::clipboard_image::ClipboardImagePaste;
+        use crate::app::test_support::{app_with_connection, press};
+        use crossterm::event::{Event, KeyEventKind};
+        fn red() -> ClipboardRead {
+            ClipboardRead::Image(arboard::ImageData {
+                width: 1,
+                height: 1,
+                bytes: vec![231, 12, 34, 255].into(),
+            })
+        }
+        fn blue() -> ClipboardRead {
+            ClipboardRead::Image(arboard::ImageData {
+                width: 2,
+                height: 1,
+                bytes: vec![10, 20, 220, 128, 30, 40, 210, 255].into(),
+            })
+        }
+        let removed = "\u{e9}  x\nz [Image #1]\u{5c3e}";
+        for (key, modifiers, col, expected, surviving) in [
+            (KeyCode::Backspace, KeyModifiers::NONE, 12, removed, vec![1]),
+            (KeyCode::Delete, KeyModifiers::NONE, 2, removed, vec![1]),
+            (KeyCode::Backspace, KeyModifiers::CONTROL, 12, removed, vec![1]),
+            (KeyCode::Delete, KeyModifiers::CONTROL, 2, removed, vec![1]),
+            (KeyCode::Backspace, KeyModifiers::ALT, 12, removed, vec![1]),
+            (KeyCode::Delete, KeyModifiers::ALT, 2, removed, vec![1]),
+            (KeyCode::Char('w'), KeyModifiers::CONTROL, 12, removed, vec![1]),
+            (KeyCode::Char('d'), KeyModifiers::ALT, 2, removed, vec![1]),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL, 12, " x\nz [Image #1]\u{5c3e}", vec![1]),
+            (
+                KeyCode::Char('k'),
+                KeyModifiers::CONTROL,
+                2,
+                "\u{e9} \nz [Image #1]\u{5c3e}",
+                vec![1],
+            ),
+            (
+                KeyCode::Backspace,
+                KeyModifiers::NONE,
+                2,
+                "\u{e9}[Image #1] x\nz [Image #2]\u{5c3e}",
+                vec![0, 1],
+            ),
+        ] {
+            for restore in [false, true] {
+                if restore && !matches!(key, KeyCode::Char('u' | 'k')) {
+                    continue;
+                }
+                let (mut app, mut commands) = app_with_connection();
+                app.status = AppStatus::Ready;
+                app.input.set_text("\u{e9}  x\nz \u{5c3e}");
+                for (row, read) in [(0, red as fn() -> ClipboardRead), (1, blue)] {
+                    app.input.set_cursor(row, 2);
+                    app.clipboard_paste =
+                        ClipboardImagePaste { trigger: KeyEventKind::Press, read };
+                    crate::app::handle_terminal_event(
+                        &mut app,
+                        Event::Key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL)),
+                    );
+                }
+                assert_eq!(app.input.text(), "\u{e9} [Image #1] x\nz [Image #2]\u{5c3e}");
+                assert!(commands.try_recv().is_err());
+                app.input.set_cursor(0, col);
+                crate::app::handle_terminal_event(
+                    &mut app,
+                    Event::Key(KeyEvent::new(key, modifiers)),
+                );
+                assert_eq!(app.input.text(), expected, "{key:?} {modifiers:?}");
+                assert!(commands.try_recv().is_err());
+                let (expected, surviving) = if restore {
+                    crate::app::handle_terminal_event(
+                        &mut app,
+                        Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+                    );
+                    ("\u{e9} [Image #2] x\nz [Image #1]\u{5c3e}", vec![1, 0])
+                } else {
+                    (expected, surviving.clone())
+                };
+                assert_eq!(app.input.text(), expected);
 
-        let outcome =
-            handle_chat_input_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert!(app.mention.is_none());
-        assert_eq!(app.input.text(), "@'docs/manual path' ");
-        assert_eq!(app.committed_mentions.len(), 1);
-        assert_eq!(app.committed_mentions[0].text, "@'docs/manual path'");
+                press(&mut app, KeyCode::Enter);
+                assert_deleted_image_prompt(
+                    commands.try_recv().expect("prompt after deletion").command,
+                    expected,
+                    &surviving,
+                );
+                assert!(app.input.is_empty());
+                assert!(app.input.image_payloads.is_empty());
+                while let Ok(envelope) = commands.try_recv() {
+                    assert!(
+                        !matches!(envelope.command, BridgeCommand::Prompt { .. }),
+                        "no duplicate prompt"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
-    fn autocomplete_tab_still_confirms_mention_candidate() {
-        let mut app = App::test_default();
-        app.input.set_text("@src");
-        let mut mention = mention::MentionState::new(
-            0,
-            0,
-            "src".to_owned(),
-            vec![crate::app::file_index::FileCandidate {
-                rel_path: "src/lib.rs".to_owned(),
-                rel_path_lower: "src/lib.rs".to_owned(),
-                basename_lower: "lib.rs".to_owned(),
-                depth: 1,
-            }],
-        );
-        mention.replace_end_col = "@src".chars().count();
-        app.mention = Some(mention);
-        app.claim_focus_target(FocusTarget::Mention);
-
-        let outcome =
-            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-
-        assert_eq!(outcome, KeyOutcome::Handled(true));
-        assert!(app.mention.is_none());
-        assert_eq!(app.input.text(), "@'src/lib.rs' ");
-        assert!(app.committed_mentions.is_empty());
-    }
-
-    #[test]
-    fn bare_slash_enter_confirms_visible_candidate() {
-        let mut app = App::test_default();
-        app.input.set_text("/");
-        let _ = app.input.set_cursor(0, 1);
-        slash::sync_with_cursor(&mut app);
-        app.claim_focus_target(FocusTarget::Mention);
-
-        let handled =
-            handle_autocomplete_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        assert!(handled.changed());
-        assert_eq!(app.input.text(), "/agent ");
-        assert!(app.slash.is_visible());
-    }
-
-    #[test]
-    fn burst_active_does_not_block_followup_chars() {
-        let mut app = App::test_default();
-        let t0 = Instant::now();
-
-        assert_eq!(app.paste.burst.on_char('a', t0), CharAction::Passthrough('a'));
-        assert_eq!(
-            app.paste.burst.on_char('b', t0 + Duration::from_millis(1)),
-            CharAction::Consumed
-        );
-        assert!(app.paste.burst.is_buffering());
-
-        let blocked = should_ignore_key_during_paste(
+    fn line_kill_yank_keeps_paste_payloads_when_their_old_numbers_are_reused() {
+        use crate::agent::wire::BridgeCommand;
+        use crate::app::test_support::{app_with_connection, press};
+        use crossterm::event::Event;
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Ready;
+        let first = format!("first-{}-end", "a".repeat(1001));
+        let second = format!("second-{}-end", "b".repeat(1002));
+        let fresh = format!("fresh-{}-end", "c".repeat(1003));
+        app.input.insert_paste_block(&first);
+        app.input.insert_str(" + ");
+        app.input.insert_paste_block(&second);
+        crate::app::handle_terminal_event(
             &mut app,
-            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
         );
-        assert!(!blocked);
+        assert_eq!(app.input.text(), "");
+        app.input.insert_paste_block(&fresh);
+        app.input.insert_str(" / ");
+        crate::app::handle_terminal_event(
+            &mut app,
+            Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL)),
+        );
+        let expected = format!("{fresh} / {first} + {second}");
+        assert_eq!(app.input.text(), expected);
+        assert!(commands.try_recv().is_err());
+        press(&mut app, KeyCode::Enter);
+        let BridgeCommand::Prompt { session_id, chunks, inline_pastes, .. } =
+            commands.try_recv().expect("prompt after reuse").command
+        else {
+            panic!("expected Prompt")
+        };
+        assert_eq!(session_id, "session-1");
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].kind, "text");
+        assert_eq!(chunks[0].value, serde_json::json!(expected));
+        assert_eq!(inline_pastes, [fresh, first, second]);
+        while let Ok(envelope) = commands.try_recv() {
+            assert!(!matches!(envelope.command, BridgeCommand::Prompt { .. }));
+        }
     }
 }

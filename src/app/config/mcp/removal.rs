@@ -171,7 +171,7 @@ fn dynamic_mcp_servers_without(
         .iter()
         .filter(|server| mcp_config_removal_scope(app, server) == Some(McpConfigScope::Dynamic))
     {
-        if mcp_server_matches_removed_key(server, &removed_key) {
+        if mcp_server_matches_removed_key(app, server, &removed_key) {
             found_removed_server = true;
             continue;
         }
@@ -397,7 +397,9 @@ pub(crate) fn pending_dynamic_mcp_removal_confirmation_from_snapshot(
         });
     }
 
-    if servers.iter().any(|server| mcp_server_name_eq(&server.name, &server_name)) {
+    let removed_key =
+        normalized_removed_config_key(McpConfigScope::Dynamic.cli_arg(), &server_name);
+    if servers.iter().any(|server| mcp_server_matches_removed_key(app, server, &removed_key)) {
         return Some(PendingDynamicMcpRemovalConfirmation::Failed {
             server_name,
             message: "SDK setMcpServers completed without reporting an error, but the confirming snapshot still contains the server.".to_owned(),
@@ -476,6 +478,13 @@ pub(super) fn apply_mcp_config_remove_success_state(
         remember_removed_config_mcp_server(app, scope_name, server_name, expected_source);
     }
     remove_matching_mcp_server_from_snapshot(app, scope_name, server_name);
+    if app
+        .config
+        .mcp_details_overlay()
+        .is_some_and(|overlay| mcp_server_name_eq(&overlay.server_name, server_name))
+    {
+        app.config.clear_overlay();
+    }
     app.config.mcp_selected_server_index =
         app.config.mcp_selected_server_index.min(app.mcp.servers.len().saturating_sub(1));
     app.mcp.last_error = None;
@@ -499,7 +508,9 @@ fn remember_removed_config_mcp_server(
 
 fn remove_matching_mcp_server_from_snapshot(app: &mut App, scope: &str, server_name: &str) {
     let removed_key = normalized_removed_config_key(scope, server_name);
-    app.mcp.servers.retain(|server| !mcp_server_matches_removed_key(server, &removed_key));
+    let mut servers = std::mem::take(&mut app.mcp.servers);
+    servers.retain(|server| !mcp_server_matches_removed_key(app, server, &removed_key));
+    app.mcp.servers = servers;
 }
 
 pub(super) fn is_removed_config_mcp_server_suppressed(
@@ -509,17 +520,17 @@ pub(super) fn is_removed_config_mcp_server_suppressed(
     app.mcp
         .removed_config_servers
         .keys()
-        .any(|removed_key| mcp_server_matches_removed_key(server, removed_key))
+        .any(|removed_key| mcp_server_matches_removed_key(app, server, removed_key))
 }
 
 pub(super) fn mcp_server_matches_removed_key(
+    app: &App,
     server: &crate::agent::model::McpServerStatus,
     removed_key: &RemovedMcpServerKey,
 ) -> bool {
-    match server.scope.as_deref() {
-        Some(scope) => normalized_removed_config_key(scope, &server.name) == *removed_key,
-        None => mcp_server_name_eq(&server.name, &removed_key.server_name),
-    }
+    mcp_config_removal_scope(app, server).is_some_and(|scope| {
+        normalized_removed_config_key(scope.cli_arg(), &server.name) == *removed_key
+    })
 }
 
 pub(super) fn mcp_server_name_eq(left: &str, right: &str) -> bool {

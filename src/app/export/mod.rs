@@ -89,6 +89,15 @@ fn begin_at(
 
 /// Fold one history chunk into the pending export and write the file after the last.
 pub(crate) fn apply_chunk(app: &mut App, chunk: HistoryChunk) -> ExportProgress {
+    apply_chunk_with_writer(app, chunk, |file, content| file.write_all(content.as_bytes()))
+}
+
+/// Keep creation and cleanup here while allowing the actual write to report an I/O failure.
+pub(crate) fn apply_chunk_with_writer(
+    app: &mut App,
+    chunk: HistoryChunk,
+    write: impl FnOnce(&mut std::fs::File, &str) -> std::io::Result<()>,
+) -> ExportProgress {
     let HistoryChunk { request_id, updates, last, omitted_updates, unmapped_updates, error } =
         chunk;
     let Some(pending) = app.history_export.as_mut() else {
@@ -131,8 +140,8 @@ pub(crate) fn apply_chunk(app: &mut App, chunk: HistoryChunk) -> ExportProgress 
         pending.unmapped_updates,
     );
     let written = match &pending.destination {
-        Destination::Explicit(path) => write_new_file(path, &content),
-        Destination::Default { dir, stem } => write_default_file(dir, stem, &content),
+        Destination::Explicit(path) => write_new_file(path, &content, write),
+        Destination::Default { dir, stem } => write_default_file(dir, stem, &content, write),
     };
     match written {
         Ok(path) => ExportProgress::Written(path),
@@ -224,20 +233,29 @@ fn already_exists(path: &Path) -> String {
 ///
 /// `create_new` is the real overwrite guard, since the file can appear after the
 /// early check in [`begin`].
-fn write_new_file(path: &Path, content: &str) -> Result<PathBuf, String> {
+fn write_new_file(
+    path: &Path,
+    content: &str,
+    write: impl FnOnce(&mut std::fs::File, &str) -> std::io::Result<()>,
+) -> Result<PathBuf, String> {
     let file = open_new(path).map_err(|error| open_error(path, &error))?;
-    finish_write(file, path, content)
+    finish_write(file, path, content, write)
 }
 
 /// Write a default-named export, taking the first free `-N` suffix.
 ///
 /// Each candidate is claimed with `create_new` rather than checked first, so two
 /// exports racing for the same name cannot both win it.
-fn write_default_file(dir: &Path, stem: &str, content: &str) -> Result<PathBuf, String> {
+fn write_default_file(
+    dir: &Path,
+    stem: &str,
+    content: &str,
+    write: impl FnOnce(&mut std::fs::File, &str) -> std::io::Result<()>,
+) -> Result<PathBuf, String> {
     for attempt in 1..=MAX_DEFAULT_NAME_ATTEMPTS {
         let path = dir.join(numbered_name(stem, attempt));
         match open_new(&path) {
-            Ok(file) => return finish_write(file, &path, content),
+            Ok(file) => return finish_write(file, &path, content, write),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
             Err(error) => return Err(open_error(&path, &error)),
         }
@@ -262,8 +280,13 @@ fn open_error(path: &Path, error: &std::io::Error) -> String {
     }
 }
 
-fn finish_write(mut file: std::fs::File, path: &Path, content: &str) -> Result<PathBuf, String> {
-    if let Err(error) = file.write_all(content.as_bytes()) {
+fn finish_write(
+    mut file: std::fs::File,
+    path: &Path,
+    content: &str,
+    write: impl FnOnce(&mut std::fs::File, &str) -> std::io::Result<()>,
+) -> Result<PathBuf, String> {
+    if let Err(error) = write(&mut file, content) {
         // Do not leave a half-written export behind for the next run to refuse over.
         drop(file);
         let _ = std::fs::remove_file(path);

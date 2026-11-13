@@ -4065,8 +4065,6 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "tui-markdown"
 version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cfb7c11a39510870d32639a98de09d95cd68f1be22a5526617d26c39de07a22"
 dependencies = [
  "itertools 0.15.0",
  "pulldown-cmark",
@@ -4077,8 +4075,6 @@ dependencies = [
 [[package]]
 name = "tui-textarea-2"
 version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fdf2865f7f32ae9e779f6185986fd920fa6b00ac878e906927ec7e78d32316ed"
 dependencies = [
  "crossterm",
  "portable-atomic",

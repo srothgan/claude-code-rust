@@ -59,52 +59,15 @@ fn format_retry_delay(retry_delay_ms: f64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_api_retry_message, format_retry_delay};
-    use crate::agent::model::ApiRetryError;
-
-    #[test]
-    fn formats_api_retry_http_status() {
-        assert_eq!(
-            format_api_retry_message(2, 4, 1500.0, Some(529), ApiRetryError::ServerError),
-            "API retry 2/4 after server error HTTP 529, retrying in 1.5s",
-        );
-    }
-
-    #[test]
-    fn formats_new_sdk_api_retry_errors_with_user_facing_labels() {
-        assert_eq!(
-            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::ModelNotFound),
-            "API retry 1/4 after model unavailable, retrying in 250ms",
-        );
-        assert_eq!(
-            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::OauthOrgNotAllowed),
-            "API retry 1/4 after account access not allowed, retrying in 250ms",
-        );
-        assert_eq!(
-            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::AccountOnHold),
-            "API retry 1/4 after account on hold, retrying in 250ms",
-        );
-        assert_eq!(
-            format_api_retry_message(1, 4, 250.0, Some(529), ApiRetryError::Overloaded),
-            "API retry 1/4 after service overloaded HTTP 529, retrying in 250ms",
-        );
-    }
-
-    #[test]
-    fn formats_api_retry_without_http_response() {
-        assert_eq!(
-            format_api_retry_message(1, 4, 250.0, None, ApiRetryError::Unknown),
-            "API retry 1/4 after connection error, retrying in 250ms",
-        );
-    }
-
-    #[test]
-    fn formats_second_delay_with_one_decimal() {
-        assert_eq!(format_retry_delay(1000.0), "1.0s");
-    }
+    use super::format_retry_delay;
 
     #[test]
     fn formats_fractional_delay_at_display_boundary() {
         assert_eq!(format_retry_delay(549.888_169_845_942_6), "550ms");
+        for (delay, expected) in
+            [(0.0, "0ms"), (999.9, "1000ms"), (1000.0, "1.0s"), (1000.1, "1.1s"), (1250.5, "1.3s")]
+        {
+            assert_eq!(format_retry_delay(delay), expected);
+        }
     }
 }

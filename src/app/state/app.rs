@@ -39,7 +39,6 @@ pub struct App {
     pub exit_error: Option<crate::error::AppError>,
     pub(crate) cwd: String,
     pub cwd_raw: String,
-    pub files_accessed: usize,
     /// State scoped to the currently active turn (command spinner, cancel
     /// bookkeeping, turn-local notices).
     pub turn: TurnState,
@@ -82,10 +81,8 @@ pub struct App {
     pub pending_submit: Option<InputSnapshot>,
     /// Paste ingestion state: burst detection, queued chunks, session tracking.
     pub paste: PasteState,
-    /// Pending image attachments accumulated via Ctrl+V clipboard reads and
-    /// consumed on submit. No cap on count — this is a developer tool, so
-    /// users are trusted to attach as many images as they need.
-    pub(crate) pending_images: Vec<crate::app::clipboard_image::ImageAttachment>,
+    /// Locally killed content, including the payload owned by each atom.
+    pub(crate) input_yank: Vec<crate::app::input::InputYankPart>,
     /// Trigger key event and pixel source for Ctrl+V image paste.
     pub(crate) clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste,
     /// Session-scoped projection of user messages accepted locally while an agent turn is active.
@@ -107,8 +104,6 @@ pub struct App {
 
     /// Central notification manager (bell + desktop toast when unfocused).
     pub(crate) notifications: notify::NotificationManager,
-    /// Global in-memory budget for rendered block and message caches.
-    pub(crate) render_cache_budget: RenderCacheBudget,
     /// Byte budget for source conversation history retained in memory.
     pub(crate) history_retention: HistoryRetentionPolicy,
     /// Last history-retention enforcement statistics.
@@ -267,7 +262,6 @@ impl App {
             exit_error: None,
             cwd: "/test".into(),
             cwd_raw: "/test".into(),
-            files_accessed: 0,
             event_tx: tx,
             event_rx: rx,
             file_index_event_tx: file_index_tx,
@@ -292,7 +286,7 @@ impl App {
             subagent: None,
             pending_submit: None,
             paste: PasteState::default(),
-            pending_images: Vec::new(),
+            input_yank: Vec::new(),
             // Tests never reach the system clipboard unless they install a reader.
             clipboard_paste: crate::app::clipboard_image::ClipboardImagePaste {
                 read: || crate::app::clipboard_image::ClipboardRead::NoImage,
@@ -307,7 +301,6 @@ impl App {
             usage: UsageState::default(),
             mcp: McpState::default(),
             notifications: notify::NotificationManager::new(),
-            render_cache_budget: RenderCacheBudget::default(),
             history_retention: HistoryRetentionPolicy::default(),
             history_retention_stats: HistoryRetentionStats::default(),
             cache_metrics: CacheMetrics::default(),

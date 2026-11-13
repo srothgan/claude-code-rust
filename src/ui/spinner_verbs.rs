@@ -198,12 +198,15 @@ mod tests {
     use super::SPINNER_VERBS;
 
     #[test]
-    fn bundled_spinner_verbs_have_no_blank_entries() {
-        assert!(SPINNER_VERBS.iter().all(|verb| !verb.trim().is_empty()));
-    }
-
-    #[test]
     fn bundled_spinner_verbs_reserve_thinking_for_observed_phase() {
         assert!(!SPINNER_VERBS.contains(&"Thinking"));
     }
+}
+
+// Catalogue edits must preserve the random picker's nonempty input domain.
+#[test]
+#[allow(clippy::const_is_empty)]
+fn spinner_catalogue_supplies_nonempty_usable_picker_inputs() {
+    assert!(!SPINNER_VERBS.is_empty());
+    assert!(SPINNER_VERBS.iter().all(|verb| !verb.trim().is_empty()));
 }

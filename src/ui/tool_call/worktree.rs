@@ -68,8 +68,7 @@ fn field_label(label: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::ui::theme;
-    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
+    use crate::ui::tool_call::test_support::tool_call;
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -89,41 +88,108 @@ mod tests {
     }
 
     #[test]
-    fn enter_input_body_renders_path_field() {
-        let tc = worktree_tool_call(
-            "EnterWorktree",
-            json!({ "path": "C:\\repo\\.worktrees\\feature" }),
-            None,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(rendered_line_texts(&lines), vec!["Path: C:\\repo\\.worktrees\\feature"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+    fn enter_worktree_cards_associate_requested_paths_and_returned_locations() {
+        use crate::ui::tool_call::test_support::card_body;
+        for (requested, output, status, expected) in [
+            (
+                "/repo/worktrees/feature one",
+                None,
+                model::ToolCallStatus::Pending,
+                "Path: /repo/worktrees/feature one",
+            ),
+            (
+                "/repo/worktrees/feature two",
+                Some("Branch: actual-branch-two"),
+                model::ToolCallStatus::Completed,
+                "Branch: actual-branch-two",
+            ),
+            (
+                "/repo/worktrees/feature three",
+                Some("Path: /actual/worktree three"),
+                model::ToolCallStatus::Completed,
+                "Path: /actual/worktree three",
+            ),
+        ] {
+            let mut tc = worktree_tool_call("EnterWorktree", json!({"path":requested}), output);
+            tc.status = status;
+            let rows = card_body(&mut tc, 120);
+            assert!(rows.contains(&format!("Path: {requested}")), "{rows:?}");
+            assert!(rows.contains(&expected.to_owned()), "{rows:?}");
+            if !expected.contains("branch-two") {
+                assert!(!rows.iter().any(|row| row.contains("actual-branch-two")));
+            }
+        }
     }
 
     #[test]
-    fn exit_input_body_renders_action_and_discard_fields() {
-        let tc = worktree_tool_call(
+    fn exit_worktree_request_cards_distinguish_intent_from_confirmed_discards() {
+        use crate::ui::tool_call::test_support::card_body;
+        for (action, discard) in [
+            ("keep", None),
+            ("keep", Some(false)),
+            ("remove", None),
+            ("remove", Some(false)),
+            ("remove", Some(true)),
+        ] {
+            let mut input = json!({"action":action});
+            if let Some(discard) = discard {
+                input["discard_changes"] = json!(discard);
+            }
+            let mut tc = worktree_tool_call("ExitWorktree", input, None);
+            tc.status = model::ToolCallStatus::Pending;
+            let rows = card_body(&mut tc, 100);
+            assert!(rows.contains(&format!("Action: {action}")), "{rows:?}");
+            assert_eq!(rows.contains(&"Discard changes: yes".to_owned()), discard == Some(true));
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row.starts_with("Discarded")
+                        || row.starts_with("Restored directory:"))
+            );
+        }
+    }
+
+    #[test]
+    fn confirmed_worktree_receipts_preserve_action_locations_and_known_discard_counts() {
+        use crate::ui::tool_call::test_support::{card_body, confirmed_receipt};
+        for (id, action, path, files, commits) in [
+            ("worktree-keep", "keep", "kept", None, None),
+            ("worktree-remove-zero", "remove", "zero", Some("0"), Some("7")),
+            ("worktree-remove-counts", "remove", "many", Some("5"), Some("2")),
+        ] {
+            let mut tc = confirmed_receipt(id);
+            let rows = card_body(&mut tc, 120);
+            assert!(rows.contains(&format!("Action: {action}")), "{rows:?}");
+            assert_eq!(rows.iter().filter(|row| row.starts_with("Action:")).count(), 1);
+            assert!(rows.contains(&format!("Worktree: /fixture/worktree/{path}")));
+            assert!(rows.contains(&format!("Restored directory: /fixture/original/{path}")));
+            for (label, value) in [("Discarded files", files), ("Discarded commits", commits)] {
+                let fields: Vec<_> = rows
+                    .iter()
+                    .filter(|row| row.starts_with(&format!("{label}:")))
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    fields,
+                    value.map(|value| format!("{label}: {value}")).into_iter().collect::<Vec<_>>()
+                );
+            }
+            if action == "keep" {
+                assert!(rows.contains(&"Branch: retained-branch".to_owned()));
+            }
+        }
+        let mut tc = worktree_tool_call(
             "ExitWorktree",
-            json!({ "action": "remove", "discard_changes": true }),
-            None,
+            json!({"action":"remove","discard_changes":true}),
+            Some("WORKTREE-REMOVE-REFUSED"),
         );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(rendered_line_texts(&lines), vec!["Action: remove", "Discard changes: yes"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
-        assert_eq!(lines[1].spans[0].style.fg, Some(theme::DIM));
-    }
-
-    #[test]
-    fn output_body_reuses_field_formatting() {
-        let tc = worktree_tool_call("EnterWorktree", json!({}), Some("Branch: feature"));
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(rendered_line_texts(&lines), vec!["Branch: feature"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        tc.status = model::ToolCallStatus::Failed;
+        let rows = card_body(&mut tc, 120);
+        assert!(rows.contains(&"WORKTREE-REMOVE-REFUSED".to_owned()));
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.starts_with("Discarded") || row.starts_with("Restored directory:"))
+        );
     }
 }

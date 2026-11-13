@@ -36,8 +36,7 @@ impl Repo {
     }
 
     fn git(&self, args: &[&str]) -> Vec<u8> {
-        let output = Command::new("git")
-            .current_dir(self.path())
+        let output = git::command(self.path())
             .args(args)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
@@ -87,6 +86,12 @@ fn comparisons_show_the_correct_versions_and_never_modify_the_worktree_or_index(
 
     let head = git::snapshot(&repo.path().join("src"), Comparison::Head)
         .expect("HEAD comparison from a subdirectory");
+    assert_eq!(
+        head.files.iter().map(|f| f.path.as_str()).collect::<std::collections::BTreeSet<_>>(),
+        ["binary.dat", "deleted.txt", "new name.txt", "new \u{fc}nicode.txt", "src/change.txt"]
+            .into_iter()
+            .collect()
+    );
     assert_eq!(file(&head, "src/change.txt").counts, Some((2, 1)));
     assert_eq!(file(&head, "new ünicode.txt").counts, Some((2, 0)));
     assert_eq!(file(&head, "deleted.txt").counts, Some((0, 1)));
@@ -105,8 +110,12 @@ fn comparisons_show_the_correct_versions_and_never_modify_the_worktree_or_index(
 
     let staged = git::snapshot(repo.path(), Comparison::Staged).expect("staged comparison");
     assert_eq!(
-        staged.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
-        ["deleted.txt", "new name.txt", "src/change.txt"]
+        staged
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["deleted.txt", "new name.txt", "src/change.txt"].into_iter().collect()
     );
     assert_eq!(file(&staged, "src/change.txt").counts, Some((1, 1)));
     let changed = contents(&staged, "src/change.txt");
@@ -115,8 +124,12 @@ fn comparisons_show_the_correct_versions_and_never_modify_the_worktree_or_index(
 
     let unstaged = git::snapshot(repo.path(), Comparison::Unstaged).expect("unstaged comparison");
     assert_eq!(
-        unstaged.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
-        ["binary.dat", "new ünicode.txt", "src/change.txt"]
+        unstaged
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["binary.dat", "new ünicode.txt", "src/change.txt"].into_iter().collect()
     );
     assert_eq!(file(&unstaged, "src/change.txt").counts, Some((1, 0)));
     let changed = contents(&unstaged, "src/change.txt");
@@ -178,7 +191,16 @@ fn draw(app: &mut App, width: u16, height: u16) -> Buffer {
 
 fn region(buffer: &Buffer, area: Rect) -> String {
     (area.y..area.bottom())
-        .map(|y| (area.x..area.right()).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .map(|y| {
+            let mut text = String::new();
+            let mut x = area.x;
+            while x < area.right() {
+                let symbol = buffer[(x, y)].symbol();
+                text.push_str(symbol);
+                x += u16::try_from(unicode_width::UnicodeWidthStr::width(symbol).max(1)).unwrap();
+            }
+            text
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -215,16 +237,28 @@ fn keyboard_flow_selects_only_files_and_scrolls_the_focused_pane() {
     repo.write("src/nested/a.txt", &long_file);
     repo.write("src/z.txt", "second new\n");
     let mut app = open_repo(&repo);
+    let (conn, mut commands) = crate::agent::client::AgentConnection::test_channel();
+    app.session_runtime.conn = Some(std::rc::Rc::new(conn));
     let buffer = draw(&mut app, 120, 20);
     let left = region(&buffer, Rect::new(1, 3, 38, 13));
     assert!(left.contains("src/") && left.contains("nested/"));
     let selected_y = (3..16)
         .find(|y| region(&buffer, Rect::new(1, *y, 38, 1)).contains("a.txt"))
         .expect("file row");
-    assert_eq!(buffer[(5, selected_y)].bg, crate::ui::theme::RUST_ORANGE);
+    assert_ne!(buffer[(5, selected_y)].bg, buffer[(5, selected_y - 1)].bg);
     assert!(region(&buffer, Rect::new(41, 3, 78, 13)).contains("first new 0"));
     assert!(!region(&buffer, Rect::new(41, 3, 78, 13)).contains("second new"));
 
+    for (code, modifiers, path, body) in [
+        (KeyCode::Tab, KeyModifiers::NONE, "src/z.txt", "second new"),
+        (KeyCode::Tab, KeyModifiers::SHIFT, "src/nested/a.txt", "first new 0"),
+        (KeyCode::BackTab, KeyModifiers::NONE, "src/z.txt", "second new"),
+        (KeyCode::Tab, KeyModifiers::NONE, "src/nested/a.txt", "first new 0"),
+    ] {
+        handle_terminal_event(&mut app, Event::Key(KeyEvent::new(code, modifiers)));
+        settle(&mut app);
+        assert_view(&mut app, path, body, "UNEXPECTED");
+    }
     key(&mut app, KeyCode::Down);
     settle(&mut app);
     assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "src/z.txt");
@@ -238,11 +272,12 @@ fn keyboard_flow_selects_only_files_and_scrolls_the_focused_pane() {
         key(&mut app, KeyCode::Down);
     }
     let scrolled = draw(&mut app, 120, 20);
+    assert!(region(&scrolled, Rect::new(41, 3, 78, 13)).contains("first new 20"));
     assert!(!region(&scrolled, Rect::new(41, 3, 78, 13)).contains("first new 0"));
     assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "src/nested/a.txt");
     key(&mut app, KeyCode::Tab);
     settle(&mut app);
-    assert!(app.diff_view.as_ref().unwrap().content_focus);
+    assert!(region(&draw(&mut app, 120, 20), Rect::new(41, 3, 78, 13)).contains("second new"));
     assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "src/z.txt");
     key(&mut app, KeyCode::BackTab);
     settle(&mut app);
@@ -263,45 +298,53 @@ fn keyboard_flow_selects_only_files_and_scrolls_the_focused_pane() {
     assert_eq!(app.surface_mode, SurfaceMode::Chat);
     assert!(app.diff_view.is_none());
     assert_eq!(app.status, crate::app::AppStatus::Running);
+    assert!(commands.try_recv().is_err());
 }
 
 #[test]
 fn full_file_mode_preserves_nested_indentation_after_resize() {
     let repo = Repo::new();
-    repo.write(
-        "src/example.rs",
-        "impl Example {\n    fn run(&self) {\n        if self.ready() {\n            self.work();\n        }\n    }\n}",
-    );
+    let source = "impl Example {\n    fn run() {\n        alpha_beta_gamma_delta_epsilon_zeta_eta_theta_iota_END();\n    }\n}";
+    repo.write("src/example.rs", source);
     let mut app = open_repo(&repo);
     key(&mut app, KeyCode::Right);
     key(&mut app, KeyCode::Char('v'));
-
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     for width in [120, 60, 120] {
-        let buffer = draw(&mut app, width, 24);
-        let tree_width = (width / 3).clamp(18, 48);
-        let content_x = tree_width + 1;
-        let content_width = width - tree_width - 2;
-        let rows = (3..10)
-            .map(|y| {
-                region(&buffer, Rect::new(content_x, y, content_width, 1)).trim_end().to_owned()
-            })
+        terminal.backend_mut().resize(width, 30);
+        redraw(&mut terminal, &mut app);
+        let b = terminal.backend().buffer();
+        let area = content_area(b);
+        let text = region(b, area);
+        let rows = text.lines().map(str::trim_end).collect::<Vec<_>>();
+        let starts = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.split_whitespace().next()?.parse::<usize>().ok().map(|n| (i, n)))
             .collect::<Vec<_>>();
-        assert_eq!(
-            rows,
-            [
-                "1  impl Example {",
-                "2      fn run(&self) {",
-                "3          if self.ready() {",
-                "4              self.work();",
-                "5          }",
-                "6      }",
-                "7  }",
-            ],
-            "full file source at width {width}"
-        );
-        assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "src/example.rs");
-        assert!(app.diff_view.as_ref().unwrap().full_file);
-        assert!(matches!(buffer[(content_x + 7, 4)].fg, ratatui::style::Color::Rgb(..)));
+        assert_eq!(starts.iter().map(|(_, n)| *n).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
+        let gutter = rows[starts[0].0].find("impl").unwrap();
+        for (i, expected) in source.lines().enumerate() {
+            let start = starts[i].0;
+            let end = starts.get(i + 1).map_or(rows.len(), |r| r.0);
+            let mut recovered = String::new();
+            for (offset, row) in rows[start..end].iter().enumerate() {
+                if row.is_empty() {
+                    continue;
+                }
+                if offset > 0 {
+                    assert!(row[..gutter].chars().all(char::is_whitespace));
+                }
+                recovered.push_str(&row[gutter..]);
+            }
+            assert_eq!(recovered, expected, "width {width}, source line {}", i + 1);
+        }
+        if width == 60 {
+            assert!(starts[3].0 > starts[2].0 + 1);
+        } else {
+            assert_eq!(starts[3].0, starts[2].0 + 1);
+        }
+        assert!(region(b, Rect::new(area.x, 2, area.width, 1)).contains("src/example.rs"));
     }
 }
 
@@ -316,62 +359,75 @@ fn comparison_selection_and_refresh_keep_the_selected_file_and_show_the_selected
     let mut app = open_repo(&repo);
     key(&mut app, KeyCode::Char('s'));
     key(&mut app, KeyCode::Down);
+    assert!(region(&draw(&mut app, 100, 18), Rect::new(0, 0, 100, 18)).contains("> Staged:"));
     key(&mut app, KeyCode::Enter);
     settle(&mut app);
     key(&mut app, KeyCode::Char('v'));
-    let buffer = draw(&mut app, 100, 18);
-    let content = region(&buffer, Rect::new(34, 3, 65, 11));
-    assert!(content.contains("staged"));
-    assert!(!content.contains("working"));
+    assert_view(&mut app, "b.txt", "staged", "working");
+    let before = app.diff_view.as_ref().unwrap().request_id;
     key(&mut app, KeyCode::Char('s'));
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.diff_view.as_ref().unwrap().comparison, Comparison::Staged);
+    assert_eq!(
+        app.diff_view.as_ref().unwrap().request_id,
+        before,
+        "cancel must not request another comparison"
+    );
+    assert_view(&mut app, "b.txt", "staged", "working");
+    let b = draw(&mut app, 100, 18);
+    assert!(region(&b, Rect::new(0, 0, 100, 2)).contains("Staged"));
     repo.write("a.txt", "new staged file\n");
     repo.git(&["add", "a.txt"]);
     key(&mut app, KeyCode::Char('r'));
     settle(&mut app);
-    assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "b.txt");
-    assert_eq!(app.diff_view.as_ref().unwrap().selected, 1);
-    // Remove the selected staged change. Refresh must select an existing file, not retain a stale row.
+    assert_view(&mut app, "b.txt", "staged", "working");
     repo.write("c.txt", "another staged file\n");
     repo.git(&["add", "c.txt"]);
     repo.git(&["reset", "-q", "HEAD", "--", "b.txt"]);
     key(&mut app, KeyCode::Char('r'));
-    key(&mut app, KeyCode::Down); // No tree rows are selectable while the read is pending.
+    key(&mut app, KeyCode::Down);
     settle(&mut app);
-    assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "c.txt");
+    assert_view(&mut app, "c.txt", "another staged file", "staged\nworking");
     repo.git(&["reset", "-q", "HEAD", "--", "c.txt"]);
     key(&mut app, KeyCode::Char('r'));
     settle(&mut app);
-    assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "a.txt");
+    assert_view(&mut app, "a.txt", "new staged file", "another staged file");
+    assert_content_focused_successor();
 }
 
 #[test]
 fn a_superseded_file_read_cannot_replace_the_current_selection() {
-    let repo = Repo::new();
-    repo.write("a.txt", "first\n");
-    repo.write("b.txt", "second\n");
-    let mut app = open_repo(&repo);
-    let state = app.diff_view.as_ref().unwrap();
-    let stale_id = state.request_id;
-    key(&mut app, KeyCode::Down);
-    let state = app.diff_view.as_mut().unwrap();
-    let accepted = state.apply_read_result(
-        stale_id,
-        ReadResult::Content(Ok(FileContent {
-            patch: "obsolete first file".into(),
-            full_text: Some("obsolete first file".into()),
-            notice: None,
-            deleted: false,
-        })),
-    );
-    assert!(!accepted);
-    settle(&mut app);
-    let buffer = draw(&mut app, 100, 18);
-    let content = region(&buffer, Rect::new(34, 3, 65, 11));
-    assert!(content.contains("second"));
-    assert!(!content.contains("obsolete first file"));
+    for kind in 0..4 {
+        let repo = Repo::new();
+        repo.write("a.txt", "first\n");
+        repo.write("b.txt", "second\n");
+        let mut app = open_repo(&repo);
+        let stale_id = app.diff_view.as_ref().unwrap().request_id;
+        key(&mut app, KeyCode::Down);
+        let snapshot = git::snapshot(repo.path(), Comparison::Head).unwrap();
+        let stale = match kind {
+            0 => ReadResult::Content(Ok(FileContent {
+                patch: "STALE body".into(),
+                full_text: Some("STALE body".into()),
+                notice: None,
+                deleted: false,
+            })),
+            1 => ReadResult::Files(Ok(snapshot)),
+            2 => ReadResult::Files(Err("STALE files failure".into())),
+            _ => ReadResult::Content(Err("STALE content failure".into())),
+        };
+        let current = app.diff_view.as_ref().unwrap().request_id;
+        assert!(!app.diff_view.as_mut().unwrap().apply_read_result(stale_id, stale));
+        assert_eq!(app.diff_view.as_ref().unwrap().request_id, current);
+        let b = draw(&mut app, 100, 18);
+        let body = region(&b, content_area(&b));
+        assert!(body.contains("Loading"));
+        assert!(!body.contains("STALE"));
+        assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "b.txt");
+        assert!(app.diff_view.as_ref().unwrap().error.is_none());
+        settle(&mut app);
+        assert_view(&mut app, "b.txt", "second", "STALE");
+    }
 }
 
 #[test]
@@ -413,31 +469,41 @@ fn empty_binary_and_failed_file_reads_are_visible_and_refresh_can_recover() {
 #[test]
 fn a_short_tree_keeps_the_selected_file_and_its_statistics_visible_at_narrow_widths() {
     let repo = Repo::new();
-    for index in 0..15 {
-        repo.write(&format!("deep/nested/folder/file{index:02}.txt"), "new line\n");
+    for n in 1..=15 {
+        repo.write(&format!("nested/{n:02}name.txt"), format!("F{n:02}\n").repeat(n));
     }
     let mut app = open_repo(&repo);
     for _ in 0..14 {
         key(&mut app, KeyCode::Down);
     }
     settle(&mut app);
-    for (width, height) in [(48, 12), (60, 12), (120, 20)] {
-        let buffer = draw(&mut app, width, height);
-        let tree_width = (width / 3).clamp(18, 48);
-        let tree = region(&buffer, Rect::new(1, 3, tree_width - 2, height - 7));
-        // The selected row must be onscreen and highlighted; folder rows may scroll away.
-        let selected = (3..height - 2)
-            .find(|y| buffer[(1, *y)].bg == crate::ui::theme::RUST_ORANGE)
-            .expect("visible selected row");
-        let selected_text = region(&buffer, Rect::new(1, selected, tree_width - 2, 1));
-        assert!(selected_text.contains("+1"));
-        assert!(!selected_text.contains("-0"));
-        assert!(tree.contains("file"));
-        assert!(
-            region(&buffer, Rect::new(tree_width + 1, 3, width - tree_width - 2, height - 7))
-                .contains("new line")
-        );
-        assert!(region(&buffer, Rect::new(0, height - 4, width, 4)).contains("v diff/full"));
+    for (width, height) in [(48, 14), (60, 14), (120, 20)] {
+        for (code, name, count, marker) in
+            [(KeyCode::Up, "14", "+14", "F14"), (KeyCode::Down, "15", "+15", "F15")]
+        {
+            key(&mut app, code);
+            settle(&mut app);
+            let b = draw(&mut app, width, height);
+            let tree = tree_area(&b);
+            let y = find_row(&b, tree, name);
+            let row = region(&b, Rect::new(tree.x, y, tree.width, 1));
+            assert!(row.contains(count), "{row}");
+            assert!(row.trim_start().starts_with(&format!("? {name}")), "{row}");
+            let other = (tree.y..tree.bottom())
+                .find(|r| {
+                    *r != y
+                        && region(&b, Rect::new(tree.x, *r, tree.width, 1))
+                            .trim_start()
+                            .starts_with('?')
+                })
+                .unwrap();
+            assert_ne!(b[(tree.x, y)].bg, b[(tree.x, other)].bg);
+            assert!(region(&b, content_area(&b)).contains(marker));
+            assert_eq!(
+                app.diff_view.as_ref().unwrap().selected_file().unwrap().path,
+                format!("nested/{name}name.txt")
+            );
+        }
     }
 }
 
@@ -450,7 +516,7 @@ fn sidebar_counts_show_only_nonzero_changes_in_their_colors_even_when_selected()
     repo.write("c-mixed.txt", "before\n");
     repo.write("old.txt", "same contents\n");
     repo.commit();
-    repo.write("a-added.txt", "one\ntwo\n");
+    repo.write("a-\u{754c}.txt", "one\ntwo\n");
     std::fs::remove_file(repo.path().join("b-removed.txt")).expect("deleted fixture");
     repo.write("c-mixed.txt", "after\n");
     repo.git(&["mv", "old.txt", "d-renamed.txt"]);
@@ -459,10 +525,10 @@ fn sidebar_counts_show_only_nonzero_changes_in_their_colors_even_when_selected()
     let mut app = open_repo(&repo);
 
     // Check every file's own row with additions selected, then removals selected.
-    for selected_name in ["a-added.txt", "b-removed.txt"] {
+    for selected_name in ["a-\u{754c}.txt", "b-removed.txt"] {
         let buffer = draw(&mut app, 120, 24);
         for (name, added, removed) in [
-            ("a-added.txt", "+2", ""),
+            ("a-\u{754c}.txt", "+2", ""),
             ("b-removed.txt", "", "-3"),
             ("c-mixed.txt", "+1", "-1"),
             ("d-renamed.txt", "", ""),
@@ -477,19 +543,19 @@ fn sidebar_counts_show_only_nonzero_changes_in_their_colors_even_when_selected()
                 if count.is_empty() {
                     continue;
                 }
-                let x = u16::try_from(row.find(count).expect("nonzero count beside its file"))
-                    .expect("sidebar column")
-                    + 1;
+                let x = cell_text_column(&buffer, y, count, 1..39);
                 for col in x..x + u16::try_from(count.len()).expect("count width") {
                     assert_eq!(buffer[(col, y)].fg, color, "{name}: {count}");
-                    assert_ne!(buffer[(col, y)].bg, crate::ui::theme::RUST_ORANGE);
                 }
             }
             if added.is_empty() && removed.is_empty() {
                 assert!(row.trim_end().ends_with(name), "zero-change file has no counts");
             }
             if name == selected_name {
-                assert_eq!(buffer[(1, y)].bg, crate::ui::theme::RUST_ORANGE);
+                let other =
+                    if name == "a-\u{754c}.txt" { "b-removed.txt" } else { "a-\u{754c}.txt" };
+                let other_y = find_row(&buffer, Rect::new(1, 3, 38, 17), other);
+                assert_ne!(buffer[(1, y)].bg, buffer[(1, other_y)].bg);
             }
         }
         let binary_y = (3..20)
@@ -506,23 +572,36 @@ fn footer_uses_one_row_when_it_fits_and_wraps_without_losing_controls() {
     let repo = Repo::new();
     repo.write("file.txt", "changed line\n");
     let mut app = open_repo(&repo);
-    let wide = draw(&mut app, 200, 14);
-    let footer = region(&wide, Rect::new(0, 13, 200, 1));
-    for control in ["Up/Down", "[ prev hunk", "] next hunk", "Ctrl+Q quit"] {
-        assert!(footer.contains(control), "all hints fit on one row: {control}");
-    }
-    assert_eq!(wide[(0, 12)].symbol(), "└", "the file pane uses the row above the footer");
-
-    let narrow = draw(&mut app, 48, 14);
-    let pane_bottom =
-        (3..13).find(|y| narrow[(0, *y)].symbol() == "└").expect("bottom of file pane");
-    assert!(pane_bottom < 12, "narrow terminals need multiple hint rows");
-    let footer = (pane_bottom + 1..14)
-        .map(|y| region(&narrow, Rect::new(0, y, 48, 1)).trim().to_owned())
-        .collect::<Vec<_>>()
-        .join(" ");
-    for control in ["Up/Down", "[ prev hunk", "] next hunk", "Ctrl+Q quit"] {
-        assert!(footer.contains(control), "wrapped footer retains {control}");
+    for width in [200, 48] {
+        let b = draw(&mut app, width, 18);
+        let footer_y = find_row(&b, b.area, "Up/Down");
+        let footer = region(&b, Rect::new(0, footer_y, width, 18 - footer_y));
+        let flattened = footer.split_whitespace().collect::<Vec<_>>().join(" ");
+        for hint in [
+            "Up/Down navigate",
+            "Enter/Right read",
+            "Left/Esc back",
+            "Tab/Shift+Tab files",
+            "v diff/full file",
+            "s comparison",
+            "r refresh",
+            "[ prev hunk",
+            "] next hunk",
+            "Ctrl+Q quit",
+        ] {
+            assert!(flattened.contains(hint), "{hint}: {flattened}");
+        }
+        let occupied = footer.lines().filter(|r| !r.trim().is_empty()).count();
+        if width == 200 {
+            assert_eq!(occupied, 1);
+        } else {
+            assert!(occupied > 1);
+        }
+        let body = content_area(&b);
+        assert!(body.bottom() < footer_y);
+        assert!(region(&b, body).contains("changed line"));
+        assert!(region(&b, tree_area(&b)).contains("file.txt"));
+        assert!(!region(&b, body).contains("Ctrl+Q"));
     }
 }
 
@@ -694,7 +773,10 @@ fn refresh_preserves_the_untracked_copy_when_a_tracked_deletion_has_the_same_pat
     assert!(content.contains("untracked contents"));
     assert!(!content.contains("committed contents"));
     let summary = region(&buffer, Rect::new(0, 0, 100, 1));
-    assert_eq!(summary.split_whitespace().find_map(|word| word.parse::<usize>().ok()), Some(1));
+    assert!(summary.contains("| 1 file "), "{summary}");
+    let tree = region(&buffer, tree_area(&buffer));
+    assert!(tree.lines().any(|r| r.contains("D file.txt")));
+    assert!(tree.lines().any(|r| r.contains("? file.txt")));
 }
 
 #[test]
@@ -704,19 +786,23 @@ fn refreshing_after_all_changes_are_removed_clears_the_preview_and_keeps_tree_fo
     repo.commit();
     repo.write("file.txt", "temporary change\n");
     let mut app = open_repo(&repo);
-    let changed = draw(&mut app, 100, 18);
+    let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+    redraw(&mut terminal, &mut app);
+    let changed = terminal.backend().buffer().clone();
     assert!(region(&changed, Rect::new(34, 3, 65, 11)).contains("temporary change"));
     repo.write("file.txt", "baseline\n");
     key(&mut app, KeyCode::Char('r'));
     settle(&mut app);
-    let clean = draw(&mut app, 100, 18);
+    redraw(&mut terminal, &mut app);
+    let clean = terminal.backend().buffer().clone();
     let state = app.diff_view.as_ref().unwrap();
-    assert!(!state.content_focus);
+
     assert!(state.selected_file().is_none());
     assert!(region(&clean, Rect::new(1, 3, 31, 11)).contains("No changes"));
     let content = region(&clean, Rect::new(34, 3, 65, 11));
     assert!(content.contains("No changes"));
     assert!(!content.contains("temporary change"));
+    assert!(!region(&clean, tree_area(&clean)).contains("file.txt"));
     // Navigation on an empty tree must remain harmless and Esc must still close.
     for code in [KeyCode::Up, KeyCode::Down, KeyCode::Tab, KeyCode::BackTab] {
         key(&mut app, code);
@@ -726,34 +812,326 @@ fn refreshing_after_all_changes_are_removed_clears_the_preview_and_keeps_tree_fo
     assert!(app.diff_view.is_none());
 }
 
-#[test]
-fn refreshing_an_undone_open_file_selects_its_successor_and_keeps_content_focus() {
+// Test-only subprocess isolation also applies inside the real Git reader thread.
+pub(super) fn isolate_git(command: &mut Command) {
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" });
+}
+fn redraw(terminal: &mut Terminal<TestBackend>, app: &mut App) {
+    terminal.draw(|f| crate::ui::render_fullscreen_surface(f, app)).unwrap();
+}
+fn find_row(b: &Buffer, area: Rect, text: &str) -> u16 {
+    (area.y..area.bottom())
+        .find(|y| region(b, Rect::new(area.x, *y, area.width, 1)).contains(text))
+        .unwrap_or_else(|| panic!("missing {text}: {}", region(b, area)))
+}
+fn content_area(b: &Buffer) -> Rect {
+    let y = find_row(b, b.area, "Files");
+    let x = (0..b.area.width)
+        .find(|x| b[(*x, y)].symbol() == "D" || b[(*x, y)].symbol() == "F" && *x > 12)
+        .unwrap();
+    // Locate the content title's word, then its adjacent left border and inner column.
+    let border = x - 2;
+    let footer = find_row(b, b.area, "Up/Down");
+    Rect::new(border + 1, y + 1, b.area.width - border - 2, footer - y - 2)
+}
+fn tree_area(b: &Buffer) -> Rect {
+    let a = content_area(b);
+    Rect::new(1, a.y, a.x - 3, a.height)
+}
+fn cell_text_column(b: &Buffer, y: u16, text: &str, range: std::ops::Range<u16>) -> u16 {
+    range
+        .clone()
+        .find(|x| region(b, Rect::new(*x, y, range.end - *x, 1)).starts_with(text))
+        .unwrap()
+}
+fn assert_view(app: &mut App, path: &str, shown: &str, hidden: &str) {
+    let b = draw(app, 100, 20);
+    let body = content_area(&b);
+    assert!(region(&b, Rect::new(body.x, 2, body.width, 1)).contains(path));
+    assert!(region(&b, body).contains(shown), "{}", region(&b, body));
+    assert!(!region(&b, body).contains(hidden));
+    assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, path);
+}
+fn assert_content_focused_successor() {
     let repo = Repo::new();
     for name in ["a", "b", "c", "d"] {
-        repo.write(&format!("{name}.txt"), format!("baseline {name}\n"));
+        repo.write(&format!("{name}.txt"), format!("base {name}\n"));
     }
     repo.commit();
     for name in ["a", "b", "c", "d"] {
-        repo.write(&format!("{name}.txt"), format!("changed {name}\n"));
+        repo.write(
+            &format!("{name}.txt"),
+            (0..40).fold(String::new(), |mut text, n| {
+                writeln!(text, "{name} ROW_{n:02}").unwrap();
+                text
+            }),
+        );
     }
     let mut app = open_repo(&repo);
     key(&mut app, KeyCode::Down);
     settle(&mut app);
     key(&mut app, KeyCode::Enter);
-    let before = draw(&mut app, 100, 18);
-    assert!(region(&before, Rect::new(34, 3, 65, 11)).contains("changed b"));
-    repo.write("b.txt", "baseline b\n");
+    key(&mut app, KeyCode::Char('v'));
+    assert_view(&mut app, "b.txt", "b ROW_00", "c ROW_00");
+    repo.write("b.txt", "base b\n");
     key(&mut app, KeyCode::Char('r'));
-    key(&mut app, KeyCode::Down); // The loading tree has no selectable rows yet.
+    key(&mut app, KeyCode::Down);
     settle(&mut app);
-    let after = draw(&mut app, 100, 18);
-    assert!(app.diff_view.as_ref().unwrap().content_focus);
-    let selected_row = (3..14)
-        .find(|y| after[(1, *y)].bg == crate::ui::theme::RUST_ORANGE)
-        .expect("selected file row");
-    assert!(region(&after, Rect::new(1, selected_row, 31, 1)).contains("c.txt"));
-    let content = region(&after, Rect::new(34, 3, 65, 11));
-    assert!(content.contains("changed c"));
-    assert!(!content.contains("changed b"));
-    assert_eq!(after[(33, 2)].fg, crate::ui::theme::RUST_ORANGE, "content pane retains focus");
+    assert_view(&mut app, "c.txt", "c ROW_01", "b ROW_00");
+    for _ in 0..15 {
+        key(&mut app, KeyCode::Down);
+    }
+    assert_view(&mut app, "c.txt", "c ROW_20", "c ROW_00");
+}
+#[test]
+fn reader_transport_failures_clear_loading_and_reopening_recovers() {
+    for fail_request in [true, false] {
+        let repo = Repo::new();
+        repo.write("recover.txt", "RECOVERED_SOURCE\n");
+        let mut app = open_repo(&repo);
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        redraw(&mut terminal, &mut app);
+        let (tx, rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let state = app.diff_view.as_mut().unwrap();
+        state.request_tx = Some(tx);
+        state.result_rx = result_rx;
+        if fail_request {
+            drop(rx);
+            key(&mut app, KeyCode::Char('r'));
+        } else {
+            key(&mut app, KeyCode::Char('r'));
+            assert!(rx.try_recv().is_ok());
+            drop(result_tx);
+            poll(&mut app);
+        }
+        redraw(&mut terminal, &mut app);
+        let b = terminal.backend().buffer();
+        let body = region(b, content_area(b));
+        assert!(body.contains("Git reader stopped"));
+        assert!(body.contains("reopen"));
+        assert!(!body.contains("Loading") && !body.contains("RECOVERED_SOURCE"));
+        assert!(app.diff_view.as_ref().unwrap().loading.is_none());
+        key(&mut app, KeyCode::Right);
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(app.surface_mode, SurfaceMode::Chat);
+        open(&mut app);
+        settle(&mut app);
+        assert_view(&mut app, "recover.txt", "RECOVERED_SOURCE", "Git reader stopped");
+    }
+}
+#[test]
+fn git_special_paths_select_only_the_literal_change() {
+    let repo = Repo::new();
+    for (path, body) in [
+        ("file[1].txt", "bracket old\n"),
+        ("file1.txt", "counterpart old\n"),
+        ("-option.txt", "option old\n"),
+        ("old[2].txt", "rename preserved\n"),
+        ("old2.txt", "other old\n"),
+    ] {
+        repo.write(path, body);
+    }
+    repo.commit();
+    for (path, body) in [
+        ("file[1].txt", "BRACKET_NEW\nSECOND\n"),
+        ("file1.txt", "COUNTERPART_NEW\n"),
+        ("-option.txt", "OPTION_NEW\n"),
+        ("old2.txt", "OTHER_NEW\n"),
+    ] {
+        repo.write(path, body);
+    }
+    repo.git(&["mv", "--", "old[2].txt", "new[2].txt"]);
+    let snapshot = git::snapshot(repo.path(), Comparison::Head).unwrap();
+    for (path, body, counts, other) in [
+        ("file[1].txt", "BRACKET_NEW\nSECOND\n", (2, 1), "COUNTERPART_NEW"),
+        ("file1.txt", "COUNTERPART_NEW\n", (1, 1), "BRACKET_NEW"),
+        ("-option.txt", "OPTION_NEW\n", (1, 1), "BRACKET_NEW"),
+        ("old2.txt", "OTHER_NEW\n", (1, 1), "rename preserved"),
+    ] {
+        let content = contents(&snapshot, path);
+        assert_eq!(content.full_text.as_deref(), Some(body));
+        assert_eq!(file(&snapshot, path).counts, Some(counts));
+        assert!(content.patch.contains(body.lines().next().unwrap()));
+        assert!(!content.patch.contains(other));
+    }
+    let rename = contents(&snapshot, "new[2].txt");
+    assert_eq!(rename.full_text.as_deref(), Some("rename preserved\n"));
+    assert!(rename.patch.contains("rename from old[2].txt"));
+    assert!(rename.patch.contains("rename to new[2].txt"));
+    assert!(!rename.patch.contains("OTHER_NEW"));
+    assert_eq!(file(&snapshot, "new[2].txt").counts, Some((0, 0)));
+}
+#[test]
+fn gitlink_and_invalid_utf8_have_distinct_previews_and_allow_navigation() {
+    let repo = Repo::new();
+    repo.write("base.txt", "base\n");
+    repo.commit();
+    let first = String::from_utf8(repo.git(&["rev-parse", "HEAD"])).unwrap();
+    repo.git(&["update-index", "--add", "--cacheinfo", &format!("160000,{},module", first.trim())]);
+    repo.git(&["-c", "core.hooksPath=", "commit", "-qm", "local gitlink"]);
+    let second = String::from_utf8(repo.git(&["rev-parse", "HEAD"])).unwrap();
+    repo.git(&["update-index", "--cacheinfo", &format!("160000,{},module", second.trim())]);
+    let staged = git::snapshot(repo.path(), Comparison::Staged).unwrap();
+    let link = contents(&staged, "module");
+    assert!(link.full_text.is_none());
+    assert!(link.notice.as_deref().unwrap().contains("Submodule"));
+    assert!(link.patch.contains(&format!("-Subproject commit {}", first.trim())));
+    assert!(link.patch.contains(&format!("+Subproject commit {}", second.trim())));
+    repo.write("a-invalid.txt", [0x61, 0xff, 0x62]);
+    repo.write("b-readable.txt", "READABLE_SOURCE\n");
+    let mut app = open_repo(&repo);
+    key(&mut app, KeyCode::Char('v'));
+    assert_view(&mut app, "a-invalid.txt", "not UTF-8", "READABLE_SOURCE");
+    key(&mut app, KeyCode::Down);
+    settle(&mut app);
+    assert_view(&mut app, "b-readable.txt", "READABLE_SOURCE", "not UTF-8");
+}
+#[test]
+fn symbolic_link_preview_shows_the_target_path_without_dereferencing() {
+    let repo = Repo::new();
+    repo.write("target.txt", "TARGET_CONTENT_MUST_NOT_LEAK\n");
+    repo.commit();
+    #[cfg(unix)]
+    let result = std::os::unix::fs::symlink("target.txt", repo.path().join("link.txt"));
+    #[cfg(windows)]
+    let result = std::os::windows::fs::symlink_file("target.txt", repo.path().join("link.txt"));
+    if let Err(error) = result {
+        #[cfg(windows)]
+        if error.raw_os_error() == Some(1314) {
+            eprintln!(
+                "A64 UNAVAILABLE: Windows symbolic-link creation requires a privilege not held by this process"
+            );
+            return;
+        }
+        panic!("cannot create symbolic-link fixture: {error}");
+    }
+    let snapshot = git::snapshot(repo.path(), Comparison::Head).unwrap();
+    let link = contents(&snapshot, "link.txt");
+    assert_eq!(link.full_text.as_deref(), Some("target.txt"));
+    assert!(link.patch.contains("+target.txt"));
+    assert!(!link.patch.contains("TARGET_CONTENT"));
+    repo.git(&["add", "--", "link.txt"]);
+    let staged = git::snapshot(repo.path(), Comparison::Staged).unwrap();
+    assert_eq!(contents(&staged, "link.txt").full_text.as_deref(), Some("target.txt"));
+}
+
+#[test]
+fn diff_and_full_file_restore_independent_reading_positions() {
+    let repo = Repo::new();
+    let old = (1..=110).fold(String::new(), |mut s, n| {
+        writeln!(s, "SOURCE_{n:03}").unwrap();
+        s
+    });
+    repo.write("positions.txt", &old);
+    repo.commit();
+    repo.write(
+        "positions.txt",
+        old.replace("SOURCE_010", "EARLY_EDIT").replace("SOURCE_090", "LATE_EDIT"),
+    );
+    let mut app = open_repo(&repo);
+    draw(&mut app, 100, 20);
+    key(&mut app, KeyCode::Right);
+    key(&mut app, KeyCode::Char(']'));
+    let b = draw(&mut app, 100, 20);
+    let diff_body = region(&b, content_area(&b));
+    assert!(diff_body.contains("LATE_EDIT"));
+    assert!(!diff_body.contains("EARLY_EDIT"));
+    key(&mut app, KeyCode::Char('v'));
+    for _ in 0..25 {
+        key(&mut app, KeyCode::Down);
+    }
+    let b = draw(&mut app, 100, 20);
+    let full_body = region(&b, content_area(&b));
+    assert!(full_body.lines().next().unwrap().contains("SOURCE_026"));
+    assert!(!full_body.contains("@@"));
+    for _ in 0..3 {
+        for code in ['[', ']'] {
+            key(&mut app, KeyCode::Char(code));
+            let b = draw(&mut app, 100, 20);
+            assert_eq!(region(&b, content_area(&b)), full_body);
+        }
+        key(&mut app, KeyCode::Char('v'));
+        let b = draw(&mut app, 100, 20);
+        assert_eq!(region(&b, content_area(&b)), diff_body);
+        key(&mut app, KeyCode::Char('v'));
+        let b = draw(&mut app, 100, 20);
+        assert_eq!(region(&b, content_area(&b)), full_body);
+        assert_eq!(app.diff_view.as_ref().unwrap().selected_file().unwrap().path, "positions.txt");
+    }
+}
+#[test]
+fn undersized_git_view_recovers_selection_comparison_and_navigation() {
+    let repo = Repo::new();
+    repo.write("a.txt", "A_BASE\n");
+    repo.write("b.txt", "B_BASE\n");
+    repo.commit();
+    repo.write("a.txt", "A_SELECTED\n");
+    repo.write("b.txt", "B_SELECTED\n");
+    repo.git(&["add", "."]);
+    for (width, height, quit) in [(47, 24, false), (100, 9, true)] {
+        let mut app = open_repo(&repo);
+        key(&mut app, KeyCode::Down);
+        settle(&mut app);
+        key(&mut app, KeyCode::Char('s'));
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        settle(&mut app);
+        key(&mut app, KeyCode::Char('v'));
+        key(&mut app, KeyCode::Right);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        redraw(&mut terminal, &mut app);
+        let before = terminal.backend().buffer();
+        assert!(region(before, content_area(before)).contains("B_SELECTED"));
+        terminal.backend_mut().resize(width, height);
+        redraw(&mut terminal, &mut app);
+        let b = terminal.backend().buffer();
+        let compact = region(b, b.area);
+        assert!(compact.contains("Resize"));
+        assert!(compact.contains("Esc back/close"));
+        assert!(compact.contains("Ctrl+Q quit"));
+        assert!(
+            !compact.contains("B_SELECTED")
+                && !compact.contains("b.txt")
+                && !compact.contains("A_SELECTED")
+        );
+        terminal.backend_mut().resize(100, 24);
+        redraw(&mut terminal, &mut app);
+        let b = terminal.backend().buffer();
+        assert!(region(b, Rect::new(0, 0, 100, 2)).contains("Staged"));
+        assert!(region(b, content_area(b)).contains("B_SELECTED"));
+        assert!(
+            region(b, Rect::new(content_area(b).x, 2, content_area(b).width, 1))
+                .contains("Full file")
+        );
+        key(&mut app, KeyCode::Tab);
+        settle(&mut app);
+        assert_view(&mut app, "a.txt", "A_SELECTED", "B_SELECTED");
+        key(&mut app, KeyCode::BackTab);
+        settle(&mut app);
+        assert_view(&mut app, "b.txt", "B_SELECTED", "A_SELECTED");
+        terminal.backend_mut().resize(width, height);
+        redraw(&mut terminal, &mut app);
+        if quit {
+            handle_terminal_event(
+                &mut app,
+                Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            );
+            assert!(app.shutdown_requested());
+        } else {
+            key(&mut app, KeyCode::Esc);
+            assert!(is_active(&app));
+            key(&mut app, KeyCode::Esc);
+            assert_eq!(app.surface_mode, SurfaceMode::Chat);
+            assert!(app.diff_view.is_none());
+        }
+    }
 }

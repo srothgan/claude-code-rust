@@ -1,13 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static CACHE_ACCESS_TICK: AtomicU64 = AtomicU64::new(1);
-
-pub(crate) fn next_cache_access_tick() -> u64 {
-    CACHE_ACCESS_TICK.fetch_add(1, Ordering::Relaxed)
-}
+use std::cell::RefCell;
 
 /// Cached body lines and source-keyed inline content for a block. The version
 /// tracks body changes; unchanged inline content survives body invalidation.
@@ -20,8 +13,6 @@ pub struct BlockCache {
     rendered_version: Option<u64>,
     lines: Option<Vec<ratatui::text::Line<'static>>>,
     render_width: Option<u16>,
-    /// Segmentation metadata for KB-sized cache chunks shared across message/tool caches.
-    segments: Vec<CacheLineSegment>,
     /// Approximate UTF-8 byte size of cached rendered lines.
     cached_bytes: usize,
     /// Wrapped line count of the cached lines at `wrapped_width`.
@@ -30,7 +21,6 @@ pub struct BlockCache {
     /// The viewport width used to compute `wrapped_height`.
     wrapped_width: u16,
     wrapped_height_valid: bool,
-    last_access_tick: Cell<u64>,
     /// Source-keyed inline content survives body invalidation and width changes.
     inline: RefCell<Option<InlineCache>>,
 }
@@ -41,24 +31,7 @@ struct InlineCache {
     spans: Vec<ratatui::text::Span<'static>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CacheLineSegment {
-    start: usize,
-    end: usize,
-}
-
-impl CacheLineSegment {
-    #[must_use]
-    fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
-    }
-}
-
 impl BlockCache {
-    fn touch(&self) {
-        self.last_access_tick.set(next_cache_access_tick());
-    }
-
     /// Memoize inline content independently of animated chrome and body versions.
     pub(crate) fn inline_spans(
         &self,
@@ -70,13 +43,11 @@ impl BlockCache {
             && cached.source == source
             && cached.literal == literal
         {
-            self.touch();
             return cached.spans.clone();
         }
         let spans = render(source);
         *self.inline.borrow_mut() =
             Some(InlineCache { source: source.to_owned(), literal, spans: spans.clone() });
-        self.touch();
         spans
     }
 
@@ -95,11 +66,7 @@ impl BlockCache {
     #[must_use]
     pub fn get(&self) -> Option<&Vec<ratatui::text::Line<'static>>> {
         if self.rendered_version == Some(self.version) && self.render_width.is_none() {
-            let lines = self.lines.as_ref();
-            if lines.is_some() {
-                self.touch();
-            }
-            lines
+            self.lines.as_ref()
         } else {
             None
         }
@@ -108,11 +75,7 @@ impl BlockCache {
     #[must_use]
     pub fn get_for_width(&self, width: u16) -> Option<&Vec<ratatui::text::Line<'static>>> {
         if self.rendered_version == Some(self.version) && self.render_width == Some(width) {
-            let lines = self.lines.as_ref();
-            if lines.is_some() {
-                self.touch();
-            }
-            lines
+            self.lines.as_ref()
         } else {
             None
         }
@@ -121,39 +84,22 @@ impl BlockCache {
     /// Store freshly rendered lines, marking the cache as clean.
     /// Height is set separately via `set_height()` after measurement.
     pub fn store(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
-        self.store_with_policy(lines, *super::super::default_cache_split_policy());
-    }
-
-    /// Store freshly rendered lines using a shared KB split policy.
-    pub fn store_with_policy(
-        &mut self,
-        lines: Vec<ratatui::text::Line<'static>>,
-        policy: super::super::CacheSplitPolicy,
-    ) {
-        self.render_width = None;
-        self.store_with_policy_and_width(lines, policy);
+        self.store_rows(lines, None);
     }
 
     pub fn store_for_width(&mut self, lines: Vec<ratatui::text::Line<'static>>, width: u16) {
-        self.render_width = Some(width);
-        self.store_with_policy_and_width(lines, *super::super::default_cache_split_policy());
+        self.store_rows(lines, Some(width));
     }
 
-    fn store_with_policy_and_width(
-        &mut self,
-        lines: Vec<ratatui::text::Line<'static>>,
-        policy: super::super::CacheSplitPolicy,
-    ) {
-        let segment_limit = policy.hard_limit_bytes.max(1);
-        let (segments, cached_bytes) = build_line_segments(&lines, segment_limit);
+    fn store_rows(&mut self, lines: Vec<ratatui::text::Line<'static>>, width: Option<u16>) {
+        self.cached_bytes =
+            lines.iter().fold(0usize, |total, line| total.saturating_add(line_utf8_bytes(line)));
         self.lines = Some(lines);
-        self.segments = segments;
-        self.cached_bytes = cached_bytes;
+        self.render_width = width;
         self.rendered_version = Some(self.version);
         self.wrapped_height = 0;
         self.wrapped_width = 0;
         self.wrapped_height_valid = false;
-        self.touch();
     }
 
     /// Set the wrapped height for the cached lines at the given width.
@@ -163,7 +109,6 @@ impl BlockCache {
         self.wrapped_height = height;
         self.wrapped_width = width;
         self.wrapped_height_valid = true;
-        self.touch();
     }
 
     /// Get the cached wrapped height if cache is valid and was computed at the given width.
@@ -173,16 +118,10 @@ impl BlockCache {
             && self.wrapped_height_valid
             && self.wrapped_width == width
         {
-            self.touch();
             Some(self.wrapped_height)
         } else {
             None
         }
-    }
-
-    #[must_use]
-    pub fn segment_count(&self) -> usize {
-        self.segments.len()
     }
 
     #[must_use]
@@ -195,11 +134,6 @@ impl BlockCache {
         self.cached_bytes.saturating_add(inline_bytes)
     }
 
-    #[must_use]
-    pub fn last_access_tick(&self) -> u64 {
-        self.last_access_tick.get()
-    }
-
     pub fn evict_cached_render(&mut self) -> usize {
         let removed = self.cached_bytes();
         if removed == 0 {
@@ -207,7 +141,6 @@ impl BlockCache {
         }
         self.lines = None;
         self.render_width = None;
-        self.segments.clear();
         self.cached_bytes = 0;
         *self.inline.get_mut() = None;
         self.wrapped_height = 0;
@@ -216,36 +149,6 @@ impl BlockCache {
         self.rendered_version = None;
         removed
     }
-}
-
-fn build_line_segments(
-    lines: &[ratatui::text::Line<'static>],
-    segment_limit_bytes: usize,
-) -> (Vec<CacheLineSegment>, usize) {
-    if lines.is_empty() {
-        return (Vec::new(), 0);
-    }
-
-    let limit = segment_limit_bytes.max(1);
-    let mut segments = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut start = 0usize;
-    let mut acc = 0usize;
-
-    for (idx, line) in lines.iter().enumerate() {
-        let line_bytes = line_utf8_bytes(line).max(1);
-        total_bytes = total_bytes.saturating_add(line_bytes);
-
-        if idx > start && acc.saturating_add(line_bytes) > limit {
-            segments.push(CacheLineSegment::new(start, idx));
-            start = idx;
-            acc = 0;
-        }
-        acc = acc.saturating_add(line_bytes);
-    }
-
-    segments.push(CacheLineSegment::new(start, lines.len()));
-    (segments, total_bytes)
 }
 
 fn line_utf8_bytes(line: &ratatui::text::Line<'static>) -> usize {

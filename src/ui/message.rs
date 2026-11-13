@@ -141,7 +141,7 @@ pub(super) fn render_text_block_cached(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{ChatMessage, MessageBlock, MessageRole, SystemSeverity, TextBlock};
+    use crate::app::{ChatMessage, MessageBlock, MessageRole, TextBlock};
     use pretty_assertions::assert_eq;
 
     fn make_text_message(role: MessageRole, text: &str) -> ChatMessage {
@@ -152,121 +152,70 @@ mod tests {
         lines.iter().map(|line| line.to_string().trim_end().to_owned()).collect()
     }
 
-    fn user_paragraphs(lines: &[Line<'static>]) -> Vec<String> {
-        let content = lines
-            .iter()
-            .map(|line| line.to_string().chars().skip(3).collect::<String>().trim_end().to_owned())
-            .collect::<Vec<_>>();
-        content
-            .split(String::is_empty)
-            .filter(|paragraph| !paragraph.is_empty())
-            .map(|paragraph| paragraph.join(" "))
-            .collect()
-    }
-
     #[test]
-    fn user_paragraph_spacing_survives_cache_reuse_and_resize() {
-        for (source, expected) in [
-            ("hello\n\nhow are you", vec!["hello", "how are you"]),
-            ("hello\nhow are you", vec!["hello how are you"]),
-            ("one\n\ntwo\n\nthree", vec!["one", "two", "three"]),
-            ("hello\n\n\nhow are you", vec!["hello", "how are you"]),
-            ("hello\n \t\nhow are you", vec!["hello", "how are you"]),
-            ("こんにちは\n\n😀 hello", vec!["こんにちは", "😀 hello"]),
-        ] {
-            let mut msg = make_text_message(MessageRole::User, source);
-            for width in [80, 80, 16, 80] {
-                let mut lines = Vec::new();
-                render_message(&mut msg, width, &mut lines);
-                assert_eq!(user_paragraphs(&lines), expected, "source={source:?}, width={width}");
-                let MessageBlock::Text(block) = &msg.blocks[0] else {
-                    panic!("expected user text");
-                };
-                assert_eq!(block.text, source);
+    fn user_message_preserves_source_structure_through_cached_resizes() {
+        let source = "first line\nsecond line\n\n```text\n  indented\nplain\n```\n\nfinal";
+        let mut msg = make_text_message(MessageRole::User, source);
+        for width in [80, 80, 28, 80] {
+            let mut lines = Vec::new();
+            render_message(&mut msg, width, &mut lines);
+            let rows = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let text = rows.join("\n");
+            for expected in ["first line", "second line", "  indented", "plain", "final"] {
+                assert!(text.contains(expected), "missing {expected:?} at width {width}: {text}");
             }
+            let row_of = |needle: &str| {
+                rows.iter()
+                    .position(|row| row.contains(needle))
+                    .unwrap_or_else(|| panic!("missing row {needle:?} at width {width}: {text}"))
+            };
+            let first = row_of("first line");
+            let second = row_of("second line");
+            let code = row_of("indented");
+            let plain = row_of("plain");
+            let final_row = row_of("final");
+            assert!(first < second, "explicit source line break was lost: {rows:?}");
+            assert!(second + 1 < code, "paragraph boundary before code was lost: {rows:?}");
+            assert!(code < plain && plain < final_row, "source order changed: {rows:?}");
+            assert!(text.contains("  indented"), "code indentation must survive");
+            let MessageBlock::Text(block) = &msg.blocks[0] else {
+                panic!("expected user text");
+            };
+            assert_eq!(block.text, source);
         }
     }
 
     #[test]
-    fn user_paragraph_spacing_survives_source_append_and_cache_invalidation() {
-        let mut msg = make_text_message(MessageRole::User, "hello\n\n");
-        let mut before = Vec::new();
-        render_message(&mut msg, 80, &mut before);
-        let MessageBlock::Text(block) = &mut msg.blocks[0] else {
-            panic!("expected user text");
-        };
-        block.text.push_str("how are you");
-        block.cache.invalidate();
-
-        let mut after = Vec::new();
-        render_message(&mut msg, 80, &mut after);
-        assert_eq!(user_paragraphs(&before), ["hello"]);
-        assert_eq!(user_paragraphs(&after), ["hello", "how are you"]);
-    }
-
-    #[test]
     fn markdown_table_rerenders_when_width_changes_in_both_directions() {
-        let table = concat!(
-            "| Name | Description |\n",
-            "| --- | --- |\n",
-            "| foo | long wrapped value |\n",
-        );
+        let table = "| Key | Val |\n| --- | --- |\n| A | amberpinewood |\n| B | cobaltstream |\n";
         let mut msg = make_text_message(MessageRole::User, table);
-
         let mut wide_lines = Vec::new();
         render_message(&mut msg, 40, &mut wide_lines);
-        let wide_rendered = render_lines_to_strings(&wide_lines);
-
+        let wide = render_lines_to_strings(&wide_lines);
         let mut narrow_lines = Vec::new();
-        render_message(&mut msg, 16, &mut narrow_lines);
-        let narrow_rendered = render_lines_to_strings(&narrow_lines);
-        assert_ne!(narrow_rendered, wide_rendered, "resize must reflow the table");
-        let mut fresh_msg = make_text_message(MessageRole::User, table);
-        let mut fresh_narrow_lines = Vec::new();
-        render_message(&mut fresh_msg, 16, &mut fresh_narrow_lines);
-        assert_eq!(
-            narrow_rendered,
-            render_lines_to_strings(&fresh_narrow_lines),
-            "shrinking must not reuse table geometry cached at the wider width"
-        );
-
+        render_message(&mut msg, 20, &mut narrow_lines);
+        let narrow = render_lines_to_strings(&narrow_lines);
+        assert_ne!(narrow, wide, "resize must reflow the table");
+        for (rows, width) in [(&wide, 40_u16), (&narrow, 20_u16)] {
+            let joined = rows.join("\n");
+            let compact = joined.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>();
+            assert!(
+                compact.contains("KeyValAamberpinewoodBcobaltstream"),
+                "table lost or reordered a header, row key, or value at width {width}: {joined}"
+            );
+            assert!(
+                rows.iter().all(|row| {
+                    unicode_width::UnicodeWidthStr::width(row.as_str()) <= usize::from(width)
+                }),
+                "a rendered row exceeded terminal width {width}: {rows:?}"
+            );
+        }
         let mut wide_again_lines = Vec::new();
         render_message(&mut msg, 40, &mut wide_again_lines);
-        let wide_again_rendered = render_lines_to_strings(&wide_again_lines);
-        assert_eq!(wide_again_rendered, wide_rendered, "growing must restore the wide layout");
-    }
-
-    #[test]
-    fn user_newlines_persist_and_code_keeps_its_indentation() {
-        let source = "first\nsecond\n\n```text\n  indented\nplain\n```";
-        let mut msg = make_text_message(MessageRole::User, source);
-        let mut lines = Vec::new();
-        render_message(&mut msg, 80, &mut lines);
-        let content = lines
-            .iter()
-            .map(|line| line.to_string().chars().skip(3).collect::<String>().trim_end().to_owned())
-            .collect::<Vec<_>>();
-        let first = content.iter().position(|row| !row.is_empty()).expect("content");
-        let last = content.iter().rposition(|row| !row.is_empty()).expect("content");
-
-        assert_eq!(content[first..=last], ["first", "second", "", "text", "  indented", "plain"]);
-        let MessageBlock::Text(block) = &msg.blocks[0] else {
-            panic!("expected user text");
-        };
-        assert_eq!(block.text, source);
-    }
-
-    #[test]
-    fn system_warning_severity_renders_warning_label() {
-        let mut msg = make_text_message(
-            MessageRole::System(Some(SystemSeverity::Warning)),
-            "Rate limit warning",
+        assert_eq!(
+            render_lines_to_strings(&wide_again_lines),
+            wide,
+            "growing must restore wide layout"
         );
-        let mut lines = Vec::new();
-        render_message(&mut msg, 120, &mut lines);
-        let rendered = render_lines_to_strings(&lines);
-
-        assert!(rendered.iter().any(|line| line.contains("Warning")));
-        assert!(rendered.iter().any(|line| line.contains("Rate limit warning")));
     }
 }

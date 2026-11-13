@@ -65,17 +65,7 @@ impl ClaudePaths {
         cwds: &[&str],
         session_id: &str,
     ) -> std::io::Result<bool> {
-        let mut first_error = None;
-        for cwd in cwds {
-            match self.session_transcript_saved_for(cwd, session_id) {
-                Ok(true) => return Ok(true),
-                Ok(false) => {}
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-        first_error.map_or(Ok(false), Err)
+        any_saved(cwds.iter().map(|cwd| self.session_transcript_saved_for(cwd, session_id)))
     }
 
     fn session_transcript_saved_for(&self, cwd: &str, session_id: &str) -> std::io::Result<bool> {
@@ -94,24 +84,11 @@ impl ClaudePaths {
             Err(error) if is_missing(&error) => return Ok(false),
             entries => entries?,
         };
-        let mut first_error = None;
-        for entry in entries {
-            let candidate = entry.and_then(|entry| {
-                let matches = entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| has_project_prefix(name, &prefix));
-                if matches { is_regular_file(&entry.path().join(&file_name)) } else { Ok(false) }
-            });
-            match candidate {
-                Ok(true) => return Ok(true),
-                Ok(false) => {}
-                Err(error) => {
-                    first_error.get_or_insert(error);
-                }
-            }
-        }
-        first_error.map_or(Ok(false), Err)
+        transcript_in_candidates(
+            entries.map(|entry| entry.map(|entry| entry.path())),
+            &prefix,
+            &file_name,
+        )
     }
 
     fn projects_dir(&self) -> PathBuf {
@@ -121,6 +98,39 @@ impl ClaudePaths {
     fn project_dir_name(&self, cwd: &str) -> OsString {
         self.project_dir_name.clone().unwrap_or_else(|| encode_project_path(cwd).into())
     }
+}
+
+fn any_saved(candidates: impl IntoIterator<Item = std::io::Result<bool>>) -> std::io::Result<bool> {
+    let mut first_error = None;
+    for candidate in candidates {
+        match candidate {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(false), Err)
+}
+
+fn transcript_in_candidates(
+    entries: impl IntoIterator<Item = std::io::Result<PathBuf>>,
+    prefix: &str,
+    file_name: &str,
+) -> std::io::Result<bool> {
+    any_saved(entries.into_iter().map(|entry| {
+        let path = entry?;
+        if path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| has_project_prefix(name, prefix))
+        {
+            is_regular_file(&path.join(file_name))
+        } else {
+            Ok(false)
+        }
+    }))
 }
 
 /// Longest project directory name the SDK uses unshortened.
@@ -160,8 +170,11 @@ fn is_missing(error: &std::io::Error) -> bool {
 /// The Agent SDK names a project directory after the resolved working
 /// directory, replacing every UTF-16 unit outside `[A-Za-z0-9]` with `-`.
 fn encode_project_path(cwd: &str) -> String {
-    resolve_cwd(cwd)
-        .chars()
+    encode_resolved_path(&resolve_cwd(cwd))
+}
+
+fn encode_resolved_path(path: &str) -> String {
+    path.chars()
         .flat_map(|ch| {
             if ch.is_ascii_alphanumeric() {
                 std::iter::repeat_n(ch, 1)
@@ -178,14 +191,17 @@ fn resolve_cwd(cwd: &str) -> String {
     let Ok(resolved) = std::fs::canonicalize(cwd) else {
         return cwd.to_owned();
     };
-    let resolved = resolved.to_string_lossy();
+    normalize_resolved_path(&resolved.to_string_lossy())
+}
+
+fn normalize_resolved_path(resolved: &str) -> String {
     // Windows canonicalizes to a verbatim path; Node's realpath does not.
     if let Some(share) = resolved.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{share}")
     } else if let Some(local) = resolved.strip_prefix(r"\\?\") {
         local.to_owned()
     } else {
-        resolved.into_owned()
+        resolved.to_owned()
     }
 }
 
@@ -210,11 +226,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_preferences_live_outside_config_directory() {
-        let paths = ClaudePaths::from_sources(Some(Path::new("profile")), None, None).unwrap();
-        assert_eq!(paths.config_dir, Path::new("profile/.claude"));
-        assert_eq!(paths.preferences, Path::new("profile/.claude.json"));
-        assert_eq!(paths.credentials(), Path::new("profile/.claude/.credentials.json"));
+    fn default_layout_requires_home_for_unset_or_empty_profile() {
+        for override_dir in [None, Some(OsStr::new(""))] {
+            let paths =
+                ClaudePaths::from_sources(Some(Path::new("profile")), override_dir, None).unwrap();
+            assert_eq!(paths.config_dir, Path::new("profile/.claude"));
+            assert_eq!(paths.preferences, Path::new("profile/.claude.json"));
+            assert_eq!(paths.credentials(), Path::new("profile/.claude/.credentials.json"));
+            assert!(ClaudePaths::from_sources(None, override_dir, None).is_none());
+        }
     }
 
     #[test]
@@ -225,185 +245,8 @@ mod tests {
         assert_eq!(paths.preferences, Path::new("isolated profile/.claude.json"));
         assert_eq!(paths.credentials(), Path::new("isolated profile/.credentials.json"));
     }
-
-    #[test]
-    fn empty_override_uses_the_default_layout() {
-        let paths =
-            ClaudePaths::from_sources(Some(Path::new("profile")), Some(OsStr::new("")), None)
-                .unwrap();
-        assert_eq!(paths.preferences, Path::new("profile/.claude.json"));
-        assert!(ClaudePaths::from_sources(None, None, None).is_none());
-    }
-
-    #[test]
-    fn project_names_are_encoded_for_both_platforms() {
-        // Claude Code stores `/Users/me` under `-Users-me`: the leading separator stays.
-        assert_eq!(encode_project_path("/home/user/project"), "-home-user-project");
-        assert_eq!(encode_project_path(r"C:\Users\User\project"), "C--Users-User-project");
-    }
-
-    #[test]
-    fn every_non_alphanumeric_utf16_unit_becomes_a_dash() {
-        assert_eq!(encode_project_path("/srv/my.app_v2 (copy)"), "-srv-my-app-v2--copy-");
-        assert_eq!(encode_project_path("/a/\u{e9}"), "-a--");
-        // A character outside the BMP is two UTF-16 units in the SDK's regex.
-        assert_eq!(encode_project_path("/a/\u{1f980}"), "-a---");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn project_names_follow_symlinks_like_the_sdk() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("target");
-        let link = dir.path().join("link");
-        std::fs::create_dir(&target).unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let resolved = std::fs::canonicalize(&target).unwrap();
-        let expected =
-            resolved.to_str().unwrap().replace(|ch: char| !ch.is_ascii_alphanumeric(), "-");
-        assert_eq!(encode_project_path(link.to_str().unwrap()), expected);
-    }
-
-    fn profile_paths(profile: &Path) -> ClaudePaths {
-        ClaudePaths::from_sources(None, Some(profile.as_os_str()), None).unwrap()
-    }
-
-    #[test]
-    fn a_session_is_saved_once_its_transcript_is_a_regular_file() {
-        let profile = tempfile::tempdir().unwrap();
-        let paths = profile_paths(profile.path());
-        // `/work/app` does not exist, so it is encoded as given.
-        let project = profile.path().join("projects/-work-app");
-        assert!(!paths.session_transcript_saved(&["/work/app"], "s1").unwrap());
-
-        std::fs::create_dir_all(project.join("s1.jsonl")).unwrap();
-        assert!(!paths.session_transcript_saved(&["/work/app"], "s1").unwrap());
-
-        std::fs::write(project.join("s2.jsonl"), "").unwrap();
-        assert!(!paths.session_transcript_saved(&["/work/app"], "s2").unwrap(), "empty");
-        std::fs::write(project.join("s2.jsonl"), "{}\n").unwrap();
-        assert!(paths.session_transcript_saved(&["/work/app"], "s2").unwrap());
-        assert!(!paths.session_transcript_saved(&["/work/other"], "s2").unwrap());
-        // A session resumed from a sibling worktree keeps its own folder.
-        assert!(paths.session_transcript_saved(&["/work/other", "/work/app"], "s2").unwrap());
-    }
-
-    #[test]
-    fn a_long_project_name_matches_any_shortened_directory() {
-        let profile = tempfile::tempdir().unwrap();
-        let paths = profile_paths(profile.path());
-        let cwd = format!("/{}", "a".repeat(250));
-        assert!(!paths.session_transcript_saved(&[&cwd], "s1").unwrap());
-        let shortened = format!("-{}-1x2y3z", "a".repeat(199));
-        let project = profile.path().join("projects").join(shortened);
-        std::fs::create_dir_all(&project).unwrap();
-        assert!(!paths.session_transcript_saved(&[&cwd], "s1").unwrap());
-        std::fs::write(project.join("s1.jsonl"), "{}\n").unwrap();
-        assert!(paths.session_transcript_saved(&[&cwd], "s1").unwrap());
-    }
-
-    /// Makes `dir` unreadable. Returns `false`, with the folder restored, when
-    /// the lock has no effect (root ignores it), so the caller can skip.
-    #[cfg(unix)]
-    fn lock_dir(dir: &Path) -> bool {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-        if std::fs::read_dir(dir).is_ok() {
-            unlock_dir(dir);
-            return false;
-        }
-        true
-    }
-
-    #[cfg(unix)]
-    fn unlock_dir(dir: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn an_unreadable_project_directory_is_an_error_not_a_missing_session() {
-        let profile = tempfile::tempdir().unwrap();
-        let paths = profile_paths(profile.path());
-        let project = profile.path().join("projects/-work-app");
-        std::fs::create_dir_all(&project).unwrap();
-        if !lock_dir(&project) {
-            eprintln!("skipped: permissions do not restrict this user");
-            return;
-        }
-        let result = paths.session_transcript_saved(&["/work/app"], "s1");
-        let other = profile.path().join("projects/-work-other");
-        std::fs::create_dir_all(&other).unwrap();
-        std::fs::write(other.join("s1.jsonl"), "{}\n").unwrap();
-        let found_elsewhere = paths.session_transcript_saved(&["/work/app", "/work/other"], "s1");
-        unlock_dir(&project);
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(found_elsewhere.unwrap());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn an_unreadable_sibling_folder_does_not_hide_a_long_name_match() {
-        let profile = tempfile::tempdir().unwrap();
-        let paths = profile_paths(profile.path());
-        let cwd = format!("/{}", "a".repeat(250));
-        let prefix = format!("-{}-", "a".repeat(199));
-        let locked = profile.path().join("projects").join(format!("{prefix}locked"));
-        std::fs::create_dir_all(&locked).unwrap();
-        if !lock_dir(&locked) {
-            eprintln!("skipped: permissions do not restrict this user");
-            return;
-        }
-        let only_locked = paths.session_transcript_saved(&[&cwd], "s1");
-        let saved = profile.path().join("projects").join(format!("{prefix}saved"));
-        std::fs::create_dir_all(&saved).unwrap();
-        std::fs::write(saved.join("s1.jsonl"), "{}\n").unwrap();
-        let with_match = paths.session_transcript_saved(&[&cwd], "s1");
-        unlock_dir(&locked);
-        assert_eq!(only_locked.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
-        assert!(with_match.unwrap());
-    }
-
-    #[test]
-    fn project_override_must_be_a_plain_name() {
-        for rejected in ["../escape", "con", "COM1", "lpt9", &"a".repeat(65)] {
-            let paths = ClaudePaths::from_sources(
-                None,
-                Some(OsStr::new("profile")),
-                Some(OsStr::new(rejected)),
-            )
-            .unwrap();
-            assert_eq!(
-                paths.default_memory_file("/any/path"),
-                Path::new("profile/projects/-any-path/memory/MEMORY.md"),
-                "{rejected}"
-            );
-        }
-        let accepted =
-            ClaudePaths::from_sources(None, Some(OsStr::new("profile")), Some(OsStr::new("com10")))
-                .unwrap();
-        assert_eq!(
-            accepted.default_memory_file("/any/path"),
-            Path::new("profile/projects/com10/memory/MEMORY.md")
-        );
-    }
-
-    #[test]
-    fn project_override_applies_only_to_an_overridden_config_root() {
-        let paths =
-            ClaudePaths::from_sources(None, Some(OsStr::new("profile")), Some(OsStr::new("work")))
-                .unwrap();
-        assert_eq!(
-            paths.default_memory_file("/any/path"),
-            Path::new("profile/projects/work/memory/MEMORY.md")
-        );
-        let default =
-            ClaudePaths::from_sources(Some(Path::new("home")), None, Some(OsStr::new("work")))
-                .unwrap();
-        assert_eq!(
-            default.default_memory_file("/any/path"),
-            Path::new("home/.claude/projects/-any-path/memory/MEMORY.md")
-        );
-    }
 }
+
+#[cfg(test)]
+#[path = "claude_paths_audit_tests.rs"]
+mod audit_tests;

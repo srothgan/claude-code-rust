@@ -36,6 +36,14 @@ pub fn post_trust_surface(app: &App) -> SurfaceMode {
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) {
+    handle_key_with_opener(app, key, crate::app::config::open_url_in_browser);
+}
+
+fn handle_key_with_opener(
+    app: &mut App,
+    key: KeyEvent,
+    opener: impl FnOnce(&str) -> Result<(), String>,
+) {
     if is_ctrl(key, 'q') {
         app.request_shutdown();
         return;
@@ -44,7 +52,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Up | KeyCode::Char('k'), KeyModifiers::NONE) => move_selection(app, -1),
         (KeyCode::Down | KeyCode::Char('j'), KeyModifiers::NONE) => move_selection(app, 1),
-        (KeyCode::Enter, KeyModifiers::NONE) => activate_selection(app),
+        (KeyCode::Enter, KeyModifiers::NONE) => activate_selection(app, opener),
         (KeyCode::Esc, KeyModifiers::NONE) => skip_now(app),
         _ => {}
     }
@@ -60,7 +68,7 @@ fn move_selection(app: &mut App, delta: isize) {
     prompt.selected = actions[next];
 }
 
-fn activate_selection(app: &mut App) {
+fn activate_selection(app: &mut App, opener: impl FnOnce(&str) -> Result<(), String>) {
     let Some(selected) = app.update_prompt.as_ref().map(|prompt| prompt.selected) else {
         continue_startup(app);
         return;
@@ -74,7 +82,7 @@ fn activate_selection(app: &mut App) {
         UpdatePromptAction::InstallNpm => install(app, Some(InstallMethod::Npm)),
         UpdatePromptAction::SkipNow => skip_now(app),
         UpdatePromptAction::SkipVersion => skip_version(app),
-        UpdatePromptAction::ReleaseNotes => open_release_notes(app),
+        UpdatePromptAction::ReleaseNotes => open_release_notes(app, opener),
     }
 }
 
@@ -112,12 +120,12 @@ fn skip_version(app: &mut App) {
     continue_startup(app);
 }
 
-fn open_release_notes(app: &mut App) {
+fn open_release_notes(app: &mut App, opener: impl FnOnce(&str) -> Result<(), String>) {
     let Some(release_url) = app.update_prompt.as_ref().map(|prompt| prompt.release_url.clone())
     else {
         return;
     };
-    match crate::app::config::open_url_in_browser(&release_url) {
+    match opener(&release_url) {
         Ok(()) => {
             if let Some(prompt) = app.update_prompt.as_mut() {
                 prompt.last_error = None;
@@ -185,84 +193,5 @@ const UNKNOWN_ACTIONS: [UpdatePromptAction; 5] = [
 ];
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::{App, FullscreenView, SurfaceMode};
-
-    fn app_with_prompt() -> App {
-        let mut app = App::test_default();
-        app.update_prompt = Some(UpdatePromptState {
-            current_version: "0.13.4".to_owned(),
-            latest_version: "0.14.0".to_owned(),
-            release_url: "https://example.invalid/v0.14.0".to_owned(),
-            install_method: InstallMethod::Npm,
-            selected: UpdatePromptAction::Install,
-            last_error: None,
-        });
-        app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Update);
-        app
-    }
-
-    #[test]
-    fn install_sets_post_exit_action_and_quits() {
-        let mut app = app_with_prompt();
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-        assert!(app.shutdown_requested());
-        assert_eq!(
-            app.post_exit_action,
-            Some(PostExitAction::InstallUpdate {
-                latest_version: "0.14.0".to_owned(),
-                method: InstallMethod::Npm,
-            })
-        );
-    }
-
-    #[test]
-    fn unknown_layout_offers_script_and_npm_install_actions() {
-        let mut app = app_with_prompt();
-        let prompt = app.update_prompt.as_mut().expect("prompt");
-        prompt.install_method = InstallMethod::Unknown;
-        prompt.selected = UpdatePromptAction::InstallScript;
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(
-            app.update_prompt.as_ref().map(|prompt| prompt.selected),
-            Some(UpdatePromptAction::InstallNpm)
-        );
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(
-            app.post_exit_action,
-            Some(PostExitAction::InstallUpdate {
-                latest_version: "0.14.0".to_owned(),
-                method: InstallMethod::Script { install_dir: None },
-            })
-        );
-    }
-
-    #[test]
-    fn down_changes_selection() {
-        let mut app = app_with_prompt();
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-
-        assert_eq!(
-            app.update_prompt.as_ref().map(|prompt| prompt.selected),
-            Some(UpdatePromptAction::SkipNow)
-        );
-    }
-
-    #[test]
-    fn esc_skips_now_and_returns_to_chat() {
-        let mut app = app_with_prompt();
-
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-        assert_eq!(app.surface_mode, SurfaceMode::Chat);
-        assert!(app.update_prompt.is_none());
-        assert!(app.global_settings.updates.skip_until_unix_secs.is_some());
-    }
-}
+#[path = "update_prompt_audit_tests.rs"]
+mod audit_tests;

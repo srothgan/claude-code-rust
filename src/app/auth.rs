@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
+
+#[cfg(test)]
+#[path = "auth_audit_tests.rs"]
+mod audit_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClaudeOAuthCredentials {
@@ -42,86 +46,6 @@ fn parse_oauth_credentials(json: &serde_json::Value) -> Option<ClaudeOAuthCreden
 
     Some(ClaudeOAuthCredentials {
         access_token: access_token.to_owned(),
-        expires_at: oauth.get("expiresAt").and_then(parse_timestamp_value),
+        expires_at: oauth.get("expiresAt").and_then(crate::epoch_time::parse_value),
     })
-}
-
-fn parse_timestamp_value(value: &serde_json::Value) -> Option<SystemTime> {
-    match value {
-        serde_json::Value::Number(number) => number
-            .as_i64()
-            .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok()))
-            .and_then(system_time_from_epoch),
-        serde_json::Value::String(raw) => {
-            raw.trim().parse::<i64>().ok().and_then(system_time_from_epoch)
-        }
-        _ => None,
-    }
-}
-
-fn system_time_from_epoch(raw: i64) -> Option<SystemTime> {
-    if raw < 0 {
-        return None;
-    }
-
-    let raw = u64::try_from(raw).ok()?;
-    if raw >= 1_000_000_000_000 {
-        Some(UNIX_EPOCH + Duration::from_millis(raw))
-    } else {
-        Some(UNIX_EPOCH + Duration::from_secs(raw))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    #[test]
-    fn returns_false_for_nonexistent_file() {
-        let path = std::path::Path::new("/tmp/claude_test_nonexistent_credentials.json");
-        assert!(load_oauth_credentials_at(path).is_none());
-    }
-
-    #[test]
-    fn returns_false_for_empty_json() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, "{{}}").unwrap();
-        assert!(load_oauth_credentials_at(tmp.path()).is_none());
-    }
-
-    #[test]
-    fn returns_false_for_empty_access_token() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"","refreshToken":"tok"}}}}"#).unwrap();
-        assert!(load_oauth_credentials_at(tmp.path()).is_none());
-    }
-
-    #[test]
-    fn returns_true_for_valid_oauth() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(
-            tmp,
-            r#"{{"claudeAiOauth":{{"accessToken":"sk-ant-oat01-test","refreshToken":"sk-ant-ort01-test","expiresAt":9999999999999}}}}"#
-        )
-        .unwrap();
-        assert!(load_oauth_credentials_at(tmp.path()).is_some());
-    }
-
-    #[test]
-    fn parses_expiry_timestamp_in_milliseconds() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, r#"{{"claudeAiOauth":{{"accessToken":"token","expiresAt":1}}}}"#).unwrap();
-
-        let credentials = load_oauth_credentials_at(tmp.path()).unwrap();
-        assert_eq!(credentials.access_token, "token");
-        assert_eq!(credentials.expires_at, Some(UNIX_EPOCH + Duration::from_secs(1)));
-    }
-
-    #[test]
-    fn returns_false_for_malformed_json() {
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        write!(tmp, "not json at all").unwrap();
-        assert!(load_oauth_credentials_at(tmp.path()).is_none());
-    }
 }

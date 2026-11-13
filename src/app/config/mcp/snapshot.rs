@@ -86,7 +86,13 @@ fn stale_plugin_mcp_server_names(
 ) -> Vec<String> {
     servers
         .iter()
-        .filter(|server| crate::app::plugins::is_stale_plugin_mcp_runtime_server(app, &server.name))
+        .filter(|server| {
+            app.plugins.last_inventory_refresh_at.is_some()
+                && matches!(
+                    mcp_server_ownership(app, server),
+                    McpServerOwnership::PluginOwnedUnknown
+                )
+        })
         .map(|server| server.name.clone())
         .collect()
 }
@@ -158,13 +164,14 @@ pub(crate) fn reconcile_removed_config_mcp_server_guards(
     let Some(source) = source else {
         return failures;
     };
-    app.mcp.removed_config_servers.retain(|removed_key, guard| {
+    let mut guards = std::mem::take(&mut app.mcp.removed_config_servers);
+    guards.retain(|removed_key, guard| {
         if guard.expected_source != source {
             return true;
         }
 
         if let Some(server) =
-            servers.iter().find(|server| mcp_server_matches_removed_key(server, removed_key))
+            servers.iter().find(|server| mcp_server_matches_removed_key(app, server, removed_key))
         {
             failures.push(McpConfigRemoveConfirmationFailure {
                 server_name: server.name.clone(),
@@ -178,6 +185,7 @@ pub(crate) fn reconcile_removed_config_mcp_server_guards(
 
         false
     });
+    app.mcp.removed_config_servers = guards;
     failures
 }
 

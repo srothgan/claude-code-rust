@@ -85,8 +85,15 @@ pub struct LoggingRuntime {
 
 impl LoggingRuntime {
     pub fn init(cli: &Cli) -> anyhow::Result<Self> {
+        Self::init_with_paths(cli, default_diagnostics_paths)
+    }
+
+    fn init_with_paths(
+        cli: &Cli,
+        paths: impl FnOnce() -> anyhow::Result<DiagnosticsPaths>,
+    ) -> anyhow::Result<Self> {
         let detailed_diagnostics = detailed_diagnostics_requested(cli);
-        match Self::try_init(cli, detailed_diagnostics) {
+        match Self::try_init(cli, detailed_diagnostics, paths) {
             Ok(runtime) => Ok(runtime),
             Err(_) if !detailed_diagnostics => {
                 BRIDGE_DIAGNOSTICS_ENABLED.store(false, Ordering::Relaxed);
@@ -96,8 +103,13 @@ impl LoggingRuntime {
         }
     }
 
-    fn try_init(cli: &Cli, detailed_diagnostics: bool) -> anyhow::Result<Self> {
-        let log_path = resolve_log_path(cli)?.context("runtime log path was not resolved")?;
+    fn try_init(
+        cli: &Cli,
+        detailed_diagnostics: bool,
+        paths: impl FnOnce() -> anyhow::Result<DiagnosticsPaths>,
+    ) -> anyhow::Result<Self> {
+        let log_path =
+            resolve_log_path_with(cli, paths)?.context("runtime log path was not resolved")?;
         let directives = build_filter_directives(cli);
         let filter = tracing_subscriber::EnvFilter::try_new(directives.as_str())
             .map_err(|e| anyhow::anyhow!("invalid tracing filter `{directives}`: {e}"))?;
@@ -486,7 +498,10 @@ struct LogRetentionReport {
     removed_bytes: u64,
 }
 
-fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
+fn resolve_log_path_with(
+    cli: &Cli,
+    paths: impl FnOnce() -> anyhow::Result<DiagnosticsPaths>,
+) -> anyhow::Result<Option<ResolvedLogPath>> {
     if let Some(path) = cli.log_file.clone() {
         return Ok(Some(ResolvedLogPath {
             path,
@@ -495,15 +510,16 @@ fn resolve_log_path(cli: &Cli) -> anyhow::Result<Option<ResolvedLogPath>> {
             retention: None,
         }));
     }
+    let paths = paths()?;
     if cli.log_append {
         return Ok(Some(ResolvedLogPath {
-            path: default_legacy_log_path()?,
+            path: paths.legacy_log_path,
             source: LogPathSource::DefaultLegacyAppend,
             open_mode: LogOpenMode::Append,
             retention: None,
         }));
     }
-    let directory = default_runtime_log_dir()?;
+    let directory = paths.runtime_dir;
     let path = generated_log_path(&directory, DEFAULT_RUNTIME_LOG_PREFIX, RUNTIME_LOG_EXTENSION);
     Ok(Some(ResolvedLogPath {
         path,
@@ -896,12 +912,32 @@ fn is_managed_log_file(name: &str, prefix: &str, extension: &str) -> bool {
         return false;
     };
     let extension_suffix = format!(".{extension}");
-    if rest.ends_with(&extension_suffix) {
-        return true;
+    let stem = if let Some(stem) = rest.strip_suffix(&extension_suffix) {
+        stem
+    } else if let Some((base, rotation)) = rest.rsplit_once('.') {
+        if rotation.is_empty() || !rotation.bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+        let Some(stem) = base.strip_suffix(&extension_suffix) else { return false };
+        stem
+    } else {
+        return false;
+    };
+    let Some((timestamp, identity)) = stem.split_once("-p") else { return false };
+    let bytes = timestamp.as_bytes();
+    if bytes.len() != 16
+        || bytes[8] != b'T'
+        || bytes[15] != b'Z'
+        || !bytes[..8].iter().chain(&bytes[9..15]).all(u8::is_ascii_digit)
+    {
+        return false;
     }
-    rest.rsplit_once('.').is_some_and(|(base, suffix)| {
-        base.ends_with(&extension_suffix) && suffix.chars().all(|ch| ch.is_ascii_digit())
-    })
+    let Some((pid, run)) = identity.split_once("-r") else { return false };
+    // Historical logs and support fixtures use shorter run IDs as well as UUID prefixes.
+    !pid.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
+        && !run.is_empty()
+        && run.bytes().all(|byte| byte.is_ascii_alphanumeric())
 }
 
 pub fn is_managed_runtime_log_file(name: &str) -> bool {
@@ -1095,19 +1131,9 @@ impl BridgeDiagnosticRecord {
 #[cfg(test)]
 mod tests {
     use super::{
-        BASELINE_VALUE_LIMIT, BRIDGE_LINE_PREVIEW_LIMIT, BaselineEventFormatter,
-        BridgeDiagnosticRecord, DEFAULT_BASELINE_FILTER, LogOpenMode, LogPathSource,
-        LogRetentionPolicy, LogRetentionTarget, RollingFileWriter, baseline_field_allowed,
-        clear_rotated_files, emit_bridge_stderr_line, enforce_log_retention_at,
-        generated_log_file_name, is_managed_log_file, list_managed_runtime_logs_in, preview_text,
-        resolve_log_path, rotated_log_path,
+        BaselineEventFormatter, DEFAULT_BASELINE_FILTER, emit_bridge_stderr_line,
+        generated_log_file_name,
     };
-    use crate::{Cli, DiagnosticsPreset};
-    use std::fs;
-    use std::io::Write;
-    use std::path::PathBuf;
-    use std::time::{Duration, SystemTime};
-    use tempfile::tempdir;
     use time::macros::datetime;
 
     #[derive(Clone)]
@@ -1134,47 +1160,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parses_structured_bridge_diagnostic() {
-        let line = r#"{"schema":"claude-rs-log/v1","timestamp":"2026-04-08T12:00:00Z","level":"warn","target":"bridge.sdk","event_name":"sdk_spawn_failed","message":"spawn failed","session_id":"session-1","fields":{"preview":"node"}}"#;
-        let record = BridgeDiagnosticRecord::parse(line).expect("structured bridge log");
-
-        assert_eq!(record.target, "bridge.sdk");
-        assert_eq!(record.event_name, "sdk_spawn_failed");
-        assert_eq!(record.message, "spawn failed");
-        assert_eq!(record.session_id.as_deref(), Some("session-1"));
-    }
-
-    #[test]
-    fn preview_truncates_with_ellipsis() {
-        let preview = preview_text("abcdefgh", 5);
-        assert_eq!(preview, "abcde...");
-    }
-
-    #[test]
-    fn baseline_fields_keep_failure_details_and_exclude_payloads() {
-        for allowed in [
-            "event_name",
-            "message",
-            "outcome",
-            "error_kind",
-            "error_code",
-            "error_message",
-            "fields_json",
-            "startup_failure_errors",
-            "duration_ms",
-            "version",
-        ] {
-            assert!(baseline_field_allowed(allowed), "{allowed} should be retained");
-        }
-        for excluded in
-            ["session_id", "request_id", "tool_call_id", "prompt", "content", "command", "path"]
-        {
-            assert!(!baseline_field_allowed(excluded), "{excluded} should be excluded");
-        }
-    }
-
-    fn baseline_records(run: impl FnOnce()) -> Vec<serde_json::Value> {
+    pub(super) fn baseline_records(run: impl FnOnce()) -> Vec<serde_json::Value> {
         let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
             .event_format(BaselineEventFormatter)
@@ -1185,58 +1171,6 @@ mod tests {
         let output =
             String::from_utf8(buffer.lock().expect("log buffer lock").clone()).expect("utf8 log");
         output.lines().map(|line| serde_json::from_str(line).expect("json log")).collect()
-    }
-
-    #[test]
-    fn baseline_formatter_redacts_and_bounds_failure_details() {
-        let long_detail = "x".repeat(BASELINE_VALUE_LIMIT * 2);
-        let records = baseline_records(|| {
-            tracing::warn!(
-                target: "app.session",
-                event_name = "session_operation_failed",
-                message = "session operation failed",
-                outcome = "failure",
-                session_id = "session-secret",
-                path = "C:/private/project",
-                error_message = "request failed api_key=sk-secret-value",
-                error_preview = %long_detail,
-            );
-        });
-
-        let record = &records[0];
-        assert_eq!(record["event_name"], "session_operation_failed");
-        assert_eq!(record["schema"], "claude-rs-baseline/v1");
-        assert_eq!(record["error_message"], "request failed api_key=[redacted]");
-        let preview = record["error_preview"].as_str().expect("bounded preview");
-        assert_eq!(preview.chars().count(), BASELINE_VALUE_LIMIT + 3);
-        assert!(record.get("session_id").is_none());
-        assert!(record.get("path").is_none());
-    }
-
-    // The bridge sends a warning on stderr even with detailed diagnostics off. The default
-    // log must keep its failure context, drop its routine records, and not invent zero
-    // timings or empty identifiers for fields the bridge never set.
-    #[test]
-    fn default_log_keeps_bridge_warnings_with_context_and_drops_routine_records() {
-        let warning = r#"{"schema":"claude-rs-log/v1","level":"warn","target":"bridge.sdk","event_name":"sdk_hook_failed","message":"SDK hook failed","outcome":"failure","session_id":"session-1","fields":{"hook_name":"PreToolUse:Bash","exit_code":1,"output_excerpt":"lint gate failed"}}"#;
-        let routine = r#"{"schema":"claude-rs-log/v1","level":"debug","target":"bridge.sdk","event_name":"sdk_hook_started","message":"started","fields":{}}"#;
-        let records = baseline_records(|| {
-            emit_bridge_stderr_line(routine);
-            emit_bridge_stderr_line(warning);
-        });
-
-        assert_eq!(records.len(), 1, "{records:?}");
-        let record = &records[0];
-        assert_eq!(record["event_name"], "sdk_hook_failed");
-        assert_eq!(record["outcome"], "failure");
-        let fields: serde_json::Value =
-            serde_json::from_str(record["fields_json"].as_str().expect("fields_json"))
-                .expect("fields json");
-        assert_eq!(fields["output_excerpt"], "lint gate failed");
-        assert_eq!(fields["exit_code"], 1);
-        for absent in ["session_id", "error_kind", "duration_ms", "count", "size_bytes"] {
-            assert!(record.get(absent).is_none(), "{absent} should be absent: {record}");
-        }
     }
 
     // A bridge warning that names a working directory, project key or session ids must not
@@ -1264,177 +1198,6 @@ mod tests {
     }
 
     #[test]
-    fn default_log_keeps_unstructured_bridge_stderr_with_a_bounded_preview() {
-        let line = format!("panic: bridge crashed {}", "z".repeat(1_000));
-        let records = baseline_records(|| emit_bridge_stderr_line(&line));
-
-        assert_eq!(records[0]["event_name"], "bridge_stderr_unstructured");
-        let preview = records[0]["preview"].as_str().expect("preview");
-        assert_eq!(preview.chars().count(), BRIDGE_LINE_PREVIEW_LIMIT + 3);
-    }
-
-    #[test]
-    fn resolve_log_path_uses_default_for_always_on_baseline() {
-        let cli = Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: false,
-        };
-
-        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
-        assert_eq!(resolved.source, LogPathSource::Default);
-        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
-        assert!(resolved.retention.is_some());
-    }
-
-    #[test]
-    fn resolve_log_path_uses_explicit_path_when_provided() {
-        let cli = Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: Some(PathBuf::from("custom.log")),
-            log_filter: None,
-            log_append: false,
-        };
-
-        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
-        assert_eq!(resolved.path, PathBuf::from("custom.log"));
-        assert_eq!(resolved.source.as_str(), "explicit");
-        assert_eq!(resolved.open_mode, LogOpenMode::Truncate);
-        assert!(resolved.retention.is_none());
-    }
-
-    #[test]
-    fn resolve_log_path_uses_default_when_filter_enables_logging() {
-        let cli = Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: Some("app.render=trace".to_owned()),
-            log_append: false,
-        };
-
-        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
-        assert_eq!(resolved.source.as_str(), "default");
-        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
-        assert!(resolved.retention.is_some());
-        let path = resolved.path.to_string_lossy().replace('\\', "/");
-        assert!(path.contains("claude-code-rust/logs/runtime/claude-rs-"));
-        assert!(
-            resolved
-                .path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("log"))
-        );
-        assert!(!path.ends_with("claude-rs.log"));
-    }
-
-    #[test]
-    fn resolve_log_path_uses_default_when_enable_logs_is_set() {
-        let cli = Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: true,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: false,
-        };
-
-        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
-        assert_eq!(resolved.source.as_str(), "default");
-        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
-    }
-
-    #[test]
-    fn resolve_log_path_uses_default_when_preset_is_set() {
-        let cli = Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: Some(DiagnosticsPreset::Session),
-            log_file: None,
-            log_filter: None,
-            log_append: false,
-        };
-
-        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
-        assert_eq!(resolved.source.as_str(), "default");
-        assert_eq!(resolved.open_mode, LogOpenMode::CreateNew);
-    }
-
-    #[test]
-    fn resolve_log_path_keeps_legacy_default_for_append_without_explicit_path() {
-        let cli = Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: None,
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: true,
-        };
-
-        let resolved = resolve_log_path(&cli).expect("resolve succeeds").expect("path exists");
-        assert_eq!(resolved.source, LogPathSource::DefaultLegacyAppend);
-        assert_eq!(resolved.open_mode, LogOpenMode::Append);
-        assert!(resolved.retention.is_none());
-        let path = resolved.path.to_string_lossy().replace('\\', "/");
-        assert!(path.ends_with("claude-code-rust/logs/claude-rs.log"));
-    }
-
-    #[test]
     fn generated_default_log_name_is_timestamped_and_filesystem_safe() {
         let name = generated_log_file_name(
             "claude-rs",
@@ -1447,128 +1210,7 @@ mod tests {
         assert_eq!(name, "claude-rs-20260614T075924Z-p12345-r8f3a2c1.log");
         assert!(!name.contains(':'));
     }
-
-    #[test]
-    fn rolling_writer_rotates_by_size() {
-        let dir = tempdir().expect("temp dir");
-        let base = dir.path().join("runtime.log");
-        let mut writer =
-            RollingFileWriter::new(&base, LogOpenMode::Truncate, 10, 2).expect("writer");
-
-        writer.write_all(b"12345").expect("first write");
-        writer.write_all(b"67890").expect("second write");
-        writer.write_all(b"abc").expect("rotation write");
-        writer.flush().expect("flush");
-
-        let current = fs::read_to_string(&base).expect("current log");
-        let rotated = fs::read_to_string(rotated_log_path(&base, 1)).expect("rotated log");
-
-        assert_eq!(current, "abc");
-        assert_eq!(rotated, "1234567890");
-    }
-
-    #[test]
-    fn rolling_writer_append_rotates_full_startup_file_without_clearing_window() {
-        let dir = tempdir().expect("temp dir");
-        let base = dir.path().join("runtime.log");
-        fs::write(&base, "1234567890").expect("write base");
-        fs::write(rotated_log_path(&base, 1), "previous").expect("write rotated");
-
-        let mut writer = RollingFileWriter::new(&base, LogOpenMode::Append, 10, 2).expect("writer");
-        writer.write_all(b"abc").expect("write new base");
-        writer.flush().expect("flush");
-
-        assert_eq!(fs::read_to_string(&base).expect("current log"), "abc");
-        assert_eq!(
-            fs::read_to_string(rotated_log_path(&base, 1)).expect("first rotated"),
-            "1234567890"
-        );
-        assert_eq!(
-            fs::read_to_string(rotated_log_path(&base, 2)).expect("second rotated"),
-            "previous"
-        );
-    }
-
-    #[test]
-    fn clear_rotated_files_removes_existing_window() {
-        let dir = tempdir().expect("temp dir");
-        let base = dir.path().join("runtime.log");
-        fs::write(rotated_log_path(&base, 1), "a").expect("write first");
-        fs::write(rotated_log_path(&base, 2), "b").expect("write second");
-
-        clear_rotated_files(&base, 2).expect("clear rotated files");
-
-        assert!(!rotated_log_path(&base, 1).exists());
-        assert!(!rotated_log_path(&base, 2).exists());
-    }
-
-    #[test]
-    fn managed_log_file_detection_is_strict() {
-        assert!(is_managed_log_file("claude-rs-20260614T075924Z-p1-rabc.log", "claude-rs", "log"));
-        assert!(is_managed_log_file(
-            "claude-rs-20260614T075924Z-p1-rabc.log.2",
-            "claude-rs",
-            "log"
-        ));
-        assert!(!is_managed_log_file("claude-rs.log", "claude-rs", "log"));
-        assert!(!is_managed_log_file("other-20260614T075924Z-p1-rabc.log", "claude-rs", "log"));
-        assert!(!is_managed_log_file("claude-rs-20260614T075924Z-p1-rabc.txt", "claude-rs", "log"));
-    }
-
-    #[test]
-    fn retention_removes_only_managed_logs_and_preserves_protected_file() {
-        let dir = tempdir().expect("temp dir");
-        let protected = dir.path().join("claude-rs-20260614T080000Z-p1-ractive.log");
-        let removable = dir.path().join("claude-rs-20260614T070000Z-p1-rold.log");
-        let legacy = dir.path().join("claude-rs.log");
-        fs::write(&protected, "active").expect("write protected");
-        fs::write(&removable, "old").expect("write removable");
-        fs::write(&legacy, "legacy").expect("write legacy");
-        let target = LogRetentionTarget {
-            directory: dir.path().to_path_buf(),
-            prefix: "claude-rs",
-            extension: "log",
-            policy: LogRetentionPolicy {
-                max_total_bytes: 1,
-                max_age: Duration::from_secs(60),
-                max_files: 10,
-                min_files: 1,
-            },
-        };
-
-        let report = enforce_log_retention_at(&target, Some(&protected), SystemTime::now())
-            .expect("retention succeeds");
-
-        assert_eq!(report.removed_files, 1);
-        assert!(protected.exists());
-        assert!(!removable.exists());
-        assert!(legacy.exists());
-    }
-
-    #[test]
-    fn retention_caps_managed_log_file_count() {
-        let dir = tempdir().expect("temp dir");
-        for index in 0..5 {
-            let path =
-                dir.path().join(format!("claude-rs-20260614T07000{index}Z-p1-rrun{index}.log"));
-            fs::write(path, "log").expect("write managed log");
-        }
-        let target = LogRetentionTarget {
-            directory: dir.path().to_path_buf(),
-            prefix: "claude-rs",
-            extension: "log",
-            policy: LogRetentionPolicy {
-                max_total_bytes: u64::MAX,
-                max_age: Duration::MAX,
-                max_files: 3,
-                min_files: 1,
-            },
-        };
-
-        let report =
-            enforce_log_retention_at(&target, None, SystemTime::now()).expect("retention succeeds");
-
-        assert_eq!(report.removed_files, 2);
-        assert_eq!(list_managed_runtime_logs_in(dir.path()).expect("list logs").len(), 3);
-    }
 }
+
+#[cfg(test)]
+mod audit_tests;

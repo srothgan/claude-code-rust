@@ -49,6 +49,26 @@ mod tests {
         render(result, clock).into_iter().map(|row| row.to_string()).collect()
     }
 
+    fn item_region<'a>(rows: &'a [String], label: &str, id: &str) -> &'a [String] {
+        let identity = format!("{label}: {id}");
+        let matches: Vec<_> =
+            rows.iter().enumerate().filter(|(_, row)| **row == identity).collect();
+        assert_eq!(matches.len(), 1, "each item must have its own unique identity: {id}");
+        let start = matches[0].0;
+        let prefix = format!("{label}:");
+        let end = rows[start + 1..]
+            .iter()
+            .position(|row| row.starts_with(&prefix))
+            .map_or(rows.len(), |next| start + 1 + next);
+        &rows[start..end]
+    }
+
+    fn assert_field(rows: &[String], label: &str, expected: &[&str]) {
+        let prefix = format!("{label}: ");
+        let values: Vec<_> = rows.iter().filter_map(|row| row.strip_prefix(&prefix)).collect();
+        assert_eq!(values, expected, "field {label} must belong to this item");
+    }
+
     #[test]
     fn each_saved_job_keeps_its_own_scheduler_instant_across_the_repeated_dst_hour() {
         let fixture: serde_json::Value =
@@ -58,14 +78,15 @@ mod tests {
             serde_json::from_value(fixture[1]["presentation"].clone()).expect("cron sections");
         let rendered =
             rows(&result, ClockFormat { format: "%F %T.%3f %z", zone: Some("Europe/Berlin") });
-        let sections: Vec<_> = rendered.split(|line| line == &"\u{2500}".repeat(16)).collect();
-        assert!(sections[0].contains(&"Schedule ID: job-a".to_owned()));
-        assert!(sections[0].contains(&"Next run: 2026-10-25 02:30:11.321 +0200".to_owned()));
-        assert!(!sections[0].iter().any(|line| line.contains("23.456")));
-        assert!(sections[1].contains(&"Schedule ID: job-b".to_owned()));
-        assert!(sections[1].contains(&"Next run: 2026-10-25 02:30:23.456 +0100".to_owned()));
-        assert!(sections[2].contains(&"Schedule ID: job-old".to_owned()));
-        assert!(!sections[2].iter().any(|line| line.starts_with("Next run:")));
+        for (id, prompt, next_run) in [
+            ("job-a", "First job", Some("2026-10-25 02:30:11.321 +0200")),
+            ("job-b", "Second job", Some("2026-10-25 02:30:23.456 +0100")),
+            ("job-old", "Old job", None),
+        ] {
+            let region = item_region(&rendered, "Schedule ID", id);
+            assert_field(region, "Prompt", &[prompt]);
+            assert_field(region, "Next run", &next_run.into_iter().collect::<Vec<_>>());
+        }
     }
 
     #[test]
@@ -77,19 +98,47 @@ mod tests {
             serde_json::from_value(fixture[2]["presentation"].clone()).expect("queue sections");
         let rendered =
             rows(&result, ClockFormat { format: "%F %T.%3f %z", zone: Some("Europe/Berlin") });
-        let sections: Vec<_> = rendered.split(|line| line == &"\u{2500}".repeat(16)).collect();
-        assert_eq!(sections[0], ["Remaining: 4", "Read at: 2026-03-29 03:10:12.345 +0200"]);
-        assert!(sections[1].contains(&"Notification ID: delivery-a".to_owned()));
-        assert!(sections[1].contains(&"Queued at: 2026-03-29 01:59:30.000 +0100".to_owned()));
-        assert!(sections[1].contains(&"Arrived at: 2026-03-29 03:00:01.250 +0200".to_owned()));
-        assert!(sections[1].ends_with(&[
-            "<user-tag>".to_owned(),
-            "Keep this **literal**".to_owned(),
-            "</user-tag>".to_owned()
-        ]));
-        assert!(sections[2].contains(&"Notification ID: delivery-b".to_owned()));
-        assert!(sections[2].contains(&"Origin: future_origin".to_owned()));
-        assert!(sections[2].contains(&"Arrived at: 2026-03-29 03:09:02.500 +0200".to_owned()));
+        let first_delivery = rendered
+            .iter()
+            .position(|row| row.starts_with("Notification ID:"))
+            .expect("delivery region");
+        let drain = &rendered[..first_delivery];
+        assert_field(drain, "Remaining", &["4"]);
+        assert_field(drain, "Read at", &["2026-03-29 03:10:12.345 +0200"]);
+        for (id, origin, queued, arrived, payload, other_payload) in [
+            (
+                "delivery-a",
+                "github_webhook",
+                "2026-03-29 01:59:30.000 +0100",
+                "2026-03-29 03:00:01.250 +0200",
+                "<user-tag>\nKeep this **literal**\n</user-tag>",
+                "Second payload",
+            ),
+            (
+                "delivery-b",
+                "future_origin",
+                "2026-03-29 03:05:00.000 +0200",
+                "2026-03-29 03:09:02.500 +0200",
+                "Second payload",
+                "Keep this **literal**",
+            ),
+        ] {
+            let region = item_region(&rendered, "Notification ID", id);
+            assert_field(region, "Origin", &[origin]);
+            assert_field(region, "Queued at", &[queued]);
+            assert_field(region, "Arrived at", &[arrived]);
+            assert_field(region, "Remaining", &[]);
+            assert_field(region, "Read at", &[]);
+            let literal: Vec<_> = payload.lines().collect();
+            assert!(
+                region.windows(literal.len()).any(|rows| rows == literal.as_slice()),
+                "literal payload missing from {id}: {region:?}"
+            );
+            assert!(
+                !region.iter().any(|row| row == other_payload),
+                "another delivery's payload leaked into {id}"
+            );
+        }
     }
 
     #[test]

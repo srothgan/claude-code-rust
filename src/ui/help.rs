@@ -283,7 +283,7 @@ fn build_subagent_help_items(app: &App) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{key_help_items, keymap_help_rows};
+    use super::key_help_items;
     use crate::app::keymap::{
         AppAction, KeyAction, KeyBinding, KeyBindingSource, KeyContext, ResolvedKeymap,
     };
@@ -293,53 +293,195 @@ mod tests {
         rows.iter().any(|(left, right)| left == key && right == action)
     }
 
-    #[test]
-    fn chat_input_shortcuts_are_generated_from_keymap() {
-        let app = App::test_default();
-
-        let rows = key_help_items(&app);
-
-        assert!(has_row(&rows, "Enter", "Send message"));
-        assert!(has_row(&rows, "Shift+Enter, Ctrl+Enter", "Insert newline"));
-        assert!(has_row(&rows, "Home", "Move line start"));
-        assert!(has_row(&rows, "End", "Move line end"));
-        assert!(has_row(&rows, "Up", "Move up / recall latest message"));
-        assert!(has_row(&rows, "Ctrl+A", "Move line start, then up"));
-        assert!(has_row(&rows, "Ctrl+E", "Move line end, then down"));
-        assert!(has_row(&rows, "Ctrl+Y", "Yank"));
-        assert!(!rows.iter().any(|(left, right)| left == "Ctrl+z/y" || right == "Undo/redo"));
+    fn has_key(rows: &[(String, String)], key: &str, action: &str) -> bool {
+        rows.iter().any(|(keys, label)| label == action && keys.split(", ").any(|item| item == key))
     }
 
     #[test]
-    fn silent_pending_command_keeps_chat_input_shortcuts() {
-        let mut app = App::test_default();
-        app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = None;
-
-        let rows = key_help_items(&app);
-
-        assert!(has_row(&rows, "Enter", "Send message"));
-        assert!(!rows.iter().any(|(_, right)| right.starts_with("Unavailable while command runs")));
+    fn input_help_distinguishes_blocked_and_usable_input() {
+        for (status, cause, usable) in [
+            (AppStatus::Ready, None, true),
+            (AppStatus::CommandPending, None, true),
+            (AppStatus::CommandPending, Some("Preparing cedar session"), false),
+            (AppStatus::Connecting, None, false),
+            (AppStatus::Error, None, false),
+        ] {
+            let mut app = App::test_default();
+            app.status = status;
+            app.turn.pending_command_label = cause.map(str::to_owned);
+            let rows = key_help_items(&app);
+            assert_eq!(has_key(&rows, "Enter", "Send message"), usable, "{status:?}: {rows:?}");
+            assert!(
+                rows.iter().any(|(keys, _)| keys.contains("Ctrl+Q")),
+                "exit control missing: {rows:?}"
+            );
+            if let Some(cause) = cause {
+                assert!(
+                    rows.iter().any(|(key, detail)| key == "Input keys" && detail.contains(cause))
+                );
+            }
+        }
     }
 
     #[test]
-    fn labeled_pending_command_reports_blocked_input() {
-        let mut app = App::test_default();
-        app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = Some("Starting new session...".to_owned());
+    fn interaction_help_follows_real_request_focus_and_cancellation() {
+        use crate::agent::{events::ClientEvent, model};
+        use crate::app::keymap::{InteractionAction, default_bindings};
+        use crate::app::{FocusTarget, test_support::*};
+        for question in [false, true] {
+            let (mut app, _commands) = app_with_connection();
+            app.status = AppStatus::Ready;
+            let context =
+                if question { KeyContext::InlineQuestion } else { KeyContext::InlinePermission };
+            let mut bindings = default_bindings();
+            bindings.retain(|binding| {
+                !(binding.context == context
+                    && binding.action == KeyAction::Interaction(InteractionAction::MoveNext))
+            });
+            bindings.push(KeyBinding::new(
+                context,
+                "ctrl-n".parse().unwrap(),
+                KeyAction::Interaction(InteractionAction::MoveNext),
+                KeyBindingSource::Config,
+            ));
+            app.keymap = ResolvedKeymap::from_bindings(bindings).unwrap();
+            admit_tool(
+                &mut app,
+                model::ToolCall::new("help-request", "Choose cedar")
+                    .status(model::ToolCallStatus::InProgress),
+            );
+            let _permission;
+            let _question;
+            if question {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                _question = Some(receiver);
+                _permission = None;
+                crate::app::handle_client_event(
+                    &mut app,
+                    ClientEvent::QuestionRequest {
+                        session_id: "session-1".into(),
+                        request: model::RequestQuestionRequest::new(
+                            "session-1",
+                            model::ToolCallUpdate::new(
+                                "help-request",
+                                model::ToolCallUpdateFields::new(),
+                            ),
+                            model::QuestionPrompt::new(
+                                "Choose cedar",
+                                "Tree",
+                                true,
+                                vec![
+                                    model::QuestionOption::new("cedar", "Cedar"),
+                                    model::QuestionOption::new("elm", "Elm"),
+                                ],
+                            ),
+                            0,
+                            1,
+                        ),
+                        response_tx: sender,
+                    },
+                );
+            } else {
+                _question = None;
+                _permission = Some(request_permission(
+                    &mut app,
+                    model::RequestPermissionRequest::new(
+                        "session-1",
+                        model::ToolCallUpdate::new(
+                            "help-request",
+                            model::ToolCallUpdateFields::new(),
+                        ),
+                        permission_options("cedar"),
+                        None,
+                    ),
+                ));
+            }
+            let rows = key_help_items(&app);
+            assert!(has_key(&rows, "Ctrl+N", "Next option"), "wrong request context: {rows:?}");
+            for key in ["Left", "Up"] {
+                assert!(has_key(&rows, key, "Previous option"));
+            }
+            assert!(has_key(&rows, "Enter", "Confirm option"));
+            assert!(has_key(&rows, "Esc", "Cancel prompt"));
+            assert!(!has_key(&rows, "Enter", "Send message"));
+            if question {
+                assert!(has_key(&rows, "Space", "Toggle selection"));
+                assert!(has_key(&rows, "Tab", "Toggle notes"));
+                assert!(has_key(&rows, "Shift+Tab", "Toggle notes"));
+            }
+            app.release_focus_target(FocusTarget::Permission);
+            let input = key_help_items(&app);
+            assert!(has_key(&input, "Enter", "Send message"));
+            assert!(has_key(&input, "Tab", "Focus pending prompt"));
+            crate::app::handle_client_event(
+                &mut app,
+                ClientEvent::InteractionCancelled {
+                    session_id: "session-1".into(),
+                    interaction_id: "help-request".into(),
+                },
+            );
+            let settled = key_help_items(&app);
+            assert!(has_key(&settled, "Enter", "Send message"));
+            assert!(!settled.iter().any(|(_, label)| label == "Focus pending prompt"));
+        }
+    }
 
-        let rows = key_help_items(&app);
-
-        assert!(has_row(
-            &rows,
-            "Input keys",
-            "Unavailable while command runs (Starting new session...)"
-        ));
-        assert!(!has_row(&rows, "Enter", "Send message"));
+    #[test]
+    fn advertised_subagent_help_preserves_metadata_and_refreshes_inventory() {
+        use crate::agent::model;
+        use crate::app::test_support::{app_with_connection, deliver_update};
+        let (mut app, _commands) = app_with_connection();
+        app.status = AppStatus::Connecting;
+        let loading = super::subagent_help_items(&app);
+        assert!(!loading.is_empty());
+        assert!(loading.iter().all(|(label, _)| !label.starts_with('&')));
+        app.status = AppStatus::Ready;
+        let mut auditor = model::AvailableAgent::new("auditor", "Inspect cedar regressions");
+        auditor.model = Some("model-cedar".into());
+        deliver_update(
+            &mut app,
+            model::SessionUpdate::AvailableAgentsUpdate(model::AvailableAgentsUpdate::new(vec![
+                auditor,
+                model::AvailableAgent::new("solo", "Own elm description"),
+                model::AvailableAgent::new("quiet", "  "),
+                model::AvailableAgent::new(" ", "discard this record"),
+            ])),
+        );
+        let rows = super::help_items(&app, crate::app::ConfigHelpSection::Subagents);
+        let auditor = rows.iter().find(|(label, _)| label.starts_with("&auditor\n")).unwrap();
+        assert!(auditor.0.contains("model-cedar"));
+        assert_eq!(auditor.1, "Inspect cedar regressions");
+        assert!(has_row(&rows, "&solo", "Own elm description"));
+        let quiet = rows.iter().find(|(label, _)| label == "&quiet").unwrap();
+        assert!(!quiet.1.trim().is_empty());
+        assert!(!rows.iter().any(|(_, description)| description == "discard this record"));
+        deliver_update(
+            &mut app,
+            model::SessionUpdate::AvailableAgentsUpdate(model::AvailableAgentsUpdate::new(vec![])),
+        );
+        let empty = super::subagent_help_items(&app);
+        assert!(empty.iter().all(|(label, _)| !label.starts_with('&')));
+        assert!(empty.iter().any(|(_, detail)| !detail.trim().is_empty()));
+        deliver_update(
+            &mut app,
+            model::SessionUpdate::AvailableAgentsUpdate(model::AvailableAgentsUpdate::new(vec![
+                model::AvailableAgent::new("successor", "Fresh maple description"),
+            ])),
+        );
+        let refreshed = super::subagent_help_items(&app);
+        assert!(has_row(&refreshed, "&successor", "Fresh maple description"));
+        assert!(!refreshed.iter().any(|(label, _)| label.starts_with("&auditor")
+            || label == "&solo"
+            || label == "&quiet"));
     }
 
     #[test]
     fn chat_input_shortcuts_reflect_resolved_keymap_changes() {
+        let defaults = key_help_items(&App::test_default());
+        assert!(has_key(&defaults, "Enter", "Send message"));
+        for alias in ["Shift+Enter", "Ctrl+Enter"] {
+            assert!(has_key(&defaults, alias, "Insert newline"));
+        }
         let mut app = App::test_default();
         app.keymap = ResolvedKeymap::from_bindings([KeyBinding::new(
             KeyContext::ChatInput,
@@ -353,32 +495,5 @@ mod tests {
 
         assert!(has_row(&rows, "Ctrl+X", "Send message"));
         assert!(!rows.iter().any(|(left, _)| left == "Enter"));
-    }
-
-    #[test]
-    fn permission_shortcuts_are_generated_without_removed_ctrl_approvals() {
-        let app = App::test_default();
-
-        let rows = keymap_help_rows(&app, KeyContext::InlinePermission);
-
-        assert!(has_row(&rows, "Left, Up", "Previous option"));
-        assert!(has_row(&rows, "Right, Down", "Next option"));
-        assert!(has_row(&rows, "Enter", "Confirm option"));
-        assert!(has_row(&rows, "Esc", "Cancel prompt"));
-        assert!(!rows.iter().any(|(left, _)| {
-            left.contains("Ctrl+A") || left.contains("Ctrl+Y") || left.contains("Ctrl+N")
-        }));
-    }
-
-    #[test]
-    fn question_shortcuts_include_selection_and_notes_bindings() {
-        let app = App::test_default();
-
-        let rows = keymap_help_rows(&app, KeyContext::InlineQuestion);
-
-        assert!(has_row(&rows, "Space", "Toggle selection"));
-        assert!(has_row(&rows, "Tab, Shift+Tab", "Toggle notes"));
-        assert!(has_row(&rows, "Enter", "Confirm option"));
-        assert!(has_row(&rows, "Esc", "Cancel prompt"));
     }
 }

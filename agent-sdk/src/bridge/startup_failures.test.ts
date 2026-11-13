@@ -5,6 +5,11 @@ import { redactStartupDetail } from "./startup_failures.js";
 
 // Mirrors `redacts_credential_shapes` in src/cli/redaction.rs, the reference.
 const CASES: Array<[string, string]> = [
+  ["raw Bearer ; retry Bearer later-secret", "raw Bearer ; retry Bearer [redacted]"],
+  ["raw Bearer , then Bearer second-secret; Bearer third-secret", "raw Bearer , then Bearer [redacted]; Bearer [redacted]"],
+  ["ANTHROPIC_API_KEY=first-secret\nAuthorization: Bearer second-secret\nraw Bearer third-secret", "ANTHROPIC_API_KEY=[redacted]\nAuthorization: [redacted]\nraw Bearer [redacted]"],
+  ["before password=one-secret; token=two-secret after", "before password=[redacted]; token=[redacted] after"],
+  ["\u96ea Bearer first-secret; retry Bearer second-secret fin", "\u96ea Bearer [redacted]; retry Bearer [redacted] fin"],
   ["GET /v1?token=abc&x=1", "GET /v1?token=[redacted]&x=1"],
   ["CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-abcDEF123", "CLAUDE_CODE_OAUTH_TOKEN=[redacted]"],
   ["x-api-key: sk-ant-api03-secretvalue", "x-api-key: [redacted]"],

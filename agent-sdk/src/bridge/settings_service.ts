@@ -120,33 +120,63 @@ function patch(document: Record<string, Json>, keys: string[], value: Json | und
   } else current[last] = value;
 }
 
-async function writeTarget(file: string, setting: SettingDescriptor, mutation: SettingsMutation): Promise<"saved" | "unchanged" | "conflict"> {
+class CommittedSettingsWriteError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `Settings were saved, but writer cleanup failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+  }
+}
+
+async function writeTarget(
+  file: string,
+  setting: SettingDescriptor,
+  mutation: SettingsMutation,
+): Promise<"saved" | "unchanged" | "conflict"> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   // Cooperative lock serializes our writers; byte rechecks detect edits from external editors.
   const lockPath = `${file}.claude-rs.lock`;
   const lock = await fs.open(lockPath, "wx", 0o600);
+  let committed = false;
   try {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const read = await readDocument(file);
-      if (!read.document) throw new Error(read.error ?? "Cannot read settings.");
-      const previous = leaf(read.document, setting.key_path);
-      if (revision(previous) !== mutation.expected_revision) return "conflict";
-      const next = mutation.operation === "remove" ? undefined : mutation.value;
-      if (revision(previous) === revision(next)) return "unchanged";
-      patch(read.document, setting.key_path, next);
-      const temp = `${file}.${randomUUID()}.tmp`;
-      if (mutation.scope === "local") await excludeLocalSettings(file, temp);
-      try {
-        const handle = await fs.open(temp, "wx", read.mode ?? 0o600);
-        try { await handle.writeFile(`${JSON.stringify(read.document, null, 2)}\n`); await handle.sync(); } finally { await handle.close(); }
-        const current = await readDocument(file);
-        if (current.raw !== read.raw || current.status !== read.status) continue;
-        await fs.rename(temp, file);
-        return "saved";
-      } finally { await fs.rm(temp, { force: true }); }
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const read = await readDocument(file);
+        if (!read.document) throw new Error(read.error ?? "Cannot read settings.");
+        const previous = leaf(read.document, setting.key_path);
+        if (revision(previous) !== mutation.expected_revision) return "conflict";
+        const next = mutation.operation === "remove" ? undefined : mutation.value;
+        if (revision(previous) === revision(next)) return "unchanged";
+        patch(read.document, setting.key_path, next);
+        const temp = `${file}.${randomUUID()}.tmp`;
+        if (mutation.scope === "local") await excludeLocalSettings(file, temp);
+        try {
+          const handle = await fs.open(temp, "wx", read.mode ?? 0o600);
+          try {
+            await handle.writeFile(`${JSON.stringify(read.document, null, 2)}\n`);
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          const current = await readDocument(file);
+          if (current.raw !== read.raw || current.status !== read.status) continue;
+          await fs.rename(temp, file);
+          committed = true;
+          return "saved";
+        } finally {
+          await fs.rm(temp, { force: true });
+        }
+      }
+      return "conflict";
+    } finally {
+      await lock.close();
+      await fs.unlink(lockPath);
     }
-    return "conflict";
-  } finally { await lock.close(); await fs.unlink(lockPath); }
+  } catch (error) {
+    if (committed) throw new CommittedSettingsWriteError(error);
+    throw error;
+  }
 }
 
 async function excludeLocalSettings(file: string, temp: string): Promise<void> {
@@ -204,7 +234,8 @@ export async function mutateSetting(cwd: string, mutation: SettingsMutation, mod
       : notLoaded ? "Your change was saved, but Claude did not load this settings file. Check its values before the change can take effect." : undefined;
     return { persistence, application: persistence === "conflict" || notLoaded ? "blocked" : setting.application, snapshot: refreshed, ...(error ? { error } : {}) };
   } catch (error) {
-    // A refresh failure after a successful save must not be reported as a failed save.
+    if (error instanceof CommittedSettingsWriteError) persistence = "saved";
+    // A refresh or cleanup failure after commit must not be reported as a failed save.
     return { persistence, application: "blocked", ...(persistence === "failure" && snapshot ? { snapshot } : {}), error: error instanceof Error ? error.message : "Settings operation failed." };
   }
 }

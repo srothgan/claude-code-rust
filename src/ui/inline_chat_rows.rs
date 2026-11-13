@@ -58,7 +58,7 @@ pub(crate) fn serialize_live_rows_with_boundaries_excluding(
 /// Serializes the live rows as of `now`: one clock reading per pass, so the
 /// welcome crab's pose and its commit decision agree, and the rows committed
 /// to scrollback are exactly the rows this pass drew.
-fn serialize_live_rows_at(
+pub(crate) fn serialize_live_rows_at(
     app: &mut App,
     width: u16,
     excluded_ids: &BTreeSet<HistoryOutputId>,
@@ -1290,7 +1290,7 @@ fn frame_assistant_rows(
         .boundaries
         .iter()
         .enumerate()
-        .filter(|(_, boundary)| boundary.kind == LiveRowBoundaryKind::AssistantBtw)
+        .filter(|(_, boundary)| !boundary.kind.uses_assistant_gutter())
         .map(|(index, boundary)| {
             boundary.start_row
                 ..rendered
@@ -1535,13 +1535,11 @@ fn render_canonical_tool_rows(
         tc.cache.evict_cached_render();
     }
     let uninterrupted = LayoutControl::uninterrupted();
-    let physical_rows = super::wrap::wrap_lines_with_control(
+    super::wrap::wrap_lines_with_control(
         &rows,
         render_context.width,
         render_context.tool_render_context.control.unwrap_or(&uninterrupted),
-    );
-    app.sync_render_cache_slot(msg_idx, block_idx);
-    physical_rows
+    )
 }
 
 pub(crate) fn assistant_role_label_line() -> Line<'static> {
@@ -1583,87 +1581,6 @@ fn segments_to_physical_rows(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn long_code_replay_yields_before_the_end_and_preserves_every_source_line() {
-        let source = format!(
-            "```text\n{}\n```",
-            (0..400).map(|n| format!("SOURCE_{n:04}")).collect::<Vec<_>>().join("\n")
-        );
-        for width in [24, 80, 120] {
-            let mut app = App::test_default();
-            app.transcript.messages.push(assistant_blocks_message(vec![MessageBlock::Text(
-                TextBlock::from_complete(&source),
-            )]));
-            let mut cursor = super::LiveRowsCursor::new(std::time::Instant::now());
-            let mut all = SerializedLiveRows::new(Vec::new(), Vec::new());
-            let mut saw_early_output = false;
-            while !cursor.is_finished() {
-                let control =
-                    super::LayoutControl::with_budget(&|| false, std::time::Duration::ZERO);
-                let Some(chunk) = cursor.next(&mut app, width, &BTreeSet::new(), &control) else {
-                    break;
-                };
-                saw_early_output |=
-                    chunk.rows().iter().any(|row| row.to_string().contains("SOURCE_0000"))
-                        && !cursor.is_finished();
-                all.append(chunk);
-            }
-            assert!(saw_early_output);
-            let text = line_texts(all.rows());
-            for n in 0..400 {
-                assert_eq!(
-                    text.iter().filter(|row| row.trim() == format!("SOURCE_{n:04}")).count(),
-                    1
-                );
-            }
-            assert!(all.rows().iter().all(|row| row.width() <= usize::from(width)));
-            assert_eq!(all.stable_row_count(), all.rows().len());
-            assert_assistant_marker(all.rows(), true);
-        }
-    }
-
-    #[test]
-    fn replay_yields_text_before_working_on_a_tool_in_the_same_turn() {
-        let mut app = App::test_default();
-        let mut tool = tool_call_block("expensive", false);
-        let MessageBlock::ToolCall(tc) = &mut tool else { unreachable!() };
-        tc.sdk_tool_name = "Read".into();
-        tc.kind = model::ToolKind::Read;
-        tc.locations = vec![model::ToolCallLocation::new("source.rs")];
-        tc.content = vec![model::ToolCallContent::from("fn main() {}\n".repeat(2000))];
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(TextBlock::from_complete("FIRST")),
-            tool,
-            MessageBlock::Text(TextBlock::from_complete("LAST")),
-        ]));
-        let mut cursor = super::LiveRowsCursor::new(std::time::Instant::now());
-        let first = cursor
-            .next(&mut app, 80, &BTreeSet::new(), &super::LayoutControl::uninterrupted())
-            .unwrap();
-        assert!(first.rows().iter().any(|row| row.to_string().contains("FIRST")));
-        assert!(!first.rows().iter().any(|row| row.to_string().contains("LAST")));
-        let MessageBlock::ToolCall(tc) = &app.transcript.messages[0].blocks[1] else {
-            unreachable!()
-        };
-        assert!(
-            tc.cache.cached_bytes() == 0,
-            "the following tool must not be laid out before the ready text is returned"
-        );
-        let checks = std::cell::Cell::new(0);
-        let resize = || {
-            checks.set(checks.get() + 1);
-            checks.get() > 20
-        };
-        let control = super::LayoutControl::new(&resize);
-        while cursor.next(&mut app, 80, &BTreeSet::new(), &control).is_some() {}
-        assert!(control.cancelled(), "resize must interrupt the file preview");
-        let fresh = serialize_live_rows(&mut app, 31);
-        assert!(fresh.iter().all(|row| row.width() <= 31));
-        for marker in ["FIRST", "LAST"] {
-            assert_eq!(fresh.iter().filter(|row| row.to_string().contains(marker)).count(), 1);
-        }
-    }
-
-    #[test]
     fn hiding_a_tool_after_its_title_cancels_replay_before_its_body() {
         let mut app = App::test_default();
         let mut tool = tool_call_block("hidden-mid-replay", false);
@@ -1689,76 +1606,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn interrupted_large_message_discards_partial_layout_and_restarts_at_new_width() {
-        use std::cell::Cell;
-        let source =
-            format!("```text\nFIRST\n{}LAST\n```", "a line of source content\n".repeat(2000));
-        let mut app = App::test_default();
-        let block = TextBlock::from_complete(&source);
-        let id = block.id;
-        app.transcript.messages.push(assistant_blocks_message(vec![MessageBlock::Text(block)]));
-        let checks = Cell::new(0);
-        let resize = || {
-            checks.set(checks.get() + 1);
-            checks.get() > 200
-        };
-        let control = super::LayoutControl::new(&resize);
-        let mut cursor = super::LiveRowsCursor::new(std::time::Instant::now());
-        while cursor.next(&mut app, 80, &BTreeSet::new(), &control).is_some() {}
-        assert!(control.cancelled(), "resize must be observed inside the message");
-
-        let fresh =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 31, &BTreeSet::new(), None);
-        let text = fresh.rows().iter().map(ToString::to_string).collect::<Vec<_>>();
-        assert_eq!(
-            text.iter().filter(|row| row.trim() == "FIRST" || row.trim() == "● FIRST").count(),
-            1
-        );
-        assert_eq!(text.iter().filter(|row| row.trim() == "LAST").count(), 1);
-        assert!(fresh.rows().iter().all(|row| row.width() <= 31));
-        let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
-            panic!("text source")
-        };
-        assert_eq!(block.id, id);
-        assert_eq!(block.text, source);
-    }
-
     use super::{
-        LiveRowBoundaryKind, LiveRowSegment, SerializedLiveRows, serialize_live_rows_at,
-        serialize_live_rows_with_boundaries_excluding,
+        LiveRowBoundaryKind, SerializedLiveRows, serialize_live_rows_with_boundaries_excluding,
     };
 
-    #[test]
-    fn tool_spinner_stays_in_its_row_and_respects_reduced_motion() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_status_interaction(
-                "static-tool",
-                model::ToolCallStatus::InProgress,
-                false,
-                false,
-                false,
-            ),
-        ]));
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "prefersReducedMotion",
-            serde_json::json!(true),
-        ));
-        let tool = line_texts(&serialize_live_rows(&mut app, 120));
-        assert!(
-            tool.iter().any(|line| line.contains('◆') && line.contains("Bash Child Tool")),
-            "{tool:?}"
-        );
-        app.spinner_frame = 8;
-        assert_eq!(line_texts(&serialize_live_rows(&mut app, 120)), tool);
-        app.config.snapshot = None;
-        assert_ne!(line_texts(&serialize_live_rows(&mut app, 120)), tool);
-    }
     use crate::agent::model;
     use crate::app::{
-        App, AppStatus, ChatMessage, ChatMessageId, HistoryOutputId, MessageBlock, MessageRole,
-        TextBlock, TextBlockSpacing, ToolCallInfo,
+        App, AppStatus, ChatMessage, HistoryOutputId, MessageBlock, MessageRole, TextBlock,
+        TextBlockSpacing, ToolCallInfo,
     };
     use ratatui::text::Line;
     use std::collections::BTreeSet;
@@ -1776,59 +1631,12 @@ mod tests {
         rows.iter().map(line_text).collect()
     }
 
-    fn compact_text(rows: &[Line<'_>]) -> String {
-        line_texts(rows).join("").chars().filter(|ch| !ch.is_whitespace()).collect()
-    }
-
     fn serialize_live_rows(app: &mut App, width: u16) -> Vec<Line<'static>> {
         serialize_all_rows_with_boundaries(app, width).rows().to_vec()
     }
 
     fn serialize_all_rows_with_boundaries(app: &mut App, width: u16) -> SerializedLiveRows {
         serialize_live_rows_with_boundaries_excluding(app, width, &BTreeSet::new(), None)
-    }
-
-    fn live_segment(start_row: usize, end_row: usize, commit_ready: bool) -> LiveRowSegment {
-        LiveRowSegment {
-            ids: vec![HistoryOutputId::AssistantLabel(ChatMessageId::new())],
-            msg_idx: 0,
-            block_idx: None,
-            kind: LiveRowBoundaryKind::Message,
-            start_row,
-            end_row,
-            commit_ready,
-        }
-    }
-
-    fn assert_assistant_marker(rows: &[Line<'static>], expected: bool) {
-        assert_eq!(
-            line_texts(rows).iter().filter(|row| row.trim_start().starts_with('\u{25cf}')).count(),
-            usize::from(expected),
-            "the active response owns one marker; waiting or absent responses own none"
-        );
-    }
-
-    #[test]
-    fn serialized_live_rows_skip_invalid_segment_ranges() {
-        let rows = vec![Line::from("first"), Line::from("second")];
-        let serialized = SerializedLiveRows::from_parts_for_test(
-            rows,
-            vec![live_segment(0, 1, true), live_segment(1, 3, true)],
-        );
-
-        assert_eq!(line_texts(&serialized.rows_excluding_ids(&BTreeSet::new())), vec!["first"]);
-        assert!(serialized.segment_rows(&serialized.segments()[1]).is_none());
-    }
-
-    #[test]
-    fn serialized_live_rows_clamp_stable_boundary_to_rows_len() {
-        let serialized = SerializedLiveRows::from_parts_for_test(
-            vec![Line::from("only")],
-            vec![live_segment(4, 5, false)],
-        );
-
-        assert_eq!(serialized.stable_row_count(), 1);
-        assert_eq!(serialized.first_mutable_boundary_start(), Some(1));
     }
 
     fn user_text_message(text: &str) -> ChatMessage {
@@ -1845,47 +1653,6 @@ mod tests {
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         ratatui::widgets::Paragraph::new(rows.to_vec()).render(area, &mut buffer);
         buffer
-    }
-
-    #[test]
-    fn user_card_fills_every_cell_and_aligns_text_images_and_paragraphs_with_the_composer() {
-        for width in [30, 80, 120] {
-            let mut app = App::test_default();
-            let mut message = user_text_message("alpha\n\nomega");
-            message
-                .blocks
-                .push(MessageBlock::ImageAttachment(crate::app::ImageAttachmentBlock::new(2)));
-            app.transcript.messages.push(message);
-            let serialized = serialize_all_rows_with_boundaries(&mut app, width);
-            let buffer = rendered_buffer(serialized.rows(), width);
-            assert_eq!(buffer.area.height, 6, "two padding rows, three text rows and an image row");
-            for row in 0..6 {
-                for column in 0..width {
-                    assert_eq!(
-                        buffer[(column, row)].bg,
-                        crate::ui::theme::USER_MSG_BG,
-                        "({column}, {row}) at width {width}"
-                    );
-                }
-            }
-            assert_eq!(buffer[(1, 1)].symbol(), "❯");
-            assert_eq!(buffer[(1, 1)].fg, crate::ui::theme::DIM);
-            assert_eq!(buffer[(3, 1)].symbol(), "a");
-            assert_eq!(buffer[(3, 3)].symbol(), "o");
-            assert_eq!(buffer[(3, 4)].symbol(), "[");
-            for row in [0, 2, 5] {
-                assert!((0..width).all(|column| buffer[(column, row)].symbol() == " "));
-            }
-            let geometry = crate::ui::input::compute_render_geometry(
-                ratatui::layout::Rect::new(0, 0, width, 3),
-                0,
-            );
-            assert_eq!(geometry.text.x, 3);
-            let MessageBlock::Text(source) = &app.transcript.messages[0].blocks[0] else {
-                panic!("user text");
-            };
-            assert_eq!(source.text, "alpha\n\nomega");
-        }
     }
 
     #[test]
@@ -1939,38 +1706,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_marker_and_tools_share_the_content_column_without_a_card_background() {
-        for tool_first in [false, true] {
-            let mut app = App::test_default();
-            let mut blocks = vec![tool_call_block("layout-tool", false)];
-            if !tool_first {
-                blocks.insert(0, MessageBlock::Text(TextBlock::from_complete("Opening text")));
-            }
-            blocks.push(MessageBlock::Text(TextBlock::from_complete("Final text")));
-            app.transcript.messages.push(assistant_blocks_message(blocks));
-            let serialized = serialize_all_rows_with_boundaries(&mut app, 80);
-            let buffer = rendered_buffer(serialized.rows(), 80);
-            assert_eq!(buffer[(1, 1)].symbol(), "\u{25cf}");
-            assert_eq!(buffer[(1, 1)].fg, crate::ui::theme::ROLE_ASSISTANT);
-            let text = line_texts(serialized.rows());
-            let tool = text.iter().position(|row| row.contains("Child Tool")).unwrap();
-            assert_eq!(
-                buffer[(3, u16::try_from(tool).unwrap())].symbol(),
-                crate::ui::theme::ICON_COMPLETED
-            );
-            let final_text = text.iter().position(|row| row.contains("Final text")).unwrap();
-            assert_eq!(buffer[(3, u16::try_from(final_text).unwrap())].symbol(), "F");
-            if !tool_first {
-                assert_eq!(buffer[(3, 1)].symbol(), "O");
-            }
-            assert!(buffer.content.iter().all(|cell| cell.bg == ratatui::style::Color::Reset));
-            assert_eq!(text.iter().filter(|row| row.contains('\u{25cf}')).count(), 1);
-            assert!(text.first().unwrap().is_empty());
-            assert!(text.last().unwrap().is_empty());
-        }
-    }
-
-    #[test]
     fn committed_agent_prefix_owns_its_marker_but_bottom_padding_waits_for_completion() {
         let mut app = App::test_default();
         app.transcript.messages.push(assistant_blocks_message(vec![
@@ -2018,24 +1753,12 @@ mod tests {
         assert_eq!(complete.segment_rows(padding).unwrap().len(), 1);
     }
 
-    fn assistant_message() -> ChatMessage {
-        ChatMessage::new(MessageRole::Assistant, Vec::new(), None)
-    }
-
     fn assistant_text_message(text: &str) -> ChatMessage {
         assistant_blocks_message(vec![MessageBlock::Text(TextBlock::from_complete(text))])
     }
 
     fn assistant_blocks_message(blocks: Vec<MessageBlock>) -> ChatMessage {
         ChatMessage::new(MessageRole::Assistant, blocks, None)
-    }
-
-    fn system_text_message(text: &str) -> ChatMessage {
-        ChatMessage::new(
-            MessageRole::System(Some(crate::app::SystemSeverity::Info)),
-            vec![MessageBlock::Text(TextBlock::from_complete(text))],
-            None,
-        )
     }
 
     fn tool_call_block(id: &str, hidden: bool) -> MessageBlock {
@@ -2060,7 +1783,7 @@ mod tests {
     }
 
     #[test]
-    fn live_tool_titles_keep_full_sources_and_obey_cache_budget_and_history_exclusion() {
+    fn live_tool_titles_preserve_canonical_sources_across_discard_resize_and_history_exclusion() {
         let mut app = App::test_default();
         app.status = AppStatus::Ready;
         let command =
@@ -2087,19 +1810,9 @@ mod tests {
                 .find(|segment| segment.ids.contains(&HistoryOutputId::ToolCall(id.to_owned())))
                 .expect("tool has its own transcript segment");
             let rows = rendered.segment_rows(segment).unwrap();
-            assert_eq!(
-                rows.iter().filter(|row| !line_text(row).trim().is_empty()).count(),
-                1,
-                "title-only tool has one content row"
-            );
             assert!(rows.iter().any(|row| line_text(row).ends_with(expected)));
             assert!(segment.commit_ready);
         }
-        let bytes = app.enforce_render_cache_budget().total_before_bytes;
-        assert!(
-            bytes > 0 && bytes < command.len() + read_title.len() + mcp_title.len(),
-            "cache must contain title projections, not discarded multiline tails: {bytes}"
-        );
         let mcp_segment = rendered
             .segments()
             .iter()
@@ -2108,51 +1821,36 @@ mod tests {
             })
             .expect("MCP tool has its own segment");
         let mcp_rows = rendered.segment_rows(mcp_segment).unwrap();
-        assert_eq!(mcp_rows.len(), 1);
         assert!(line_text(&mcp_rows[0]).contains("Search MCP documents"));
         assert!(line_text(&mcp_rows[0]).ends_with('…'));
         let replay = serialize_all_rows_with_boundaries(&mut app, 100);
         assert_eq!(replay.rows(), rendered.rows());
-        assert_eq!(app.enforce_render_cache_budget().total_before_bytes, bytes);
 
-        app.render_cache_budget.max_bytes = 0;
-        let stats = app.enforce_render_cache_budget();
-        assert_eq!(stats.evicted_blocks, 3, "title-only tool caches must be evictable");
-        assert_eq!(stats.evicted_bytes, bytes);
-        assert_eq!(stats.total_after_bytes, 0);
+        for (idx, source) in [(0, &command), (1, &read_title), (2, &mcp_title)] {
+            let MessageBlock::ToolCall(tool) = &mut app.transcript.messages[0].blocks[idx] else {
+                unreachable!("seeded tool block")
+            };
+            assert_eq!(&tool.title, source);
+            tool.cache.evict_cached_render();
+        }
+        let resized = serialize_all_rows_with_boundaries(&mut app, 24);
+        assert!(resized.rows().iter().all(|row| row.width() <= 24));
+        let restored = serialize_all_rows_with_boundaries(&mut app, 100);
+        assert_eq!(restored.rows(), rendered.rows());
         for (idx, source) in [(0, &command), (1, &read_title), (2, &mcp_title)] {
             let MessageBlock::ToolCall(tool) = &app.transcript.messages[0].blocks[idx] else {
                 unreachable!("seeded tool block")
             };
-            assert_eq!(&tool.title, source);
-            assert_eq!(tool.cache.cached_bytes(), 0);
+            assert_eq!(
+                &tool.title, source,
+                "resize and replay preserve the complete canonical title"
+            );
         }
-        app.render_cache_budget.max_bytes = usize::MAX;
-        let resized = serialize_all_rows_with_boundaries(&mut app, 24);
-        assert!(resized.rows().iter().all(|row| row.width() <= 24));
-        assert!(app.enforce_render_cache_budget().total_before_bytes > 0);
-        let restored = serialize_all_rows_with_boundaries(&mut app, 100);
-        assert_eq!(restored.rows(), rendered.rows());
 
         let confirmed: BTreeSet<_> =
             restored.segments().iter().flat_map(|segment| segment.ids.iter().cloned()).collect();
         let live = serialize_live_rows_with_boundaries_excluding(&mut app, 100, &confirmed, None);
         assert!(live.rows().is_empty(), "confirmed tool titles must not reappear in live output");
-    }
-
-    fn tool_call_block_with_interaction(
-        id: &str,
-        hidden: bool,
-        focused_permission: bool,
-        focused_question: bool,
-    ) -> MessageBlock {
-        tool_call_block_with_status_interaction(
-            id,
-            model::ToolCallStatus::Completed,
-            hidden,
-            focused_permission,
-            focused_question,
-        )
     }
 
     fn tool_call_block_with_status_interaction(
@@ -2206,53 +1904,6 @@ mod tests {
         MessageBlock::ToolCall(Box::new(tool))
     }
 
-    fn tool_call_block_with_pending_permission(
-        id: &str,
-        hidden: bool,
-        focused: bool,
-    ) -> MessageBlock {
-        let mut block = tool_call_block(id, hidden);
-        let MessageBlock::ToolCall(tool) = &mut block else {
-            unreachable!("tool_call_block always returns a tool call");
-        };
-        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-        tool.pending_permission = Some(crate::app::InlinePermission {
-            options: Vec::new(),
-            display: None,
-            subagent_context: None,
-            response_tx,
-            selected_index: 0,
-            focused,
-        });
-        block
-    }
-
-    fn tool_call_block_with_subagent_pending_permission(id: &str) -> MessageBlock {
-        let mut block = tool_call_block_with_pending_permission(id, true, true);
-        let MessageBlock::ToolCall(tool) = &mut block else {
-            unreachable!("tool_call_block_with_pending_permission returns a tool call");
-        };
-        let permission = tool.pending_permission.as_mut().expect("pending permission");
-        permission.options = vec![
-            model::PermissionOption::new(
-                "allow",
-                "Allow once",
-                model::PermissionOptionKind::AllowOnce,
-            ),
-            model::PermissionOption::new("deny", "Deny", model::PermissionOptionKind::RejectOnce),
-        ];
-        permission.subagent_context = Some(crate::app::SubagentPermissionContext {
-            subagent_label: "general-purpose".to_owned(),
-            child_tool_name: "Bash".to_owned(),
-            child_tool_title: "Child Tool".to_owned(),
-            parent_tool_call_id: "agent-1".to_owned(),
-            parent_tool_title: Some("Agent: general-purpose".to_owned()),
-            parent_model: Some("claude-opus-4-8".to_owned()),
-            parent_raw_input: None,
-        });
-        block
-    }
-
     #[test]
     fn user_paragraphs_stay_separate_from_the_streaming_reply_after_resize() {
         let mut app = App::test_default();
@@ -2283,442 +1934,6 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(" ");
             assert_eq!(reply, "live reply");
-        }
-    }
-
-    fn assistant_content_rows(app: &mut App, width: u16) -> (Vec<Line<'static>>, Vec<String>) {
-        let rows = serialize_live_rows(app, width);
-        let text = line_texts(&rows)
-            .into_iter()
-            .map(|row| row.chars().skip(3).collect::<String>())
-            .collect::<Vec<_>>();
-        (rows, text)
-    }
-
-    #[test]
-    fn assistant_markdown_shows_parsed_headings_and_verbatim_code_blocks() {
-        let source = concat!(
-            "## Setup\n\n",
-            "Run this first:\nthen continue\n\n",
-            "```bash\n#!/usr/bin/env bash\n# install deps\n  npm ci\n```\n\n",
-            "1. Then check\n\n",
-            "   ```sh\n   # nested\n   ```\n\n",
-            "   | Name | Value |\n   | --- | --- |\n   | Alpha | Beta |",
-        );
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_text_message(source));
-        let (rows, text) = assistant_content_rows(&mut app, 80);
-
-        let heading = text.iter().position(|row| row == "Setup").expect("heading row");
-        assert_eq!(
-            text[heading..heading + 10],
-            [
-                "Setup",
-                "",
-                "Run this first:",
-                "then continue",
-                "",
-                "bash",
-                "#!/usr/bin/env bash",
-                "# install deps",
-                "  npm ci",
-                "",
-            ]
-        );
-        assert!(
-            rows[heading]
-                .spans
-                .iter()
-                .filter(|span| span.content.contains("Setup"))
-                .all(|span| span.style.add_modifier.contains(ratatui::style::Modifier::BOLD)),
-            "heading lost its style"
-        );
-        assert!(!text.iter().any(|row| row.contains("##")), "{text:?}");
-
-        let body_column = text
-            .iter()
-            .find_map(|row| row.find("1. Then check"))
-            .map(|column| column + 3)
-            .expect("list item");
-        assert!(
-            text.iter().any(|row| row == "# nested"),
-            "nested code lost its own line: {text:?}"
-        );
-        let header = text.iter().find(|row| row.contains("Name")).expect("table header");
-        let table_row = text.iter().find(|row| row.contains("Alpha")).expect("table row");
-        assert!(table_row.contains("Beta"), "table cells split across rows: {text:?}");
-        assert_eq!(header.find('│'), Some(body_column), "table left its list: {text:?}");
-        assert_eq!(header.find('│'), table_row.find('│'), "table columns shifted: {text:?}");
-
-        let MessageBlock::Text(block) = &app.transcript.messages[0].blocks[0] else {
-            panic!("expected assistant text");
-        };
-        assert_eq!(block.text, source);
-    }
-
-    #[test]
-    fn assistant_code_blocks_wrap_inside_the_message_column() {
-        let code = "let value = compute_something_long(alpha, beta, gamma);";
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_text_message(&format!("```rust\n{code}\n```")));
-        let (rows, text) = assistant_content_rows(&mut app, 30);
-
-        assert!(rows.iter().all(|row| crate::ui::wrap::line_display_width(row) <= 30));
-        let label = text.iter().position(|row| row == "rust").expect("language label");
-        let body =
-            text[label + 1..].iter().take_while(|row| !row.is_empty()).cloned().collect::<Vec<_>>();
-        assert!(body.len() > 1, "long code must wrap: {text:?}");
-        assert_eq!(body.concat().replace(' ', ""), code.replace(' ', ""));
-    }
-
-    #[test]
-    fn width_rebuild_wraps_same_canonical_transcript_to_different_row_counts() {
-        let mut app = App::test_default();
-        app.push_message_tracked(user_text_message(
-            "Resize should rebuild canonical user prose from messages with enough words to wrap \
-             differently at narrow widths.",
-        ));
-        app.transcript.messages.push(assistant_text_message(
-            "Assistant rows also come directly from app.transcript.messages, so changing width changes \
-             physical row count without changing semantic text.",
-        ));
-
-        let narrow_rows = serialize_live_rows(&mut app, 32);
-        let wide_rows = serialize_live_rows(&mut app, 120);
-        let narrow_text = line_texts(&narrow_rows).join("\n");
-        let wide_text = line_texts(&wide_rows).join("\n");
-
-        assert!(
-            narrow_rows.len() > wide_rows.len(),
-            "narrow rows should wrap more physical rows; narrow={narrow_text:?}, wide={wide_text:?}"
-        );
-        assert_eq!(compact_text(&narrow_rows), compact_text(&wide_rows));
-        assert!(narrow_text.contains(" ❯ "));
-        assert!(narrow_text.contains(" ● "));
-        assert!(wide_text.contains(" ❯ "));
-        assert!(wide_text.contains(" ● "));
-    }
-
-    #[test]
-    fn active_assistant_commits_completed_tool_before_pending_permission_tool() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block("done-tool", false),
-            tool_call_block_with_status_interaction(
-                "pending-tool",
-                model::ToolCallStatus::InProgress,
-                false,
-                true,
-                false,
-            ),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-        let stable_text = line_texts(&serialized.rows()[..serialized.stable_row_count()]);
-        let mutable_text = line_texts(&serialized.rows()[serialized.stable_row_count()..]);
-
-        assert!(stable_text.iter().any(|line| line.starts_with(" ●")));
-        assert!(stable_text.iter().any(|line| line.contains("Child Tool")));
-        assert!(mutable_text.iter().any(|line| line.contains("Child Tool")));
-        assert!(mutable_text.iter().any(|line| line.contains("select")));
-    }
-
-    #[test]
-    fn active_assistant_completed_tool_is_commit_ready() {
-        let mut app = App::test_default();
-        app.transcript
-            .messages
-            .push(assistant_blocks_message(vec![tool_call_block("done-tool", false)]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-
-        let tool = serialized
-            .segments()
-            .iter()
-            .find(|segment| segment.ids.contains(&HistoryOutputId::ToolCall("done-tool".into())))
-            .unwrap();
-        assert!(tool.commit_ready);
-        assert!(
-            serialized
-                .segment_rows(tool)
-                .unwrap()
-                .iter()
-                .any(|row| line_text(row).contains("Child Tool"))
-        );
-    }
-
-    #[test]
-    fn active_assistant_in_progress_tool_keeps_label_mutable() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_status_interaction(
-                "running-tool",
-                model::ToolCallStatus::InProgress,
-                false,
-                false,
-                false,
-            ),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-
-        assert_eq!(serialized.stable_row_count(), 0);
-        assert_eq!(
-            serialized.first_mutable_boundary_kind(),
-            Some(LiveRowBoundaryKind::AssistantTool)
-        );
-    }
-
-    #[test]
-    fn detached_web_launch_is_stable_and_final_output_gets_its_own_rows() {
-        let mut app = App::test_default();
-        let mut block = tool_call_block_with_status_interaction(
-            "web-1",
-            model::ToolCallStatus::Detached,
-            false,
-            false,
-            false,
-        );
-        let MessageBlock::ToolCall(tool) = &mut block else {
-            unreachable!("tool helper returns a tool call")
-        };
-        tool.title = "Deferred web fetch".to_owned();
-        tool.sdk_tool_name = "WebFetch".to_owned();
-        tool.kind = model::ToolKind::Fetch;
-        app.transcript.messages.push(assistant_blocks_message(vec![block]));
-        app.index_tool_call("web-1".to_owned(), 0, 0);
-        app.sync_tool_call_history(0, 0);
-        app.status = AppStatus::Ready;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-        let launch = line_texts(serialized.rows());
-        assert!(launch.iter().any(|line| line.contains("Deferred web fetch")
-            && line.contains(crate::ui::theme::ICON_DETACHED)));
-
-        let MessageBlock::ToolCall(tool) = &mut app.transcript.messages[0].blocks[0] else {
-            unreachable!("original web call")
-        };
-        tool.status = model::ToolCallStatus::Completed;
-        tool.content = vec![model::ToolCallContent::from("Actual web output")];
-        tool.invalidate_render_cache();
-        app.sync_tool_call_history(0, 0);
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-        let rows = line_texts(serialized.rows());
-        let cards: Vec<_> =
-            rows.iter().filter(|line| line.contains("Deferred web fetch")).collect();
-        assert_eq!(cards.len(), 2);
-        assert!(cards[0].contains(crate::ui::theme::ICON_DETACHED));
-        assert!(cards[1].contains(crate::ui::theme::ICON_COMPLETED));
-        assert!(rows.iter().any(|line| line.contains("Actual web output")));
-    }
-
-    #[test]
-    fn live_adjacent_text_blocks_preserve_paragraph_gap() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(
-                TextBlock::from_complete("line 1: ready\n\n")
-                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
-            ),
-            MessageBlock::Text(TextBlock::from_complete("line 2: ready")),
-        ]));
-
-        let rows = serialize_live_rows(&mut app, 120);
-
-        let text = line_texts(&rows);
-        let first = text.iter().position(|row| row.ends_with("line 1: ready")).unwrap();
-        let second = text.iter().position(|row| row.ends_with("line 2: ready")).unwrap();
-        assert_eq!(second - first, 2);
-        assert!(text[first + 1].trim().is_empty());
-    }
-
-    #[test]
-    fn live_assistant_text_preserves_paragraph_gap_before_list_block() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(
-                TextBlock::from_complete("Intro\n\n")
-                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
-            ),
-            MessageBlock::Text(TextBlock::from_complete("- One\n- Two")),
-        ]));
-
-        let rows = serialize_live_rows(&mut app, 120);
-
-        let text = line_texts(&rows);
-        let intro = text.iter().position(|row| row.ends_with("Intro")).unwrap();
-        assert!(text[intro + 1].trim().is_empty());
-        assert!(text[intro + 2].trim_start().starts_with("- One"));
-        assert!(text[intro + 3].trim_start().starts_with("- Two"));
-    }
-
-    #[test]
-    fn live_assistant_text_preserves_paragraph_gap_after_list_block() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(
-                TextBlock::from_complete("- One\n- Two\n\n")
-                    .with_trailing_spacing(TextBlockSpacing::ParagraphBreak),
-            ),
-            MessageBlock::Text(TextBlock::from_complete("Outro")),
-        ]));
-
-        let rows = serialize_live_rows(&mut app, 120);
-
-        let text = line_texts(&rows);
-        let last_item = text.iter().position(|row| row.trim() == "- Two").unwrap();
-        assert!(text[last_item + 1].trim().is_empty());
-        assert_eq!(text[last_item + 2].trim(), "Outro");
-    }
-
-    #[test]
-    fn live_assistant_text_preserves_single_newline_rows() {
-        let mut app = App::test_default();
-        app.transcript
-            .messages
-            .push(assistant_text_message("line 1: ready\nline 2: ready\nline 3: ready"));
-
-        let rows = serialize_live_rows(&mut app, 120);
-
-        let text = line_texts(&rows);
-        let first = text.iter().position(|row| row.ends_with("line 1: ready")).unwrap();
-        assert_eq!(text[first + 1].trim(), "line 2: ready");
-        assert_eq!(text[first + 2].trim(), "line 3: ready");
-    }
-
-    #[test]
-    fn excluded_static_assistant_text_prefix_is_not_rendered_into_live_rows() {
-        let first = TextBlock::from_complete("first paragraph\n\n")
-            .with_trailing_spacing(TextBlockSpacing::ParagraphBreak);
-        let first_id = first.id;
-        let second = TextBlock::from_complete("second paragraph");
-        let second_id = second.id;
-        let message =
-            assistant_blocks_message(vec![MessageBlock::Text(first), MessageBlock::Text(second)]);
-        let message_id = message.id;
-        let mut app = App::test_default();
-        app.transcript.messages.push(message);
-        let excluded_ids = BTreeSet::from([
-            HistoryOutputId::AssistantLabel(message_id),
-            HistoryOutputId::Block(first_id),
-        ]);
-
-        let serialized =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 120, &excluded_ids, None);
-        let text = line_texts(serialized.rows());
-
-        assert_eq!(
-            text.iter().map(|row| row.trim()).filter(|row| !row.is_empty()).collect::<Vec<_>>(),
-            ["second paragraph"]
-        );
-        assert!(
-            serialized
-                .segments()
-                .iter()
-                .all(|segment| !segment.ids.contains(&HistoryOutputId::Block(first_id)))
-        );
-        assert!(
-            serialized
-                .segments()
-                .iter()
-                .any(|segment| segment.ids.contains(&HistoryOutputId::Block(second_id)))
-        );
-    }
-
-    #[test]
-    fn active_assistant_table_handoff_keeps_prefix_mutable_with_pipe_row_tail() {
-        let first = TextBlock::from_complete(concat!(
-            "| Hassle | What users report | Refs |\n",
-            "| --- | --- | --- |\n",
-            "| Input lag | Keystrokes echo late as context fills | #18943 |\n",
-        ));
-        let second = TextBlock::from_complete(
-            "| Slow startup | Startup output lands after a long delay | #42002 |\n",
-        );
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(first),
-            MessageBlock::Text(second),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 180);
-        let committed_ids = serialized
-            .segments()
-            .iter()
-            .filter(|segment| segment.commit_ready)
-            .flat_map(|segment| segment.ids.iter().cloned())
-            .collect::<BTreeSet<_>>();
-        let remaining =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 180, &committed_ids, None);
-        let remaining_text = line_texts(remaining.rows());
-
-        assert_eq!(serialized.stable_row_count(), 0);
-        assert!(
-            remaining_text.iter().any(|line| line.contains("Slow startup")),
-            "expected table continuation to remain visible: {remaining_text:?}"
-        );
-        assert!(
-            !remaining_text.iter().any(|line| line.trim_start().starts_with("| Slow startup |")),
-            "table continuation must not render as a raw pipe row: {remaining_text:?}"
-        );
-    }
-
-    #[test]
-    fn parsed_markdown_handoffs_keep_rows_together_through_completion_and_resize() {
-        for (first, second) in [
-            ("Name | Value\n- | -\nred | one\n", "blue | two\n"),
-            ("Name | Value\n--- | ---\nred\n", "blue\n"),
-            ("> Name | Value\n> --- | ---\n> red | one\n", "> blue | two\n"),
-            ("````md\n```\nName | Value\n", "- | -\nred | one\n````"),
-        ] {
-            let first = TextBlock::from_complete(first);
-            let second = TextBlock::from_complete(second);
-            let block_ids = [HistoryOutputId::Block(first.id), HistoryOutputId::Block(second.id)];
-            let source = format!("{}{}", first.text, second.text);
-            let mut streamed = App::test_default();
-            streamed.transcript.messages.push(assistant_blocks_message(vec![
-                MessageBlock::Text(first),
-                MessageBlock::Text(second),
-            ]));
-            streamed.bind_active_turn_assistant(0);
-            let mut whole = App::test_default();
-            whole.transcript.messages.push(assistant_text_message(&source));
-            whole.bind_active_turn_assistant(0);
-            for running in [true, false] {
-                streamed.status = if running { AppStatus::Running } else { AppStatus::Ready };
-                whole.status = if running { AppStatus::Running } else { AppStatus::Ready };
-                for width in [24, 80, 24] {
-                    let actual = serialize_all_rows_with_boundaries(&mut streamed, width);
-                    let expected = serialize_all_rows_with_boundaries(&mut whole, width);
-                    assert_eq!(
-                        line_texts(actual.rows()),
-                        line_texts(expected.rows()),
-                        "{source:?}"
-                    );
-                    let text_segments = actual
-                        .segments()
-                        .iter()
-                        .filter(|segment| segment.kind == LiveRowBoundaryKind::AssistantText)
-                        .collect::<Vec<_>>();
-                    assert_eq!(text_segments.len(), 1, "one block must have one render owner");
-                    assert!(block_ids.iter().all(|id| text_segments[0].ids.contains(id)));
-                    if running {
-                        assert_eq!(actual.stable_row_count(), 0, "context must stay mutable");
-                    } else {
-                        assert_eq!(actual.stable_row_count(), actual.rows().len());
-                    }
-                }
-            }
         }
     }
 
@@ -2761,204 +1976,6 @@ mod tests {
         assert!(super::line_is_blank(&rows[0]), "the table must own its leading paragraph gap");
         assert!(
             rows.iter().any(|row| line_text(row).contains("red") && line_text(row).contains("one"))
-        );
-    }
-
-    #[test]
-    fn a_closed_markdown_block_releases_scrollback_before_an_independent_pipe_paragraph() {
-        for (source, spacing) in [
-            ("Name | Value\n--- | ---\nred | one\n", TextBlockSpacing::ParagraphBreak),
-            ("Name | Value\n--- | ---\nred | literal **\n", TextBlockSpacing::ParagraphBreak),
-            ("Name | Value\n--- | ---\nred | literal **", TextBlockSpacing::ParagraphBreak),
-            ("One | Two\n--- | --- | ---\nred | one | two\n", TextBlockSpacing::None),
-            ("````md\n```\nliteral **\n````\n", TextBlockSpacing::None),
-            ("````md\n```\nliteral **\n````", TextBlockSpacing::None),
-        ] {
-            let mut app = App::test_default();
-            let first = TextBlock::from_complete(source).with_trailing_spacing(spacing);
-            let first_id = first.id;
-            app.transcript.messages.push(assistant_blocks_message(vec![
-                MessageBlock::Text(first),
-                MessageBlock::Text(TextBlock::from_complete("ordinary | paragraph")),
-            ]));
-            app.bind_active_turn_assistant(0);
-            app.status = AppStatus::Running;
-
-            let rows = serialize_all_rows_with_boundaries(&mut app, 80);
-            let table = rows
-                .segments()
-                .iter()
-                .find(|segment| segment.ids.contains(&HistoryOutputId::Block(first_id)))
-                .expect("table segment");
-            assert!(table.commit_ready, "independent pipe text must not hold the prefix");
-            assert!(table.end_row <= rows.stable_row_count());
-            assert!(
-                rows.segment_rows(table)
-                    .unwrap()
-                    .iter()
-                    .all(|row| !line_text(row).contains("ordinary"))
-            );
-        }
-    }
-
-    #[test]
-    fn live_assistant_ordered_list_wraps_without_losing_content() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_text_message(
-            "3. Keymap survey - mapping the keymap system, focus dispatch, and help generation.",
-        ));
-
-        let rows = serialize_live_rows(&mut app, 38);
-        let text = line_texts(&rows);
-
-        assert!(
-            text.iter().any(|line| line.starts_with(" ● 3. Keymap survey")),
-            "missing ordered list prefix: {text:?}"
-        );
-        let content = text.iter().map(|line| line.trim()).collect::<Vec<_>>().join(" ");
-        assert!(
-            content.contains("mapping the keymap system, focus dispatch, and help generation."),
-            "{text:?}"
-        );
-    }
-
-    #[test]
-    fn active_assistant_list_handoff_keeps_context_prefix_mutable() {
-        let first = TextBlock::from_complete("3. Keymap survey maps the system.");
-        let second = TextBlock::from_complete(" Additional detail keeps streaming.");
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(first),
-            MessageBlock::Text(second),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 38);
-        let committed_ids = serialized
-            .segments()
-            .iter()
-            .filter(|segment| segment.commit_ready)
-            .flat_map(|segment| segment.ids.iter().cloned())
-            .collect::<BTreeSet<_>>();
-        let remaining =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 38, &committed_ids, None);
-        let remaining_text = line_texts(remaining.rows());
-
-        assert_eq!(serialized.stable_row_count(), 0);
-        assert!(
-            remaining_text.iter().any(|line| line.starts_with(" ● 3. Keymap survey")),
-            "missing ordered list prefix: {remaining_text:?}"
-        );
-    }
-
-    #[test]
-    fn streamed_list_paragraphs_keep_numbering_and_never_commit_an_incomplete_list() {
-        let pieces = [
-            "9. Parent item.\n\n",
-            "   Continuation paragraph.\n\n",
-            "   - Nested child.\n",
-            "10. Following item.",
-        ];
-        for width in [32, 80] {
-            let mut streamed = App::test_default();
-            streamed.transcript.messages.push(assistant_blocks_message(Vec::new()));
-            streamed.bind_active_turn_assistant(0);
-            streamed.status = AppStatus::Running;
-            for piece in pieces {
-                streamed.transcript.messages[0]
-                    .blocks
-                    .push(MessageBlock::Text(TextBlock::from_complete(piece)));
-                let partial = serialize_all_rows_with_boundaries(&mut streamed, width);
-                assert_eq!(
-                    partial.stable_row_count(),
-                    0,
-                    "list context must stay mutable until the list ends: {piece:?}"
-                );
-            }
-            let mut whole = App::test_default();
-            whole.transcript.messages.push(assistant_text_message(&pieces.concat()));
-            whole.bind_active_turn_assistant(0);
-            whole.status = AppStatus::Running;
-            assert_eq!(
-                line_texts(&serialize_live_rows(&mut streamed, width)),
-                line_texts(&serialize_live_rows(&mut whole, width)),
-                "stream boundaries must not change list structure"
-            );
-            streamed.status = AppStatus::Ready;
-            whole.status = AppStatus::Ready;
-            assert_eq!(
-                line_texts(&serialize_live_rows(&mut streamed, width)),
-                line_texts(&serialize_live_rows(&mut whole, width)),
-                "completion must preserve the list"
-            );
-        }
-    }
-
-    #[test]
-    fn active_assistant_inline_bold_handoff_keeps_prefix_mutable_until_closed() {
-        let first = TextBlock::from_complete("This is **bold");
-        let second = TextBlock::from_complete(" text** done.");
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(first),
-            MessageBlock::Text(second),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 80);
-        let committed_ids = serialized
-            .segments()
-            .iter()
-            .filter(|segment| segment.commit_ready)
-            .flat_map(|segment| segment.ids.iter().cloned())
-            .collect::<BTreeSet<_>>();
-        let remaining =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &committed_ids, None);
-        let remaining_text = line_texts(remaining.rows());
-
-        assert_eq!(serialized.stable_row_count(), 0);
-        assert!(remaining_text.iter().any(|line| line.contains("This is bold")));
-        assert!(remaining_text.iter().any(|line| line.contains("text done.")));
-        assert!(
-            !remaining_text.iter().any(|line| line.contains("**")),
-            "inline markdown marker leaked through handoff: {remaining_text:?}"
-        );
-    }
-
-    #[test]
-    fn active_assistant_inline_bold_handoff_commits_after_following_block_arrives() {
-        let first = TextBlock::from_complete("This is **bold");
-        let second = TextBlock::from_complete(" text** done.");
-        let third = TextBlock::from_complete("more");
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            MessageBlock::Text(first),
-            MessageBlock::Text(second),
-            MessageBlock::Text(third),
-        ]));
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 80);
-        let stable_text = line_texts(&serialized.rows()[..serialized.stable_row_count()]);
-
-        assert!(
-            stable_text.iter().any(|line| line.contains("This is bold")),
-            "closed inline markdown handoff did not commit: {stable_text:?}"
-        );
-        assert!(
-            stable_text.iter().any(|line| line.contains("text done.")),
-            "closed inline markdown suffix did not commit: {stable_text:?}"
-        );
-        assert!(
-            !stable_text.iter().any(|line| line.contains("more")),
-            "active tail should remain mutable: {stable_text:?}"
-        );
-        assert!(
-            !stable_text.iter().any(|line| line.contains("**")),
-            "inline markdown marker leaked through committed handoff: {stable_text:?}"
         );
     }
 
@@ -3009,242 +2026,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_assistant_reserves_no_transcript_space_independently_of_activity_and_tips() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(user_text_message("request"));
-        app.transcript.messages.push(assistant_message());
-        app.bind_active_turn_assistant(1);
-        assert_assistant_marker(&serialize_live_rows(&mut app, 80), false);
-        app.status = AppStatus::Running;
-        app.begin_turn_activity(std::time::Instant::now());
-        for width in [32, 120, 32] {
-            let serialized = serialize_all_rows_with_boundaries(&mut app, width);
-            assert_assistant_marker(serialized.rows(), false);
-            assert!(serialized.segments().iter().all(|segment| segment.msg_idx == 0));
-            let stable = &serialized.rows()[..serialized.stable_row_count()];
-            assert_assistant_marker(stable, false);
-            assert!(line_texts(stable).iter().any(|row| row.ends_with("request")));
-            assert_eq!(serialized.first_mutable_boundary_kind(), None);
-            assert!(app.transcript.messages[1].blocks.is_empty());
-        }
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "spinnerTipsEnabled",
-            serde_json::json!(false),
-        ));
-        assert_assistant_marker(&serialize_live_rows(&mut app, 80), false);
-        app.config.snapshot = None;
-        assert_assistant_marker(&serialize_live_rows(&mut app, 80), false);
-        app.session_runtime.runtime_session_state =
-            Some(model::RuntimeSessionState::RequiresAction);
-        assert_assistant_marker(&serialize_live_rows(&mut app, 80), false);
-        app.session_runtime.runtime_session_state = Some(model::RuntimeSessionState::Running);
-        app.pending_interaction_ids.push("permission".into());
-        assert_assistant_marker(&serialize_live_rows(&mut app, 80), false);
-        app.pending_interaction_ids.clear();
-        assert_assistant_marker(&serialize_live_rows(&mut app, 80), false);
-        app.status = AppStatus::Ready;
-        assert_assistant_marker(&serialize_live_rows(&mut app, 80), false);
-    }
-
-    #[test]
-    fn activity_never_enters_transcript_rows_or_history_boundaries() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_message());
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-        app.begin_turn_activity(std::time::Instant::now());
-        for width in [32, 120, 32] {
-            let serialized = serialize_all_rows_with_boundaries(&mut app, width);
-            assert!(serialized.rows().is_empty());
-            assert!(serialized.segments().is_empty());
-            app.turn.compaction.begin();
-            assert!(app.transcript.messages[0].blocks.is_empty());
-        }
-    }
-
-    #[test]
-    fn sdk_thinking_renders_separately_for_empty_assistant_and_clears_on_work_or_wait() {
-        let mut app = App::test_default();
-        app.session_runtime.session_id = Some("thinking-render".into());
-        app.transcript.messages.push(assistant_message());
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-        app.begin_turn_activity(std::time::Instant::now());
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "prefersReducedMotion",
-            serde_json::json!(true),
-        ));
-        let verb = app.activity_presentation(std::time::Instant::now()).expect("active").text();
-        for phase in [
-            model::AgentActivityPhase::Thinking,
-            model::AgentActivityPhase::Working,
-            model::AgentActivityPhase::Thinking,
-        ] {
-            crate::app::handle_client_event(
-                &mut app,
-                crate::agent::events::ClientEvent::SessionUpdate {
-                    session_id: "thinking-render".into(),
-                    update: model::SessionUpdate::AgentActivityUpdate(phase),
-                },
-            );
-            for width in [32, 120, 32] {
-                let serialized = serialize_all_rows_with_boundaries(&mut app, width);
-                assert_eq!(
-                    line_texts(serialized.rows()).iter().any(|row| row.contains("Thinking…")),
-                    phase == model::AgentActivityPhase::Thinking
-                );
-                if phase == model::AgentActivityPhase::Thinking {
-                    assert_assistant_marker(serialized.rows(), true);
-                    assert_eq!(serialized.stable_row_count(), 0);
-                    assert_eq!(serialized.rows_excluding_ids(&BTreeSet::new()), serialized.rows());
-                    assert!(serialized.segments().iter().all(|segment| !segment.commit_ready));
-                } else {
-                    assert!(serialized.rows().is_empty());
-                    assert!(serialized.segments().is_empty());
-                }
-                let activity = crate::ui::activity_rows::build_activity_rows(
-                    &app,
-                    width,
-                    std::time::Instant::now(),
-                );
-                assert!(line_text(&activity[0]).contains(&verb));
-                assert!(line_text(&activity[1]).contains("Tip:"));
-                assert!(app.transcript.messages[0].blocks.is_empty());
-            }
-        }
-        app.config.snapshot.as_mut().expect("settings").values.extend(
-            crate::agent::settings::SettingsSnapshot::test_value(
-                "spinnerTipsEnabled",
-                serde_json::json!(false),
-            )
-            .values,
-        );
-        let activity =
-            crate::ui::activity_rows::build_activity_rows(&app, 120, std::time::Instant::now());
-        assert_eq!(activity.len(), 1);
-        assert!(line_text(&activity[0]).contains(&verb));
-        assert_assistant_marker(&serialize_live_rows(&mut app, 120), true);
-        assert!(
-            line_texts(&serialize_live_rows(&mut app, 120))
-                .iter()
-                .any(|row| row.contains("Thinking\u{2026}"))
-        );
-        app.pending_interaction_ids.push("permission".into());
-        assert!(serialize_live_rows(&mut app, 120).is_empty());
-        app.pending_interaction_ids.clear();
-        app.turn.cancel_requested = true;
-        let cancelling = serialize_live_rows(&mut app, 120);
-        assert!(cancelling.is_empty());
-        assert!(!line_texts(&cancelling).iter().any(|row| row.contains("Thinking…")));
-        app.turn.cancel_requested = false;
-        app.turn.compaction.begin();
-        let compacting = serialize_live_rows(&mut app, 120);
-        assert!(compacting.is_empty());
-        assert!(!line_texts(&compacting).iter().any(|row| row.contains("Thinking…")));
-        app.turn.reset_for_turn_exit();
-        app.status = AppStatus::Ready;
-        assert!(serialize_live_rows(&mut app, 120).is_empty());
-    }
-
-    #[test]
-    fn disabled_tips_keep_activity_and_real_output_without_duplicate_headings() {
-        let session_update = |app: &mut App, update| {
-            crate::app::handle_client_event(
-                app,
-                crate::agent::events::ClientEvent::SessionUpdate {
-                    session_id: "heading-output".into(),
-                    update,
-                },
-            );
-        };
-        let mut app = App::test_default();
-        app.session_runtime.session_id = Some("heading-output".into());
-        app.transcript.messages.push(assistant_message());
-        app.transcript.messages.push(assistant_message());
-        app.bind_active_turn_assistant(0);
-        app.status = AppStatus::Running;
-        app.begin_turn_activity(std::time::Instant::now());
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "spinnerTipsEnabled",
-            serde_json::json!(false),
-        ));
-        assert!(serialize_live_rows(&mut app, 80).is_empty());
-        for update in [
-            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Thinking),
-            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Working),
-        ] {
-            session_update(&mut app, update);
-            let rows = line_texts(&serialize_live_rows(&mut app, 80));
-            assert_eq!(
-                rows.iter().filter(|row| row.starts_with(" \u{25cf}")).count(),
-                usize::from(app.status == AppStatus::Thinking)
-            );
-            assert_eq!(
-                rows.iter().any(|row| row.contains("Thinking…")),
-                app.status == AppStatus::Thinking
-            );
-        }
-        session_update(
-            &mut app,
-            model::SessionUpdate::ToolCall(
-                model::ToolCall::new("first-tool", "Read")
-                    .status(model::ToolCallStatus::InProgress),
-            ),
-        );
-        let tool_rows = line_texts(&serialize_live_rows(&mut app, 80));
-        assert_eq!(tool_rows.iter().filter(|row| row.starts_with(" ●")).count(), 1);
-        assert!(tool_rows.iter().any(|row| row.contains("Read")));
-        session_update(
-            &mut app,
-            model::SessionUpdate::ToolCallUpdate(model::ToolCallUpdate::new(
-                "first-tool",
-                model::ToolCallUpdateFields::new().status(model::ToolCallStatus::Completed),
-            )),
-        );
-        session_update(
-            &mut app,
-            model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
-                model::ContentBlock::Text(model::TextContent::new("Actual response")),
-            )),
-        );
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 80);
-        let output = line_texts(serialized.rows());
-        assert_eq!(output.iter().filter(|row| row.starts_with(" ●")).count(), 1);
-        assert!(output.iter().any(|row| row == "   Actual response"));
-        let excluded =
-            BTreeSet::from([HistoryOutputId::AssistantLabel(app.transcript.messages[0].id)]);
-        app.config.snapshot = None;
-        let after_enable =
-            serialize_live_rows_with_boundaries_excluding(&mut app, 80, &excluded, None);
-        assert!(!line_texts(after_enable.rows()).iter().any(|row| row.starts_with(" ●")));
-        assert!(line_texts(after_enable.rows()).iter().any(|row| row == "   Actual response"));
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "spinnerTipsEnabled",
-            serde_json::json!(false),
-        ));
-        crate::app::handle_client_event(
-            &mut app,
-            crate::agent::events::ClientEvent::TurnComplete {
-                session_id: "heading-output".into(),
-                queued_turn_count: Some(0),
-                terminal_reason: None,
-            },
-        );
-        let completed = line_texts(&serialize_live_rows(&mut app, 80));
-        assert_eq!(completed.iter().filter(|row| row.starts_with(" ●")).count(), 1);
-        assert!(completed.iter().any(|row| row == "   Actual response"));
-        session_update(
-            &mut app,
-            model::SessionUpdate::AgentActivityUpdate(model::AgentActivityPhase::Thinking),
-        );
-        assert_eq!(line_texts(&serialize_live_rows(&mut app, 80)), completed);
-        assert!(
-            crate::ui::activity_rows::build_activity_rows(&app, 80, std::time::Instant::now())
-                .is_empty()
-        );
-    }
-
-    #[test]
     fn thinking_keeps_completed_body_committable_and_survives_committed_body_exclusion() {
         let mut app = App::test_default();
         app.transcript
@@ -3284,485 +2065,219 @@ mod tests {
         assert!(!line_texts(completed.rows()).iter().any(|row| row.contains("Thinking")));
     }
 
-    #[test]
-    fn live_rows_keep_system_row_after_active_assistant_turn() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_text_message("streaming"));
-        app.push_message_tracked(system_text_message("during turn"));
-
-        let rows = serialize_live_rows(&mut app, 120);
-        let text = line_texts(&rows);
-        let assistant_pos = text.iter().position(|line| line == " ● streaming").expect("assistant");
-        let system_pos = text.iter().position(|line| line == "during turn").expect("system");
-
-        assert!(assistant_pos < system_pos);
-    }
-
-    #[test]
-    fn live_rows_render_welcome_once() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "/workspace/demo",
-            "session-123",
-        ));
-
-        let rows = serialize_live_rows(&mut app, 120);
-        let text = line_texts(&rows);
-
-        assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
-    }
-
-    #[test]
-    fn live_welcome_tip_wraps_below_its_value() {
-        let mut message = ChatMessage::welcome("1.2.3", "Pro", "/workspace/demo", "session-123");
-        let Some(MessageBlock::Welcome(welcome)) = message.blocks.first_mut() else {
-            panic!("expected welcome block");
-        };
-        welcome.tip_seed = 7;
-        let mut app = App::test_default();
-        app.transcript.messages.push(message);
-
-        let text = line_texts(&serialize_live_rows(&mut app, 110));
-        let tip_row = text.iter().position(|line| line.contains("Tips: Start")).expect("tip row");
-
-        assert_eq!(text[tip_row].find("Tips:"), Some(20));
-        assert_eq!(text[tip_row + 1].find("noise"), Some(26));
-    }
-
-    #[test]
-    fn welcome_renders_once_across_repeated_width_rebuilds() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "/workspace/demo",
-            "session-123",
-        ));
-
-        for width in [36, 120, 36] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            assert_eq!(
-                text.iter().filter(|line| line.as_str() == "Overview").count(),
-                1,
-                "welcome overview duplicated at width {width}: {text:?}"
-            );
-            assert_eq!(
-                text.iter().filter(|line| line.contains("Version:")).count(),
-                1,
-                "welcome version row duplicated at width {width}: {text:?}"
-            );
-            assert_eq!(
-                text.iter().filter(|line| line.contains("Subscription:")).count(),
-                1,
-                "welcome subscription row duplicated at width {width}: {text:?}"
-            );
-            assert_eq!(
-                text.iter().filter(|line| line.contains("Session ID:")).count(),
-                1,
-                "welcome session row duplicated at width {width}: {text:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn finalized_welcome_rows_are_commit_ready() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "/workspace/demo",
-            "session-123",
-        ));
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-
-        assert!(!serialized.rows().is_empty());
-        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-    }
-
-    #[test]
-    fn live_rows_render_uncommitted_loading_welcome() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Connecting;
-        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
-
-        let rows = serialize_live_rows(&mut app, 120);
-        let text = line_texts(&rows);
-
-        assert_eq!(text.iter().filter(|line| line.as_str() == "Overview").count(), 1);
-        assert!(text.iter().any(|line| line.contains("_~^~^~_")));
-        assert!(text.iter().any(|line| line.contains("Subscription: Connecting")));
-        assert!(text.iter().any(|line| line.contains("Session ID: Connecting")));
-    }
-
-    #[test]
-    fn loading_welcome_rows_are_not_commit_ready() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Connecting;
-        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-
-        assert!(!serialized.rows().is_empty());
-        assert_eq!(serialized.stable_row_count(), 0);
-    }
-
-    #[test]
-    fn loading_welcome_blocks_later_stable_rows_from_scrollback() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Connecting;
-        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
-        app.push_message_tracked(user_text_message("queued while connecting"));
-
-        let serialized = serialize_all_rows_with_boundaries(&mut app, 120);
-
-        assert!(
-            line_texts(serialized.rows()).iter().any(|line| line == " ❯ queued while connecting")
-        );
-        assert_eq!(serialized.stable_row_count(), 0);
-    }
-
-    // The crab fixtures are written out here rather than taken from
-    // welcome.rs, so a changed frame table fails these tests.
-    const REST_CRAB: [&str; 4] =
-        [r"    _~^~^~_     ", r"\) /  o o  \ (/ ", r"  '_   -   _'   ", r"  / '-----' \   "];
-    const EYES_LEFT_ROW: &str = r"\) / o o   \ (/ ";
-    const EYES_RIGHT_ROW: &str = r"\) /   o o \ (/ ";
-    const LEGS_B_ROW: &str = r"  \ '-----' /   ";
-    const WAVE_TOP_ROW: &str = r"\)  _~^~^~_  (/ ";
-
-    /// The four crab cells of the rendered welcome: the art sits after the
-    /// two-column left padding, 16 columns wide.
-    fn crab_rows(rows: &[Line<'_>]) -> Vec<String> {
-        let text = line_texts(rows);
-        let Some(start) = text.iter().position(|line| line.contains("_~^~^~_")) else {
-            return Vec::new();
-        };
-        text[start..]
+    fn child_interaction_region(serialized: &SerializedLiveRows, id: &str) -> Vec<Line<'static>> {
+        let segment = serialized
+            .segments()
             .iter()
-            .take(4)
-            .map(|line| format!("{line:<18}").chars().skip(2).take(16).collect())
-            .collect()
+            .find(|segment| segment.ids.contains(&HistoryOutputId::ToolCall(id.to_owned())))
+            .expect("child's own transcript segment");
+        assert!(!segment.commit_ready, "pending interaction must remain mutable");
+        serialized.segment_rows(segment).expect("child rows").to_vec()
     }
 
-    /// The hello is timed from the first connect, pinned to this instant, and
-    /// every render passes an explicit `now`, so no test depends on how fast
-    /// it runs.
-    struct CrabClock(std::time::Instant);
-
-    impl CrabClock {
-        fn new() -> Self {
-            Self(std::time::Instant::now())
-        }
-
-        fn at(&self, millis: u64) -> std::time::Instant {
-            self.0 + std::time::Duration::from_millis(millis)
-        }
+    struct ChildInteractionFixture {
+        app: App,
+        permission_rx: Option<tokio::sync::oneshot::Receiver<model::RequestPermissionResponse>>,
+        question_rx: Option<tokio::sync::oneshot::Receiver<model::RequestQuestionResponse>>,
+        before: Option<Vec<String>>,
     }
 
-    fn rows_at(app: &mut App, now: std::time::Instant) -> SerializedLiveRows {
-        serialize_live_rows_at(
+    fn deliver_child_parent_metadata(app: &mut App) {
+        crate::app::handle_client_event(
             app,
-            120,
-            &BTreeSet::new(),
-            now,
-            &super::LayoutControl::uninterrupted(),
-        )
-    }
-
-    /// A welcome whose values are still loading, `spinner_frame` frames into
-    /// the connecting loop.
-    fn connecting_app(spinner_frame: usize) -> App {
-        let mut app = App::test_default();
-        app.status = AppStatus::Connecting;
-        app.spinner_frame = spinner_frame;
-        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
-        app
-    }
-
-    /// A ready welcome whose first connect is the clock's base instant, with
-    /// the settings snapshot acknowledged.
-    fn connected_app(clock: &CrabClock) -> App {
-        let mut app = App::test_default();
-        app.status = AppStatus::Ready;
-        app.startup.mark_connected(clock.0);
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "prefersReducedMotion",
-            serde_json::json!(false),
-        ));
-        app.transcript.messages.push(ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "/workspace/demo",
-            "session-123",
-        ));
-        app
-    }
-
-    fn reduce_motion(app: &mut App) {
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "prefersReducedMotion",
-            serde_json::json!(true),
-        ));
-    }
-
-    #[test]
-    fn connecting_crab_steps_through_poses_by_spinner_frame() {
-        let clock = CrabClock::new();
-        let mut app = connecting_app(0);
-        let now = clock.at(0);
-        let crab_at = |app: &mut App, spinner_frame: usize| {
-            app.spinner_frame = spinner_frame;
-            crab_rows(rows_at(app, now).rows())
-        };
-
-        let first = crab_at(&mut app, 0);
-        let last_of_first = crab_at(&mut app, 5);
-        let second = crab_at(&mut app, 6);
-        let third = crab_at(&mut app, 12);
-        let wrapped = crab_at(&mut app, 24);
-
-        assert_eq!(first.len(), 4, "{first:?}");
-        assert_eq!(last_of_first, first, "a pose lasts 6 spinner frames");
-        assert_ne!(first, second);
-        assert_eq!(first[1], EYES_LEFT_ROW);
-        assert_eq!(second[3], LEGS_B_ROW);
-        assert_eq!(third[1], EYES_RIGHT_ROW);
-        assert_eq!(wrapped, first, "the loop repeats after four poses");
-    }
-
-    #[test]
-    fn hello_waves_while_holding_the_welcome_back_from_scrollback() {
-        let clock = CrabClock::new();
-        let mut app = connected_app(&clock);
-
-        let serialized = rows_at(&mut app, clock.at(0));
-
-        assert_eq!(crab_rows(serialized.rows())[0], WAVE_TOP_ROW);
-        assert_eq!(serialized.stable_row_count(), 0);
-        let last_instant = rows_at(&mut app, clock.at(1_199));
-        assert_eq!(crab_rows(last_instant.rows()), REST_CRAB, "the hello ends at rest");
-        assert_eq!(last_instant.stable_row_count(), 0, "still held inside the window");
-    }
-
-    #[test]
-    fn crab_rests_and_commits_when_the_hello_window_closes() {
-        let clock = CrabClock::new();
-        let mut app = connected_app(&clock);
-
-        let serialized = rows_at(&mut app, clock.at(1_200));
-
-        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
-        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-    }
-
-    #[test]
-    fn a_later_connection_does_not_replay_the_hello() {
-        let clock = CrabClock::new();
-        let mut app = connected_app(&clock);
-        // `/new` or a resume connects again with the welcome as the whole
-        // transcript, long after the first hello ended.
-        app.startup.mark_connected(clock.at(60_000));
-
-        let serialized = rows_at(&mut app, clock.at(60_100));
-
-        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
-        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-    }
-
-    #[test]
-    fn a_narrow_terminal_shows_no_crab_and_does_not_hold_the_welcome_back() {
-        let clock = CrabClock::new();
-        let mut app = connected_app(&clock);
-
-        let narrow = serialize_live_rows_at(
-            &mut app,
-            36,
-            &BTreeSet::new(),
-            clock.at(0),
-            &super::LayoutControl::uninterrupted(),
+            crate::agent::events::ClientEvent::SessionUpdate {
+                session_id: "interaction-render".into(),
+                update: model::SessionUpdate::ToolCallUpdate(
+                    model::ToolCallUpdate::new("child-request", model::ToolCallUpdateFields::new())
+                        .meta(serde_json::json!({"claudeCode":{"parentToolUseId":"parent-agent"}})),
+                ),
+            },
         );
-
-        assert!(crab_rows(narrow.rows()).is_empty(), "no crab column at 36 columns");
-        assert_eq!(narrow.stable_row_count(), narrow.rows().len(), "nothing to wait for");
     }
 
-    #[test]
-    fn a_prompt_during_the_hello_snaps_the_crab_to_rest_and_commits_it() {
-        let clock = CrabClock::new();
-        let mut app = connected_app(&clock);
-        app.push_message_tracked(user_text_message("typed first"));
-
-        let serialized = rows_at(&mut app, clock.at(100));
-
-        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
-        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-    }
-
-    #[test]
-    fn hello_waits_at_rest_until_the_motion_preference_is_known() {
-        let clock = CrabClock::new();
-        let mut app = connected_app(&clock);
-        app.config.snapshot = None;
-
-        let serialized = rows_at(&mut app, clock.at(100));
-
-        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
-        assert_eq!(serialized.stable_row_count(), 0, "held until the hello window closes");
-    }
-
-    #[test]
-    fn reduced_motion_keeps_the_crab_at_rest() {
-        let clock = CrabClock::new();
-        let mut connecting = connecting_app(0);
-        reduce_motion(&mut connecting);
-        assert_eq!(crab_rows(rows_at(&mut connecting, clock.at(0)).rows()), REST_CRAB);
-
-        let mut hello = connected_app(&clock);
-        reduce_motion(&mut hello);
-        let serialized = rows_at(&mut hello, clock.at(100));
-        assert_eq!(crab_rows(serialized.rows()), REST_CRAB);
-        assert_eq!(serialized.stable_row_count(), serialized.rows().len());
-    }
-
-    #[test]
-    fn hidden_canonical_tool_renders_no_rows_or_label() {
-        let mut app = App::test_default();
-        app.transcript
-            .messages
-            .push(assistant_blocks_message(vec![tool_call_block("child-1", true)]));
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-
-            assert!(rows.is_empty(), "hidden tool rendered rows at width {width}");
+    fn child_interaction_fixture(question: bool, late_parent: bool) -> ChildInteractionFixture {
+        use crate::ui::tool_call::test_support::{
+            attach_permission, attach_question, interaction_app,
+        };
+        let mut child = crate::app::test_support::named_tool_call_info(
+            "child-request",
+            if question { "AskUserQuestion" } else { "Write" },
+            model::ToolCallStatus::InProgress,
+        );
+        child.title = "Child operation".into();
+        child.parent_tool_use_id = (!late_parent).then(|| "parent-agent".into());
+        let mut neighbor = crate::app::test_support::named_tool_call_info(
+            "neighbor",
+            "Read",
+            model::ToolCallStatus::Completed,
+        );
+        neighbor.title = "Neighbor result".into();
+        neighbor.content = vec![model::ToolCallContent::from("Neighbor-only content")];
+        let mut app = interaction_app(vec![neighbor, child]);
+        let before = (!late_parent)
+            .then(|| line_texts(serialize_all_rows_with_boundaries(&mut app, 100).rows()));
+        if let Some(before) = &before {
+            assert!(before.iter().any(|row| row.contains("Neighbor-only content")));
+            assert!(!before.iter().any(|row| row.contains("Child operation")));
         }
-    }
-
-    #[test]
-    fn hidden_canonical_tool_with_focused_permission_without_subagent_context_has_no_header() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_interaction("child-1", true, true, false),
-        ]));
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
+        app.input.set_text("unfinished user draft");
+        let (permission_rx, question_rx) = if question {
+            (
+                None,
+                Some(attach_question(
+                    &mut app,
+                    "child-request",
+                    model::QuestionPrompt::new(
+                        "Choose the child's tree",
+                        "Child choice",
+                        false,
+                        vec![
+                            model::QuestionOption::new("oak-c", "Oak-C"),
+                            model::QuestionOption::new("elm-c", "Elm-C"),
+                            model::QuestionOption::new("ash-c", "Ash-C"),
+                        ],
+                    ),
+                )),
+            )
+        } else {
+            (
+                Some(attach_permission(
+                    &mut app,
+                    "child-request",
+                    vec![
+                        model::PermissionOption::new(
+                            "once-c",
+                            "Once-C",
+                            model::PermissionOptionKind::AllowOnce,
+                        ),
+                        model::PermissionOption::new(
+                            "save-c",
+                            "Save-C",
+                            model::PermissionOptionKind::AllowSession,
+                        ),
+                        model::PermissionOption::new(
+                            "deny-c",
+                            "Deny-C",
+                            model::PermissionOptionKind::RejectOnce,
+                        ),
+                    ],
+                    None,
+                )),
+                None,
+            )
+        };
+        if late_parent {
+            // The request arrives before parent metadata: absent context is reachable.
+            deliver_child_parent_metadata(&mut app);
             assert!(
-                text.iter().any(|line| line.starts_with(" ●")),
-                "missing label at width {width}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Child Tool")),
-                "missing tool title at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent:")),
-                "unexpected subagent header at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent ·")),
-                "unexpected subagent title prefix at width {width}: {text:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn hidden_canonical_tool_with_unfocused_permission_renders_interaction_rows() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_pending_permission("child-1", true, false),
-        ]));
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            assert!(
-                text.iter().any(|line| line.starts_with(" ●")),
-                "missing label at width {width}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Child Tool")),
-                "missing tool title at width {width}: {text:?}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Waiting for input")),
-                "missing waiting row at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent:")),
-                "unexpected subagent header at width {width}: {text:?}"
-            );
-            assert!(
-                !text.iter().any(|line| line.contains("Subagent ·")),
-                "unexpected subagent title prefix at width {width}: {text:?}"
+                app.tool_call("child-request")
+                    .unwrap()
+                    .pending_permission
+                    .as_ref()
+                    .unwrap()
+                    .subagent_context
+                    .is_none()
             );
         }
+        ChildInteractionFixture { app, permission_rx, question_rx, before }
     }
 
     #[test]
-    fn hidden_canonical_tool_with_subagent_permission_prefixes_child_tool_title() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_subagent_pending_permission("child-1"),
-        ]));
-
-        for width in [80, 120, 80] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            let child_idx = text
-                .iter()
-                .position(|line| line.contains("Subagent ·") && line.contains("Child Tool"))
-                .expect("missing prefixed child tool line");
-            assert!(
-                !text[child_idx].contains("general-purpose"),
-                "subagent label should not render at width {width}: {text:?}"
-            );
-            let permission_idx = text
-                .iter()
-                .position(|line| line.contains("Allow once"))
-                .expect("missing permission options");
-
-            assert!(child_idx < permission_idx, "permission rendered before child: {text:?}");
-            assert_eq!(
-                text.iter().filter(|line| line.contains("Subagent ·")).count(),
-                1,
-                "expected one prefixed subagent title at width {width}: {text:?}"
-            );
-            assert!(!text.iter().any(|line| line.contains("Subagent:")));
-            assert!(!text.iter().any(|line| line.contains("[model:")));
-            assert!(!text.iter().any(|line| line.contains("Agent:")));
-            assert!(!text.iter().any(|line| line.contains("general-purpose")));
-        }
-    }
-
-    #[test]
-    fn hidden_canonical_tool_with_focused_question_renders_interaction_rows() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(assistant_blocks_message(vec![
-            tool_call_block_with_interaction("child-1", true, false, true),
-        ]));
-
-        for width in [32, 120, 32] {
-            let rows = serialize_live_rows(&mut app, width);
-            let text = line_texts(&rows);
-
-            assert!(
-                text.iter().any(|line| line.starts_with(" ●")),
-                "missing label at width {width}"
-            );
-            assert!(
-                text.iter().any(|line| line.contains("Child Tool")),
-                "missing tool title at width {width}: {text:?}"
-            );
+    fn hidden_child_controls_remain_targeted_mutable_and_disappear_after_settlement() {
+        use crate::ui::tool_call::test_support::{assert_focused_option, press};
+        use crossterm::event::KeyCode;
+        for (question, late_parent) in [(false, false), (false, true), (true, false)] {
+            let ChildInteractionFixture { mut app, mut permission_rx, mut question_rx, before } =
+                child_interaction_fixture(question, late_parent);
+            let labels =
+                if question { ["Oak-C", "Elm-C", "Ash-C"] } else { ["Once-C", "Save-C", "Deny-C"] };
+            for width in [48, 100] {
+                let serialized = serialize_all_rows_with_boundaries(&mut app, width);
+                let rows = child_interaction_region(&serialized, "child-request");
+                assert!(
+                    !rows
+                        .iter()
+                        .flat_map(|row| &row.spans)
+                        .any(|span| labels.contains(&span.content.as_ref()))
+                );
+                if question {
+                    assert!(
+                        line_texts(&rows).iter().any(|row| row.contains("Choose the child's tree"))
+                    );
+                } else {
+                    assert!(line_texts(&rows).iter().any(|row| row.contains("Child operation")));
+                }
+                assert!(!line_texts(&rows).iter().any(|row| row.contains("Neighbor-only content")));
+            }
+            app.claim_focus_target(crate::app::FocusTarget::Permission);
+            app.rebuild_chat_focus_from_state();
+            for (selected, width) in [(0, 48), (1, 100), (1, 48)] {
+                if selected == 1 && width == 100 {
+                    press(&mut app, KeyCode::Right);
+                }
+                let serialized = serialize_all_rows_with_boundaries(&mut app, width);
+                let rows = child_interaction_region(&serialized, "child-request");
+                assert_focused_option(&rows, labels, selected);
+                let neighbor = serialized
+                    .segments()
+                    .iter()
+                    .find(|segment| {
+                        segment.ids.contains(&HistoryOutputId::ToolCall("neighbor".into()))
+                    })
+                    .expect("neighbor segment");
+                assert!(
+                    !serialized
+                        .segment_rows(neighbor)
+                        .unwrap()
+                        .iter()
+                        .flat_map(|row| &row.spans)
+                        .any(|span| labels.contains(&span.content.as_ref()))
+                );
+            }
+            press(&mut app, KeyCode::Enter);
+            if let Some(rx) = permission_rx.as_mut() {
+                assert_eq!(
+                    rx.try_recv().expect("child permission answer").outcome,
+                    model::RequestPermissionOutcome::Selected(
+                        model::SelectedPermissionOutcome::new("save-c")
+                    )
+                );
+            }
+            if let Some(rx) = question_rx.as_mut() {
+                let model::RequestQuestionOutcome::Answered(answer) =
+                    rx.try_recv().expect("child question answer").outcome
+                else {
+                    panic!("answer");
+                };
+                assert_eq!(answer.selected_option_ids, ["elm-c"]);
+            }
+            let settled = serialize_all_rows_with_boundaries(&mut app, 100);
+            assert!(!settled.segments().iter().any(|segment| {
+                segment.ids.contains(&HistoryOutputId::ToolCall("child-request".into()))
+            }));
+            let text = line_texts(settled.rows());
+            assert!(text.iter().any(|row| row.contains("Neighbor-only content")));
+            for label in labels {
+                assert!(!text.iter().any(|row| row.contains(label)));
+            }
+            if let Some(before) = before {
+                assert_eq!(
+                    text, before,
+                    "settlement must not leave an orphan child marker or controls"
+                );
+            }
         }
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;
+
+#[cfg(test)]
+mod welcome_tests;
+
+#[cfg(test)]
+mod layout_tests;
+
+#[cfg(test)]
+mod presentation_tests;

@@ -32,10 +32,6 @@ pub fn redact_json_value(value: &mut Value) {
     }
 }
 
-pub fn redact_env_value(name: &str, value: Option<&str>) -> Option<String> {
-    value.map(|value| if is_secret_key(name) { REDACTED.to_owned() } else { value.to_owned() })
-}
-
 /// Line-oriented redaction for text that reaches the always-on log, support bundles and
 /// failure reports.
 ///
@@ -184,7 +180,8 @@ fn redact_bearer_tokens(input: &str) -> String {
             .find(is_value_delimiter)
             .map_or(output.len(), |offset| value_start + offset);
         if value_end <= value_start {
-            break;
+            search_start = value_start;
+            continue;
         }
         output.replace_range(value_start..value_end, REDACTED);
         search_start = value_start + REDACTED.len();
@@ -349,29 +346,13 @@ fn is_value_delimiter(ch: char) -> bool {
 }
 
 #[cfg(test)]
+#[path = "redaction_audit_tests.rs"]
+mod audit_tests;
+
+#[cfg(test)]
 mod tests {
+    use super::redact_text_with_home;
     use std::path::Path;
-
-    use super::{
-        redact_env_value, redact_json_value, redact_line, redact_text, redact_text_with_home,
-    };
-
-    #[test]
-    fn json_key_rule_keeps_token_counts_and_redacts_credentials() {
-        let mut value = serde_json::json!({
-            "max_tokens": 4096,
-            "input_tokens": 120,
-            "access_token": "a",
-            "refresh-token": "b",
-            "token": "c"
-        });
-        redact_json_value(&mut value);
-        assert_eq!(value["max_tokens"], 4096);
-        assert_eq!(value["input_tokens"], 120);
-        assert_eq!(value["access_token"], "[redacted]");
-        assert_eq!(value["refresh-token"], "[redacted]");
-        assert_eq!(value["token"], "[redacted]");
-    }
 
     #[test]
     fn credential_only_redaction_keeps_paths() {
@@ -383,7 +364,6 @@ mod tests {
         );
     }
 
-    // Mirrors the home table in agent-sdk/src/bridge/startup_failures.test.ts.
     #[test]
     fn replaces_the_home_directory_prefix_with_a_tilde() {
         let cases: &[(&str, &str, &str)] = &[
@@ -416,94 +396,5 @@ mod tests {
         }
         assert_eq!(redact_text_with_home("/Users/alice/x", None), "/Users/alice/x");
         assert_eq!(redact_text_with_home("/x", Some(Path::new("/"))), "/x");
-    }
-
-    #[test]
-    fn redacts_secret_json_keys_recursively() {
-        let mut value = serde_json::json!({
-            "model": "sonnet",
-            "env": {
-                "ANTHROPIC_API_KEY": "sk-ant-secret",
-                "KEEP": "visible"
-            },
-            "claudeAiOauth": {
-                "accessToken": "access",
-                "refreshToken": "refresh"
-            }
-        });
-
-        redact_json_value(&mut value);
-
-        assert_eq!(value["model"], "sonnet");
-        assert_eq!(value["env"]["KEEP"], "visible");
-        assert_eq!(value["env"]["ANTHROPIC_API_KEY"], "[redacted]");
-        assert_eq!(value["claudeAiOauth"]["accessToken"], "[redacted]");
-        assert_eq!(value["claudeAiOauth"]["refreshToken"], "[redacted]");
-    }
-
-    #[test]
-    fn redacts_secret_env_values_only() {
-        assert_eq!(
-            redact_env_value("ANTHROPIC_API_KEY", Some("sk-ant-secret")).as_deref(),
-            Some("[redacted]")
-        );
-        assert_eq!(redact_env_value("PATH", Some("bin")).as_deref(), Some("bin"));
-        assert_eq!(redact_env_value("PATH", None), None);
-    }
-
-    #[test]
-    fn redacts_json_log_lines() {
-        let line =
-            r#"{"message":"x","fields":{"Authorization":"Bearer secret-token","keep":"ok"}}"#;
-
-        let redacted = redact_line(line);
-
-        assert!(redacted.contains(r#""keep":"ok""#));
-        assert!(!redacted.contains("secret-token"));
-        assert!(redacted.contains("[redacted]"));
-    }
-
-    #[test]
-    fn redacts_common_text_credentials() {
-        let text = "ANTHROPIC_API_KEY=sk-ant-secret\nAuthorization: Bearer oauth-secret\nraw Bearer raw-secret";
-
-        let redacted = redact_text(text);
-
-        assert!(!redacted.contains("sk-ant-secret"));
-        assert!(!redacted.contains("oauth-secret"));
-        assert!(!redacted.contains("raw-secret"));
-        assert!(redacted.contains("ANTHROPIC_API_KEY=[redacted]"));
-        assert!(redacted.contains("Authorization: [redacted]"));
-        assert!(redacted.contains("Bearer [redacted]"));
-    }
-
-    // Mirrors the table in agent-sdk/src/bridge/startup_failures.test.ts.
-    #[test]
-    fn redacts_credential_shapes() {
-        let cases: &[(&str, &str)] = &[
-            ("GET /v1?token=abc&x=1", "GET /v1?token=[redacted]&x=1"),
-            (
-                "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-abcDEF123",
-                "CLAUDE_CODE_OAUTH_TOKEN=[redacted]",
-            ),
-            ("x-api-key: sk-ant-api03-secretvalue", "x-api-key: [redacted]"),
-            ("access_token=abc123 next", "access_token=[redacted] next"),
-            (
-                "fetch https://user:pass@example.com/repo",
-                "fetch https://[redacted]@example.com/repo",
-            ),
-            ("Authorization: Basic dXNlcjpwYXNz", "Authorization: [redacted]"),
-            ("Authorization: Bearer abc.def", "Authorization: [redacted]"),
-            ("Authorization: token ghp_abc", "Authorization: [redacted]"),
-            ("key sk-live_abc123 end", "key [redacted] end"),
-            ("max_tokens=4096 input_tokens: 120", "max_tokens=4096 input_tokens: 120"),
-            ("refresh-token=abc next", "refresh-token=[redacted] next"),
-            ("token: abc max_tokens=1", "token: [redacted] max_tokens=1"),
-            ("accessToken: abc next", "accessToken: [redacted] next"),
-            ("task-1 and risk-free are not keys", "task-1 and risk-free are not keys"),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(redact_text(input), *expected, "input: {input}");
-        }
     }
 }

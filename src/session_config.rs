@@ -220,66 +220,65 @@ mod tests {
         let project = tempfile::tempdir().expect("project");
         let shared = tempfile::tempdir().expect("shared");
         std::fs::create_dir(project.path().join("docs")).expect("docs");
-        std::fs::write(project.path().join("notes.txt"), "").expect("file");
+        std::fs::write(project.path().join("notes.txt"), "notes").expect("file");
         let shared_path = shared.path().to_str().expect("UTF-8 path");
-
         let config = resolve(project.path(), &["--add-dir", "docs", "--add-dir", shared_path])
             .expect("existing directories");
         assert_eq!(
             config.additional_directories,
-            [project.path().join("docs").to_str().expect("UTF-8 path"), shared_path]
+            [project.path().join("docs").to_str().expect("path"), shared_path]
         );
-
-        for missing in ["absent", "notes.txt"] {
-            let error = resolve(project.path(), &["--add-dir", missing]).expect_err(missing);
-            assert_eq!(
-                error,
-                format!(
-                    "--add-dir: {} is not an existing directory",
-                    project.path().join(missing).display()
-                )
-            );
+        for target in ["absent", "notes.txt"] {
+            let error = resolve(project.path(), &["--add-dir", "docs", "--add-dir", target])
+                .expect_err(target);
+            for detail in ["--add-dir", target, "directory"] {
+                assert!(error.contains(detail), "{error}");
+            }
         }
     }
 
     #[test]
     fn settings_come_from_inline_json_or_a_file_and_must_be_an_object() {
         let project = tempfile::tempdir().expect("project");
-        std::fs::write(project.path().join("ci.json"), "{ \"cleanupPeriodDays\": 7 }\n")
-            .expect("settings file");
-        std::fs::write(project.path().join("list.json"), "[1]").expect("array file");
-        std::fs::write(project.path().join("broken.json"), "{ \"a\": ").expect("broken file");
-
-        let from_file = resolve(project.path(), &["--settings", "ci.json"]).expect("file");
-        assert_eq!(from_file.settings, json!({"cleanupPeriodDays": 7}).as_object().cloned());
-        let inline =
-            resolve(project.path(), &["--settings", "  {\"model\": \"haiku\"}"]).expect("inline");
-        assert_eq!(inline.settings, json!({"model": "haiku"}).as_object().cloned());
-
-        let missing = resolve(project.path(), &["--settings", "absent.json"]).expect_err("missing");
-        assert!(
-            missing.starts_with(&format!(
-                "--settings: cannot read {}: ",
-                project.path().join("absent.json").display()
-            )),
-            "{missing}"
-        );
-        let array = resolve(project.path(), &["--settings", "list.json"]).expect_err("array");
-        assert_eq!(
-            array,
-            format!(
-                "--settings: {} must be a JSON object",
-                project.path().join("list.json").display()
+        for (file, contents, category) in [
+            ("absent.json", None, "read"),
+            ("list.json", Some("[1]"), "object"),
+            ("scalar.json", Some("42"), "object"),
+            ("broken.json", Some("{\"a\":"), "JSON"),
+        ] {
+            if let Some(contents) = contents {
+                std::fs::write(project.path().join(file), contents).expect("invalid settings");
+            }
+            let error = resolve(project.path(), &["--settings", file]).expect_err(file);
+            for detail in ["--settings", file, category] {
+                assert!(error.contains(detail), "{error}");
+            }
+            std::fs::write(
+                project.path().join(file),
+                r#"{"permissions":{"allow":["Read"]},"cleanupPeriodDays":7}"#,
             )
-        );
-        let broken = resolve(project.path(), &["--settings", "broken.json"]).expect_err("broken");
-        assert!(broken.contains("is not valid JSON"), "{broken}");
-        let inline_broken =
-            resolve(project.path(), &["--settings", "{\"a\":"]).expect_err("inline broken");
-        assert!(
-            inline_broken.starts_with("--settings: the inline value is not valid JSON"),
-            "{inline_broken}"
-        );
+            .expect("correct settings");
+            let corrected =
+                resolve(project.path(), &["--settings", file]).expect("corrected settings");
+            assert_eq!(
+                corrected.settings,
+                json!({"permissions":{"allow":["Read"]},"cleanupPeriodDays":7})
+                    .as_object()
+                    .cloned()
+            );
+        }
+        let error = resolve(project.path(), &["--settings", " {\"a\":"]).expect_err("inline JSON");
+        for detail in ["--settings", "inline", "JSON"] {
+            assert!(error.contains(detail), "{error}");
+        }
+        for (text, expected) in
+            [("  {\"model\":\"haiku\"}", json!({"model":"haiku"})), (" {}", json!({}))]
+        {
+            assert_eq!(
+                resolve(project.path(), &["--settings", text]).expect("inline object").settings,
+                expected.as_object().cloned()
+            );
+        }
     }
 
     #[test]
@@ -306,40 +305,102 @@ mod tests {
             ]
         );
 
-        let without = resolve(project.path(), &["--mcp-config", "{\"servers\":{}}"])
-            .expect_err("no mcpServers");
-        assert_eq!(without, "--mcp-config: the inline value must contain an \"mcpServers\" object");
-        let scalar = resolve(project.path(), &["--mcp-config", r#"{"mcpServers":{"docs":"x"}}"#])
-            .expect_err("server is not an object");
-        assert_eq!(scalar, "--mcp-config: the inline value: MCP server \"docs\" must be an object");
+        for (text, detail) in [
+            (r#"{"servers":{}}"#, "mcpServers"),
+            (r#"{"mcpServers":[]}"#, "mcpServers"),
+            (r#"{"mcpServers":{"docs":"x"}}"#, "docs"),
+        ] {
+            for source in [text, "invalid-mcp.json"] {
+                std::fs::write(project.path().join("invalid-mcp.json"), text)
+                    .expect("invalid MCP file");
+                let error = resolve(project.path(), &["--mcp-config", source]).expect_err("shape");
+                for part in [
+                    "--mcp-config",
+                    detail,
+                    "object",
+                    if source == text { "inline" } else { "invalid-mcp.json" },
+                ] {
+                    assert!(error.contains(part), "{error}");
+                }
+            }
+            std::fs::write(
+                project.path().join("invalid-mcp.json"),
+                r#"{"mcpServers":{"docs":{"command":"repaired"}}}"#,
+            )
+            .expect("repair");
+            assert_eq!(
+                resolve(project.path(), &["--mcp-config", "invalid-mcp.json"])
+                    .expect("corrected MCP")
+                    .mcp_configs,
+                [json!({"docs":{"command":"repaired"}}).as_object().cloned().expect("object")]
+            );
+        }
+        assert_eq!(
+            resolve(project.path(), &["--mcp-config", r#"{"mcpServers":{}}"#])
+                .expect("empty valid config")
+                .mcp_configs,
+            [serde_json::Map::new()]
+        );
     }
 
     #[test]
     fn prompt_files_are_read_whole_and_an_empty_one_is_rejected() {
         let project = tempfile::tempdir().expect("project");
-        std::fs::write(project.path().join("prompt.md"), "You are a release bot.\n").expect("file");
-        std::fs::write(project.path().join("empty.md"), "").expect("empty file");
-        std::fs::write(project.path().join("blank.md"), " \n\t\n").expect("blank file");
-
-        let config = resolve(
-            project.path(),
-            &["--system-prompt-file", "prompt.md", "--append-system-prompt", "Answer in German."],
+        std::fs::write(
+            project.path().join("replace.md"),
+            "You are a release bot.\nGr\u{fc}\u{df}e.\n",
         )
-        .expect("prompts");
-        assert_eq!(config.system_prompt.as_deref(), Some("You are a release bot.\n"));
-        assert_eq!(config.append_system_prompt.as_deref(), Some("Answer in German."));
-
-        for (flag, file) in [
-            ("--system-prompt-file", "empty.md"),
-            ("--system-prompt-file", "blank.md"),
-            ("--append-system-prompt-file", "empty.md"),
-        ] {
-            let error = resolve(project.path(), &[flag, file]).expect_err(file);
-            assert_eq!(error, format!("{flag}: {} is empty", project.path().join(file).display()));
+        .expect("replacement file");
+        std::fs::write(
+            project.path().join("append.md"),
+            "Append these notes:\n\u{65e5}\u{672c}\u{8a9e}\n",
+        )
+        .expect("append file");
+        let first = resolve(
+            project.path(),
+            &[
+                "--system-prompt-file",
+                "replace.md",
+                "--append-system-prompt",
+                " Answer in German. ",
+            ],
+        )
+        .expect("file/text");
+        assert_eq!(
+            first.system_prompt.as_deref(),
+            Some("You are a release bot.\nGr\u{fc}\u{df}e.\n")
+        );
+        assert_eq!(first.append_system_prompt.as_deref(), Some(" Answer in German. "));
+        let second = resolve(
+            project.path(),
+            &[
+                "--system-prompt",
+                "Text replacement.\nKeep this line.\n",
+                "--append-system-prompt-file",
+                "append.md",
+            ],
+        )
+        .expect("text/file");
+        assert_eq!(second.system_prompt.as_deref(), Some("Text replacement.\nKeep this line.\n"));
+        assert_eq!(
+            second.append_system_prompt.as_deref(),
+            Some("Append these notes:\n\u{65e5}\u{672c}\u{8a9e}\n")
+        );
+        for flag in ["--system-prompt-file", "--append-system-prompt-file"] {
+            for (file, content, category) in [
+                ("empty.md", Some(""), "empty"),
+                ("blank.md", Some(" \n\t\n"), "empty"),
+                ("absent.md", None, "read"),
+            ] {
+                if let Some(content) = content {
+                    std::fs::write(project.path().join(file), content).expect("invalid file");
+                }
+                let error = resolve(project.path(), &[flag, file]).expect_err("invalid prompt");
+                for part in [flag, file, category] {
+                    assert!(error.contains(part), "{error}");
+                }
+            }
         }
-        let missing = resolve(project.path(), &["--append-system-prompt-file", "absent.md"])
-            .expect_err("missing prompt file");
-        assert!(missing.starts_with("--append-system-prompt-file: cannot read "), "{missing}");
     }
 
     #[test]
@@ -353,12 +414,23 @@ mod tests {
 
     #[test]
     fn blank_inline_prompts_are_rejected_by_the_parser() {
-        for args in [
-            ["claude-rs", "--system-prompt", ""],
-            ["claude-rs", "--system-prompt", "  "],
-            ["claude-rs", "--append-system-prompt", ""],
-        ] {
-            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        let project = tempfile::tempdir().expect("project");
+        for flag in ["--system-prompt", "--append-system-prompt"] {
+            for blank in ["", "  ", "\n\t\u{2003}"] {
+                let error =
+                    Cli::try_parse_from(["claude-rs", flag, blank]).expect_err("blank prompt");
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert!(error.to_string().contains(flag), "{error}");
+            }
+            let text = " \nGr\u{fc}\u{df}e \u{65e5}\u{672c}\u{8a9e}\t ";
+            let config = resolve(project.path(), &[flag, text]).expect("visible prompt");
+            if flag == "--system-prompt" {
+                assert_eq!(config.system_prompt.as_deref(), Some(text));
+                assert!(config.append_system_prompt.is_none());
+            } else {
+                assert_eq!(config.append_system_prompt.as_deref(), Some(text));
+                assert!(config.system_prompt.is_none());
+            }
         }
     }
 }

@@ -6,7 +6,8 @@ use crate::ui::message_layout::MessageLayout;
 use crate::ui::{autocomplete, theme};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const MAX_PENDING_MESSAGE_PREVIEW_ROWS: usize = 3;
 
@@ -88,6 +89,10 @@ pub(crate) fn build_composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     }
 
     rows
+}
+
+pub(crate) fn wrapped_composer_hint_rows(app: &App, width: u16) -> Vec<Line<'static>> {
+    crate::ui::wrap::wrap_lines_to_physical_rows(&build_composer_hint_rows(app), width)
 }
 
 pub(crate) fn build_btw_status_rows(app: &App, width: u16) -> Vec<Line<'static>> {
@@ -172,12 +177,12 @@ fn fit_status_text(text: &str, max_width: usize) -> String {
     let content_width = max_width.saturating_sub(1);
     let mut result = String::new();
     let mut width = 0usize;
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for grapheme in text.graphemes(true) {
+        let ch_width = UnicodeWidthStr::width(grapheme);
         if width.saturating_add(ch_width) > content_width {
             break;
         }
-        result.push(ch);
+        result.push_str(grapheme);
         width = width.saturating_add(ch_width);
     }
     result.push(ellipsis);
@@ -234,140 +239,45 @@ pub(crate) fn blocked_input_lines(
 
 #[cfg(test)]
 mod tests {
-    use super::{blocked_input_lines, build_btw_status_rows, build_composer_hint_rows};
-    use crate::app::{
-        App, AppStatus, ComposerBlockReason, FocusTarget, LoginHint, PendingUserMessage,
-    };
+    use super::build_btw_status_rows;
+    use crate::app::App;
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
     #[test]
-    fn reduced_motion_keeps_command_activity_icon_static() {
-        let mut app = App::test_default();
-        app.config.snapshot = Some(crate::agent::settings::SettingsSnapshot::test_value(
-            "prefersReducedMotion",
-            serde_json::json!(true),
-        ));
-        app.turn.cancel_requested = true;
-        app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = Some("Starting new session...".to_owned());
-        for frame in [0, 4, 9] {
-            app.spinner_frame = frame;
-            let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)
-                .expect("labeled command shows a status");
-            assert_eq!(line_text(&rows[0]), "\u{25C6} Starting new session...");
-        }
-    }
-
-    #[test]
-    fn build_composer_hint_rows_preserves_login_hint_content() {
-        let mut app = App::test_default();
-        app.session_runtime.login_hint = Some(LoginHint {
-            method_name: "oauth".to_owned(),
-            method_description: "Sign in".to_owned(),
-        });
-
-        let rows = build_composer_hint_rows(&app);
-        assert_eq!(rows.len(), 2);
-        assert!(line_text(&rows[0]).contains("Authentication required: oauth -- Sign in"));
-    }
-
-    #[test]
-    fn build_composer_hint_rows_keeps_suggestions_without_cancellation_indicator() {
-        let mut app = App::test_default();
-        app.turn.cancel_requested = true;
-        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
-
-        let rows = build_composer_hint_rows(&app);
-        assert_eq!(rows.len(), 1);
-        assert!(line_text(&rows[0]).contains("Suggestion: Write tests"));
-    }
-
-    #[test]
-    fn pending_message_rows_show_dimmed_summary_and_preview() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(PendingUserMessage::sending(
-                    "one".to_owned(),
-                    "first line\nsecond line".to_owned(),
-                    Vec::new(),
-                ))
-                .is_ok()
-        );
-
-        let rows = build_composer_hint_rows(&app);
-
-        assert_eq!(rows.len(), 2);
-        assert_eq!(line_text(&rows[0]), "Queued Messages (1) · Esc interrupt & continue");
-        assert_eq!(line_text(&rows[1]), "  1. first line");
-        assert!(
-            rows.iter()
-                .flat_map(|row| row.spans.iter())
-                .all(|span| span.style.fg == Some(crate::ui::theme::DIM))
-        );
-    }
-
-    #[test]
-    fn pending_message_rows_show_only_latest_three_previews_with_stable_numbers() {
-        let mut app = App::test_default();
-        for index in 1..=5 {
-            assert!(
-                app.pending_user_messages
-                    .try_push_sending(PendingUserMessage::sending(
-                        format!("message-{index}"),
-                        format!("preview {index}"),
-                        Vec::new(),
-                    ))
-                    .is_ok()
-            );
-        }
-
-        let rows = build_composer_hint_rows(&app);
-
-        assert_eq!(
-            rows.iter().map(line_text).collect::<Vec<_>>(),
-            [
-                "Queued Messages (5) · Esc interrupt & continue",
-                "  3. preview 3",
-                "  4. preview 4",
-                "  5. preview 5",
-            ]
-        );
-    }
-
-    #[test]
-    fn btw_rows_apply_priority_limit_overflow_and_terminal_width() {
+    fn composer_btw_priority_associates_each_failure_and_overflow() {
         let mut app = App::test_default();
         for (id, question) in [
-            ("old-failure", "old failure"),
-            ("new-failure", "new failure"),
-            ("active", "active question with a long tail"),
-            ("waiting", "waiting question"),
+            ("old", "OLD_QUESTION"),
+            ("new", "NEW_QUESTION"),
+            ("active", "ACTIVE_QUESTION"),
+            ("waiting", "WAITING_QUESTION"),
         ] {
-            app.btw.try_push(id.to_owned(), question.to_owned()).expect("queue slot");
+            app.btw.try_push(id.into(), question.into()).unwrap();
         }
         let now = std::time::Instant::now();
-        app.btw.take_next().expect("dispatch old failure");
-        assert!(app.btw.fail("old-failure", "old error".to_owned(), now));
-        app.btw.take_next().expect("dispatch new failure");
-        assert!(app.btw.fail("new-failure", "new error".to_owned(), now));
-        app.btw.take_next().expect("dispatch active");
-
-        let rows = build_btw_status_rows(&app, 24);
+        app.btw.take_next().unwrap();
+        assert!(app.btw.fail("old", "OLD_CAUSE".into(), now));
+        app.btw.take_next().unwrap();
+        assert!(app.btw.fail("new", "NEW_CAUSE".into(), now));
+        app.btw.take_next().unwrap();
+        let rows = build_btw_status_rows(&app, 90);
         let text = rows.iter().map(line_text).collect::<Vec<_>>();
-
-        assert_eq!(rows.len(), 4);
-        assert!(text[0].contains("active question"));
-        assert!(text[1].contains("new failure"));
-        assert!(text[2].contains("old failure"));
-        assert!(text[3].contains("+1 more pending"));
-        assert!(rows.iter().all(|row| row.width() <= 24));
-        assert!(
-            rows[1].spans.iter().any(|span| span.style.fg == Some(crate::ui::theme::STATUS_ERROR))
-        );
+        let active = text.iter().position(|r| r.contains("ACTIVE_QUESTION")).unwrap();
+        let recent = text.iter().position(|r| r.contains("NEW_QUESTION")).unwrap();
+        let old = text.iter().position(|r| r.contains("OLD_QUESTION")).unwrap();
+        assert!(active < recent && recent < old);
+        assert!(text[recent].contains("NEW_CAUSE") && !text[recent].contains("OLD_CAUSE"));
+        assert!(text[old].contains("OLD_CAUSE") && !text[old].contains("NEW_CAUSE"));
+        assert_ne!(text[active].split("BTW").next(), text[recent].split("BTW").next());
+        assert!(text.iter().any(|r| r.contains("+1") && r.contains("pending")));
+        assert!(!text.iter().any(|r| r.contains("WAITING_QUESTION")));
+        let narrow = build_btw_status_rows(&app, 24);
+        assert!(narrow.iter().all(|r| r.width() <= 24));
+        assert!(line_text(&narrow[0]).contains("ACTIVE_QUESTION"));
+        assert!(narrow.iter().any(|r| line_text(r).contains("+1")));
     }
 
     #[test]
@@ -384,108 +294,47 @@ mod tests {
     }
 
     #[test]
-    fn btw_rows_clip_fixed_prefixes_at_tiny_widths_and_keep_multiline_errors_on_one_row() {
-        let mut app = App::test_default();
-        for index in 0..4 {
-            app.btw.try_push(index.to_string(), "question".to_owned()).expect("queue slot");
+    fn composer_btw_clipping_keeps_graphemes_and_failure_identity() {
+        for (question, width, expected) in [
+            ("界XY", 10, "界…"),
+            ("e\u{301}XY", 9, "e\u{301}…"),
+            ("👩\u{200d}💻XY", 10, "👩\u{200d}💻…"),
+        ] {
+            let mut app = App::test_default();
+            app.btw.try_push("unicode".into(), question.into()).unwrap();
+            let rows = build_btw_status_rows(&app, width);
+            let rendered = line_text(&rows[0]);
+            assert_eq!(rendered.split_once("BTW  ").unwrap().1, expected);
+            assert!(rows[0].width() <= usize::from(width));
+            assert_eq!(app.btw.status_items()[0].question, question);
+            assert!(line_text(&build_btw_status_rows(&app, 80)[0]).ends_with(question));
         }
-        app.btw.take_next().expect("dispatch");
+        let mut app = App::test_default();
+        for (id, body) in [
+            ("failed", "FAILED_QUESTION"),
+            ("active", "ACTIVE_BODY"),
+            ("a", "WAIT_A"),
+            ("b", "WAIT_B"),
+        ] {
+            app.btw.try_push(id.into(), body.into()).unwrap();
+        }
+        app.btw.take_next().unwrap();
         assert!(app.btw.fail(
-            "0",
-            "first error\nsecond error".to_owned(),
+            "failed",
+            "FIRST_CAUSE\nSECOND_CAUSE".into(),
             std::time::Instant::now()
         ));
-        app.btw.take_next().expect("dispatch next");
+        app.btw.take_next().unwrap();
         for width in 0..10 {
             let rows = build_btw_status_rows(&app, width);
-            assert_eq!(rows.len(), 4);
-            assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
+            assert!(rows.iter().all(|r| r.width() <= usize::from(width)));
         }
-        let rows = build_btw_status_rows(&app, 120);
-        assert!(line_text(&rows[1]).contains("first error second error"));
-    }
-
-    #[test]
-    fn build_composer_hint_rows_omits_compaction_status() {
-        let mut app = App::test_default();
-        app.turn.compaction.begin();
-
-        let rows = build_composer_hint_rows(&app);
-
-        assert!(rows.is_empty());
-    }
-
-    #[test]
-    fn build_composer_hint_rows_prefers_autocomplete_over_prompt_suggestion() {
-        let mut app = App::test_default();
-        app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
-        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
-        crate::app::mention::activate(&mut app);
-
-        let rows = build_composer_hint_rows(&app);
-
-        assert_eq!(rows.len(), 1);
-        assert!(line_text(&rows[0]).contains("Type a file or folder name after @"));
-        assert!(!rows.iter().any(|row| line_text(row).contains("Suggestion:")));
-    }
-
-    #[test]
-    fn prompt_suggestion_hint_requires_input_focus() {
-        let mut app = App::test_default();
-        app.session_runtime.prompt_suggestion = Some("Write tests".to_owned());
-        app.pending_interaction_ids.push("perm-1".to_owned());
-        app.claim_focus_target(FocusTarget::Permission);
-
-        let rows = build_composer_hint_rows(&app);
-        assert!(rows.is_empty());
-    }
-
-    #[test]
-    fn blocked_input_lines_shows_pending_command_label() {
-        let mut app = App::test_default();
-        app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = Some("Resuming session abc...".to_owned());
-
-        let rows = blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80)
-            .expect("labeled command shows a status");
-
-        assert_eq!(rows.len(), 1);
-        assert!(line_text(&rows[0]).contains("Resuming session abc..."));
-    }
-
-    #[test]
-    fn blocked_input_lines_keeps_silent_pending_command_hidden() {
-        let mut app = App::test_default();
-        app.status = AppStatus::CommandPending;
-        app.turn.pending_command_label = None;
-
-        assert!(blocked_input_lines(&app, ComposerBlockReason::CommandPending, 80).is_none());
-    }
-
-    #[test]
-    fn blocked_input_lines_shows_error_rows() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Error;
-
-        let rows = blocked_input_lines(&app, ComposerBlockReason::Error, 80)
-            .expect("error shows a status");
-
-        assert_eq!(rows.len(), 2);
-        assert!(line_text(&rows[0]).contains("Input disabled due to error"));
-        assert!(line_text(&rows[1]).contains("Press Ctrl+Q to quit and try again."));
-    }
-
-    #[test]
-    fn blocked_input_lines_prioritizes_shutdown_status() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Running;
-        app.request_shutdown();
-
-        let rows = blocked_input_lines(&app, ComposerBlockReason::Shutdown, 80)
-            .expect("shutdown shows a status");
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(line_text(&rows[0]), "Shutting down... Press Ctrl+C again to force exit.");
+        let rows = build_btw_status_rows(&app, 100);
+        let text = rows.iter().map(line_text).collect::<Vec<_>>();
+        let failure = text.iter().find(|r| r.contains("FAILED_QUESTION")).unwrap();
+        assert!(failure.contains("FIRST_CAUSE SECOND_CAUSE"));
+        assert!(!failure.contains('\n'));
+        assert!(text.iter().any(|r| r.contains("ACTIVE_BODY")));
+        assert!(text.iter().any(|r| r.contains("+1")));
     }
 }

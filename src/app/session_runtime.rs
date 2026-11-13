@@ -201,9 +201,8 @@ fn clear_context_usage_refresh_state(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CONTEXT_USAGE_REFRESH_INTERVAL, RuntimeReloadRequestOutcome, apply_context_usage_snapshot,
-        request_context_usage_refresh, request_context_usage_refresh_at,
-        request_forced_runtime_reload, request_runtime_reload, request_status_snapshot_refresh,
+        RuntimeReloadRequestOutcome, request_context_usage_refresh,
+        request_context_usage_refresh_at, request_forced_runtime_reload, request_runtime_reload,
         tick_context_usage_refresh,
     };
     use crate::agent::wire::BridgeCommand;
@@ -220,181 +219,338 @@ mod tests {
         ));
     }
 
-    fn just_before_refresh_interval() -> Duration {
-        CONTEXT_USAGE_REFRESH_INTERVAL
-            .checked_sub(Duration::from_secs(1))
-            .expect("context usage refresh interval must exceed one second")
+    #[test]
+    fn runtime_reload_correlates_ordinary_and_held_requests_with_their_outcomes() {
+        for folders in
+            [vec![], vec!["fixtures/plugin alpha".to_owned(), "fixtures/plugin-beta".to_owned()]]
+        {
+            for force in [false, true] {
+                assert_correlated_reload(&folders, force);
+            }
+        }
+        for missing_connection in [false, true] {
+            let (mut app, mut commands) = app_with_connection();
+            if missing_connection {
+                app.session_runtime.conn = None;
+            } else {
+                app.session_runtime.session_id = None;
+            }
+            assert!(matches!(
+                request_runtime_reload(&mut app),
+                RuntimeReloadRequestOutcome::Unavailable
+            ));
+            assert!(commands.try_recv().is_err());
+            let (connection, mut usable) = crate::agent::client::AgentConnection::test_channel();
+            app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+            app.session_runtime.session_id = Some("session-1".into());
+            assert!(matches!(
+                request_runtime_reload(&mut app),
+                RuntimeReloadRequestOutcome::Requested
+            ));
+            let id = reload_request(&mut usable, false, &[]);
+            complete_reload(&mut app, "session-1", &id);
+            assert!(app.plugins.pending_reload.is_none());
+        }
+        let (mut app, commands) = app_with_connection();
+        drop(commands);
+        assert!(matches!(request_runtime_reload(&mut app), RuntimeReloadRequestOutcome::Failed));
+        assert!(app.plugins.pending_reload.is_none());
     }
 
     #[test]
-    fn request_runtime_reload_sends_bridge_command() {
-        let (mut app, mut rx) = app_with_connection();
+    fn context_refresh_coalesces_explicit_requests_without_replaying_ticks() {
+        for explicit in [false, true] {
+            let (mut app, mut commands) = app_with_connection();
+            active_phase(&mut app, crate::agent::model::AgentActivityPhase::Thinking);
+            context_result(&mut app, "session-1", Some(17));
+            request_context_usage_refresh(&mut app);
+            expect_context_usage_command(&mut commands);
+            for _ in 0..3 {
+                if explicit {
+                    request_context_usage_refresh(&mut app);
+                } else {
+                    tick_context_usage_refresh(&mut app, Instant::now() + Duration::from_secs(20));
+                }
+            }
+            assert!(commands.try_recv().is_err());
+            context_result(&mut app, "old-session", Some(99));
+            assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(17));
+            assert!(commands.try_recv().is_err());
+            // A stale snapshot must not release the outstanding request either.
+            tick_context_usage_refresh(&mut app, Instant::now() + Duration::from_secs(20));
+            assert!(commands.try_recv().is_err());
+            context_result(&mut app, "session-1", Some(0));
+            assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(0));
+            if explicit {
+                expect_context_usage_command(&mut commands);
+                assert!(commands.try_recv().is_err());
+                context_result(&mut app, "session-1", None);
+                assert_eq!(app.session_runtime.session_usage.context_usage_percent, None);
+            }
+            assert!(commands.try_recv().is_err(), "one response must finish the coalesced work");
+            request_context_usage_refresh(&mut app);
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(62));
+            assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(62));
+            assert!(commands.try_recv().is_err());
+        }
+    }
 
-        assert!(matches!(request_runtime_reload(&mut app), RuntimeReloadRequestOutcome::Requested));
+    #[test]
+    fn context_refresh_obeys_active_phase_intervals_and_manual_reset() {
+        for phase in [
+            crate::agent::model::AgentActivityPhase::Thinking,
+            crate::agent::model::AgentActivityPhase::Working,
+        ] {
+            let (mut app, mut commands) = app_with_connection();
+            let start = Instant::now();
+            active_phase(&mut app, phase);
+            tick_context_usage_refresh(&mut app, start);
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(12));
+            tick_context_usage_refresh(&mut app, start + Duration::from_millis(4999));
+            assert!(commands.try_recv().is_err());
+            tick_context_usage_refresh(&mut app, start + Duration::from_secs(5));
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(24));
+            // An explicit request uses the same monotonic clock as periodic ticks.
+            request_context_usage_refresh_at(&mut app, start + Duration::from_secs(7));
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(31));
+            tick_context_usage_refresh(&mut app, start + Duration::from_millis(11999));
+            assert!(commands.try_recv().is_err());
+            tick_context_usage_refresh(&mut app, start + Duration::from_secs(12));
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(43));
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::TurnComplete {
+                    session_id: "session-1".into(),
+                    queued_turn_count: None,
+                    terminal_reason: None,
+                },
+            );
+            // Turn completion legitimately asks for a final snapshot.
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(54));
+            assert_eq!(app.status, AppStatus::Ready);
+            tick_context_usage_refresh(&mut app, start + Duration::from_secs(30));
+            assert!(commands.try_recv().is_err());
+            request_context_usage_refresh_at(&mut app, start + Duration::from_secs(30));
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(65));
+            active_phase(&mut app, phase);
+            tick_context_usage_refresh(&mut app, start + Duration::from_millis(34999));
+            assert!(commands.try_recv().is_err());
+            tick_context_usage_refresh(&mut app, start + Duration::from_secs(35));
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(76));
+            assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(76));
+            assert!(commands.try_recv().is_err());
+        }
+    }
 
-        let envelope = rx.try_recv().expect("reload command");
-        assert!(matches!(
+    fn context_result(app: &mut App, session: &str, percentage: Option<u8>) {
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::ContextUsageReceived {
+                session_id: session.into(),
+                percentage,
+            },
+        );
+    }
+
+    fn active_phase(app: &mut App, phase: crate::agent::model::AgentActivityPhase) {
+        crate::app::test_support::deliver_update(
+            app,
+            crate::agent::model::SessionUpdate::AgentResponseStarted,
+        );
+        crate::app::test_support::deliver_update(
+            app,
+            crate::agent::model::SessionUpdate::AgentActivityUpdate(phase),
+        );
+        assert!(app.is_agent_turn_active());
+        assert_eq!(
+            app.status,
+            if phase == crate::agent::model::AgentActivityPhase::Thinking {
+                AppStatus::Thinking
+            } else {
+                AppStatus::Running
+            }
+        );
+    }
+
+    fn reload_request(
+        commands: &mut crate::agent::client::CommandReceiver,
+        force: bool,
+        folders: &[String],
+    ) -> String {
+        let envelope = commands.try_recv().expect("reload request");
+        assert_eq!(
             envelope.command,
-            BridgeCommand::ReloadPlugins { session_id, force: false, .. } if session_id == "session-1"
-        ));
+            BridgeCommand::ReloadPlugins {
+                session_id: "session-1".into(),
+                force,
+                add_plugins: folders.to_vec()
+            }
+        );
+        let id = envelope.request_id.expect("correlated reload");
+        assert!(!id.is_empty());
+        assert!(commands.try_recv().is_err());
+        id
     }
 
-    #[test]
-    fn request_runtime_reload_reports_unavailable_without_session_connection() {
-        let mut app = App::test_default();
-
-        assert!(matches!(
-            request_runtime_reload(&mut app),
-            RuntimeReloadRequestOutcome::Unavailable
-        ));
+    fn hold_reload(app: &mut App, session: &str, id: &str) {
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::RuntimeReloadHeld {
+                session_id: session.into(),
+                request_id: Some(id.into()),
+                error_count: 0,
+                cache_impact: crate::agent::types::RuntimeReloadCacheImpact {
+                    mcp_servers_added: vec!["fixture:tools".into()],
+                    mcp_servers_removed: vec![],
+                    lsp_tool_change: None,
+                    invalid_server_name_count: 0,
+                },
+            },
+        );
     }
 
-    #[test]
-    fn forced_runtime_reload_sets_explicit_command_flag() {
-        let (mut app, mut rx) = app_with_connection();
+    fn complete_reload(app: &mut App, session: &str, id: &str) {
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::RuntimeReloadCompleted {
+                session_id: session.into(),
+                request_id: Some(id.into()),
+                error_count: 0,
+                reconciliation_error: None,
+            },
+        );
+    }
 
+    fn assert_correlated_reload(folders: &[String], force: bool) {
+        let (mut app, mut commands) = app_with_connection();
+        app.trust.status = crate::app::trust::TrustStatus::Trusted;
+        crate::app::config::open_tab(&mut app, crate::app::ConfigTab::Help).expect("open config");
+        let installed = vec![crate::agent::types::SessionPlugin {
+            name: "confirmed".into(),
+            path: "old-folder".into(),
+            source: None,
+            version: Some("1.2.3".into()),
+        }];
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::PluginInventory {
+                session_id: "session-1".into(),
+                plugins: installed.clone(),
+            },
+        );
+        let outcome = if folders.is_empty() {
+            request_runtime_reload(&mut app)
+        } else {
+            super::request_plugin_folders(&mut app, folders.to_vec(), false)
+        };
+        assert!(matches!(outcome, RuntimeReloadRequestOutcome::Requested));
+        let first = reload_request(&mut commands, false, folders);
+        // An admitted operation cannot be forced before the bridge holds it.
         assert!(matches!(
             request_forced_runtime_reload(&mut app),
-            RuntimeReloadRequestOutcome::Requested
+            RuntimeReloadRequestOutcome::Failed
         ));
-
-        let envelope = rx.try_recv().expect("forced reload command");
-        assert!(matches!(
-            envelope.command,
-            BridgeCommand::ReloadPlugins { session_id, force: true, .. } if session_id == "session-1"
-        ));
+        assert!(commands.try_recv().is_err());
+        hold_reload(&mut app, "session-1", "wrong-id");
+        hold_reload(&mut app, "other-session", &first);
+        complete_reload(&mut app, "session-1", "wrong-id");
+        assert!(app.config.confirmation_overlay().is_none());
+        assert_eq!(app.plugins.pending_reload.as_ref().unwrap().request_id, first);
+        assert_eq!(app.plugins.session_plugins, installed);
+        let current = if force {
+            hold_reload(&mut app, "session-1", &first);
+            assert!(app.config.confirmation_overlay().is_some());
+            crate::app::test_support::press(&mut app, crossterm::event::KeyCode::Down);
+            crate::app::test_support::press(&mut app, crossterm::event::KeyCode::Enter);
+            let second = reload_request(&mut commands, true, folders);
+            assert_ne!(first, second);
+            complete_reload(&mut app, "session-1", &first);
+            hold_reload(&mut app, "session-1", &first);
+            crate::app::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::RuntimeReloadFailed {
+                    session_id: "session-1".into(),
+                    request_id: Some(first),
+                    message: "stale failure".into(),
+                },
+            );
+            assert_eq!(app.plugins.pending_reload.as_ref().unwrap().request_id, second);
+            assert!(app.plugins.last_error.is_none());
+            second
+        } else {
+            first
+        };
+        complete_reload(&mut app, "other-session", &current);
+        assert_eq!(app.plugins.pending_reload.as_ref().unwrap().request_id, current);
+        complete_reload(&mut app, "session-1", &current);
+        assert!(app.plugins.pending_reload.is_none());
+        assert_eq!(
+            app.plugins.session_plugins, installed,
+            "completion must not fabricate inventory"
+        );
+        let new = vec![crate::agent::types::SessionPlugin {
+            name: "new".into(),
+            path: "confirmed-folder".into(),
+            source: None,
+            version: None,
+        }];
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::PluginInventory {
+                session_id: "session-1".into(),
+                plugins: new.clone(),
+            },
+        );
+        assert_eq!(app.plugins.session_plugins, new);
+        assert!(commands.try_recv().is_err());
     }
 
     #[test]
-    fn request_context_usage_refresh_coalesces_in_flight_requests() {
-        let (mut app, mut rx) = app_with_connection();
-
-        request_context_usage_refresh(&mut app);
-        request_context_usage_refresh(&mut app);
-
-        assert!(app.session_runtime.session_usage.context_usage_in_flight);
-        assert!(app.session_runtime.session_usage.context_usage_refresh_pending);
-        expect_context_usage_command(&mut rx);
-        assert!(rx.try_recv().is_err(), "coalesced refresh should not send twice");
-    }
-
-    #[test]
-    fn apply_context_usage_snapshot_replays_pending_refresh() {
-        let (mut app, mut rx) = app_with_connection();
-        request_context_usage_refresh(&mut app);
-        request_context_usage_refresh(&mut app);
-        let _ = rx.try_recv().expect("initial context usage command");
-
-        apply_context_usage_snapshot(&mut app, Some(62));
-
-        assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(62));
-        assert!(app.session_runtime.session_usage.context_usage_in_flight);
-        assert!(!app.session_runtime.session_usage.context_usage_refresh_pending);
-        expect_context_usage_command(&mut rx);
-    }
-
-    #[test]
-    fn tick_context_usage_refresh_waits_for_interval() {
-        let (mut app, mut rx) = app_with_connection();
-        let started = Instant::now();
-        app.status = AppStatus::Thinking;
-        app.session_runtime.session_usage.context_usage_last_requested_at = Some(started);
-
-        tick_context_usage_refresh(&mut app, started + just_before_refresh_interval());
-
-        assert!(rx.try_recv().is_err(), "refresh before interval should not send");
-    }
-
-    #[test]
-    fn tick_context_usage_refresh_requests_when_timestamp_is_missing() {
-        let (mut app, mut rx) = app_with_connection();
-        let now = Instant::now();
-        app.status = AppStatus::Thinking;
-
-        tick_context_usage_refresh(&mut app, now);
-
-        assert_eq!(app.session_runtime.session_usage.context_usage_last_requested_at, Some(now));
-        expect_context_usage_command(&mut rx);
-    }
-
-    #[test]
-    fn tick_context_usage_refresh_requests_after_interval_during_thinking() {
-        let (mut app, mut rx) = app_with_connection();
-        let started = Instant::now();
-        let due = started + CONTEXT_USAGE_REFRESH_INTERVAL;
-        app.status = AppStatus::Thinking;
-        app.session_runtime.session_usage.context_usage_last_requested_at = Some(started);
-
-        tick_context_usage_refresh(&mut app, due);
-
-        assert_eq!(app.session_runtime.session_usage.context_usage_last_requested_at, Some(due));
-        expect_context_usage_command(&mut rx);
-    }
-
-    #[test]
-    fn tick_context_usage_refresh_requests_after_interval_during_running() {
-        let (mut app, mut rx) = app_with_connection();
-        let started = Instant::now();
-        let due = started + CONTEXT_USAGE_REFRESH_INTERVAL;
-        app.status = AppStatus::Running;
-        app.session_runtime.session_usage.context_usage_last_requested_at = Some(started);
-
-        tick_context_usage_refresh(&mut app, due);
-
-        expect_context_usage_command(&mut rx);
-    }
-
-    #[test]
-    fn tick_context_usage_refresh_skips_ready_state() {
-        let (mut app, mut rx) = app_with_connection();
-        let started = Instant::now();
-        app.status = AppStatus::Ready;
-        app.session_runtime.session_usage.context_usage_last_requested_at = Some(started);
-
-        tick_context_usage_refresh(&mut app, started + CONTEXT_USAGE_REFRESH_INTERVAL);
-
-        assert!(rx.try_recv().is_err(), "ready state should not refresh context usage");
-    }
-
-    #[test]
-    fn tick_context_usage_refresh_skips_in_flight_request() {
-        let (mut app, mut rx) = app_with_connection();
-        let started = Instant::now();
-        app.status = AppStatus::Running;
-        app.session_runtime.session_usage.context_usage_in_flight = true;
-        app.session_runtime.session_usage.context_usage_last_requested_at = Some(started);
-
-        tick_context_usage_refresh(&mut app, started + CONTEXT_USAGE_REFRESH_INTERVAL);
-
-        assert!(rx.try_recv().is_err(), "in-flight refresh should not send another command");
-        assert!(!app.session_runtime.session_usage.context_usage_refresh_pending);
-    }
-
-    #[test]
-    fn manual_context_usage_refresh_resets_timer() {
-        let (mut app, mut rx) = app_with_connection();
-        let requested_at = Instant::now();
-        app.status = AppStatus::Running;
-
-        request_context_usage_refresh_at(&mut app, requested_at);
-        expect_context_usage_command(&mut rx);
-        apply_context_usage_snapshot(&mut app, Some(12));
-
-        tick_context_usage_refresh(&mut app, requested_at + just_before_refresh_interval());
-
-        assert!(rx.try_recv().is_err(), "manual request should restart the interval");
-    }
-
-    #[test]
-    fn request_status_snapshot_refresh_sends_bridge_command() {
-        let (mut app, mut rx) = app_with_connection();
-
-        request_status_snapshot_refresh(&mut app);
-
-        let envelope = rx.try_recv().expect("status snapshot command");
-        assert!(matches!(
-            envelope.command,
-            BridgeCommand::GetStatusSnapshot { session_id } if session_id == "session-1"
-        ));
+    fn refused_context_refresh_retains_data_and_allows_scheduled_or_manual_retry() {
+        for manual in [false, true] {
+            let (mut app, commands) = app_with_connection();
+            active_phase(&mut app, crate::agent::model::AgentActivityPhase::Thinking);
+            app.input.set_text("unsent refresh draft");
+            app.input.set_cursor(0, 6);
+            context_result(&mut app, "session-1", Some(37));
+            drop(commands);
+            let start = Instant::now();
+            request_context_usage_refresh_at(&mut app, start);
+            assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(37));
+            assert_eq!(app.input.text(), "unsent refresh draft");
+            assert_eq!(app.input.cursor(), (0, 6));
+            let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+            app.session_runtime.conn = Some(std::rc::Rc::new(connection));
+            for millis in if manual { [0, 1, 500, 999] } else { [0, 1, 2500, 4999] } {
+                tick_context_usage_refresh(&mut app, start + Duration::from_millis(millis));
+                assert!(
+                    commands.try_recv().is_err(),
+                    "failed admission must not cause a tick flood"
+                );
+            }
+            if manual {
+                request_context_usage_refresh_at(&mut app, start + Duration::from_secs(1));
+            } else {
+                tick_context_usage_refresh(&mut app, start + Duration::from_secs(5));
+            }
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(68));
+            assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(68));
+            assert_eq!(app.input.text(), "unsent refresh draft");
+            assert_eq!(app.input.cursor(), (0, 6));
+            assert!(commands.try_recv().is_err());
+            request_context_usage_refresh_at(&mut app, start + Duration::from_secs(9));
+            expect_context_usage_command(&mut commands);
+            context_result(&mut app, "session-1", Some(72));
+            assert_eq!(app.session_runtime.session_usage.context_usage_percent, Some(72));
+        }
     }
 }

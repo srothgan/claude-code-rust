@@ -105,7 +105,9 @@ fn field_value(label: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
+    use crate::ui::tool_call::test_support::{
+        card_body, rendered_line_texts, set_result_fields, tool_call,
+    };
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -126,62 +128,73 @@ mod tests {
 
     #[test]
     fn create_input_body_renders_labels_and_defaults() {
-        let tc = cron_tool_call(
-            "CronCreate",
-            json!({
-                "cron": "30 9 * * 1",
-                "prompt": "Send weekly status",
-                "durable": true
-            }),
-            None,
-        );
-
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
-        let rendered: Vec<String> =
-            rendered.into_iter().map(|line| line.trim_end().to_owned()).collect();
-
-        assert_eq!(
-            rendered,
-            vec![
-                "  \u{2502}  Cron: 30 9 * * 1",
-                "  \u{2502}  Prompt: Send weekly status",
-                "  \u{2502}  Recurring: yes",
-                "  \u{2514}\u{2500} Durable: yes",
-            ]
-        );
+        for (input, recurring) in [
+            (json!({"cron":"30 9 * * 1","prompt":"Send weekly status","durable":true}), "yes"),
+            (
+                json!({"cron":"30 9 * * 1","prompt":"Send weekly status","recurring":false,"durable":true}),
+                "no",
+            ),
+        ] {
+            let mut tc = cron_tool_call("CronCreate", input, None);
+            tc.status = model::ToolCallStatus::InProgress;
+            let body = card_body(&mut tc, 100);
+            for expected in [
+                "Cron: 30 9 * * 1",
+                "Prompt: Send weekly status",
+                "Durable: yes",
+                &format!("Recurring: {recurring}"),
+            ] {
+                assert!(body.iter().any(|row| row == expected), "{body:?}");
+            }
+            assert!(!body.iter().any(|row| row.starts_with("Schedule ID:")));
+        }
     }
 
     #[test]
-    fn completed_create_omits_raw_cron_when_schedule_output_exists() {
-        let tc = cron_tool_call(
-            "CronCreate",
-            json!({
-                "cron": "7 * * * *",
-                "prompt": "Send hourly tick"
-            }),
-            Some(
-                "Schedule ID: schedule-1\nSchedule: Every hour at minute 07\nRecurring: yes\nDurable: no",
+    fn completed_create_uses_confirmed_schedule_and_recurrence_without_request_defaults() {
+        for (requested, returned, prompt) in [
+            (
+                json!({"cron":"7 * * * *","prompt":"Send hourly tick","durable":true}),
+                "no",
+                "Send hourly tick",
             ),
-        );
-
-        let rendered = rendered_line_texts(&render_tool_content(&tc));
-
-        assert_eq!(
-            rendered,
-            vec![
-                "Prompt: Send hourly tick",
-                "Recurring: yes",
-                "Schedule ID: schedule-1",
+            (
+                json!({"cron":"7 * * * *","prompt":"Repeat accepted tick","recurring":false,"durable":true}),
+                "yes",
+                "Repeat accepted tick",
+            ),
+        ] {
+            let receipt = format!(
+                "Schedule ID: accepted-job-71\nSchedule: Every hour at minute 07\nPrompt: {prompt}\nRecurring: {returned}\nDurable: no"
+            );
+            let mut tc = cron_tool_call("CronCreate", requested, Some(&receipt));
+            set_result_fields(
+                &mut tc,
+                &[
+                    ("Schedule ID", "accepted-job-71"),
+                    ("Schedule", "Every hour at minute 07"),
+                    ("Prompt", prompt),
+                    ("Recurring", returned),
+                    ("Durable", "no"),
+                ],
+            );
+            let body = card_body(&mut tc, 100);
+            for expected in [
+                "Schedule ID: accepted-job-71",
                 "Schedule: Every hour at minute 07",
-                "Recurring: yes",
+                &format!("Prompt: {prompt}"),
+                &format!("Recurring: {returned}"),
                 "Durable: no",
-            ]
-        );
+            ] {
+                assert_eq!(
+                    body.iter().filter(|row| row.as_str() == expected).count(),
+                    1,
+                    "{body:?}"
+                );
+            }
+            assert_eq!(body.iter().filter(|row| row.starts_with("Recurring:")).count(), 1);
+            assert!(!body.iter().any(|row| row.starts_with("Cron:") || row == "Durable: yes"));
+        }
     }
 
     #[test]
@@ -198,103 +211,94 @@ mod tests {
     }
 
     #[test]
-    fn list_input_has_no_body() {
-        let tc = cron_tool_call("CronList", json!({}), None);
+    fn list_results_preserve_job_association_and_truthful_bounded_previews() {
+        for structured in [true, false] {
+            let mut tc = two_job_list("FIRST_JOB_PROMPT");
+            if !structured {
+                tc.output_metadata = None;
+            }
+            let body = card_body(&mut tc, 100);
+            assert_job_regions(&body);
+        }
 
-        let rendered =
-            rendered_line_texts(&super::super::standard::ToolBodyCursor::default().render(
-                &tc,
-                80,
-                &crate::ui::layout_control::LayoutControl::uninterrupted(),
-            ));
+        let mut empty = cron_tool_call("CronList", json!({}), Some("Jobs: none"));
+        set_result_fields(&mut empty, &[("Jobs", "none")]);
+        let body = card_body(&mut empty, 100);
+        assert!(body.iter().any(|row| row == "Jobs: none"));
+        assert!(!body.iter().any(|row| row.starts_with("Schedule ID:")));
+        let mut pending = cron_tool_call("CronList", json!({}), None);
+        pending.status = model::ToolCallStatus::InProgress;
+        assert!(!card_body(&mut pending, 100).iter().any(|row| row == "Jobs: none"));
 
-        assert!(rendered.is_empty());
+        let long_prompt = format!("FIRST_JOB_PROMPT {} FIRST_JOB_TAIL", "detail ".repeat(100));
+        let mut tc = two_job_list(&long_prompt);
+        let canonical = tc.content.clone();
+        let result = tc.output_metadata.as_ref().unwrap().presentation.as_ref().unwrap();
+        let full = rendered_line_texts(&super::super::result_presentation::render(
+            result,
+            crate::app::presentation::ClockFormat::default(),
+        ));
+        assert_job_regions(&full);
+        let body = card_body(&mut tc, 60);
+        assert!(body.iter().any(|row| row == "Schedule ID: job-alpha"), "{body:?}");
+        assert!(body.iter().any(|row| row == "Schedule: Every hour at minute 07"));
+        assert!(body.iter().any(|row| row.contains("FIRST_JOB_PROMPT")));
+        assert!(body.iter().any(|row| row.contains("hidden")), "{body:?}");
+        assert!(
+            !body.iter().any(|row| row.contains("SECOND_JOB_PROMPT") || row.contains("job-beta"))
+        );
+        assert_eq!(tc.content, canonical);
+
+        // Saved text uses the existing tail policy rather than protected metadata.
+        let mut saved = two_job_list(&long_prompt);
+        saved.output_metadata = None;
+        let body = card_body(&mut saved, 60);
+        assert!(body.iter().any(|row| row.contains("FIRST_JOB_TAIL")), "{body:?}");
+        assert!(body.iter().any(|row| row.contains("hidden")));
+        let second = body.iter().position(|row| row == "Schedule ID: job-beta").unwrap();
+        assert!(body[second..].iter().any(|row| row == "Schedule: Every day at 09:30"));
+        assert!(body[second..].iter().any(|row| row == "Prompt: SECOND_JOB_PROMPT"));
+        assert!(!body[second..].iter().any(|row| row.contains("FIRST_JOB")));
     }
 
-    #[test]
-    fn output_body_formats_colon_fields_and_maps_labels() {
-        let tc = cron_tool_call(
-            "CronList",
-            json!({}),
-            Some(
-                "id: schedule-1\nhumanSchedule: every weekday at 09:30\nrecurring: false\ndurable: true",
-            ),
+    fn two_job_list(first_prompt: &str) -> ToolCallInfo {
+        // Literal saved divider is independent of the renderer's constant.
+        let receipt = format!(
+            "Schedule ID: job-alpha\nSchedule: Every hour at minute 07\nPrompt: {first_prompt}\n__cron_list_job_divider__\nSchedule ID: job-beta\nSchedule: Every day at 09:30\nPrompt: SECOND_JOB_PROMPT"
         );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Schedule ID: schedule-1",
-                "Schedule: every weekday at 09:30",
-                "Recurring: no",
-                "Durable: yes",
-            ]
+        let mut tc = cron_tool_call("CronList", json!({}), Some(&receipt));
+        tc.output_metadata = Some(
+            serde_json::from_value(json!({"presentation":{"sections":[
+                {"fields":[
+                    {"label":"Schedule ID","value":{"type":"text","value":"job-alpha"}},
+                    {"label":"Schedule","value":{"type":"text","value":"Every hour at minute 07"}},
+                    {"label":"Prompt","value":{"type":"text","value":first_prompt}}
+                ]},
+                {"fields":[
+                    {"label":"Schedule ID","value":{"type":"text","value":"job-beta"}},
+                    {"label":"Schedule","value":{"type":"text","value":"Every day at 09:30"}},
+                    {"label":"Prompt","value":{"type":"text","value":"SECOND_JOB_PROMPT"}}
+                ]}
+            ]}}))
+            .unwrap(),
         );
+        tc
     }
 
-    #[test]
-    fn list_output_renders_job_divider_without_label_corruption() {
-        let content = format!(
-            "Schedule ID: schedule-1\nSchedule: Every hour at minute 07\nPrompt: first\n{CRON_LIST_DIVIDER}\nSchedule ID: schedule-2\nCron: 0 9 1 * 1\nPrompt: second"
-        );
-        let tc = cron_tool_call("CronList", json!({}), Some(&content));
-
-        let lines = render_tool_content(&tc);
-        let rendered = rendered_line_texts(&lines);
-        let divider = "\u{2500}".repeat(16);
-
-        assert_eq!(
-            rendered,
-            vec![
-                "Schedule ID: schedule-1",
-                "Schedule: Every hour at minute 07",
-                "Prompt: first",
-                divider.as_str(),
-                "Schedule ID: schedule-2",
-                "Cron: 0 9 1 * 1",
-                "Prompt: second",
-            ]
-        );
-        assert_eq!(lines[3].spans[0].style.fg, Some(crate::ui::theme::DIM));
-    }
-
-    #[test]
-    fn long_prompt_body_stays_bounded_after_wrapping() {
-        let long_prompt = (0..120).map(|idx| format!("word{idx}")).collect::<Vec<_>>().join(" ");
-        let content = format!(
-            "Schedule ID: schedule-1\nCron: * * * * *\nSchedule: every minute\nPrompt: {long_prompt}\nRecurring: yes"
-        );
-        let tc = cron_tool_call("CronList", json!({}), Some(&content));
-
-        let body = super::super::standard::ToolBodyCursor::default().render(
-            &tc,
-            40,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered = rendered_line_texts(&body);
-
-        assert_eq!(body.len(), super::super::TOOL_BODY_MAX_LINES);
-        assert!(rendered.iter().any(|line| line.contains("hidden")));
-    }
-
-    #[test]
-    fn long_multi_job_prompt_body_stays_bounded_after_wrapping() {
-        let long_prompt = (0..120).map(|idx| format!("word{idx}")).collect::<Vec<_>>().join(" ");
-        let content = format!(
-            "Schedule ID: schedule-1\nSchedule: Every hour at minute 07\nPrompt: {long_prompt}\n{CRON_LIST_DIVIDER}\nSchedule ID: schedule-2\nSchedule: Every day at 09:30\nPrompt: short"
-        );
-        let tc = cron_tool_call("CronList", json!({}), Some(&content));
-
-        let body = super::super::standard::ToolBodyCursor::default().render(
-            &tc,
-            40,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered = rendered_line_texts(&body);
-
-        assert_eq!(body.len(), super::super::TOOL_BODY_MAX_LINES);
-        assert!(rendered.iter().any(|line| line.contains("hidden")));
+    fn assert_job_regions(rows: &[String]) {
+        for (id, schedule, prompt, other) in [
+            ("job-alpha", "Every hour at minute 07", "FIRST_JOB_PROMPT", "SECOND_JOB_PROMPT"),
+            ("job-beta", "Every day at 09:30", "SECOND_JOB_PROMPT", "FIRST_JOB_PROMPT"),
+        ] {
+            let start = rows.iter().position(|row| row == &format!("Schedule ID: {id}")).unwrap();
+            let end = rows[start + 1..]
+                .iter()
+                .position(|row| row.starts_with("Schedule ID:"))
+                .map_or(rows.len(), |offset| start + 1 + offset);
+            let region = &rows[start..end];
+            assert!(region.iter().any(|row| row == &format!("Schedule: {schedule}")), "{region:?}");
+            assert!(region.iter().any(|row| row.contains(prompt)), "{region:?}");
+            assert!(!region.iter().any(|row| row.contains(other)), "{region:?}");
+        }
     }
 }

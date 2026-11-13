@@ -3,7 +3,6 @@ import test from "node:test";
 import { parseCommandEnvelope } from "./commands.js";
 import {
   buildFlagSettings,
-  buildLaunchQueryOptions,
   buildSystemPrompt,
   fileCheckpointingEnabled,
   mergeMcpServers,
@@ -11,58 +10,103 @@ import {
 
 const GUARD = "guard text";
 
-test("host restrictions are laid over the user's --settings layer", () => {
-  const layered = buildFlagSettings(
-    { settings: { spinnerTipsEnabled: false, feedbackDrafts: "on" } },
-    {},
-  );
-  assert.deepEqual(layered, {
-    spinnerTipsEnabled: false,
-    feedbackDrafts: "off",
-    crossSessionInbound: "refuse",
-  });
+test("host restrictions preserve user settings and inbound policy precedence without mutating inputs", () => {
+  const rows = [
+    { flag: {}, saved: {}, expected: { crossSessionInbound: "refuse" } },
+    {
+      flag: { crossSessionInbound: "accept" },
+      saved: { crossSessionInbound: "refuse" },
+      expected: { crossSessionInbound: "accept" },
+    },
+    {
+      flag: { crossSessionInbound: "refuse" },
+      saved: { crossSessionInbound: "accept" },
+      expected: { crossSessionInbound: "refuse" },
+    },
+    { flag: {}, saved: { crossSessionInbound: "accept" }, expected: {} },
+    { flag: {}, saved: { crossSessionInbound: "refuse" }, expected: {} },
+    {
+      flag: {},
+      saved: { crossSessionInbound: "ask" },
+      expected: { crossSessionInbound: "refuse" },
+    },
+    {
+      flag: { crossSessionInbound: "ask" },
+      saved: { crossSessionInbound: "accept" },
+      expected: { crossSessionInbound: "refuse" },
+    },
+  ];
+  for (const row of rows) {
+    // Generic flag settings are admitted as JSON by the actual command parser.
+    const decoded = parseCommandEnvelope(
+      launchCommand({
+        settings: {
+          ...row.flag,
+          spinnerTipsEnabled: false,
+          feedbackDrafts: "on",
+          custom: { token: "keep", list: [1, "two"] },
+        },
+      }),
+    ).command;
+    assert.equal(decoded.command, "create_session");
+    if (decoded.command !== "create_session") return;
+    const saved = JSON.parse(JSON.stringify(row.saved));
+    const before = structuredClone({ launch: decoded.launch_settings, saved });
+    assert.deepEqual(buildFlagSettings(decoded.launch_settings, saved), {
+      spinnerTipsEnabled: false,
+      feedbackDrafts: "off",
+      custom: { token: "keep", list: [1, "two"] },
+      ...row.expected,
+    });
+    assert.deepEqual({ launch: decoded.launch_settings, saved }, before);
+  }
 });
 
-test("an explicit crossSessionInbound survives from the flag layer and from the saved cascade", () => {
-  assert.equal(
-    buildFlagSettings({ settings: { crossSessionInbound: "accept" } }, { crossSessionInbound: "refuse" })
-      .crossSessionInbound,
-    "accept",
-  );
-  // Nothing in the flag layer: the saved value decides, and the SDK keeps reading it.
-  assert.equal(
-    "crossSessionInbound" in buildFlagSettings({}, { crossSessionInbound: "accept" }),
-    false,
-  );
-  // A flag value outside the two accepted ones is replaced by the restriction.
-  assert.equal(
-    buildFlagSettings({ settings: { crossSessionInbound: "ask" as never } }, { crossSessionInbound: "accept" })
-      .crossSessionInbound,
-    "refuse",
-  );
+test("file checkpointing honors opposing explicit values, saved values and the opt-in default", () => {
+  const rows = [
+    { flag: true, saved: false, expected: true },
+    { flag: false, saved: true, expected: false },
+    { flag: undefined, saved: true, expected: true },
+    { flag: undefined, saved: false, expected: false },
+    { flag: undefined, saved: undefined, expected: true },
+    { flag: "invalid", saved: false, expected: false },
+    { flag: null, saved: true, expected: true },
+  ];
+  for (const { flag, saved, expected } of rows) {
+    assert.equal(
+      fileCheckpointingEnabled(
+        { settings: flag === undefined ? {} : { fileCheckpointingEnabled: flag } },
+        { ...(saved === undefined ? {} : { fileCheckpointingEnabled: saved }) },
+      ),
+      expected,
+    );
+  }
 });
 
-test("fileCheckpointingEnabled follows the flag layer, then the saved cascade, then on", () => {
-  assert.equal(fileCheckpointingEnabled({ settings: { fileCheckpointingEnabled: false } }, { fileCheckpointingEnabled: true }), false);
-  assert.equal(fileCheckpointingEnabled({}, { fileCheckpointingEnabled: false }), false);
-  assert.equal(fileCheckpointingEnabled({}, {}), true);
-});
-
-test("later MCP configs replace earlier servers of the same name and keep the rest", () => {
+test("MCP merge preserves exact last-writer payloads and literal keys without inherited servers", () => {
   assert.equal(mergeMcpServers(undefined), undefined);
   assert.equal(mergeMcpServers([]), undefined);
-  const merged = mergeMcpServers([
-    { docs: { command: "docs-v1" }, search: { command: "search-v1" } },
-    { docs: { command: "docs-v2" } },
-  ]);
-  assert.deepEqual(merged, { docs: { command: "docs-v2" }, search: { command: "search-v1" } });
-});
-
-test("an MCP server named __proto__ is an ordinary entry", () => {
-  const config = JSON.parse('{"__proto__":{"command":"x"}}') as { [key: string]: never };
-  const merged = mergeMcpServers([config]);
-  assert.equal(Object.hasOwn(merged ?? {}, "__proto__"), true);
-  assert.equal(Object.getPrototypeOf(merged), Object.prototype);
+  const first = Object.assign(
+    Object.create({ inherited: { command: "must-not-launch" } }),
+    JSON.parse(
+      '{"docs":{"command":"old-docs","args":["--old"]},"search":{"command":"search","env":{"MODE":"local"}},"__proto__":{"command":"old-special"}}',
+    ),
+  );
+  const second = JSON.parse(
+    '{"docs":{"command":"new-docs","args":["--new","literal space"]},"__proto__":{"command":"special","args":["--literal"],"env":{"TOKEN":"value"}}}',
+  );
+  const before = JSON.stringify([first, second]);
+  const merged = mergeMcpServers([first, second]);
+  assert.ok(merged);
+  assert.equal(Object.hasOwn(merged, "__proto__"), true);
+  assert.equal(Object.hasOwn(merged, "inherited"), false);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(merged)),
+    JSON.parse(
+      '{"docs":{"command":"new-docs","args":["--new","literal space"]},"search":{"command":"search","env":{"MODE":"local"}},"__proto__":{"command":"special","args":["--literal"],"env":{"TOKEN":"value"}}}',
+    ),
+  );
+  assert.equal(JSON.stringify([first, second]), before);
 });
 
 test("the system prompt keeps the runtime guard whichever flags are given", () => {
@@ -91,64 +135,77 @@ test("the system prompt keeps the runtime guard whichever flags are given", () =
 
 // sdk.d.ts documents `title` for a new session; a real `--continue --fork-session -n` run
 // stored it as the fork's custom title, so the option is passed for forks too.
-test("the SDK title option names a new or forked session, never a plain resume", () => {
-  const launch = { name: "Experiment" };
-  assert.deepEqual(buildLaunchQueryOptions(launch, {}), { title: "Experiment" });
-  assert.deepEqual(buildLaunchQueryOptions(launch, { resume: "s1", forkSession: true }), {
-    title: "Experiment",
-  });
-  // The SDK would ignore it for a resumed session, which the resume path renames instead.
-  assert.deepEqual(buildLaunchQueryOptions(launch, { resume: "s1" }), {});
-});
 
-test("launch query options carry directories, servers and strict mode, and nothing else when unset", () => {
-  assert.deepEqual(buildLaunchQueryOptions({}, {}), {});
-  assert.deepEqual(
-    buildLaunchQueryOptions(
-      {
-        additional_directories: ["/work/shared"],
-        mcp_configs: [{ docs: { command: "docs-mcp" } }],
-        strict_mcp_config: true,
-      },
-      {},
-    ),
-    {
-      additionalDirectories: ["/work/shared"],
-      mcpServers: { docs: { command: "docs-mcp" } },
-      strictMcpConfig: true,
-    },
-  );
-});
+
+
 
 function launchCommand(launchSettings: unknown): string {
   return JSON.stringify({ command: "create_session", cwd: "/work", launch_settings: launchSettings });
 }
 
-test("the command parser accepts the launch configuration fields as the app sends them", () => {
-  const launchSettings = {
+test("launch envelope decoding preserves authored payloads, empty prompts and lifecycle identity", () => {
+  const raw =
+    '{"command":"create_session","request_id":"launch-request","cwd":"/work","launch_settings":{"name":"Release prep","fork_session":true,"additional_directories":["/work/shared"],"settings":{"spinnerTipsEnabled":false,"nested":{"literal":[1,"two"]}},"mcp_configs":[{"docs":{"command":"docs-mcp","args":["--literal"]}}],"strict_mcp_config":true,"system_prompt":"  First\\nSecond  ","append_system_prompt":""}}';
+  const parsed = parseCommandEnvelope(raw);
+  assert.equal(parsed.requestId, "launch-request");
+  assert.equal(parsed.command.command, "create_session");
+  assert.deepEqual(parsed.command.launch_settings, {
     name: "Release prep",
     fork_session: true,
     additional_directories: ["/work/shared"],
-    settings: { spinnerTipsEnabled: false },
-    mcp_configs: [{ docs: { command: "docs-mcp" } }],
+    settings: { spinnerTipsEnabled: false, nested: { literal: [1, "two"] } },
+    mcp_configs: [{ docs: { command: "docs-mcp", args: ["--literal"] } }],
     strict_mcp_config: true,
-    system_prompt: "You are a release bot.",
-    append_system_prompt: "End with DONE.",
-  };
-  const parsed = parseCommandEnvelope(launchCommand(launchSettings)).command;
-  assert.equal(parsed.command, "create_session");
-  assert.deepEqual(parsed.launch_settings, launchSettings);
-});
-
-test("the command parser rejects launch configuration of the wrong shape", () => {
-  for (const launchSettings of [
-    { mcp_configs: "docs" },
-    { mcp_configs: ["docs"] },
-    { settings: ["a"] },
-    { additional_directories: [1] },
-    { strict_mcp_config: "yes" },
-    { system_prompt: 3 },
+    system_prompt: "  First\nSecond  ",
+    append_system_prompt: "",
+  });
+  for (const base of [
+    { command: "create_session", cwd: "/work" },
+    { command: "new_session", cwd: "/work" },
+    { command: "resume_session", session_id: "saved" },
+    { command: "resume_session_at", session_id: "saved", target_user_message_id: "turn-2" },
   ]) {
-    assert.throws(() => parseCommandEnvelope(launchCommand(launchSettings)), `${JSON.stringify(launchSettings)}`);
+    const decoded = parseCommandEnvelope(
+      JSON.stringify({
+        ...base,
+        launch_settings: {
+          system_prompt: "",
+          append_system_prompt: "  tail\n",
+          settings: {},
+          mcp_configs: [],
+          additional_directories: [],
+          strict_mcp_config: false,
+          fork_session: false,
+        },
+      }),
+    ).command;
+    assert.equal(decoded.command, base.command);
+    assert.ok("launch_settings" in decoded);
+    assert.deepEqual(decoded.launch_settings, {
+      system_prompt: "",
+      append_system_prompt: "  tail\n",
+      settings: {},
+    });
+    const absent = parseCommandEnvelope(JSON.stringify(base)).command;
+    assert.ok("launch_settings" in absent);
+    assert.deepEqual(absent.launch_settings, {});
+  }
+  const rows = [
+    ["mcp_configs", "docs", [{ docs: { command: "mcp" } }]],
+    ["mcp_configs", ["docs"], [{}]],
+    ["settings", ["a"], { literal: ["a"] }],
+    ["additional_directories", [1], ["/shared"]],
+    ["strict_mcp_config", "yes", true],
+    ["fork_session", "yes", true],
+    ["system_prompt", 3, "prompt"],
+    ["append_system_prompt", false, "tail"],
+    ["name", 3, "name"],
+  ] as const;
+  for (const [field, invalid, valid] of rows) {
+    assert.doesNotThrow(() => parseCommandEnvelope(launchCommand({ [field]: valid })));
+    assert.throws(
+      () => parseCommandEnvelope(launchCommand({ [field]: invalid })),
+      new RegExp(field),
+    );
   }
 });

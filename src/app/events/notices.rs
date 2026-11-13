@@ -172,7 +172,7 @@ fn update_inline_notice(
     }
     notice.severity = severity;
     notice.replace_text(message);
-    app.finish_block_change(msg_idx, block_idx);
+    app.sync_after_message_blocks_changed(msg_idx);
     true
 }
 
@@ -198,7 +198,7 @@ fn update_standalone_notice(
     msg.role = MessageRole::System(Some(severity));
     notice.severity = severity;
     notice.replace_text(message);
-    app.finish_block_change(msg_idx, 0);
+    app.sync_after_message_blocks_changed(msg_idx);
     true
 }
 
@@ -234,98 +234,4 @@ fn prune_invalid_turn_notice_refs(app: &mut App) {
             )
         ),
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{update_inline_notice, upsert_turn_notice};
-    use crate::app::{
-        App, ChatMessage, MessageBlock, MessageRole, NoticeDedupKey, SystemSeverity,
-        TurnNoticeLocation,
-    };
-
-    #[test]
-    fn inline_notice_insert_updates_canonical_assistant_message() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(0);
-
-        upsert_turn_notice(
-            &mut app,
-            crate::app::NoticeDedupKey::ApiRetry,
-            SystemSeverity::Warning,
-            "retrying",
-        );
-
-        assert_eq!(app.transcript.messages[0].blocks.len(), 1);
-        let Some(MessageBlock::Notice(notice)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected notice block");
-        };
-        assert_eq!(notice.severity, SystemSeverity::Warning);
-        assert_eq!(notice.text.text, "retrying");
-    }
-
-    #[test]
-    fn inline_notice_update_mutates_canonical_notice() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(0);
-
-        upsert_turn_notice(
-            &mut app,
-            crate::app::NoticeDedupKey::ApiRetry,
-            SystemSeverity::Warning,
-            "retrying",
-        );
-        assert!(update_inline_notice(
-            &mut app,
-            0,
-            0,
-            &crate::app::NoticeDedupKey::ApiRetry,
-            SystemSeverity::Error,
-            "failed",
-        ));
-
-        let Some(MessageBlock::Notice(notice)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected notice block");
-        };
-        assert_eq!(notice.severity, SystemSeverity::Error);
-        assert_eq!(notice.text.text, "failed");
-    }
-
-    #[test]
-    fn standalone_notice_migrates_inline_without_double_removing_tracking() {
-        let mut app = App::test_default();
-
-        upsert_turn_notice(
-            &mut app,
-            NoticeDedupKey::ApiRetry,
-            SystemSeverity::Warning,
-            "retrying before assistant",
-        );
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert_eq!(app.turn.notice_refs.len(), 1);
-
-        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(1);
-
-        upsert_turn_notice(
-            &mut app,
-            NoticeDedupKey::ApiRetry,
-            SystemSeverity::Warning,
-            "retrying with assistant",
-        );
-
-        assert_eq!(app.transcript.messages.len(), 1);
-        assert!(matches!(app.transcript.messages[0].role, MessageRole::Assistant));
-        let Some(MessageBlock::Notice(notice)) = app.transcript.messages[0].blocks.first() else {
-            panic!("expected migrated inline notice");
-        };
-        assert_eq!(notice.text.text, "retrying with assistant");
-        assert_eq!(app.turn.notice_refs.len(), 1);
-        assert!(matches!(
-            app.turn.notice_refs[0].location,
-            TurnNoticeLocation::Inline { msg_idx: 0, block_idx: 0 }
-        ));
-    }
 }

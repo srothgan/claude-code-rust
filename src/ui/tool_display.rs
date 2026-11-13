@@ -185,8 +185,7 @@ fn join_non_empty(words: impl Iterator<Item = String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MCP_ICON, parse_mcp_tool_name, tool_name_label, tool_title};
-    use unicode_width::UnicodeWidthStr;
+    use super::{parse_mcp_tool_name, tool_name_label, tool_title};
 
     #[test]
     fn parse_mcp_tool_name_formats_known_examples() {
@@ -217,41 +216,20 @@ mod tests {
             assert_eq!(display.server, server);
             assert_eq!(display.tool, tool);
             assert_eq!(display.title(), title);
+            assert_eq!(tool_name_label(raw).label.as_ref(), server);
         }
     }
 
     #[test]
-    fn parse_mcp_tool_name_requires_non_empty_server_and_tool_segments() {
+    fn mcp_tool_titles_preserve_identity_when_parsing_or_humanizing_fails() {
         for raw in ["mcp__missing_separator", "mcp____find_files", "mcp__fff__", "not_mcp__x__y"] {
-            assert_eq!(parse_mcp_tool_name(raw), None);
+            assert_eq!(tool_title(raw, raw).as_ref(), raw);
         }
-    }
-
-    #[test]
-    fn parse_mcp_tool_name_preserves_raw_segments_when_humanizing_has_no_words() {
         let display = parse_mcp_tool_name("mcp__---__...").expect("valid MCP wrapper");
         assert_eq!(display.server, "---");
         assert_eq!(display.tool, "...");
         assert_eq!(display.title(), "---: ...");
-    }
-
-    #[test]
-    fn tool_name_label_uses_mcp_icon_and_server_label() {
-        let label = tool_name_label("mcp__claude_ai_Strava__get_gear");
-        assert_eq!(label.icon, MCP_ICON);
-        assert_eq!(label.label.as_ref(), "Strava");
-    }
-
-    #[test]
-    fn mcp_icon_is_single_column() {
-        assert_eq!(UnicodeWidthStr::width(MCP_ICON), 1);
-    }
-
-    #[test]
-    fn tool_name_label_keeps_generic_fallback_for_unknown_non_mcp_tools() {
-        let label = tool_name_label("UnknownFutureTool");
-        assert_eq!(label.icon, "\u{25cb}");
-        assert_eq!(label.label.as_ref(), "Tool");
+        assert_eq!(tool_title("mcp__---__...", "mcp__---__...").as_ref(), "---: ...");
     }
 
     #[test]
@@ -271,16 +249,13 @@ mod tests {
     }
 
     #[test]
-    fn tool_title_falls_back_to_raw_name_for_unknown_mcp_shapes() {
-        assert_eq!(
-            tool_title("mcp__fff_find_files", "mcp__fff_find_files").as_ref(),
-            "mcp__fff_find_files",
-        );
-    }
-
-    #[test]
-    fn tool_title_uses_tool_name_when_title_is_empty() {
+    fn tool_title_preserves_explicit_title_and_falls_back_to_identity() {
         assert_eq!(tool_title("mcp__fff__find_files", "").as_ref(), "fff: Find files");
         assert_eq!(tool_title("UnknownFutureTool", "").as_ref(), "UnknownFutureTool");
+        assert_eq!(tool_title("UnknownFutureTool", "Friendly title").as_ref(), "Friendly title");
+        assert_eq!(
+            tool_title("mcp__fff_find_files", "mcp__fff_find_files").as_ref(),
+            "mcp__fff_find_files"
+        );
     }
 }

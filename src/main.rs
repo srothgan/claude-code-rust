@@ -168,37 +168,80 @@ fn write_resume_hint(
 
 #[cfg(test)]
 mod tests {
-    use super::{write_resume_hint, write_resume_hint_for_app};
-    use claude_code_rust::agent::model::SessionId;
+    use super::write_resume_hint_for_app;
     use claude_code_rust::app::App;
 
-    #[test]
-    fn resume_hint_starts_on_fresh_line_and_ends_with_newline() {
-        let mut output = Vec::new();
-
-        assert!(write_resume_hint(&mut output, "abc-123").is_ok());
-
-        assert_eq!(output, b"\r\nResume this session: claude-rs resume abc-123\n");
-    }
-
-    #[test]
-    fn app_resume_hint_uses_available_session_id() {
+    #[tokio::test]
+    async fn resume_hint_consumes_established_replaced_and_retained_session_identity() {
+        use claude_code_rust::agent::{events::ClientEvent, model};
+        use claude_code_rust::app::handle_client_event;
+        const CHILD: &str = "CLAUDE_RS_RESUME_HINT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let isolated = tempfile::tempdir().unwrap();
+            let output = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                tokio::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "tests::resume_hint_consumes_established_replaced_and_retained_session_identity", "--nocapture"])
+                    .env(CHILD, "1")
+                    .env("CLAUDE_CONFIG_DIR", isolated.path().join("profile"))
+                    .env("HOME", isolated.path())
+                    .env("USERPROFILE", isolated.path())
+                    .kill_on_drop(true)
+                    .output(),
+            ).await.unwrap().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
         let mut app = App::test_default();
-        app.session_runtime.session_id = Some(SessionId::new("session-123"));
-        let mut output = Vec::new();
 
-        assert!(write_resume_hint_for_app(&mut output, &app).is_ok());
-
-        assert_eq!(output, b"\r\nResume this session: claude-rs resume session-123\n");
-    }
-
-    #[test]
-    fn app_resume_hint_is_empty_before_session_establishment() {
-        let app = App::test_default();
-        let mut output = Vec::new();
-
-        assert!(write_resume_hint_for_app(&mut output, &app).is_ok());
-
-        assert!(output.is_empty());
+        let mut empty = Vec::new();
+        write_resume_hint_for_app(&mut empty, &app).unwrap();
+        assert!(empty.is_empty());
+        for (id, replacement) in [("first-session", false), ("replacement-session", true)] {
+            let session_id = model::SessionId::new(id);
+            let cwd = project.path().to_string_lossy().into_owned();
+            let event = if replacement {
+                ClientEvent::SessionReplaced {
+                    session_id,
+                    cwd,
+                    current_model: model::CurrentModel::new("model", "Model", "Model"),
+                    available_models: vec![],
+                    mode: None,
+                    fast_mode_state: model::FastModeState::Off,
+                    fast_mode_disabled_reason: None,
+                    ultracode: None,
+                    history_updates: vec![],
+                    restored_input: None,
+                }
+            } else {
+                ClientEvent::Connected {
+                    session_id,
+                    cwd,
+                    current_model: model::CurrentModel::new("model", "Model", "Model"),
+                    available_models: vec![],
+                    mode: None,
+                    fast_mode_state: model::FastModeState::Off,
+                    fast_mode_disabled_reason: None,
+                    ultracode: None,
+                    history_updates: vec![],
+                }
+            };
+            handle_client_event(&mut app, event);
+            for clear in [false, true] {
+                if clear {
+                    app.session_runtime.clear_identity();
+                }
+                let mut bytes = Vec::new();
+                write_resume_hint_for_app(&mut bytes, &app).unwrap();
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(text.starts_with("\r\n") && text.ends_with('\n'));
+                let line = text.lines().find(|line| line.contains("claude-rs resume ")).unwrap();
+                assert_eq!(line.split_once("claude-rs resume ").unwrap().1, id);
+                if replacement {
+                    assert!(!text.contains("first-session"));
+                }
+            }
+        }
     }
 }

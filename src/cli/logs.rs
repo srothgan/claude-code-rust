@@ -7,7 +7,7 @@ use anyhow::Context as _;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::fs::{self, File, OpenOptions, create_dir_all, rename};
+use std::fs::{self, File, OpenOptions, create_dir_all};
 use std::io::{IsTerminal as _, Write};
 use std::path::{Path, PathBuf};
 use time::{OffsetDateTime, macros::format_description};
@@ -307,6 +307,25 @@ fn create_bundle(
     paths: &crate::logging::DiagnosticsPaths,
     plan: &BundlePlan,
 ) -> anyhow::Result<BundleReport> {
+    create_bundle_with(
+        paths,
+        plan,
+        || Ok(serde_json::to_value(doctor::build_report(cli))?),
+        publish_bundle,
+    )
+}
+
+fn publish_bundle(source: &Path, destination: &Path) -> std::io::Result<()> {
+    // The finalized sibling becomes visible without replacing a newly occupied destination.
+    fs::hard_link(source, destination)
+}
+
+fn create_bundle_with(
+    paths: &crate::logging::DiagnosticsPaths,
+    plan: &BundlePlan,
+    doctor_report: impl FnOnce() -> anyhow::Result<Value>,
+    publish: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> anyhow::Result<BundleReport> {
     if plan.output_path.exists() {
         anyhow::bail!("bundle output already exists: {}", plan.output_path.display());
     }
@@ -322,27 +341,20 @@ fn create_bundle(
             format!("failed to create temporary bundle {}", temp_path.display())
         })?;
 
-    let result = write_bundle_zip(cli, paths, plan, temp_file);
-    if let Err(error) = result {
-        let _ = fs::remove_file(&temp_path);
-        return Err(error);
-    }
-
-    rename(&temp_path, &plan.output_path).with_context(|| {
-        format!(
-            "failed to move bundle from {} to {}",
-            temp_path.display(),
-            plan.output_path.display()
-        )
-    })?;
+    let result = write_bundle_zip(paths, plan, temp_file, doctor_report).and_then(|()| {
+        publish(&temp_path, &plan.output_path)
+            .with_context(|| format!("failed to publish bundle {}", plan.output_path.display()))
+    });
+    let _ = fs::remove_file(&temp_path);
+    result?;
     Ok(BundleReport { output_path: plan.output_path.clone() })
 }
 
 fn write_bundle_zip(
-    cli: &Cli,
     paths: &crate::logging::DiagnosticsPaths,
     plan: &BundlePlan,
     file: File,
+    doctor_report: impl FnOnce() -> anyhow::Result<Value>,
 ) -> anyhow::Result<()> {
     let mut zip = ZipWriter::new(file);
     let mut included_files =
@@ -398,7 +410,7 @@ fn write_bundle_zip(
 
     add_json_file(&mut zip, "manifest.json", &manifest)?;
 
-    let mut doctor_json = serde_json::to_value(doctor::build_report(cli))?;
+    let mut doctor_json = doctor_report()?;
     redaction::redact_json_value(&mut doctor_json);
     add_json_value_file(&mut zip, "doctor.json", &doctor_json)?;
 
@@ -549,290 +561,5 @@ fn base_log_path(path: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        BundlePlan, create_bundle, extract_bridge_diagnostics, select_bundle_runtime_logs,
-        write_latest_path, write_summary, write_tail,
-    };
-    use crate::{Cli, LogsArgs};
-    use std::fs;
-    use std::io::Read as _;
-    use std::path::PathBuf;
-    use tempfile::tempdir;
-    use zip::ZipArchive;
-
-    #[test]
-    fn latest_path_falls_back_to_legacy_log() {
-        let dir = tempdir().expect("tempdir");
-        let runtime_dir = dir.path().join("runtime");
-        let legacy = dir.path().join("claude-rs.log");
-        fs::write(&legacy, "legacy").expect("write legacy");
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code =
-            write_latest_path(&mut stdout, &mut stderr, &runtime_dir, &legacy).expect("latest");
-
-        assert_eq!(code, 0);
-        assert_eq!(stderr, b"");
-        assert!(String::from_utf8(stdout).expect("utf8").contains("claude-rs.log"));
-    }
-
-    #[test]
-    fn summary_output_uses_sections_and_status_rows() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().join("logs");
-        let runtime_dir = root.join("runtime");
-        fs::create_dir_all(&runtime_dir).expect("runtime dir");
-        fs::write(runtime_dir.join("claude-rs-20260614T075924Z-p1-rabc.log"), "runtime")
-            .expect("runtime log");
-        let paths = crate::logging::DiagnosticsPaths {
-            root_dir: root.clone(),
-            runtime_dir,
-            legacy_log_path: root.join("claude-rs.log"),
-        };
-        let mut stdout = Vec::new();
-
-        let code =
-            write_summary(&mut stdout, &paths, super::HumanStyle::new(false)).expect("summary");
-
-        assert_eq!(code, 0);
-        let output = String::from_utf8(stdout).expect("utf8");
-        assert!(output.contains("claude-rs logs"));
-        assert!(output.contains("Summary: 1 managed runtime logs, latest log found"));
-        assert!(output.contains("Locations"));
-        assert!(output.contains("[DIR]"));
-        assert!(output.contains("[MISS] Legacy log"));
-        assert!(!output.contains("Perf telemetry"));
-        assert!(output.contains("Latest"));
-        assert!(output.contains("[FOUND] Latest log"));
-        assert!(output.contains("Commands"));
-        assert!(output.contains("Print redacted latest log tail"));
-    }
-
-    #[test]
-    fn latest_path_reports_missing_logs() {
-        let dir = tempdir().expect("tempdir");
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code = write_latest_path(
-            &mut stdout,
-            &mut stderr,
-            &dir.path().join("runtime"),
-            &dir.path().join("claude-rs.log"),
-        )
-        .expect("latest");
-
-        assert_eq!(code, 1);
-        assert!(stdout.is_empty());
-        assert!(String::from_utf8(stderr).expect("utf8").contains("No claude-rs log"));
-    }
-
-    #[test]
-    fn tail_redacts_latest_log_lines() {
-        let dir = tempdir().expect("tempdir");
-        let runtime_dir = dir.path().join("runtime");
-        fs::create_dir_all(&runtime_dir).expect("runtime dir");
-        let log = runtime_dir.join("claude-rs-20260614T075924Z-p1-rabc.log");
-        fs::write(&log, "first\nANTHROPIC_API_KEY=sk-ant-secret\nlast\n").expect("write log");
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let code = write_tail(
-            &mut stdout,
-            &mut stderr,
-            &runtime_dir,
-            &dir.path().join("claude-rs.log"),
-            2,
-        )
-        .expect("tail");
-
-        assert_eq!(code, 0);
-        assert!(stderr.is_empty());
-        let output = String::from_utf8(stdout).expect("utf8");
-        assert!(!output.contains("sk-ant-secret"));
-        assert!(output.contains("ANTHROPIC_API_KEY=[redacted]"));
-        assert!(output.contains("last"));
-    }
-
-    #[test]
-    fn bundle_runtime_selection_includes_rotated_siblings() {
-        let dir = tempdir().expect("tempdir");
-        let runtime_dir = dir.path();
-        let base = runtime_dir.join("claude-rs-20260614T075924Z-p1-rabc.log");
-        let rotated = runtime_dir.join("claude-rs-20260614T075924Z-p1-rabc.log.1");
-        fs::write(&base, "base").expect("write base");
-        fs::write(&rotated, "rotated").expect("write rotated");
-        fs::write(runtime_dir.join("other.log"), "ignored").expect("write ignored");
-
-        let selected = select_bundle_runtime_logs(runtime_dir).expect("select");
-
-        assert!(selected.contains(&base));
-        assert!(selected.contains(&rotated));
-        assert_eq!(selected.len(), 2);
-    }
-
-    #[test]
-    fn bridge_diagnostics_extracts_bridge_targets_only() {
-        let logs = r#"{"target":"app.session","event_name":"x","message":"skip"}"#.to_owned()
-            + "\n"
-            + r#"{"target":"bridge.sdk","event_name":"sdk_stderr_line","fields":{"Authorization":"Bearer secret"}}"#;
-
-        let extracted = extract_bridge_diagnostics([logs.as_str()].into_iter());
-
-        assert!(extracted.contains("bridge.sdk"));
-        assert!(!extracted.contains("app.session"));
-        assert!(!extracted.contains("secret"));
-        assert!(extracted.contains("[redacted]"));
-    }
-
-    #[test]
-    fn bundle_contains_manifest_doctor_paths_and_redacted_logs() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().join("logs");
-        let runtime_dir = root.join("runtime");
-        fs::create_dir_all(&runtime_dir).expect("runtime dir");
-        let runtime_log = runtime_dir.join("claude-rs-20260614T075924Z-p1-rabc.log");
-        fs::write(
-            &runtime_log,
-            r#"{"target":"bridge.sdk","event_name":"sdk_stderr_line","fields":{"Authorization":"Bearer secret"}}"#,
-        )
-        .expect("write runtime log");
-        let legacy_log_path = root.join("claude-rs.log");
-        fs::write(&legacy_log_path, "accessToken=secret-token").expect("write legacy log");
-        let output_path = dir.path().join("bundle.zip");
-        let paths =
-            crate::logging::DiagnosticsPaths { root_dir: root, runtime_dir, legacy_log_path };
-        let plan = BundlePlan {
-            output_path: output_path.clone(),
-            runtime_logs: vec![runtime_log],
-            legacy_log: Some(paths.legacy_log_path.clone()),
-            last_crash_metadata: paths.root_dir.join(crate::failure::LAST_CRASH_FILE_NAME),
-        };
-
-        create_bundle(&test_cli(), &paths, &plan).expect("bundle");
-
-        let file = fs::File::open(output_path).expect("open bundle");
-        let mut archive = ZipArchive::new(file).expect("zip archive");
-        let names = (0..archive.len())
-            .map(|index| {
-                archive.by_index(index).expect("entry").name().expect("entry name").into_owned()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(names.len(), 6);
-        assert!(names.contains(&"manifest.json".to_owned()));
-        assert!(names.contains(&"doctor.json".to_owned()));
-        assert!(names.contains(&"paths.json".to_owned()));
-        assert!(names.contains(&"logs/bridge-diagnostics.jsonl".to_owned()));
-        assert!(names.contains(&"logs/runtime/claude-rs-20260614T075924Z-p1-rabc.log".to_owned()));
-        assert!(names.contains(&"logs/legacy/claude-rs.log".to_owned()));
-
-        for name in ["manifest.json", "paths.json"] {
-            let json: serde_json::Value =
-                serde_json::from_reader(archive.by_name(name).expect("JSON entry"))
-                    .expect("bundle JSON");
-            assert!(json.get("perf_log_dir").is_none(), "{name} contains removed perf path");
-            assert_eq!(json["diagnostics_root"], paths.root_dir.display().to_string());
-            assert_eq!(json["runtime_log_dir"], paths.runtime_dir.display().to_string());
-            assert_eq!(json["legacy_log_path"], paths.legacy_log_path.display().to_string());
-            if name == "manifest.json" {
-                assert_eq!(json["schema"], "claude-rs-debug-bundle/v2");
-            }
-        }
-        let doctor: serde_json::Value =
-            serde_json::from_reader(archive.by_name("doctor.json").expect("doctor entry"))
-                .expect("doctor JSON");
-        assert!(
-            doctor["checks"]
-                .as_array()
-                .expect("doctor checks")
-                .iter()
-                .all(|check| check["id"] != "perf_log_dir")
-        );
-
-        let mut bridge = String::new();
-        archive
-            .by_name("logs/bridge-diagnostics.jsonl")
-            .expect("bridge entry")
-            .read_to_string(&mut bridge)
-            .expect("read bridge");
-        assert!(!bridge.contains("secret"));
-        assert!(bridge.contains("[redacted]"));
-
-        for name in
-            ["logs/runtime/claude-rs-20260614T075924Z-p1-rabc.log", "logs/legacy/claude-rs.log"]
-        {
-            let mut log = String::new();
-            archive.by_name(name).expect("log entry").read_to_string(&mut log).expect("read log");
-            assert!(!log.contains("secret"), "{name} contains an unredacted credential");
-            assert!(log.contains("[redacted]"), "{name} is missing its redacted log content");
-        }
-    }
-
-    #[test]
-    fn bundle_includes_redacted_last_crash_metadata_when_available() {
-        let dir = tempdir().expect("tempdir");
-        let root = dir.path().join("logs");
-        let runtime_dir = root.join("runtime");
-        fs::create_dir_all(&runtime_dir).expect("runtime dir");
-        fs::create_dir_all(&root).expect("root dir");
-        let crash_path = root.join(crate::failure::LAST_CRASH_FILE_NAME);
-        fs::write(
-            &crash_path,
-            r#"{"schema":"claude-rs-crash/v1","message":"ANTHROPIC_API_KEY=sk-ant-secret"}"#,
-        )
-        .expect("write crash metadata");
-        let output_path = dir.path().join("bundle.zip");
-        let paths = crate::logging::DiagnosticsPaths {
-            root_dir: root,
-            runtime_dir,
-            legacy_log_path: dir.path().join("claude-rs.log"),
-        };
-        let plan = BundlePlan {
-            output_path: output_path.clone(),
-            runtime_logs: Vec::new(),
-            legacy_log: None,
-            last_crash_metadata: crash_path,
-        };
-
-        create_bundle(&test_cli(), &paths, &plan).expect("bundle");
-
-        let file = fs::File::open(output_path).expect("open bundle");
-        let mut archive = ZipArchive::new(file).expect("zip archive");
-        let mut crash = String::new();
-        archive
-            .by_name(crate::failure::LAST_CRASH_FILE_NAME)
-            .expect("crash metadata entry")
-            .read_to_string(&mut crash)
-            .expect("read crash metadata");
-        assert!(crash.contains("[redacted]"));
-        assert!(!crash.contains("sk-ant-secret"));
-    }
-
-    fn test_cli() -> Cli {
-        Cli {
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            command: Some(crate::Command::Logs(LogsArgs {
-                path: false,
-                latest: false,
-                tail: None,
-                bundle: true,
-                output: Some(PathBuf::from("bundle.zip")),
-                yes: true,
-            })),
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: false,
-        }
-    }
-}
+#[path = "logs_audit_tests.rs"]
+mod audit_tests;

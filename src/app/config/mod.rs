@@ -61,5 +61,10 @@ mod prelude {
 
 #[cfg(test)]
 mod navigation_tests;
+
+#[cfg(test)]
+mod settings_audit_support;
+#[cfg(test)]
+mod status_usage_tests;
 #[cfg(test)]
 mod tests;

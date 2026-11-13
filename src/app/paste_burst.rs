@@ -74,6 +74,8 @@ pub enum CharAction {
     RetroCapture(usize),
     /// Not a burst -- insert this character normally.
     Passthrough(char),
+    /// A false alarm released a held character. Insert it before the current key, even if equal.
+    ReleaseHeld(char),
 }
 
 /// Action produced by [`PasteBurstDetector::tick`] when a timeout fires.
@@ -191,7 +193,7 @@ impl PasteBurstDetector {
                     self.state = BurstState::Idle;
                     self.push_recent_passthrough(prev, now);
                     self.push_recent_passthrough(ch, now);
-                    CharAction::Passthrough(prev)
+                    CharAction::ReleaseHeld(prev)
                 }
             }
             BurstState::Buffering => {
@@ -306,9 +308,9 @@ impl PasteBurstDetector {
         self.enter_suppress_until.is_some_and(|until| now <= until)
     }
 
-    /// Whether the detector is actively buffering characters.
+    /// Whether accepted characters are still held outside the visible editor.
     #[must_use]
-    pub fn is_buffering(&self) -> bool {
+    pub fn has_held_input(&self) -> bool {
         matches!(self.state, BurstState::Buffering | BurstState::Pending { .. })
     }
 
@@ -387,290 +389,149 @@ mod tests {
     }
 
     #[test]
-    fn single_char_passes_through() {
-        let mut d = PasteBurstDetector::new();
-        let now = Instant::now();
-        let action = d.on_char('a', now);
-        assert_eq!(action, CharAction::Passthrough('a'));
-    }
-
-    #[test]
-    fn two_fast_chars_start_buffering() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        // First char passes through (no prior timing reference).
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-
-        // Second char within interval is held (Pending).
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-
-        // Third char within interval promotes to Buffering.
-        let t2 = fast(t1, 2);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-
-        assert!(d.is_buffering());
-    }
-
-    #[test]
-    fn burst_flushes_on_idle_timeout() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-        let t2 = fast(t1, 2);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-        let t3 = fast(t2, 2);
-        assert_eq!(d.on_char('d', t3), CharAction::Consumed);
-
-        // Not yet timed out.
-        let t4 = fast(t3, 2);
-        assert!(d.tick(t4).is_none());
-
-        // After idle timeout.
-        let t5 = after_idle(t3);
-        let flush = d.tick(t5);
-        assert_eq!(flush, Some(FlushAction::EmitPaste("abcd".to_owned())));
-    }
-
-    #[test]
-    fn pending_char_emitted_on_timeout() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-
-        // Timeout without a third char.
-        let t2 = after_idle(t1);
-        assert_eq!(d.tick(t2), Some(FlushAction::EmitChar('b')));
-    }
-
-    #[test]
-    fn enter_suppressed_after_burst() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        assert_eq!(d.on_char('b', fast(t0, 2)), CharAction::Consumed);
-        assert_eq!(d.on_char('c', fast(t0, 4)), CharAction::RetroCapture(1));
-        for i in 3_u8..=4 {
-            let t = fast(t0, u64::from(i) * 2);
-            assert_eq!(d.on_char(char::from(b'b' + i - 1), t), CharAction::Consumed);
+    fn bursts_deliver_complete_unicode_source_once_and_allow_reuse() {
+        let cases = [
+            ("\u{e9}\u{301}\u{754c}Z", [0, 2, 4, 6]),
+            #[cfg(windows)]
+            ("abcd", [0, 20, 40, 65]),
+            #[cfg(windows)]
+            ("abcd", [0, 20, 40, 80]),
+            #[cfg(windows)]
+            ("abcd", [0, 20, 60, 80]),
+        ];
+        for (source, times) in cases {
+            let mut detector = PasteBurstDetector::new();
+            let start = Instant::now();
+            for (i, ch) in source.chars().enumerate() {
+                let expected = match i {
+                    0 => CharAction::Passthrough(ch),
+                    1 | 3 => CharAction::Consumed,
+                    2 => CharAction::RetroCapture(1),
+                    _ => unreachable!(),
+                };
+                assert_eq!(detector.on_char(ch, fast(start, times[i])), expected);
+            }
+            let end = fast(start, times[3]);
+            assert_eq!(detector.tick(end + IDLE_TIMEOUT), None);
+            let flushed = end + IDLE_TIMEOUT + Duration::from_nanos(1);
+            assert_eq!(detector.tick(flushed), Some(FlushAction::EmitPaste(source.to_owned())));
+            assert_eq!(detector.tick(flushed + IDLE_TIMEOUT), None);
+            let later = flushed + Duration::from_secs(1);
+            assert_eq!(detector.on_char('X', later), CharAction::Passthrough('X'));
+            assert_eq!(detector.on_char('Y', fast(later, 2)), CharAction::Consumed);
+            assert_eq!(detector.on_char('Z', fast(later, 4)), CharAction::RetroCapture(1));
+            assert_eq!(
+                detector.tick(after_idle(fast(later, 4))),
+                Some(FlushAction::EmitPaste("XYZ".to_owned()))
+            );
         }
-
-        // Flush the burst.
-        let t_flush = after_idle(t0);
-        let flush = d.tick(t_flush);
-        assert!(matches!(flush, Some(FlushAction::EmitPaste(_))));
-
-        // Enter within suppression window is suppressed.
-        let t_enter = fast(t_flush, 10);
-        assert!(d.should_suppress_enter(t_enter));
-
-        // Enter after suppression window is not suppressed.
-        let late_ms =
-            u64::try_from((ENTER_SUPPRESS_WINDOW + Duration::from_millis(1)).as_millis()).unwrap();
-        let t_late = fast(t_flush, late_ms);
-        assert!(!d.should_suppress_enter(t_late));
     }
 
     #[test]
-    fn suppressed_enter_is_emitted_as_newline_paste() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        assert_eq!(d.on_char('b', fast(t0, 2)), CharAction::Consumed);
-        assert_eq!(d.on_char('c', fast(t0, 4)), CharAction::RetroCapture(1));
-
-        let t_flush = after_idle(t0);
-        assert_eq!(d.tick(t_flush), Some(FlushAction::EmitPaste("abc".to_owned())));
-
-        let t_enter = fast(t_flush, 10);
-        assert!(d.on_enter(t_enter));
-        assert!(d.is_buffering());
-
-        let t_newline_flush = after_idle(t_enter);
-        assert_eq!(d.tick(t_newline_flush), Some(FlushAction::EmitPaste("\n".to_owned())));
-    }
-
-    #[test]
-    fn enter_during_buffering_appends_newline() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-        let t2 = fast(t1, 2);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-
-        // Enter during buffering.
-        let t3 = fast(t2, 2);
-        assert!(d.on_enter(t3));
-        assert!(d.is_buffering());
-
-        // Continue buffering after Enter.
-        let t4 = fast(t3, 2);
-        assert_eq!(d.on_char('d', t4), CharAction::Consumed);
-
-        // Flush.
-        let t5 = after_idle(t4);
-        let flush = d.tick(t5);
-        assert_eq!(flush, Some(FlushAction::EmitPaste("abc\nd".to_owned())));
-    }
-
-    #[test]
-    fn non_char_key_returns_held_input_and_resets_state() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-
-        let t2 = fast(t1, 2);
-        assert_eq!(d.on_non_char_key(t2), Some(FlushAction::EmitChar('b')));
-        assert!(!d.is_buffering());
-        assert_eq!(d.tick(after_idle(t2)), None);
-    }
-
-    #[test]
-    fn non_char_key_returns_a_confirmed_burst_exactly_once() {
+    fn ordinary_typing_and_expired_pending_input_never_replay() {
         let mut detector = PasteBurstDetector::new();
-        let started = Instant::now();
-        assert_eq!(detector.on_char('a', started), CharAction::Passthrough('a'));
-        assert_eq!(detector.on_char('b', fast(started, 1)), CharAction::Consumed);
-        assert_eq!(detector.on_char('c', fast(started, 2)), CharAction::RetroCapture(1));
-        assert_eq!(
-            detector.on_non_char_key(fast(started, 3)),
-            Some(FlushAction::EmitPaste("abc".to_owned()))
-        );
-        assert_eq!(detector.on_non_char_key(fast(started, 4)), None);
-        assert_eq!(detector.tick(after_idle(started)), None);
-    }
-
-    #[test]
-    fn slow_typing_never_triggers_burst() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        for i in 0_u8..10 {
-            let t = fast(t0, u64::from(i) * 200); // 200ms apart = human typing.
-            let ch = char::from(b'a' + (i % 26));
-            assert_eq!(d.on_char(ch, t), CharAction::Passthrough(ch));
+        let start = Instant::now();
+        for (i, ch) in "a\u{754c}b".chars().enumerate() {
+            let at = start + Duration::from_secs(u64::try_from(i).unwrap());
+            assert_eq!(detector.on_char(ch, at), CharAction::Passthrough(ch));
+            assert_eq!(detector.tick(after_idle(at)), None);
         }
-        assert!(!d.is_buffering());
+        let later = start + Duration::from_secs(4);
+        assert_eq!(detector.on_char('X', later), CharAction::Passthrough('X'));
+        let pending = fast(later, 2);
+        assert_eq!(detector.on_char('Y', pending), CharAction::Consumed);
+        assert_eq!(detector.tick(pending + IDLE_TIMEOUT), None);
+        let expired = pending + IDLE_TIMEOUT + Duration::from_nanos(1);
+        assert_eq!(detector.tick(expired), Some(FlushAction::EmitChar('Y')));
+        assert_eq!(detector.tick(after_idle(expired)), None);
+        assert_eq!(
+            detector.on_char('Z', expired + Duration::from_secs(1)),
+            CharAction::Passthrough('Z')
+        );
     }
 
     #[test]
-    fn sub_threshold_burst_emits_chars_not_paste() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        // Only 2 fast chars (below MIN_BURST_LEN of 3).
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed); // held in Pending
-
-        // Third char is slow.
-        let t2 = fast(t1, 200);
-        // 'b' gets emitted as passthrough, 'c' becomes the new pending hold.
-        assert_eq!(d.on_char('c', t2), CharAction::Passthrough('b'));
+    fn a_false_alarm_explicitly_releases_the_held_character_before_the_current_key() {
+        for current in ['b', 'c'] {
+            let mut detector = PasteBurstDetector::new();
+            let start = Instant::now();
+            assert_eq!(detector.on_char('a', start), CharAction::Passthrough('a'));
+            assert_eq!(detector.on_char('b', fast(start, 2)), CharAction::Consumed);
+            let late = start + Duration::from_secs(1);
+            assert_eq!(detector.on_char(current, late), CharAction::ReleaseHeld('b'));
+            assert_eq!(detector.tick(after_idle(late)), None);
+            assert_eq!(detector.on_non_char_key(after_idle(late)), None);
+        }
     }
 
     #[test]
-    fn enter_in_pending_promotes_to_buffering() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-
-        // Enter while Pending -> promotes to Buffering with held_char + newline.
-        let t2 = fast(t1, 2);
-        assert!(d.on_enter(t2));
-        assert!(d.is_buffering());
-
-        // Flush to verify buffer contents.
-        let t3 = after_idle(t2);
-        let flush = d.tick(t3);
-        assert_eq!(flush, Some(FlushAction::EmitPaste("b\n".to_owned())));
+    fn enter_suppression_delivers_newlines_only_through_its_original_deadline() {
+        for (offset, suppressed) in [
+            (Duration::from_millis(1), true),
+            (ENTER_SUPPRESS_WINDOW, true),
+            (ENTER_SUPPRESS_WINDOW + Duration::from_nanos(1), false),
+        ] {
+            let mut detector = PasteBurstDetector::new();
+            let start = Instant::now();
+            assert_eq!(detector.on_char('a', start), CharAction::Passthrough('a'));
+            assert_eq!(detector.on_char('b', fast(start, 2)), CharAction::Consumed);
+            assert_eq!(detector.on_char('c', fast(start, 4)), CharAction::RetroCapture(1));
+            let flushed = after_idle(fast(start, 4));
+            assert_eq!(detector.tick(flushed), Some(FlushAction::EmitPaste("abc".into())));
+            assert_eq!(detector.on_enter(flushed + offset), suppressed);
+            let next = after_idle(flushed + offset);
+            assert_eq!(
+                detector.tick(next),
+                if suppressed { Some(FlushAction::EmitPaste("\n".into())) } else { None }
+            );
+            // A one-character newline cannot extend the original suppression deadline.
+            let after_deadline =
+                (flushed + ENTER_SUPPRESS_WINDOW + Duration::from_nanos(1)).max(next);
+            assert!(!detector.on_enter(after_deadline));
+            assert_eq!(detector.tick(after_deadline + Duration::from_secs(1)), None);
+            assert_eq!(
+                detector.on_char('Q', after_deadline + Duration::from_secs(1)),
+                CharAction::Passthrough('Q')
+            );
+        }
     }
 
     #[test]
-    fn retro_capture_first_char_on_burst_confirm() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 2);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-        let t2 = fast(t1, 2);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-
-        let t3 = after_idle(t2);
-        assert_eq!(d.tick(t3), Some(FlushAction::EmitPaste("abc".to_owned())));
+    fn non_character_boundaries_release_source_once_and_restart_ordinary_typing() {
+        for (source, expected) in [
+            ("", None),
+            ("ab", Some(FlushAction::EmitChar('b'))),
+            ("abc", Some(FlushAction::EmitPaste("abc".into()))),
+        ] {
+            let mut detector = PasteBurstDetector::new();
+            let start = Instant::now();
+            for (i, ch) in source.chars().enumerate() {
+                let _ = detector.on_char(ch, fast(start, u64::try_from(i).unwrap()));
+            }
+            let boundary = fast(start, 4);
+            assert_eq!(detector.on_non_char_key(boundary), expected);
+            assert_eq!(detector.on_non_char_key(boundary), None);
+            assert_eq!(detector.tick(boundary), None);
+            assert_eq!(detector.on_char('X', fast(boundary, 1)), CharAction::Passthrough('X'));
+            assert_eq!(detector.tick(after_idle(boundary)), None);
+        }
     }
 
-    #[cfg(windows)]
     #[test]
-    fn windows_slower_burst_still_detected() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 20);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-        let t2 = fast(t1, 20);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-        let t3 = fast(t2, 25);
-        assert_eq!(d.on_char('d', t3), CharAction::Consumed);
-
-        let t4 = fast(t3, 80);
-        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_owned())));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_buffering_gap_does_not_drop_text() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 20);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-        let t2 = fast(t1, 20);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-
-        // Gap above CHAR_INTERVAL but below IDLE_TIMEOUT should stay in burst.
-        let t3 = fast(t2, 40);
-        assert_eq!(d.on_char('d', t3), CharAction::Consumed);
-
-        let t4 = fast(t3, 80);
-        assert_eq!(d.tick(t4), Some(FlushAction::EmitPaste("abcd".to_owned())));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_pending_confirmation_tolerates_jitter_within_idle_timeout() {
-        let mut d = PasteBurstDetector::new();
-        let t0 = Instant::now();
-
-        assert_eq!(d.on_char('a', t0), CharAction::Passthrough('a'));
-        let t1 = fast(t0, 20);
-        assert_eq!(d.on_char('b', t1), CharAction::Consumed);
-
-        let jitter_ms =
-            u64::try_from((CHAR_INTERVAL + Duration::from_millis(5)).as_millis()).unwrap();
-        let t2 = fast(t1, jitter_ms);
-        assert_eq!(d.on_char('c', t2), CharAction::RetroCapture(1));
-        assert!(d.is_buffering());
+    fn enter_preserves_pending_and_confirmed_source_with_followup_text() {
+        for (source, expected) in [("ab", "b\nZ"), ("abc", "abc\nZ")] {
+            let mut detector = PasteBurstDetector::new();
+            let start = Instant::now();
+            assert_eq!(detector.on_char('a', start), CharAction::Passthrough('a'));
+            assert_eq!(detector.on_char('b', fast(start, 2)), CharAction::Consumed);
+            if source == "abc" {
+                assert_eq!(detector.on_char('c', fast(start, 4)), CharAction::RetroCapture(1));
+            }
+            assert!(detector.on_enter(fast(start, 6)));
+            assert_eq!(detector.on_char('Z', fast(start, 7)), CharAction::Consumed);
+            let end = after_idle(fast(start, 7));
+            assert_eq!(detector.tick(end), Some(FlushAction::EmitPaste(expected.into())));
+            assert_eq!(detector.tick(after_idle(end)), None);
+        }
     }
 }

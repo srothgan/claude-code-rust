@@ -61,18 +61,59 @@ pub enum SessionTranscriptState {
     CheckFailed(String),
 }
 
+/// Rendered-line navigation bounds for read-only content.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReadOnlyViewport {
+    offset: u16,
+    height: u16,
+    max_offset: u16,
+}
+
+impl ReadOnlyViewport {
+    pub(crate) fn offset(&self) -> u16 {
+        self.offset
+    }
+
+    pub(crate) fn resize(&mut self, height: u16, content_height: u16) {
+        self.height = height;
+        self.max_offset = content_height.saturating_sub(height);
+        self.set_offset(self.offset);
+    }
+
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub(crate) fn handle_key(&mut self, code: KeyCode) -> bool {
+        let offset = match code {
+            KeyCode::Up => self.offset.saturating_sub(1),
+            KeyCode::Down => self.offset.saturating_add(1),
+            KeyCode::PageUp => self.offset.saturating_sub(self.height.max(1)),
+            KeyCode::PageDown => self.offset.saturating_add(self.height.max(1)),
+            KeyCode::Home => 0,
+            KeyCode::End => self.max_offset,
+            _ => return false,
+        };
+        self.set_offset(offset);
+        true
+    }
+
+    fn set_offset(&mut self, offset: u16) {
+        self.offset = offset.min(self.max_offset);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigState {
     pub(crate) footer: Box<crate::app::footer::FooterPreferences>,
     pub active_tab: ConfigTab,
+    pub(crate) read_only: ReadOnlyViewport,
+    pub(crate) overlay_read_only: ReadOnlyViewport,
     pub settings: Box<super::SettingsBrowse>,
     pub mcp_selected_server_index: usize,
     pub help_section: ConfigHelpSection,
     pub help_dialog: DialogState,
     pub help_visible_count: usize,
-    pub usage_scroll: u16,
-    pub usage_max_scroll: u16,
-    pub usage_visible_rows: u16,
     pub overlay: Option<ConfigOverlayState>,
     pub snapshot: Option<crate::agent::settings::SettingsSnapshot>,
     pub selected_scope: crate::agent::settings::SettingsScope,
@@ -93,14 +134,13 @@ impl Default for ConfigState {
         Self {
             footer: Box::default(),
             active_tab: ConfigTab::Settings,
+            read_only: ReadOnlyViewport::default(),
+            overlay_read_only: ReadOnlyViewport::default(),
             settings: Box::default(),
             mcp_selected_server_index: 0,
             help_section: ConfigHelpSection::default(),
             help_dialog: DialogState::default(),
             help_visible_count: 0,
-            usage_scroll: 0,
-            usage_max_scroll: 0,
-            usage_visible_rows: 0,
             overlay: None,
             snapshot: None,
             selected_scope: crate::agent::settings::SettingsScope::User,
@@ -202,11 +242,13 @@ impl ConfigState {
     pub fn replace_overlay(&mut self, overlay: ConfigOverlayState) {
         self.overlay = Some(overlay);
         self.overlay_message = None;
+        self.overlay_read_only.reset();
     }
 
     pub fn clear_overlay(&mut self) {
         self.overlay = None;
         self.overlay_message = None;
+        self.overlay_read_only.reset();
     }
 
     pub fn invalidate_session(&mut self, path: Option<&std::path::Path>) {

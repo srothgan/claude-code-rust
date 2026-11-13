@@ -223,40 +223,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn saving_preserves_external_siblings_and_updater_saves_preserve_the_footer() {
-        let directory = tempfile::tempdir().expect("directory");
-        let path = directory.path().join("settings.json");
-        std::fs::write(&path, r#"{"presentation":{"future":"initial"}}"#).expect("fixture");
-        let initial = FooterPreferences::load(Some(&path));
-        std::fs::write(&path, r#"{"presentation":{"future":"external"},"updates":{"autoInstall":true},"unknown":[1,2]}"#).expect("external sibling edit");
-        let layout = FooterLayout::from_saved(Some(&json!([
-            {"id":"directory","visible":true,"side":"right","color":"orange"}
-        ])))
-        .expect("layout");
-        let (_, error) = save(&path, initial.revision(), Some(&layout));
-        assert!(error.is_none(), "unrelated edits are not footer conflicts");
-        let mut updates = crate::app::AppSettings::default();
-        crate::app::settings::record_skip_version(&mut updates, "0.99.0");
-        crate::app::settings::save_global_settings(&path, &updates).expect("updater save");
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(path).expect("read")).expect("JSON");
-        assert_eq!(saved["presentation"]["future"], "external");
-        let directory = saved["presentation"]["footer"]
-            .as_array()
-            .expect("footer")
-            .iter()
-            .find(|field| field["id"] == "directory")
-            .expect("directory field");
-        assert_eq!(
-            *directory,
-            json!({"id":"directory","visible":true,"side":"right","color":"orange"})
-        );
-        assert_eq!(saved["updates"]["autoInstall"], true);
-        assert_eq!(saved["updates"]["skipped_version"], "0.99.0");
-        assert_eq!(saved["unknown"], json!([1, 2]));
-    }
-
-    #[test]
     fn invalid_or_nonregular_app_documents_cannot_be_overwritten() {
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("settings.json");
@@ -270,21 +236,6 @@ mod tests {
         let (_, error) = save(directory.path(), "unset", Some(&FooterLayout::default()));
         assert!(error.is_some());
         assert!(directory.path().is_dir());
-    }
-
-    #[test]
-    fn reset_repairs_an_invalid_footer_and_removes_an_empty_presentation_container() {
-        let directory = tempfile::tempdir().expect("directory");
-        let path = directory.path().join("settings.json");
-        std::fs::write(&path, r#"{"presentation":{"footer":false},"retain":17}"#).expect("fixture");
-        let state = FooterPreferences::load(Some(&path));
-        assert!(state.error.is_some());
-        let (_, error) = save(&path, state.revision(), None);
-        assert!(error.is_none());
-        let saved: Value =
-            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
-        assert_eq!(saved, json!({"retain":17}));
-        assert!(FooterPreferences::load(Some(&path)).saved().is_none());
     }
 
     #[cfg(unix)]
@@ -301,3 +252,7 @@ mod tests {
         assert!(std::fs::symlink_metadata(&link).expect("link").file_type().is_symlink());
     }
 }
+
+#[cfg(test)]
+#[path = "preferences_audit_tests.rs"]
+mod audit_tests;

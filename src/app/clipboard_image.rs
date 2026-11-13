@@ -98,16 +98,15 @@ pub fn is_supported_image_type(mime_type: &str) -> bool {
 /// Returns `true` if `data` is non-empty, correctly padded, and decodes as
 /// valid standard base64.
 ///
-/// NOTE: This is intentionally strict (requires padding) to match the
-/// `isValidBase64` check in `agent-sdk/src/bridge/message_handlers.ts`.
+/// Clipboard encoding emits canonical standard base64. This outgoing boundary also
+/// accepts surrounding whitespace, but requires nonempty decoded data and correct padding.
 pub fn is_valid_base64(data: &str) -> bool {
     use base64::Engine as _;
 
-    if data.is_empty() {
+    if data.trim().is_empty() {
         return false;
     }
-    // Quick structural check matching the TS regex: length must be a multiple
-    // of 4, only valid charset, padding only at end (max 2 '=' chars).
+    // The strict decoder checks alphabet and padding after the length check.
     let clean = data.trim();
     if !clean.len().is_multiple_of(4) {
         return false;
@@ -185,60 +184,9 @@ mod tests {
 
     // --- is_supported_image_type ---
 
-    #[test]
-    fn supported_types_accepted() {
-        for mime in SUPPORTED_IMAGE_MIME_TYPES {
-            assert!(is_supported_image_type(mime), "{mime} should be supported");
-        }
-    }
-
-    #[test]
-    fn unsupported_types_rejected() {
-        assert!(!is_supported_image_type("image/bmp"));
-        assert!(!is_supported_image_type("text/plain"));
-        assert!(!is_supported_image_type(""));
-    }
-
     // --- is_valid_base64 ---
 
-    #[test]
-    fn valid_base64_accepted() {
-        assert!(is_valid_base64("aGVsbG8=")); // "hello"
-        assert!(is_valid_base64("AAAA"));
-        assert!(is_valid_base64("AA=="));
-    }
-
-    #[test]
-    fn invalid_base64_rejected() {
-        assert!(!is_valid_base64(""));
-        assert!(!is_valid_base64("A")); // bad length
-        assert!(!is_valid_base64("AAA!")); // invalid char
-        assert!(!is_valid_base64("AAA")); // not padded (length % 4 != 0)
-        assert!(!is_valid_base64("A=AA")); // padding in the middle
-        assert!(!is_valid_base64("====")); // all padding, no data
-    }
-
     // --- validate_image ---
-
-    #[test]
-    fn validate_image_rejects_bad_mime() {
-        let err = validate_image("AAAA", "image/bmp").unwrap_err();
-        assert!(err.contains("unsupported image type"));
-    }
-
-    #[test]
-    fn validate_image_rejects_bad_base64() {
-        let err = validate_image("!!!", "image/png").unwrap_err();
-        assert!(err.contains("not valid base64"));
-    }
-
-    #[test]
-    fn validate_image_accepts_valid() {
-        assert!(validate_image("aGVsbG8=", "image/png").is_ok());
-        assert!(validate_image("aGVsbG8=", "image/jpeg").is_ok());
-        assert!(validate_image("aGVsbG8=", "image/gif").is_ok());
-        assert!(validate_image("aGVsbG8=", "image/webp").is_ok());
-    }
 
     // --- encode_clipboard_image ---
 
@@ -260,6 +208,7 @@ mod tests {
         let attachment =
             encode_clipboard_image(clipboard_pixels(3, 2, rgba.clone())).expect("attachment");
 
+        assert_eq!(attachment.mime_type, "image/png");
         assert_eq!(validate_image(&attachment.data, &attachment.mime_type), Ok(()));
         let png = base64::engine::general_purpose::STANDARD
             .decode(&attachment.data)
@@ -280,41 +229,120 @@ mod tests {
     }
 
     #[test]
-    fn image_whose_png_exceeds_ten_mebibytes_is_rejected() {
-        // Noise does not compress, so 1700x1700 RGBA (11.5 MB raw) stays over the limit.
-        let mut state = 0x9E37_79B9_u32;
-        let noise: Vec<u8> = (0..1700 * 1700 * 4)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 17;
-                state ^= state << 5;
-                state.to_le_bytes()[1]
-            })
-            .collect();
-
-        assert_eq!(
-            encode_clipboard_image(clipboard_pixels(1700, 1700, noise)),
-            Err(ClipboardImageError::TooLarge)
-        );
+    fn attachment_validation_rejects_blank_data_and_preserves_valid_prompt_neighbors() {
+        use crate::agent::wire::BridgeCommand;
+        for (mime, data, valid, cause) in [
+            ("image/jpeg", "AA==", true, ""),
+            ("image/png", "AAA=", true, ""),
+            ("image/gif", "AAAA", true, ""),
+            ("image/webp", "aGVsbG8=", true, ""),
+            ("image/bmp", "AAAA", false, "type"),
+            ("text/plain", "AAAA", false, "type"),
+            ("", "AAAA", false, "type"),
+            ("image/png", "", false, "base64"),
+            ("image/png", " \t\r\n", false, "base64"),
+            ("image/png", "A", false, "base64"),
+            ("image/png", "AAA!", false, "base64"),
+            ("image/png", "A===", false, "base64"),
+            ("image/png", "=AAA", false, "base64"),
+            ("image/png", "AA=A", false, "base64"),
+            ("image/png", "AA", false, "base64"),
+            ("image/png", "A A==", false, "base64"),
+            ("image/png", "AAAA====", false, "base64"),
+            // The supported clipboard encoder emits canonical base64; surrounding ASCII whitespace
+            // is tolerated at this boundary and by the bridge, but cleaned-empty data is not.
+            ("image/png", " \nAA==\t", true, ""),
+        ] {
+            let result = validate_image(data, mime);
+            assert_eq!(result.is_ok(), valid, "{mime} {data:?}");
+            if !valid {
+                assert!(result.unwrap_err().contains(cause));
+            }
+            let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+            let images = vec![
+                ImageAttachment { data: "AQID".into(), mime_type: "image/gif".into() },
+                ImageAttachment { data: data.into(), mime_type: mime.into() },
+                ImageAttachment { data: "BAUG".into(), mime_type: "image/webp".into() },
+            ];
+            connection
+                .prompt_with_images_and_pastes(
+                    "session-1".into(),
+                    "image-contract".into(),
+                    "literal source".into(),
+                    images,
+                    vec!["paste source".into()],
+                )
+                .expect("accepted prompt");
+            let BridgeCommand::Prompt { session_id, chunks, inline_pastes, .. } =
+                commands.try_recv().expect("actual Prompt").command
+            else {
+                panic!("expected Prompt")
+            };
+            assert_eq!(session_id, "session-1");
+            let actual: Vec<_> = chunks
+                .iter()
+                .filter(|c| c.kind == "image")
+                .map(|c| {
+                    (c.value["mime_type"].as_str().unwrap(), c.value["data"].as_str().unwrap())
+                })
+                .collect();
+            let mut expected = vec![("image/gif", "AQID")];
+            if valid {
+                expected.push((mime, data));
+            }
+            expected.push(("image/webp", "BAUG"));
+            assert_eq!(actual, expected);
+            assert_eq!(
+                chunks
+                    .iter()
+                    .filter(|c| c.kind == "text")
+                    .map(|c| c.value.clone())
+                    .collect::<Vec<_>>(),
+                [serde_json::json!("literal source")]
+            );
+            assert_eq!(inline_pastes, ["paste source"]);
+        }
     }
 
     #[test]
-    fn clipboard_image_error_messages_are_stable() {
-        assert_eq!(
-            ClipboardImageError::InvalidDimensions.user_message(),
-            "Clipboard image data is invalid and could not be attached."
-        );
-        assert_eq!(
-            ClipboardImageError::InvalidPixelBuffer.user_message(),
-            "Clipboard image data is invalid and could not be attached."
-        );
-        assert_eq!(
-            ClipboardImageError::EncodeFailed.user_message(),
-            "Clipboard image could not be converted to PNG for upload."
-        );
-        assert_eq!(
-            ClipboardImageError::TooLarge.user_message(),
-            "Clipboard image is too large to attach. Keep images under 10 MiB."
-        );
+    fn clipboard_limit_applies_to_png_bytes_not_raw_pixels_or_base64_text() {
+        use base64::Engine as _;
+        const LIMIT: usize = 10 * 1024 * 1024;
+        for (width, height, rgba, accepted) in [
+            (1700, 1700, crate::app::test_support::clipboard_noise(1700, 1700), false),
+            (2000, 1400, [12, 34, 56, 128].repeat(2000 * 1400), true),
+            (1500, 1500, crate::app::test_support::clipboard_noise(1500, 1500), true),
+        ] {
+            let fixture = image::RgbaImage::from_raw(width, height, rgba.clone()).unwrap();
+            let mut png = Vec::new();
+            fixture.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+            if !accepted {
+                assert!(png.len() > LIMIT);
+            } else if width == 2000 {
+                assert!(rgba.len() > LIMIT);
+                assert!(png.len() < LIMIT);
+            } else {
+                assert!(png.len() < LIMIT);
+                assert!(base64::engine::general_purpose::STANDARD.encode(&png).len() > LIMIT);
+            }
+            let result = encode_clipboard_image(clipboard_pixels(
+                width as usize,
+                height as usize,
+                rgba.clone(),
+            ));
+            if accepted {
+                let attachment = result.expect("PNG within byte limit");
+                assert_eq!(attachment.mime_type, "image/png");
+                let bytes =
+                    base64::engine::general_purpose::STANDARD.decode(&attachment.data).unwrap();
+                let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                    .unwrap()
+                    .into_rgba8();
+                assert_eq!((decoded.width(), decoded.height()), (width, height));
+                assert_eq!(decoded.into_raw(), rgba);
+            } else {
+                assert_eq!(result, Err(ClipboardImageError::TooLarge));
+            }
+        }
     }
 }

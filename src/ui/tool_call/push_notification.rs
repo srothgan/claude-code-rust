@@ -70,8 +70,7 @@ fn disabled_reason_label(value: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::ui::theme;
-    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
+    use crate::ui::tool_call::test_support::{card_body, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -91,90 +90,90 @@ mod tests {
     }
 
     #[test]
-    fn input_body_renders_message_field() {
-        let tc = push_notification_tool_call(
-            json!({ "message": "Build finished", "status": "proactive" }),
-            None,
-            model::ToolCallStatus::InProgress,
-        );
+    fn pending_message_and_completed_receipts_keep_requested_and_delivered_values_distinct() {
+        let input = json!({"message":"Build finished","status":"proactive"});
+        let mut pending =
+            push_notification_tool_call(input.clone(), None, model::ToolCallStatus::InProgress);
+        assert_eq!(card_body(&mut pending, 100), vec!["Message: Build finished"]);
 
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(rendered_line_texts(&lines), vec!["Message: Build finished"]);
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
-    }
-
-    #[test]
-    fn completed_body_renders_delivery_fields_in_order() {
-        let tc = push_notification_tool_call(
-            json!({ "message": "Build finished", "status": "proactive" }),
-            Some(
+        for (receipt, expected, absent) in [
+            (
                 "Result: Notification queued\nPush sent: no\nLocal sent: yes\nDisabled reason: notifications disabled\nIdle time: 1m 30s\nApp focused: no\nSent at: 2026-06-05 14:00:00 local",
+                vec![
+                    "Message: Build finished",
+                    "Result: Notification queued",
+                    "Push sent: no",
+                    "Local sent: yes",
+                    "Disabled reason: notifications disabled",
+                    "Idle time: 1m 30s",
+                    "App focused: no",
+                    "Sent at: 2026-06-05 14:00:00 local",
+                ],
+                vec!["Push sent: yes", "Local sent: no", "Result: Build finished"],
             ),
-            model::ToolCallStatus::Completed,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Message: Build finished",
-                "Result: Notification queued",
-                "Push sent: no",
-                "Local sent: yes",
-                "Disabled reason: notifications disabled",
-                "Idle time: 1m 30s",
-                "App focused: no",
-                "Sent at: 2026-06-05 14:00:00 local",
-            ]
-        );
+            (
+                "Result: Delivery deferred\nPush sent: no\nLocal sent: no\nDisabled reason: no notification transport\nApp focused: yes",
+                vec![
+                    "Message: Build finished",
+                    "Result: Delivery deferred",
+                    "Push sent: no",
+                    "Local sent: no",
+                    "Disabled reason: no notification transport",
+                    "App focused: yes",
+                ],
+                vec!["Push sent: yes", "Local sent: yes", "Sent at:"],
+            ),
+            (
+                "Result: Remote delivery accepted\nPush sent: yes\nLocal sent: no",
+                vec![
+                    "Message: Build finished",
+                    "Result: Remote delivery accepted",
+                    "Push sent: yes",
+                    "Local sent: no",
+                ],
+                vec!["Push sent: no", "Local sent: yes"],
+            ),
+            (
+                "Result: Delivery state unavailable",
+                vec!["Message: Build finished", "Result: Delivery state unavailable"],
+                vec!["Push sent:", "Local sent:", "Sent at:", "App focused:"],
+            ),
+        ] {
+            let mut tc = push_notification_tool_call(
+                input.clone(),
+                Some(receipt),
+                model::ToolCallStatus::Completed,
+            );
+            let body = card_body(&mut tc, 100);
+            for value in expected {
+                assert!(body.iter().any(|row| row == value), "{body:?}");
+            }
+            for value in absent {
+                assert!(!body.iter().any(|row| row.contains(value)), "{body:?}");
+            }
+        }
     }
 
     #[test]
-    fn raw_output_labels_are_mapped_to_human_values() {
-        let tc = push_notification_tool_call(
-            json!({ "message": "Deployment changed", "status": "proactive" }),
-            Some(
-                "message: Delivered\npushSent: true\nlocalSent: false\ndisabledReason: no_transport\nidleSec: 90\nhasFocus: true\nsentAt: raw timestamp",
-            ),
+    fn long_message_keeps_its_tail_and_actual_delivery_receipt_visible() {
+        let message = format!("REQUEST_START {} REQUEST_TAIL_42", "delivery detail ".repeat(100));
+        let mut tc = push_notification_tool_call(
+            json!({"message":message,"status":"proactive"}),
+            Some("Result: Receipt for target 42\nPush sent: no\nLocal sent: yes"),
             model::ToolCallStatus::Completed,
         );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Message: Deployment changed",
-                "Result: Delivered",
-                "Push sent: yes",
-                "Local sent: no",
-                "Disabled reason: no notification transport",
-                "Idle time: 1m 30s",
-                "App focused: yes",
-                "Sent at: raw timestamp",
-            ]
-        );
-    }
-
-    #[test]
-    fn long_message_body_stays_bounded_after_wrapping() {
-        let long_message = (0..120).map(|idx| format!("word{idx}")).collect::<Vec<_>>().join(" ");
-        let tc = push_notification_tool_call(
-            json!({ "message": long_message, "status": "proactive" }),
-            Some("Push sent: true"),
-            model::ToolCallStatus::Completed,
-        );
-
-        let body = super::super::standard::ToolBodyCursor::default().render(
-            &tc,
-            40,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered = rendered_line_texts(&body);
-
-        assert_eq!(body.len(), super::super::TOOL_BODY_MAX_LINES);
-        assert!(rendered.iter().any(|line| line.contains("hidden")));
+        let original_input = tc.raw_input.clone();
+        let original_result = tc.content.clone();
+        let body = card_body(&mut tc, 60);
+        assert!(body.iter().any(|row| row.contains("hidden")), "{body:?}");
+        assert!(body.iter().any(|row| row.contains("REQUEST_TAIL_42")), "{body:?}");
+        for receipt in ["Result: Receipt for target 42", "Push sent: no", "Local sent: yes"] {
+            assert!(body.iter().any(|row| row == receipt), "{body:?}");
+        }
+        assert!(!body.iter().any(|row| row.contains("REQUEST_START")
+            || row == "Push sent: yes"
+            || row == "Local sent: no"));
+        assert_eq!(tc.raw_input, original_input);
+        assert_eq!(tc.content, original_result);
     }
 }

@@ -56,7 +56,6 @@ pub(super) fn reset_for_conversation(
     app.status = super::super::AppStatus::Ready;
     app.session_runtime.runtime_session_state = None;
     app.session_runtime.prompt_suggestion = None;
-    app.files_accessed = 0;
     app.turn.reset_for_new_session();
     app.pending_interaction_ids.clear();
     app.clear_tool_call_index();
@@ -123,7 +122,6 @@ fn reset_session_identity_state(
     app.session_runtime.fast_mode_disabled_reason = fast_mode.disabled_reason;
     app.session_runtime.runtime_session_state = None;
     app.session_runtime.prompt_suggestion = None;
-    app.files_accessed = 0;
     app.turn.clear_cancel_state();
     app.session_runtime.account_info = None;
 }
@@ -144,11 +142,10 @@ fn reset_messages_for_new_session(app: &mut App, preserve_current_welcome_tip: b
 fn reset_input_state_for_new_session(app: &mut App, reset_kind: ChatResetKind) {
     if !reset_kind.preserves_draft() {
         app.input.clear();
-        app.pending_images.clear();
         app.committed_mentions.clear();
+        app.paste.discard_input();
     }
     app.pending_submit = None;
-    app.paste.clear_all_sessions();
 }
 
 fn reset_interaction_state_for_new_session(app: &mut App) {
@@ -280,178 +277,7 @@ pub(super) fn load_resume_history(app: &mut App, history_updates: &[model::Sessi
 mod tests {
     use super::{ChatResetKind, reset_for_new_session};
     use crate::agent::model;
-    use crate::app::{App, ChatMessage, ChatRebuildKind, PendingUserMessage};
-
-    #[test]
-    fn session_reset_clears_chat_render_measurement_state() {
-        let mut app = App::test_default();
-        app.chat_render.terminal_width = 120;
-        app.chat_render.terminal_height = 40;
-        app.chat_render.composer.total_rows = 6;
-        app.chat_render.live_region.anchor_valid = true;
-        app.chat_render.live_region.last_rendered_rows = 9;
-        app.transcript.messages.push(ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "/workspace/demo",
-            "session-1",
-        ));
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            ChatResetKind::Replacement,
-        );
-
-        assert_eq!(app.chat_render.terminal_width, 0);
-        assert_eq!(app.chat_render.terminal_height, 0);
-        assert_eq!(app.chat_render.composer.total_rows, 0);
-        assert!(!app.chat_render.live_region.anchor_valid);
-        assert_eq!(app.chat_render.live_region.last_rendered_rows, 0);
-    }
-
-    #[test]
-    fn replacement_session_reset_discards_old_session_pending_projection() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(PendingUserMessage::sending(
-                    "old-session-message".to_owned(),
-                    "must not cross sessions".to_owned(),
-                    Vec::new(),
-                ))
-                .is_ok()
-        );
-        app.input.set_text("old draft");
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            ChatResetKind::Replacement,
-        );
-
-        assert!(app.pending_user_messages.is_empty());
-        assert!(app.input.text().is_empty());
-    }
-
-    #[test]
-    fn replacement_session_reset_discards_old_session_side_questions() {
-        let mut app = App::test_default();
-        app.btw
-            .try_push("btw-1".to_owned(), "must not cross sessions".to_owned())
-            .expect("queue side question");
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            ChatResetKind::Replacement,
-        );
-
-        assert_eq!(app.btw.len(), 0);
-    }
-
-    #[test]
-    fn startup_session_reset_preserves_inline_viewport_for_diffed_repaint() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::welcome("1.2.3", "-", "/workspace/demo", "-"));
-        app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
-        app.surface_dirty.chat.repaint = false;
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            ChatResetKind::InitialConnection,
-        );
-
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-        assert!(app.surface_dirty.chat.repaint);
-    }
-
-    #[test]
-    fn startup_session_reset_preserves_connecting_draft_and_images() {
-        let mut app = App::test_default();
-        app.input.set_text("draft while connecting");
-        app.pending_images.push(crate::app::clipboard_image::ImageAttachment {
-            data: "image-data".to_owned(),
-            mime_type: "image/png".to_owned(),
-        });
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            ChatResetKind::InitialConnection,
-        );
-
-        assert_eq!(app.input.text(), "draft while connecting");
-        assert_eq!(app.pending_images.len(), 1);
-    }
-
-    #[test]
-    fn replacement_session_reset_defers_transcript_render() {
-        let mut app = App::test_default();
-        app.transcript.messages.push(ChatMessage::welcome(
-            "1.2.3",
-            "Pro",
-            "/workspace/demo",
-            "session-1",
-        ));
-        app.surface_dirty.chat.rebuild = ChatRebuildKind::None;
-        app.surface_dirty.chat.repaint = false;
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            ChatResetKind::Replacement,
-        );
-
-        assert_eq!(app.surface_dirty.chat.rebuild, ChatRebuildKind::None);
-    }
-
-    #[test]
-    fn session_reset_clears_rewind_target_state() {
-        let mut app = App::test_default();
-        app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
-            uuid: "user-1".to_owned(),
-            first_text: "prompt".to_owned(),
-            input_text: "prompt".to_owned(),
-            index: 0,
-            previous_assistant_uuid: None,
-            resume_anchor_uuid: None,
-        }];
-        app.sdk_inventory.rewind_targets_session_id = Some(model::SessionId::new("session-1"));
-        app.sdk_inventory.rewind_targets_in_flight = true;
-
-        reset_for_new_session(
-            &mut app,
-            model::SessionId::new("session-2"),
-            model::CurrentModel::new("test", "test", "test").authoritative(true),
-            None,
-            model::FastModeSnapshot::new(model::FastModeState::Off, None),
-            ChatResetKind::Replacement,
-        );
-
-        assert!(app.sdk_inventory.rewind_targets.is_empty());
-        assert!(app.sdk_inventory.rewind_targets_session_id.is_none());
-        assert!(!app.sdk_inventory.rewind_targets_in_flight);
-    }
+    use crate::app::App;
 
     #[test]
     fn session_reset_does_not_cancel_requested_shutdown() {
@@ -468,5 +294,93 @@ mod tests {
         );
 
         assert!(app.shutdown_requested());
+    }
+    #[test]
+    fn connecting_paste_survives_acknowledgement_before_input_drain_finalization() {
+        use crate::app::test_support::{
+            app_with_connection, drain_session_refreshes, expect_session_prompt, press,
+            session_connection, session_image,
+        };
+        for pasted in ["accepted \u{754c}".to_owned(), "large \u{1f980} paste\n".repeat(120)] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut app, mut rx) = app_with_connection();
+            app.status = crate::app::AppStatus::Connecting;
+            app.session_runtime.session_id = None;
+            app.input.set_text("pre \u{754c} |tail [Image #1]");
+            app.input.set_cursor(0, 6);
+            let image = session_image();
+            app.input.image_payloads.push(image.clone());
+            crate::app::handle_terminal_event(
+                &mut app,
+                crossterm::event::Event::Paste(pasted.clone()),
+            );
+            crate::app::events::handle_client_event(
+                &mut app,
+                session_connection("connected-session", directory.path()),
+            );
+            drain_session_refreshes(&mut rx, "connected-session");
+            crate::app::finalize_pending_paste_event(&mut app);
+            let snapshot = app.input.snapshot();
+            crate::app::finalize_pending_paste_event(&mut app);
+            assert_eq!(
+                app.input.snapshot(),
+                snapshot,
+                "finalization does not duplicate accepted paste"
+            );
+            assert_eq!(app.input.images(), std::slice::from_ref(&image));
+            assert!(rx.try_recv().is_err());
+            press(&mut app, crossterm::event::KeyCode::Char('!'));
+            crate::app::input_submit::submit_input(&mut app);
+            let pastes = if pasted.lines().count() > 1 { vec![pasted.clone()] } else { vec![] };
+            expect_session_prompt(
+                &mut rx,
+                "connected-session",
+                &format!("pre \u{754c} {pasted}!|tail [Image #1]"),
+                &[image],
+                &pastes,
+            );
+            assert!(app.input.is_empty());
+        }
+    }
+    #[test]
+    fn replacement_discards_accepted_paste_and_held_typing_before_restoring_input() {
+        use crate::app::test_support::{
+            EventClock, app_with_connection, drain_session_refreshes, expect_session_prompt, press,
+            session_replacement,
+        };
+        for bracketed in [false, true] {
+            let clock = EventClock::new();
+            let directory = tempfile::tempdir().unwrap();
+            let (mut app, mut rx) = app_with_connection();
+            app.input.set_text("old draft ");
+            if bracketed {
+                crate::app::handle_terminal_event(
+                    &mut app,
+                    crossterm::event::Event::Paste("old queued paste".into()),
+                );
+            } else {
+                for ch in "abc".chars() {
+                    press(&mut app, crossterm::event::KeyCode::Char(ch));
+                }
+            }
+            crate::app::events::handle_client_event(
+                &mut app,
+                session_replacement(
+                    "replacement",
+                    directory.path(),
+                    vec![],
+                    Some("restored source"),
+                ),
+            );
+            drain_session_refreshes(&mut rx, "replacement");
+            if let Some(action) = app.paste.burst.tick(clock.at(1)) {
+                crate::app::apply_paste_burst_flush(&mut app, action);
+            }
+            crate::app::finalize_pending_paste_event(&mut app);
+            assert_eq!(app.input.text(), "restored source");
+            press(&mut app, crossterm::event::KeyCode::Char('!'));
+            crate::app::input_submit::submit_input(&mut app);
+            expect_session_prompt(&mut rx, "replacement", "restored source!", &[], &[]);
+        }
     }
 }

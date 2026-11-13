@@ -86,13 +86,11 @@ pub fn normalize_project_key(project_root: &Path) -> String {
 }
 
 fn project_keys_match(stored_key: &str, project_key: &str) -> bool {
-    let normalized_stored = normalize_project_key_string(stored_key);
-    if same_os_path_key(&normalized_stored, project_key) {
-        return true;
+    // Existing paths are identified by the filesystem before lexical aliases.
+    if let Some(canonical) = canonical_project_key(Path::new(stored_key)) {
+        return same_os_path_key(&canonical, project_key);
     }
-
-    canonical_project_key(Path::new(stored_key))
-        .is_some_and(|canonical| same_os_path_key(&canonical, project_key))
+    same_os_path_key(&normalize_project_key_string(stored_key), project_key)
 }
 
 fn absolutize(project_root: &Path) -> PathBuf {
@@ -107,12 +105,14 @@ fn absolutize(project_root: &Path) -> PathBuf {
 }
 
 fn normalize_project_key_string(raw: &str) -> String {
-    let mut normalized = raw.trim().replace('\\', "/");
-    if let Some(stripped) = normalized.strip_prefix("//?/UNC/") {
-        normalized = format!("//{stripped}");
-    } else if let Some(stripped) = normalized.strip_prefix("//?/") {
-        let stripped = stripped.to_owned();
-        normalized = stripped;
+    // Backslashes and trailing spaces are valid, distinct Unix filename bytes.
+    let mut normalized = if cfg!(windows) { raw.trim().replace('\\', "/") } else { raw.to_owned() };
+    if cfg!(windows) {
+        if let Some(stripped) = normalized.strip_prefix("//?/UNC/") {
+            normalized = format!("//{stripped}");
+        } else if normalized.starts_with("//?/") {
+            normalized.replace_range(..4, "");
+        }
     }
 
     let (prefix, root_segments, rest) = split_root_prefix(&normalized);
@@ -149,7 +149,9 @@ fn normalize_project_key_string(raw: &str) -> String {
 }
 
 fn split_root_prefix(normalized: &str) -> (String, Vec<&str>, &str) {
-    if let Some(rest) = normalized.strip_prefix("//") {
+    if cfg!(windows)
+        && let Some(rest) = normalized.strip_prefix("//")
+    {
         let mut parts = rest.split('/').filter(|segment| !segment.is_empty());
         let server = parts.next();
         let share = parts.next();
@@ -162,7 +164,7 @@ fn split_root_prefix(normalized: &str) -> (String, Vec<&str>, &str) {
         return ("//".to_owned(), Vec::new(), rest);
     }
 
-    if normalized.len() >= 2 && normalized.as_bytes()[1] == b':' {
+    if cfg!(windows) && normalized.len() >= 2 && normalized.as_bytes()[1] == b':' {
         let mut chars = normalized.chars();
         let first = chars.next().unwrap_or_default().to_ascii_uppercase();
         let drive = if normalized[2..].starts_with('/') {
@@ -216,82 +218,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[cfg(windows)]
-    #[test]
-    fn read_status_accepts_equivalent_backslash_entry() {
-        let document = json!({
-            "projects": {
-                r"C:\Users\Simon Peter Rothgang\Desktop\claude_rust": {
-                    "hasTrustDialogAccepted": true
-                }
-            }
-        });
-
-        let lookup = read_status(
-            &document,
-            Path::new(r"c:\Users\Simon Peter Rothgang\Desktop\claude_rust\"),
-        );
-
-        assert!(lookup.trusted);
-        assert_eq!(lookup.project_key, "C:/Users/Simon Peter Rothgang/Desktop/claude_rust");
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn read_status_accepts_equivalent_normalized_entry() {
-        let document = json!({
-            "projects": {
-                "/home/user/work/project/": {
-                    "hasTrustDialogAccepted": true
-                }
-            }
-        });
-
-        let lookup = read_status(&document, Path::new("/home/user/work/project"));
-
-        assert!(lookup.trusted);
-        assert_eq!(lookup.project_key, "/home/user/work/project");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn read_status_treats_any_equivalent_true_entry_as_trusted() {
-        let document = json!({
-            "projects": {
-                "C:/Users/Simon Peter Rothgang/Desktop/claude_rust": {
-                    "hasTrustDialogAccepted": false
-                },
-                r"C:\Users\Simon Peter Rothgang\Desktop\claude_rust": {
-                    "hasTrustDialogAccepted": true
-                }
-            }
-        });
-
-        let lookup =
-            read_status(&document, Path::new(r"C:\Users\Simon Peter Rothgang\Desktop\claude_rust"));
-
-        assert!(lookup.trusted);
-    }
-
-    #[cfg(not(windows))]
-    #[test]
-    fn read_status_treats_any_equivalent_true_entry_as_trusted() {
-        let document = json!({
-            "projects": {
-                "/home/user/work/project": {
-                    "hasTrustDialogAccepted": false
-                },
-                "/home/user/work/project/": {
-                    "hasTrustDialogAccepted": true
-                }
-            }
-        });
-
-        let lookup = read_status(&document, Path::new("/home/user/work/project"));
-
-        assert!(lookup.trusted);
-    }
-
     #[test]
     fn set_trusted_preserves_unknown_project_fields() {
         let project_path =
@@ -320,56 +246,6 @@ mod tests {
         assert_eq!(project_key, project_path);
     }
 
-    #[test]
-    fn normalize_project_key_uppercases_drive_and_trims_trailing_separator() {
-        let normalized = normalize_project_key_string(r"c:\work\project\");
-
-        assert_eq!(normalized, "C:/work/project");
-    }
-
-    #[test]
-    fn normalize_project_key_collapses_dot_segments_for_windows_paths() {
-        let normalized = normalize_project_key_string(r"c:\work\demo\..\project\.\");
-
-        assert_eq!(normalized, "C:/work/project");
-    }
-
-    #[test]
-    fn normalize_project_key_preserves_unc_root_structure() {
-        let normalized = normalize_project_key_string(r"\\server\share\team\..\project\");
-
-        assert_eq!(normalized, "//server/share/project");
-    }
-
-    #[test]
-    fn normalize_project_key_handles_posix_paths() {
-        let normalized = normalize_project_key_string("/Users/simon/work/../project/");
-
-        assert_eq!(normalized, "/Users/simon/project");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn read_status_accepts_case_differences_for_existing_windows_paths() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let project_root = dir.path().join("TrustCaseProject");
-        std::fs::create_dir_all(&project_root).expect("create project");
-
-        let stored_key =
-            normalize_project_key(&project_root).replace('/', "\\").to_ascii_lowercase();
-        let document = json!({
-            "projects": {
-                stored_key: {
-                    "hasTrustDialogAccepted": true
-                }
-            }
-        });
-
-        let lookup = read_status(&document, &project_root);
-
-        assert!(lookup.trusted);
-    }
-
     #[cfg(unix)]
     #[test]
     fn read_status_accepts_symlink_alias_for_existing_unix_paths() {
@@ -393,75 +269,8 @@ mod tests {
 
         assert!(lookup.trusted);
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn set_trusted_marks_equivalent_windows_aliases_without_rewriting_metadata() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let project_root = dir.path().join("TrustCaseProject");
-        std::fs::create_dir_all(&project_root).expect("create project");
-
-        let canonical_key = normalize_project_key(&project_root);
-        let alias_key = canonical_key.replace('/', "\\");
-        let mut document = json!({
-            "projects": {
-                alias_key: {
-                    "allowedTools": ["git"],
-                    "hasTrustDialogAccepted": false
-                }
-            }
-        });
-
-        let project_key = set_trusted(&mut document, &project_root).expect("set trust");
-
-        assert_eq!(project_key, canonical_key);
-        assert_eq!(
-            document,
-            json!({
-                "projects": {
-                    canonical_key.replace('/', "\\"): {
-                        "allowedTools": ["git"],
-                        "hasTrustDialogAccepted": true
-                    }
-                }
-            })
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn set_trusted_marks_equivalent_unix_aliases_without_rewriting_metadata() {
-        use std::os::unix::fs::symlink;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let project_root = dir.path().join("project");
-        let alias_root = dir.path().join("project-link");
-        std::fs::create_dir_all(&project_root).expect("create project");
-        symlink(&project_root, &alias_root).expect("create symlink");
-
-        let alias_key = alias_root.to_string_lossy().to_string();
-        let mut document = json!({
-            "projects": {
-                alias_key: {
-                    "allowedTools": ["git"],
-                    "hasTrustDialogAccepted": false
-                }
-            }
-        });
-
-        let project_key = set_trusted(&mut document, &project_root).expect("set trust");
-
-        assert_eq!(project_key, normalize_project_key(&project_root));
-        assert_eq!(
-            document,
-            json!({
-                "projects": {
-                    alias_root.to_string_lossy().to_string(): {
-                        "allowedTools": ["git"],
-                        "hasTrustDialogAccepted": true
-                    }
-                }
-            })
-        );
-    }
 }
+
+#[cfg(test)]
+#[path = "store_audit_tests.rs"]
+mod audit_tests;

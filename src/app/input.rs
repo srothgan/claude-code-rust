@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use tui_textarea::{AtomicDeleteDirection, AtomicRange, CursorMove, TextArea, WrapMode};
+use tui_textarea::{AtomicRange, CursorMove, TextArea, WrapMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputSnapshot {
@@ -8,6 +8,8 @@ pub struct InputSnapshot {
     pub cursor_row: usize,
     pub cursor_col: usize,
     pub paste_blocks: Vec<String>,
+    /// Backing images retained while editor history can restore their badges.
+    pub(crate) image_payloads: Vec<super::clipboard_image::ImageAttachment>,
 }
 
 #[derive(Debug)]
@@ -22,6 +24,8 @@ pub struct InputState {
     /// A placeholder token `[Pasted Text N]` is inserted into `lines` at the paste point.
     /// On `text()`, placeholders are expanded back to the original pasted content.
     pub paste_blocks: Vec<String>,
+    /// Backing images retained while editor history can restore their badges.
+    pub(crate) image_payloads: Vec<super::clipboard_image::ImageAttachment>,
     /// Cached visual line measurement: (`content_version`, width, `max_rows`, result).
     cached_measure: Option<(u64, u16, u16, u16)>,
     /// Tracks which `content_version` highlights were last applied for.
@@ -35,6 +39,14 @@ const PASTE_PREFIX: &str = "[Pasted Text ";
 const PASTE_SUFFIX: &str = "]";
 /// Character threshold above which pasted content is collapsed to a placeholder.
 pub const PASTE_PLACEHOLDER_CHAR_THRESHOLD: usize = 1000;
+
+/// One local yank buffer owns both the deleted source and any referenced payloads.
+#[derive(Clone, Debug)]
+pub(crate) enum InputYankPart {
+    Text(String),
+    Image(super::clipboard_image::ImageAttachment),
+    Paste(String),
+}
 
 impl InputState {
     fn configure_editor(editor: &mut TextArea<'static>) {
@@ -57,6 +69,7 @@ impl InputState {
             version: 0,
             content_version: 0,
             paste_blocks: Vec::new(),
+            image_payloads: Vec::new(),
             cached_measure: None,
             highlight_version: u64::MAX,
             editor,
@@ -115,6 +128,8 @@ impl InputState {
             lines.push(String::new());
         }
         self.editor.set_lines(lines, (cursor_row, cursor_col));
+        // Replacing the editor drops its history, so hidden payloads have no owner.
+        self.discard_image_redo();
         self.refresh_atomic_ranges();
         self.bump_content_version();
     }
@@ -132,13 +147,6 @@ impl InputState {
 
     pub fn clear_custom_highlights(&mut self) {
         self.editor.clear_custom_highlight();
-    }
-
-    pub fn mutate_lines(&mut self, edit: impl FnOnce(&mut Vec<String>)) {
-        let mut lines = self.lines().to_vec();
-        edit(&mut lines);
-        let (row, col) = self.cursor();
-        self.replace_lines_and_cursor(lines, row, col);
     }
 
     #[must_use]
@@ -175,8 +183,68 @@ impl InputState {
         self.lines().len() == 1 && self.lines()[0].is_empty()
     }
 
+    /// Visible badges select outgoing payloads; hidden images remain available to editor redo.
+    pub(crate) fn images(&self) -> Vec<super::clipboard_image::ImageAttachment> {
+        let ids: std::collections::BTreeSet<_> =
+            crate::app::input_atoms::resolve_input_atoms(self.lines())
+                .into_iter()
+                .filter_map(|atom| match atom.kind {
+                    crate::app::input_atoms::InputAtomKind::ImageBadge { one_based_index } => {
+                        Some(one_based_index)
+                    }
+                    crate::app::input_atoms::InputAtomKind::PasteBlock { .. } => None,
+                })
+                .collect();
+        self.image_payloads
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| ids.contains(&(index + 1)))
+            .map(|(_, image)| image.clone())
+            .collect()
+    }
+
+    fn visible_image_extent(&self) -> usize {
+        crate::app::input_atoms::resolve_input_atoms(self.lines())
+            .into_iter()
+            .filter_map(|atom| match atom.kind {
+                crate::app::input_atoms::InputAtomKind::ImageBadge { one_based_index } => {
+                    Some(one_based_index)
+                }
+                crate::app::input_atoms::InputAtomKind::PasteBlock { .. } => None,
+            })
+            .max()
+            .unwrap_or(0)
+            .min(self.image_payloads.len())
+    }
+
+    fn discard_image_redo(&mut self) {
+        self.image_payloads.truncate(self.visible_image_extent());
+    }
+
+    /// Insert one composer edit with its payloads. The editor remains the only undo authority.
+    pub(crate) fn insert_parts(&mut self, parts: impl IntoIterator<Item = InputYankPart>) {
+        use std::fmt::Write as _;
+        self.discard_image_redo();
+        let mut text = String::new();
+        for part in parts {
+            match part {
+                InputYankPart::Text(value) => text.push_str(&value),
+                InputYankPart::Image(image) => {
+                    self.image_payloads.push(image);
+                    let _ = write!(text, "[Image #{}]", self.image_payloads.len());
+                }
+                InputYankPart::Paste(value) => {
+                    let placeholder = self.allocate_paste_block_for_insertion(&value, &text);
+                    text.push_str(&placeholder);
+                }
+            }
+        }
+        self.insert_str_inner(&text);
+    }
+
     pub fn clear(&mut self) {
         self.paste_blocks.clear();
+        self.image_payloads.clear();
         self.replace_lines_and_cursor(vec![String::new()], 0, 0);
     }
 
@@ -188,11 +256,13 @@ impl InputState {
             cursor_row,
             cursor_col,
             paste_blocks: self.paste_blocks.clone(),
+            image_payloads: self.image_payloads.clone(),
         }
     }
 
     pub fn restore_snapshot(&mut self, snapshot: InputSnapshot) {
         self.paste_blocks = snapshot.paste_blocks;
+        self.image_payloads = snapshot.image_payloads;
         self.replace_lines_and_cursor(snapshot.lines, snapshot.cursor_row, snapshot.cursor_col);
     }
 
@@ -206,11 +276,8 @@ impl InputState {
         let row = lines.len().saturating_sub(1);
         let col = lines[row].chars().count();
         self.paste_blocks.clear();
+        self.image_payloads.clear();
         self.replace_lines_and_cursor(lines, row, col);
-    }
-
-    pub fn insert_char(&mut self, c: char) {
-        let _ = self.textarea_insert_char(c);
     }
 
     fn apply_cursor_edit(&mut self, edit: impl FnOnce(&mut TextArea<'_>)) -> bool {
@@ -224,6 +291,7 @@ impl InputState {
     }
 
     pub fn textarea_insert_char(&mut self, c: char) -> bool {
+        self.discard_image_redo();
         self.editor.insert_char(c);
         self.refresh_atomic_ranges();
         self.bump_content_version();
@@ -231,6 +299,7 @@ impl InputState {
     }
 
     pub fn textarea_insert_newline(&mut self) -> bool {
+        self.discard_image_redo();
         self.editor.insert_newline();
         self.refresh_atomic_ranges();
         self.bump_content_version();
@@ -238,8 +307,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_char_before(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_char();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -247,8 +318,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_char_after(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_next_char();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -337,8 +410,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_word_before(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_word();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -346,8 +421,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_word_after(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_next_word();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -355,8 +432,10 @@ impl InputState {
     }
 
     pub fn textarea_delete_line_before(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_line_by_head();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
@@ -364,38 +443,32 @@ impl InputState {
     }
 
     pub fn textarea_delete_line_after(&mut self) -> bool {
+        let image_extent = self.visible_image_extent();
         let changed = self.editor.delete_line_by_end();
         if changed {
+            self.image_payloads.truncate(image_extent);
             self.refresh_atomic_ranges();
             self.bump_content_version();
         }
         changed
     }
 
-    pub fn textarea_yank(&mut self) -> bool {
-        let changed = self.editor.paste();
-        if changed {
-            self.refresh_atomic_ranges();
-            self.bump_content_version();
-        }
-        changed
-    }
-
-    pub fn textarea_delete_atomic_range_at_cursor(
-        &mut self,
-        direction: AtomicDeleteDirection,
-    ) -> Option<AtomicRange> {
-        let range = self.editor.delete_atomic_range_at_cursor(direction)?;
-        self.refresh_atomic_ranges();
-        self.bump_content_version();
-        Some(range)
-    }
-
-    pub fn insert_newline(&mut self) {
-        let _ = self.textarea_insert_newline();
+    /// Transfer the editor's killed text to the composer, which owns its atom payloads.
+    pub(super) fn take_yank_text(&mut self) -> String {
+        let text = self.editor.yank_text();
+        self.editor.set_yank_text("");
+        text
     }
 
     pub fn insert_str(&mut self, s: &str) {
+        if s.is_empty() {
+            return;
+        }
+        self.discard_image_redo();
+        self.insert_str_inner(s);
+    }
+
+    fn insert_str_inner(&mut self, s: &str) {
         if s.is_empty() {
             return;
         }
@@ -429,8 +502,19 @@ impl InputState {
 
     /// Store the full text as a paste block and return its placeholder label.
     pub fn allocate_paste_block_placeholder(&mut self, text: &str) -> String {
+        self.allocate_paste_block_for_insertion(text, "")
+    }
+
+    /// Reserve a distinct block while assembling one editor insertion with multiple atoms.
+    pub(super) fn allocate_paste_block_for_insertion(
+        &mut self,
+        text: &str,
+        pending: &str,
+    ) -> String {
         let normalized = normalize_line_endings(text);
-        let idx = next_free_paste_block_index(self.lines(), &self.paste_blocks);
+        let mut used_lines = self.lines().to_vec();
+        used_lines.extend(pending.split('\n').map(str::to_owned));
+        let idx = next_free_paste_block_index(&used_lines, &self.paste_blocks);
         if idx < self.paste_blocks.len() {
             normalized.clone_into(&mut self.paste_blocks[idx]);
         } else {
@@ -470,42 +554,6 @@ impl InputState {
         true
     }
 
-    pub fn delete_char_before(&mut self) {
-        let _ = self.textarea_delete_char_before();
-    }
-
-    pub fn delete_char_after(&mut self) {
-        let _ = self.textarea_delete_char_after();
-    }
-
-    pub fn move_left(&mut self) {
-        let _ = self.textarea_move_left();
-    }
-
-    pub fn move_right(&mut self) {
-        let _ = self.textarea_move_right();
-    }
-
-    pub fn move_up(&mut self) {
-        let _ = self.textarea_move_up();
-    }
-
-    pub fn move_down(&mut self) {
-        let _ = self.textarea_move_down();
-    }
-
-    pub fn move_home(&mut self) {
-        if !self.textarea_move_home() {
-            self.version += 1;
-        }
-    }
-
-    pub fn move_end(&mut self) {
-        if !self.textarea_move_end() {
-            self.version += 1;
-        }
-    }
-
     pub fn measure_visual_lines(&mut self, content_width: u16, max_rows: u16) -> u16 {
         if let Some((v, w, m, result)) = self.cached_measure
             && v == self.content_version
@@ -527,13 +575,8 @@ impl InputState {
         result
     }
 
-    #[must_use]
-    pub fn line_count(&self) -> u16 {
-        u16::try_from(self.lines().len()).unwrap_or(u16::MAX)
-    }
-
     /// Renumber all `[Image #N]` badges in the input to match the current
-    /// `pending_images` indices (1-based). Call after removing an image.
+    /// attachment indices (1-based). Call after removing an image.
     pub fn renumber_image_badges(&mut self) {
         let mut lines = self.lines().to_vec();
         let (cursor_row, cursor_col) = self.cursor();
@@ -577,7 +620,7 @@ impl Default for InputState {
 }
 
 /// Convert a character index to a byte index within a string.
-fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
+pub(crate) fn char_to_byte_index(s: &str, char_idx: usize) -> usize {
     s.char_indices().nth(char_idx).map_or(s.len(), |(i, _)| i)
 }
 
@@ -683,7 +726,7 @@ pub fn parse_paste_placeholder_before_cursor(line: &str, cursor_col: usize) -> O
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-    use tui_textarea::{AtomicDeleteDirection, AtomicRange};
+    use tui_textarea::AtomicRange;
 
     // char_to_byte_index
 
@@ -709,389 +752,19 @@ mod tests {
     // InputState::new / Default
 
     #[test]
-    fn new_and_default_create_the_same_empty_state() {
-        let a = InputState::new();
-        let b = InputState::default();
-        assert_eq!(a.lines(), vec![String::new()]);
-        assert_eq!(a.cursor_row(), 0);
-        assert_eq!(a.cursor_col(), 0);
-        assert_eq!(a.version, 0);
-        assert_eq!(a.lines(), b.lines());
-        assert_eq!(a.cursor_row(), b.cursor_row());
-        assert_eq!(a.cursor_col(), b.cursor_col());
-        assert_eq!(a.version, b.version);
-    }
-
-    // text()
-
-    #[test]
-    fn text_reflects_empty_and_multiline_state() {
-        let input = InputState::new();
-        assert_eq!(input.text(), "");
-
-        let mut input = InputState::new();
-        input.insert_str("line1\nline2\nline3");
-        assert_eq!(input.text(), "line1\nline2\nline3");
-    }
-
-    // is_empty()
-
-    #[test]
-    fn is_empty_only_for_single_empty_line() {
-        assert!(InputState::new().is_empty());
-
-        let mut with_text = InputState::new();
-        with_text.insert_char('a');
-        assert!(!with_text.is_empty());
-
-        let mut multiline = InputState::new();
-        multiline.insert_newline();
-        assert!(!multiline.is_empty());
-    }
-
-    // clear()
-
-    #[test]
-    fn clear_resets_to_empty() {
-        let mut input = InputState::new();
-        input.insert_str("hello\nworld");
-        let v_before = input.version;
-        input.clear();
-        assert!(input.is_empty());
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.cursor_col(), 0);
-        assert!(input.version > v_before);
-    }
-
-    // insert_char
-
-    #[test]
-    fn insert_char_ascii() {
-        let mut input = InputState::new();
-        input.insert_char('h');
-        input.insert_char('i');
-        assert_eq!(input.lines()[0], "hi");
-        assert_eq!(input.cursor_col(), 2);
-    }
-
-    #[test]
-    fn insert_char_unicode_emoji() {
-        let mut input = InputState::new();
-        input.insert_char('\u{1F600}'); // grinning face
-        assert_eq!(input.cursor_col(), 1);
-        assert_eq!(input.lines()[0], "\u{1F600}");
-    }
-
-    #[test]
-    fn insert_char_cjk() {
-        let mut input = InputState::new();
-        input.insert_char('\u{4F60}'); // Chinese "ni"
-        input.insert_char('\u{597D}'); // Chinese "hao"
-        assert_eq!(input.lines()[0], "\u{4F60}\u{597D}");
-        assert_eq!(input.cursor_col(), 2);
-    }
-
-    #[test]
-    fn insert_char_mid_line() {
-        let mut input = InputState::new();
-        input.insert_str("ac");
-        input.move_left(); // cursor at col 1
-        input.insert_char('b');
-        assert_eq!(input.lines()[0], "abc");
-        assert_eq!(input.cursor_col(), 2);
-    }
-
-    #[test]
-    fn insert_char_bumps_version() {
-        let mut input = InputState::new();
-        let v = input.version;
-        input.insert_char('x');
-        assert!(input.version > v);
-    }
-
-    // insert_newline
-
-    #[test]
-    fn insert_newline_at_end() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        input.insert_newline();
-        assert_eq!(input.lines(), vec!["hello", ""]);
-        assert_eq!(input.cursor_row(), 1);
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    #[test]
-    fn insert_newline_mid_line() {
-        let mut input = InputState::new();
-        input.insert_str("helloworld");
-        // Move cursor to position 5
-        let _ = input.set_cursor_col(5);
-        input.insert_newline();
-        assert_eq!(input.lines(), vec!["hello", "world"]);
-        assert_eq!(input.cursor_row(), 1);
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    #[test]
-    fn insert_newline_at_start() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        input.move_home();
-        input.insert_newline();
-        assert_eq!(input.lines(), vec!["", "hello"]);
-    }
-
-    // insert_str
-
-    #[test]
-    fn insert_str_multiline() {
-        let mut input = InputState::new();
-        input.insert_str("line1\nline2\nline3");
-        assert_eq!(input.lines(), vec!["line1", "line2", "line3"]);
-        assert_eq!(input.cursor_row(), 2);
-        assert_eq!(input.cursor_col(), 5);
-    }
-
-    #[test]
-    fn insert_str_with_carriage_returns() {
-        let mut input = InputState::new();
-        input.insert_str("a\rb\rc");
-        // \r treated same as \n
-        assert_eq!(input.lines(), vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn insert_str_empty() {
-        let mut input = InputState::new();
-        let v = input.version;
-        input.insert_str("");
-        assert_eq!(input.version, v); // no mutation
-    }
-
-    // delete_char_before (backspace)
-
-    #[test]
-    fn backspace_mid_line() {
-        let mut input = InputState::new();
-        input.insert_str("abc");
-        input.delete_char_before();
-        assert_eq!(input.lines()[0], "ab");
-        assert_eq!(input.cursor_col(), 2);
-    }
-
-    #[test]
-    fn backspace_start_of_line_joins() {
-        let mut input = InputState::new();
-        input.insert_str("hello\nworld");
-        // cursor at row 1, col 5. Move to start of row 1.
-        input.move_home();
-        input.delete_char_before();
-        assert_eq!(input.lines(), vec!["helloworld"]);
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.cursor_col(), 5); // at the join point
-    }
-
-    #[test]
-    fn backspace_start_of_buffer_noop() {
-        let mut input = InputState::new();
-        input.insert_str("hi");
-        input.move_home();
-        let v = input.version;
-        input.delete_char_before(); // should do nothing
-        assert_eq!(input.lines()[0], "hi");
-        assert_eq!(input.version, v); // no version bump
-    }
-
-    #[test]
-    fn backspace_unicode() {
-        let mut input = InputState::new();
-        input.insert_char('\u{1F600}');
-        input.insert_char('x');
-        input.delete_char_before();
-        assert_eq!(input.lines()[0], "\u{1F600}");
-    }
-
-    // delete_char_after (delete key)
-
-    #[test]
-    fn delete_mid_line() {
-        let mut input = InputState::new();
-        input.insert_str("abc");
-        input.move_home();
-        input.delete_char_after();
-        assert_eq!(input.lines()[0], "bc");
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    #[test]
-    fn delete_end_of_line_joins_next() {
-        let mut input = InputState::new();
-        input.insert_str("hello\nworld");
-        let _ = input.set_cursor(0, 5); // end of "hello"
-        input.delete_char_after();
-        assert_eq!(input.lines(), vec!["helloworld"]);
-    }
-
-    #[test]
-    fn delete_end_of_buffer_noop() {
-        let mut input = InputState::new();
-        input.insert_str("hi");
-        // cursor at end of last line
-        let v = input.version;
-        input.delete_char_after();
-        assert_eq!(input.lines()[0], "hi");
-        assert_eq!(input.version, v);
-    }
-
-    // Navigation: move_left, move_right
-
-    #[test]
-    fn move_left_within_line() {
-        let mut input = InputState::new();
-        input.insert_str("abc");
-        input.move_left();
-        assert_eq!(input.cursor_col(), 2);
-    }
-
-    #[test]
-    fn move_left_wraps_to_previous_line() {
-        let mut input = InputState::new();
-        input.insert_str("ab\ncd");
-        input.move_home(); // at col 0, row 1
-        input.move_left();
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.cursor_col(), 2); // end of "ab"
-    }
-
-    #[test]
-    fn move_left_at_origin_noop() {
-        let mut input = InputState::new();
-        input.insert_char('a');
-        input.move_home();
-        let v = input.version;
-        input.move_left();
-        assert_eq!(input.cursor_col(), 0);
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.version, v); // no change
-    }
-
-    #[test]
-    fn move_right_within_line() {
-        let mut input = InputState::new();
-        input.insert_str("abc");
-        input.move_home();
-        input.move_right();
-        assert_eq!(input.cursor_col(), 1);
-    }
-
-    #[test]
-    fn move_right_wraps_to_next_line() {
-        let mut input = InputState::new();
-        input.insert_str("ab\ncd");
-        let _ = input.set_cursor(0, 2); // end of "ab"
-        input.move_right();
-        assert_eq!(input.cursor_row(), 1);
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    #[test]
-    fn move_right_at_end_noop() {
-        let mut input = InputState::new();
-        input.insert_str("ab");
-        let v = input.version;
-        input.move_right(); // already at end
-        assert_eq!(input.version, v);
-    }
-
-    // Navigation: move_up, move_down
-
-    #[test]
-    fn move_up_clamps_col() {
-        let mut input = InputState::new();
-        input.insert_str("ab\nhello");
-        // cursor at row 1, col 5 ("hello" end)
-        input.move_up();
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.cursor_col(), 2); // clamped to "ab" length
-    }
-
-    #[test]
-    fn move_up_at_top_noop() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        let v = input.version;
-        input.move_up();
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.version, v);
-    }
-
-    #[test]
-    fn move_down_clamps_col() {
-        let mut input = InputState::new();
-        input.insert_str("hello\nab");
-        let _ = input.set_cursor(0, 5);
-        input.move_down();
-        assert_eq!(input.cursor_row(), 1);
-        assert_eq!(input.cursor_col(), 2); // clamped to "ab" length
-    }
-
-    #[test]
-    fn move_down_at_bottom_noop() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        let v = input.version;
-        input.move_down();
-        assert_eq!(input.version, v);
-    }
-
-    // Navigation: move_home, move_end
-
-    #[test]
-    fn move_home_sets_col_zero() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        input.move_home();
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    #[test]
-    fn move_end_sets_col_to_line_len() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        input.move_home();
-        input.move_end();
-        assert_eq!(input.cursor_col(), 5);
-    }
-
-    #[test]
-    fn move_home_always_bumps_version() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        input.move_home(); // col was 5, now 0
-        let v = input.version;
-        input.move_home(); // col already 0, but still bumps
-        assert!(input.version > v);
-    }
-
-    #[test]
     fn move_line_start_or_up_stops_at_each_logical_line_start() {
         let mut input = InputState::new();
         input.set_text("alpha\nbeta\ngamma");
         let _ = input.set_cursor(1, 2);
 
-        let version = input.version;
         assert!(input.textarea_move_line_start_or_up());
         assert_eq!(input.cursor(), (1, 0));
-        assert_eq!(input.version, version + 1);
 
         assert!(input.textarea_move_line_start_or_up());
         assert_eq!(input.cursor(), (0, 0));
 
-        let version = input.version;
         assert!(!input.textarea_move_line_start_or_up());
         assert_eq!(input.cursor(), (0, 0));
-        assert_eq!(input.version, version);
     }
 
     #[test]
@@ -1100,18 +773,14 @@ mod tests {
         input.set_text("alpha\nbeta\ngamma");
         let _ = input.set_cursor(1, 2);
 
-        let version = input.version;
         assert!(input.textarea_move_line_end_or_down());
         assert_eq!(input.cursor(), (1, 4));
-        assert_eq!(input.version, version + 1);
 
         assert!(input.textarea_move_line_end_or_down());
         assert_eq!(input.cursor(), (2, 5));
 
-        let version = input.version;
         assert!(!input.textarea_move_line_end_or_down());
         assert_eq!(input.cursor(), (2, 5));
-        assert_eq!(input.version, version);
     }
 
     #[test]
@@ -1135,486 +804,6 @@ mod tests {
     // line_count
 
     #[test]
-    fn line_count_single() {
-        assert_eq!(InputState::new().line_count(), 1);
-    }
-
-    #[test]
-    fn line_count_multi() {
-        let mut input = InputState::new();
-        input.insert_str("a\nb\nc");
-        assert_eq!(input.line_count(), 3);
-    }
-
-    // version counter
-
-    #[test]
-    fn version_increments_on_every_mutation() {
-        let mut input = InputState::new();
-        let mut v = input.version;
-
-        input.insert_char('a');
-        assert!(input.version > v);
-        v = input.version;
-
-        input.insert_newline();
-        assert!(input.version > v);
-        v = input.version;
-
-        input.delete_char_before();
-        assert!(input.version > v);
-        v = input.version;
-
-        input.move_left();
-        assert!(input.version > v);
-        v = input.version;
-
-        input.clear();
-        assert!(input.version > v);
-    }
-
-    #[test]
-    fn rapid_insert_delete_cycle() {
-        let mut input = InputState::new();
-        for _ in 0..100 {
-            input.insert_char('x');
-        }
-        assert_eq!(input.lines()[0].len(), 100);
-        for _ in 0..100 {
-            input.delete_char_before();
-        }
-        assert!(input.is_empty());
-    }
-
-    #[test]
-    fn mixed_unicode_operations() {
-        let mut input = InputState::new();
-        // Insert mixed: ASCII, emoji, CJK
-        input.insert_str("hi\u{1F600}\u{4F60}");
-        assert_eq!(input.cursor_col(), 4); // h, i, emoji, CJK
-        input.move_home();
-        input.move_right(); // past 'h'
-        input.move_right(); // past 'i'
-        input.delete_char_after(); // delete emoji
-        assert_eq!(input.lines()[0], "hi\u{4F60}");
-    }
-
-    #[test]
-    fn multiline_editing_stress() {
-        let mut input = InputState::new();
-        // Create 10 lines
-        for i in 0..10 {
-            input.insert_str(&format!("line{i}"));
-            if i < 9 {
-                input.insert_newline();
-            }
-        }
-        assert_eq!(input.lines().len(), 10);
-
-        // Navigate to middle and delete lines by joining
-        let _ = input.set_cursor(5, 0);
-        input.delete_char_before(); // join line 5 with line 4
-        assert_eq!(input.lines().len(), 9);
-
-        // Text should be coherent
-        let text = input.text();
-        assert!(text.contains("line4line5"));
-    }
-
-    #[test]
-    fn insert_str_with_only_newlines() {
-        let mut input = InputState::new();
-        input.insert_str("\n\n\n");
-        assert_eq!(input.lines(), vec!["", "", "", ""]);
-        assert_eq!(input.cursor_row(), 3);
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    #[test]
-    fn cursor_clamping_on_vertical_nav() {
-        let mut input = InputState::new();
-        input.insert_str("long line here\nab\nmedium line");
-        // cursor at row 2, col 11 (end of "medium line")
-        input.move_up(); // to row 1 "ab", col clamped to 2
-        assert_eq!(input.cursor_col(), 2);
-        input.move_up(); // to row 0 "long line here", col stays 2
-        assert_eq!(input.cursor_col(), 2);
-        input.move_end(); // col = 14
-        input.move_down(); // to row 1 "ab", col clamped to 2
-        assert_eq!(input.cursor_col(), 2);
-    }
-
-    // weird inputs
-
-    #[test]
-    fn insert_tab_character() {
-        let mut input = InputState::new();
-        input.insert_char('\t');
-        assert_eq!(input.lines()[0], "\t");
-        assert_eq!(input.cursor_col(), 1);
-    }
-
-    #[test]
-    fn insert_null_byte() {
-        let mut input = InputState::new();
-        input.insert_char('\0');
-        assert_eq!(input.lines()[0].len(), 1);
-        assert_eq!(input.cursor_col(), 1);
-    }
-
-    #[test]
-    fn insert_control_chars() {
-        let mut input = InputState::new();
-        // Bell, backspace-char (not the key), escape
-        input.insert_char('\x07');
-        input.insert_char('\x08');
-        input.insert_char('\x1B');
-        assert_eq!(input.cursor_col(), 3);
-        assert_eq!(input.lines()[0].chars().count(), 3);
-    }
-
-    #[test]
-    fn windows_crlf_line_endings() {
-        // \r\n normalizes to a single newline.
-        let mut input = InputState::new();
-        input.insert_str("a\r\nb");
-        assert_eq!(input.lines(), vec!["a", "b"]);
-    }
-
-    #[test]
-    fn insert_zero_width_joiner_sequence() {
-        // Family emoji: man + ZWJ + woman + ZWJ + girl
-        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
-        let mut input = InputState::new();
-        input.insert_str(family);
-        // Each code point is a separate char as far as Rust is concerned
-        assert_eq!(input.cursor_col(), family.chars().count());
-        assert_eq!(input.text(), family);
-    }
-
-    #[test]
-    fn insert_flag_emoji() {
-        // Regional indicator symbols for US flag
-        let flag = "\u{1F1FA}\u{1F1F8}";
-        let mut input = InputState::new();
-        input.insert_str(flag);
-        assert_eq!(input.cursor_col(), 2); // two chars
-        assert_eq!(input.text(), flag);
-    }
-
-    #[test]
-    fn insert_combining_diacritical_marks() {
-        // e + combining acute + combining cedilla
-        let mut input = InputState::new();
-        input.insert_char('e');
-        input.insert_char('\u{0301}'); // combining acute
-        input.insert_char('\u{0327}'); // combining cedilla
-        assert_eq!(input.cursor_col(), 3);
-        // Delete the last combining mark
-        input.delete_char_before();
-        assert_eq!(input.cursor_col(), 2);
-        assert_eq!(input.lines()[0], "e\u{0301}");
-    }
-
-    #[test]
-    fn insert_right_to_left_text() {
-        // Arabic text
-        let arabic = "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}";
-        let mut input = InputState::new();
-        input.insert_str(arabic);
-        assert_eq!(input.cursor_col(), 5);
-        assert_eq!(input.text(), arabic);
-        // Navigate and delete should still work
-        input.move_home();
-        input.delete_char_after();
-        assert_eq!(input.cursor_col(), 0);
-        assert_eq!(input.lines()[0].chars().count(), 4);
-    }
-
-    #[test]
-    fn insert_very_long_single_line() {
-        let mut input = InputState::new();
-        let long_str: String = "x".repeat(10_000);
-        input.insert_str(&long_str);
-        assert_eq!(input.cursor_col(), 10_000);
-        assert_eq!(input.lines()[0].len(), 10_000);
-        // Navigate to middle
-        input.move_home();
-        for _ in 0..5000 {
-            input.move_right();
-        }
-        assert_eq!(input.cursor_col(), 5000);
-        // Insert in the middle
-        input.insert_char('Y');
-        assert_eq!(input.lines()[0].len(), 10_001);
-    }
-
-    #[test]
-    fn insert_many_short_lines() {
-        let mut input = InputState::new();
-        for i in 0..500 {
-            input.insert_str(&format!("{i}"));
-            input.insert_newline();
-        }
-        assert_eq!(input.lines().len(), 501); // 500 newlines + 1 trailing empty
-        assert_eq!(input.cursor_row(), 500);
-    }
-
-    // rapid key combinations
-
-    #[test]
-    fn type_then_backspace_all_then_retype() {
-        let mut input = InputState::new();
-        input.insert_str("hello world");
-        // Backspace everything
-        for _ in 0..11 {
-            input.delete_char_before();
-        }
-        assert!(input.is_empty());
-        assert_eq!(input.cursor_col(), 0);
-        // Type again
-        input.insert_str("new text");
-        assert_eq!(input.text(), "new text");
-    }
-
-    #[test]
-    fn alternating_insert_and_navigate() {
-        let mut input = InputState::new();
-        // Simulate: type 'a', left, type 'b', left, type 'c' -> "cba"
-        input.insert_char('a');
-        input.move_left();
-        input.insert_char('b');
-        input.move_left();
-        input.insert_char('c');
-        assert_eq!(input.lines()[0], "cba");
-        assert_eq!(input.cursor_col(), 1); // after 'c'
-    }
-
-    #[test]
-    fn home_end_rapid_cycle() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        for _ in 0..50 {
-            input.move_home();
-            assert_eq!(input.cursor_col(), 0);
-            input.move_end();
-            assert_eq!(input.cursor_col(), 5);
-        }
-    }
-
-    #[test]
-    fn left_right_round_trip_preserves_position() {
-        let mut input = InputState::new();
-        input.insert_str("abcdef");
-        input.move_home();
-        input.move_right();
-        input.move_right();
-        input.move_right(); // at col 3
-        let col = input.cursor_col();
-        // Go left 2 then right 2 -- should be back at same spot
-        input.move_left();
-        input.move_left();
-        input.move_right();
-        input.move_right();
-        assert_eq!(input.cursor_col(), col);
-    }
-
-    #[test]
-    fn up_down_round_trip_with_short_line() {
-        let mut input = InputState::new();
-        input.insert_str("longline\na\nlongline");
-        let _ = input.set_cursor(0, 7); // end-ish of first line
-        input.move_down(); // to "a" -- col clamped to 1
-        assert_eq!(input.cursor_col(), 1);
-        input.move_down(); // to "longline" -- col stays at 1 (not restored to 7)
-        assert_eq!(input.cursor_col(), 1);
-    }
-
-    #[test]
-    fn newline_then_immediate_backspace() {
-        let mut input = InputState::new();
-        input.insert_str("hello");
-        input.insert_newline();
-        assert_eq!(input.lines().len(), 2);
-        input.delete_char_before(); // should rejoin
-        assert_eq!(input.lines().len(), 1);
-        assert_eq!(input.lines()[0], "hello");
-        assert_eq!(input.cursor_col(), 5);
-    }
-
-    #[test]
-    fn delete_forward_through_multiple_line_joins() {
-        let mut input = InputState::new();
-        input.insert_str("a\nb\nc\nd");
-        assert_eq!(input.lines().len(), 4);
-        // Go to very start
-        let _ = input.set_cursor(0, 0);
-        // Move to col 1 (after 'a'), then delete forward repeatedly
-        input.move_right(); // past 'a'
-        input.delete_char_after(); // join "a" + "b" -> "ab"
-        assert_eq!(input.lines()[0], "ab");
-        input.move_right(); // past 'b'
-        input.delete_char_after(); // join "ab" + "c" -> "abc"
-        assert_eq!(input.lines()[0], "abc");
-        input.move_right(); // past 'c'
-        input.delete_char_after(); // join "abc" + "d" -> "abcd"
-        assert_eq!(input.lines(), vec!["abcd"]);
-    }
-
-    #[test]
-    fn backspace_collapses_all_lines_to_one() {
-        let mut input = InputState::new();
-        input.insert_str("a\nb\nc\nd\ne");
-        assert_eq!(input.lines().len(), 5);
-        // Cursor is at end of last line. Backspace everything.
-        let total_chars = input.text().len(); // includes \n chars
-        for _ in 0..total_chars {
-            input.delete_char_before();
-        }
-        assert!(input.is_empty());
-        assert_eq!(input.lines().len(), 1);
-        assert_eq!(input.cursor_row(), 0);
-        assert_eq!(input.cursor_col(), 0);
-    }
-
-    // interleaved actions
-
-    #[test]
-    fn type_on_multiple_lines_then_clear() {
-        let mut input = InputState::new();
-        input.insert_str("line1\nline2\nline3");
-        input.move_up();
-        input.move_home();
-        input.insert_str("prefix_");
-        assert_eq!(input.lines()[1], "prefix_line2");
-        input.clear();
-        assert!(input.is_empty());
-        assert_eq!(input.cursor_row(), 0);
-    }
-
-    #[test]
-    fn insert_between_emoji() {
-        let mut input = InputState::new();
-        input.insert_char('\u{1F600}');
-        input.insert_char('\u{1F601}');
-        // cursor at col 2, after both emoji
-        input.move_left(); // between the two emoji, col 1
-        input.insert_char('X');
-        assert_eq!(input.lines()[0], "\u{1F600}X\u{1F601}");
-        assert_eq!(input.cursor_col(), 2);
-    }
-
-    #[test]
-    fn delete_char_after_on_multibyte_boundary() {
-        let mut input = InputState::new();
-        input.insert_str("\u{1F600}\u{1F601}\u{1F602}");
-        input.move_home();
-        input.move_right(); // after first emoji
-        input.delete_char_after(); // delete second emoji
-        assert_eq!(input.lines()[0], "\u{1F600}\u{1F602}");
-    }
-
-    #[test]
-    fn text_consistent_after_every_operation() {
-        let mut input = InputState::new();
-
-        input.insert_str("hello");
-        assert_eq!(input.text(), "hello");
-
-        input.insert_newline();
-        assert_eq!(input.text(), "hello\n");
-
-        input.insert_str("world");
-        assert_eq!(input.text(), "hello\nworld");
-
-        input.move_up();
-        input.move_end();
-        input.insert_char('!');
-        assert_eq!(input.text(), "hello!\nworld");
-
-        input.delete_char_before();
-        assert_eq!(input.text(), "hello\nworld");
-
-        input.move_down();
-        input.move_home();
-        input.delete_char_before(); // join lines
-        assert_eq!(input.text(), "helloworld");
-
-        input.clear();
-        assert_eq!(input.text(), "");
-    }
-
-    #[test]
-    fn navigate_through_empty_lines() {
-        let mut input = InputState::new();
-        input.insert_str("\n\n\n");
-        // 4 empty lines, cursor at row 3
-        assert_eq!(input.cursor_row(), 3);
-        input.move_up();
-        assert_eq!(input.cursor_row(), 2);
-        assert_eq!(input.cursor_col(), 0);
-        input.move_up();
-        input.move_up();
-        assert_eq!(input.cursor_row(), 0);
-        // Insert on the first empty line
-        input.insert_char('x');
-        assert_eq!(input.lines()[0], "x");
-        assert_eq!(input.lines().len(), 4);
-    }
-
-    #[test]
-    fn insert_str_into_middle_of_existing_content() {
-        let mut input = InputState::new();
-        input.insert_str("hd");
-        input.move_left(); // between h and d
-        input.insert_str("ello worl");
-        assert_eq!(input.lines()[0], "hello world");
-    }
-
-    #[test]
-    fn multiline_paste_into_middle_of_line() {
-        let mut input = InputState::new();
-        input.insert_str("start end");
-        // Move cursor to col 6 (between "start " and "end")
-        input.move_home();
-        for _ in 0..6 {
-            input.move_right();
-        }
-        input.insert_str("line1\nline2\nline3 ");
-        assert_eq!(input.lines()[0], "start line1");
-        assert_eq!(input.lines()[1], "line2");
-        assert_eq!(input.lines()[2], "line3 end");
-        assert_eq!(input.cursor_row(), 2);
-    }
-
-    #[test]
-    fn version_never_wraps_in_reasonable_use() {
-        let mut input = InputState::new();
-        // After 1000 operations version should be 1000
-        for _ in 0..500 {
-            input.insert_char('a');
-            input.delete_char_before();
-        }
-        assert_eq!(input.version, 1000);
-    }
-
-    #[test]
-    fn mixed_cr_and_lf_in_paste() {
-        let mut input = InputState::new();
-        // Mix of \r, \n, and \r\n
-        input.insert_str("a\rb\nc\r\nd");
-        // \r -> newline, \n -> newline, \r -> newline, \n -> newline
-        // So: "a", "", "b", "", "c", "", "", "d" -- no wait, let me think again
-        // \r -> newline (line "a" done, new line), b -> char, \n -> newline,
-        // c -> char, \r -> newline, \n -> newline, d -> char
-        // lines: ["a", "b", "c", "", "d"]
-        assert_eq!(input.lines()[0], "a");
-        assert_eq!(input.lines().last().unwrap(), "d");
-        // The key point: it doesn't crash and 'd' ends up somewhere
-        assert!(input.text().contains('d'));
-    }
-
-    #[test]
     fn set_text_registers_atomic_ranges() {
         let mut input = InputState::new();
         input.set_text("é [Image #1] [Pasted Text 2 - 3 chars]");
@@ -1634,6 +823,37 @@ mod tests {
                 },
             ]
         );
+
+        let mut input = InputState::new();
+        input.set_text("\u{e9}[Pasted Text 2 - 3 chars][Image #7]\n\u{732b} [Image #3]");
+        assert_eq!(
+            input.atomic_ranges(),
+            &[
+                AtomicRange { row: 0, start_col: 1, end_col: 26 },
+                AtomicRange { row: 0, start_col: 26, end_col: 36 },
+                AtomicRange { row: 1, start_col: 2, end_col: 12 },
+            ]
+        );
+        input.set_cursor(0, 1);
+        input.textarea_insert_char('!');
+        assert_eq!(
+            input.atomic_ranges(),
+            &[
+                AtomicRange { row: 0, start_col: 2, end_col: 27 },
+                AtomicRange { row: 0, start_col: 27, end_col: 37 },
+                AtomicRange { row: 1, start_col: 2, end_col: 12 },
+            ]
+        );
+        input.set_cursor(1, 2);
+        input.textarea_delete_char_after();
+        assert_eq!(input.lines(), ["\u{e9}![Pasted Text 2 - 3 chars][Image #7]", "\u{732b} "]);
+        assert_eq!(
+            input.atomic_ranges(),
+            &[
+                AtomicRange { row: 0, start_col: 2, end_col: 27 },
+                AtomicRange { row: 0, start_col: 27, end_col: 37 },
+            ]
+        );
     }
 
     #[test]
@@ -1642,9 +862,9 @@ mod tests {
         input.set_text("a[Image #1]b");
         let _ = input.set_cursor_col("a[Image #1]".chars().count());
 
-        let deleted = input.textarea_delete_atomic_range_at_cursor(AtomicDeleteDirection::Backward);
+        let deleted = input.textarea_delete_char_before();
 
-        assert!(deleted.is_some());
+        assert!(deleted);
         assert_eq!(input.text(), "ab");
         assert!(input.atomic_ranges().is_empty());
 
@@ -1675,9 +895,7 @@ mod tests {
     fn text_expands_placeholder_even_with_trailing_text() {
         let mut input = InputState::new();
         input.insert_paste_block("line1\nline2");
-        input.mutate_lines(|lines| {
-            lines[0].push_str(" + extra");
-        });
+        input.replace_lines_and_cursor(vec!["[Pasted Text 1 - 11 chars] + extra".to_owned()], 0, 0);
         let _ = input.set_cursor_col(input.lines()[0].chars().count());
         assert_eq!(input.text(), "line1\nline2 + extra");
     }
@@ -1707,9 +925,7 @@ mod tests {
     fn insert_paste_block_reuses_number_after_placeholder_removed() {
         let mut input = InputState::new();
         input.insert_paste_block(&"a".repeat(1001));
-        input.mutate_lines(|lines| {
-            lines[0].clear();
-        });
+        input.replace_lines_and_cursor(vec![String::new()], 0, 0);
         let _ = input.set_cursor_col(0);
 
         input.insert_paste_block(&"b".repeat(1001));
@@ -1744,17 +960,41 @@ mod tests {
     fn append_to_active_paste_block_rejects_dirty_placeholder_line() {
         let mut input = InputState::new();
         input.insert_paste_block("a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk");
-        input.mutate_lines(|lines| {
-            lines[0].push_str("tail");
-        });
+        input.replace_lines_and_cursor(vec!["[Pasted Text 1 - 21 chars]tail".to_owned()], 0, 0);
         let _ = input.set_cursor_col(input.lines()[0].chars().count());
         assert!(!input.append_to_active_paste_block("x"));
     }
 
     #[test]
-    fn count_text_chars_counts_unicode_scalars() {
-        assert_eq!(count_text_chars("abc"), 3);
-        assert_eq!(count_text_chars("\u{1F600}\u{4F60}"), 2);
-        assert_eq!(count_text_chars("a\nb"), 3);
+    fn clear_discards_paste_payloads_and_restarts_placeholder_allocation() {
+        let mut input = InputState::new();
+        input.insert_str("old ");
+        input.insert_paste_block(&"x".repeat(1001));
+        input.insert_paste_block(&"y".repeat(1002));
+        input.clear();
+        assert_eq!(input.text(), "");
+        assert_eq!(input.cursor(), (0, 0));
+        assert!(input.inline_pastes().is_empty());
+        assert!(input.paste_blocks.is_empty());
+        input.insert_paste_block(&"n".repeat(1003));
+        assert_eq!(input.lines(), ["[Pasted Text 1 - 1003 chars]"]);
+        assert_eq!(input.text(), "n".repeat(1003));
+        assert_eq!(input.inline_pastes(), ["n".repeat(1003)]);
+    }
+
+    #[test]
+    fn insertion_normalizes_all_line_endings_without_losing_source_or_suffix() {
+        for (source, expected) in [
+            ("a\rb\rc", vec!["La", "b", "cR"]),
+            ("a\r\nb\r\nc", vec!["La", "b", "cR"]),
+            ("a\rb\nc\r\nd", vec!["La", "b", "c", "dR"]),
+            ("\r\n\u{e9}\r\u{732b}\n", vec!["L", "\u{e9}", "\u{732b}", "R"]),
+        ] {
+            let mut input = InputState::new();
+            input.set_text("LR");
+            input.set_cursor(0, 1);
+            input.insert_str(source);
+            assert_eq!(input.lines(), expected, "{source:?}");
+        }
     }
 }

@@ -23,10 +23,6 @@ pub fn is_active(app: &App) -> bool {
         || app.subagent.as_ref().is_some_and(|s| !s.candidates.is_empty())
 }
 
-pub fn composer_hint_height(app: &App) -> u16 {
-    u16::try_from(composer_hint_rows(app).len()).unwrap_or(u16::MAX)
-}
-
 pub fn composer_hint_rows(app: &App) -> Vec<Line<'static>> {
     let Some(dropdown) = active_dropdown(app) else {
         return Vec::new();
@@ -339,170 +335,460 @@ fn push_highlighted_text(
 
 #[cfg(test)]
 mod tests {
-    use super::{composer_hint_height, composer_hint_rows, find_case_insensitive_range, is_active};
+    use super::composer_hint_rows;
     use crate::app::{AUTOCOMPLETE_VISIBLE_ROWS, App, file_index, mention, slash, subagent};
-    use crate::ui::theme;
 
     fn line_text(line: &ratatui::text::Line<'_>) -> String {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
 
-    #[test]
-    fn case_insensitive_range_respects_utf8_boundaries() {
-        let haystack = "\u{0130}stanbul";
-        let (start, end) =
-            find_case_insensitive_range(haystack, "i").expect("case-insensitive match");
-        assert!(haystack.is_char_boundary(start));
-        assert!(haystack.is_char_boundary(end));
-        assert_eq!(&haystack[start..end], "\u{0130}");
+    fn completion_file(path: &str) -> file_index::FileCandidate {
+        file_index::FileCandidate {
+            rel_path: path.into(),
+            rel_path_lower: path.to_lowercase(),
+            basename_lower: path.rsplit('/').next().unwrap().to_lowercase(),
+            depth: path.matches('/').count(),
+        }
     }
 
+    fn wait_for_mention(app: &mut App, expected: &[&str]) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            file_index::drain_events(app);
+            let mention = app.mention.as_ref().expect("active mention");
+            let ready = if expected.is_empty() {
+                mention.candidates.is_empty()
+            } else {
+                mention.candidates.len() == expected.len()
+                    && expected.iter().all(|path| {
+                        mention.candidates.iter().any(|candidate| candidate.rel_path == *path)
+                    })
+            };
+            if ready {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mention result did not arrive: {:?}, expected {expected:?}",
+                mention.placeholder_message()
+            );
+            std::thread::yield_now();
+        }
+    }
+    fn paint_hints(
+        app: &App,
+        terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> Vec<String> {
+        let area = ratatui::layout::Rect::new(3, 2, 110, 10);
+        terminal
+            .draw(|frame| {
+                frame
+                    .render_widget(ratatui::widgets::Paragraph::new(composer_hint_rows(app)), area);
+            })
+            .unwrap();
+        (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .filter(|r| !r.is_empty())
+            .collect()
+    }
+    fn hint_terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(116, 14)).unwrap()
+    }
+    fn settle_completion(app: &mut App, ready: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            file_index::drain_events(app);
+            if ready(app) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "completion did not settle");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     #[test]
-    fn empty_mention_renders_single_placeholder_row() {
+    fn completion_guidance_tracks_real_search_agent_and_rewind_outcomes() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("visible.rs"), "").unwrap();
         let mut app = App::test_default();
+        app.cwd_raw = directory.path().to_string_lossy().into_owned();
+        file_index::restart(&mut app);
+        settle_completion(&mut app, |a| {
+            matches!(a.file_index.status, file_index::FileIndexStatus::Complete)
+        });
+        let mut terminal = hint_terminal();
+        assert!(paint_hints(&app, &mut terminal).is_empty());
         app.input.set_text("@");
-        let _ = app.input.set_cursor(0, 1);
         mention::activate(&mut app);
-
-        let rows = composer_hint_rows(&app);
-
-        assert!(is_active(&app));
-        assert_eq!(composer_hint_height(&app), 1);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(line_text(&rows[0]), "  [ Type a file or folder name after @");
-    }
-
-    #[test]
-    fn bare_slash_renders_command_candidates() {
-        let mut app = App::test_default();
-        app.input.set_text("/");
-        let _ = app.input.set_cursor(0, 1);
-        slash::sync_with_cursor(&mut app);
-
-        let rows = composer_hint_rows(&app);
-
-        assert_eq!(composer_hint_height(&app), 5);
-        assert_eq!(rows.len(), 5);
-        assert!(line_text(&rows[0]).contains("/agent"));
-    }
-
-    #[test]
-    fn slash_empty_state_renders_command_placeholder() {
-        let mut app = App::test_default();
-        let (connection, _rx) = crate::agent::client::AgentConnection::test_channel();
-        app.session_runtime.conn = Some(std::rc::Rc::new(connection));
-        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        app.input.set_text("/rewind ");
-        let _ = app.input.set_cursor(0, "/rewind ".chars().count());
-        slash::sync_with_cursor(&mut app);
-
-        let rows = composer_hint_rows(&app);
-
-        assert_eq!(composer_hint_height(&app), 1);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(line_text(&rows[0]), "  [ Loading messages");
-    }
-
-    #[test]
-    fn bare_subagent_trigger_renders_single_placeholder_row() {
-        let mut app = App::test_default();
+        let hint = paint_hints(&app, &mut terminal);
+        assert!(hint.iter().any(|r| r.contains("file") && r.contains('@')));
+        assert!(hint.iter().all(|r| !r.contains("> ") && !r.contains("visible.rs")));
+        app.input.insert_str("zzzz_nonmatching");
+        mention::update_query(&mut app);
+        settle_completion(&mut app, |a| {
+            a.mention
+                .as_ref()
+                .and_then(mention::MentionState::placeholder_message)
+                .is_some_and(|text| text.starts_with("No matching"))
+        });
+        let no_match = paint_hints(&app, &mut terminal);
+        assert!(no_match.iter().any(|r| r.to_lowercase().contains("no match")));
+        assert!(no_match.iter().all(|r| !r.contains("> ") && !r.contains("visible.rs")));
+        mention::deactivate(&mut app);
+        app.input.clear();
+        assert!(paint_hints(&app, &mut terminal).is_empty());
         app.sdk_inventory.available_agents =
-            vec![crate::agent::model::AvailableAgent::new("reviewer", "Review code")];
+            vec![crate::agent::model::AvailableAgent::new("reviewer", "INSPECT")];
         app.input.set_text("&");
-        let _ = app.input.set_cursor(0, 1);
         subagent::sync_with_cursor(&mut app);
-
-        let rows = composer_hint_rows(&app);
-
-        assert_eq!(composer_hint_height(&app), 1);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(line_text(&rows[0]), "  [ Type a subagent name after &");
+        let hint = paint_hints(&app, &mut terminal);
+        assert!(hint.iter().any(|r| r.contains("subagent") && r.contains('&')));
+        assert!(hint.iter().all(|r| !r.contains("> ")));
+        app.input.insert_str("rev");
+        subagent::sync_with_cursor(&mut app);
+        assert!(
+            paint_hints(&app, &mut terminal)
+                .iter()
+                .any(|r| r.contains("> &reviewer") && r.contains("INSPECT"))
+        );
+        app.input.insert_str(" tail");
+        subagent::sync_with_cursor(&mut app);
+        assert!(paint_hints(&app, &mut terminal).is_empty());
+        let (mut app, mut rx) = crate::app::test_support::app_with_connection();
+        app.input.set_text("/rewind ");
+        slash::sync_with_cursor(&mut app);
+        assert!(
+            matches!(rx.try_recv().unwrap().command,crate::agent::wire::BridgeCommand::GetRewindTargets {session_id} if session_id=="session-1")
+        );
+        let pending = paint_hints(&app, &mut terminal);
+        assert!(pending.iter().any(|r| r.contains("Loading") && r.contains("messages")));
+        assert!(pending.iter().all(|r| !r.contains("> ")));
+        crate::app::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::RewindTargetsReceived {
+                session_id: "session-1".into(),
+                targets: vec![crate::agent::model::RewindTarget {
+                    uuid: "target-current".into(),
+                    first_text: "CURRENT_PROMPT".into(),
+                    input_text: "CURRENT_PROMPT".into(),
+                    index: 0,
+                    previous_assistant_uuid: None,
+                    resume_anchor_uuid: None,
+                }],
+                error: None,
+            },
+        );
+        let ready = paint_hints(&app, &mut terminal);
+        assert!(ready.iter().any(|r| r.contains("CURRENT_PROMPT") && r.contains("> ")));
+        assert!(ready.iter().all(|r| !r.contains("Loading")));
+        slash::confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "/rewind target-current ");
     }
-
     #[test]
-    fn mention_uses_result_count_when_below_max_height() {
+    fn short_completion_lists_keep_row_identity_selection_and_clear_stale_cells() {
         let mut app = App::test_default();
+        let mut terminal = hint_terminal();
         app.mention = Some(mention::MentionState::new(
             0,
             0,
-            "rs".to_owned(),
-            vec![
-                file_index::FileCandidate {
-                    rel_path: "src/main.rs".to_owned(),
-                    rel_path_lower: "src/main.rs".to_owned(),
-                    basename_lower: "main.rs".to_owned(),
-                    depth: 1,
-                },
-                file_index::FileCandidate {
-                    rel_path: "src/lib.rs".to_owned(),
-                    rel_path_lower: "src/lib.rs".to_owned(),
-                    basename_lower: "lib.rs".to_owned(),
-                    depth: 1,
-                },
-            ],
+            "rs".into(),
+            vec![completion_file("src/alpha.rs"), completion_file("tests/beta.rs")],
         ));
+        for selected in ["src/alpha.rs", "tests/beta.rs"] {
+            let rows = paint_hints(&app, &mut terminal);
+            assert_eq!(rows.len(), 2);
+            for path in ["src/alpha.rs", "tests/beta.rs"] {
+                let own = rows.iter().filter(|r| r.contains(path)).collect::<Vec<_>>();
+                assert_eq!(own.len(), 1);
+                assert_eq!(own[0].contains("> "), path == selected);
+                assert!(!own[0].contains(if path == "src/alpha.rs" {
+                    "tests/beta.rs"
+                } else {
+                    "src/alpha.rs"
+                }));
+            }
+            mention::move_down(&mut app);
+        }
+        app.mention = Some(mention::MentionState::new(
+            0,
+            0,
+            "rs".into(),
+            vec![completion_file("only/current.rs")],
+        ));
+        let rows = paint_hints(&app, &mut terminal);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].contains("> only/current.rs"));
+        assert!(!rows[0].contains("alpha") && !rows[0].contains("beta"));
+        mention::deactivate(&mut app);
+        assert!(paint_hints(&app, &mut terminal).is_empty());
 
-        let rows = composer_hint_rows(&app);
-
-        assert_eq!(composer_hint_height(&app), 2);
-        assert_eq!(rows.len(), 2);
-        assert!(line_text(&rows[0]).starts_with("  \u{250c}\u{2500} "));
-        assert!(line_text(&rows[1]).starts_with("  \u{2514}\u{2500} "));
-        assert!(line_text(&rows[0]).contains("src/main.rs"));
-        assert!(line_text(&rows[1]).contains("src/lib.rs"));
-    }
-
-    #[test]
-    fn slash_rows_use_shared_five_row_max_window() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["cedar.rs", "elm.rs"] {
+            std::fs::write(directory.path().join(name), "fixture").unwrap();
+        }
         let mut app = App::test_default();
+        app.cwd_raw = directory.path().to_string_lossy().into_owned();
+        app.status = crate::app::AppStatus::Ready;
+        file_index::restart(&mut app);
+        app.input.set_text("open @rs keep suffix");
+        app.input.set_cursor(0, 8);
+        mention::sync_with_cursor(&mut app);
+        wait_for_mention(&mut app, &["cedar.rs", "elm.rs"]);
+        let initially_cedar =
+            paint_hints(&app, &mut terminal).iter().any(|row| row.contains("> cedar.rs"));
+        mention::move_down(&mut app);
+        let selected_before_clear = paint_hints(&app, &mut terminal);
+        let nonfirst = if initially_cedar { "> elm.rs" } else { "> cedar.rs" };
+        assert!(selected_before_clear.iter().any(|row| row.contains(nonfirst)));
+        app.input.set_text("open @not-a-match keep suffix");
+        app.input.set_cursor(0, 17);
+        mention::sync_with_cursor(&mut app);
+        wait_for_mention(&mut app, &[]);
+        let empty = paint_hints(&app, &mut terminal);
+        assert!(empty.iter().all(|row| !row.contains("> ")
+            && !row.contains("cedar.rs")
+            && !row.contains("elm.rs")));
+        mention::confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "open @not-a-match keep suffix");
+        app.input.set_text("open @rs keep suffix");
+        app.input.set_cursor(0, 8);
+        mention::sync_with_cursor(&mut app);
+        wait_for_mention(&mut app, &["cedar.rs", "elm.rs"]);
+        for _ in 0..2 {
+            if paint_hints(&app, &mut terminal).iter().any(|row| row.contains("> cedar.rs")) {
+                break;
+            }
+            mention::move_down(&mut app);
+        }
+        assert!(paint_hints(&app, &mut terminal).iter().any(|row| row.contains("> cedar.rs")));
+        mention::confirm_selection(&mut app);
+        assert_eq!(app.input.text(), "open @'cedar.rs' keep suffix");
+        assert!(app.pending_submit.is_none());
+    }
+    #[test]
+    fn completion_window_follows_navigation_and_confirms_the_displayed_target() {
+        let mut app = App::test_default();
+        let mut terminal = hint_terminal();
         app.input.set_text("/");
-        let _ = app.input.set_cursor(0, 1);
         slash::sync_with_cursor(&mut app);
-        let state = app.slash.visible_mut().expect("slash autocomplete");
-        state.query = "cmd".to_owned();
-        state.candidates = (0..8)
-            .map(|i| slash::SlashCandidate {
-                insert_value: format!("/cmd{i}"),
-                primary: format!("/cmd{i}"),
+        let catalog = app
+            .slash
+            .visible()
+            .unwrap()
+            .candidates
+            .iter()
+            .map(|c| c.primary.clone())
+            .collect::<Vec<_>>();
+        for name in ["/help", "/rewind"] {
+            assert!(catalog.iter().any(|c| c == name));
+        }
+        let control = paint_hints(&app, &mut terminal);
+        assert_eq!(control.iter().filter(|r| r.contains("> ")).count(), 1);
+        for row in &control {
+            assert!(catalog.iter().any(|c| row.contains(c)));
+        }
+        let names = (0..AUTOCOMPLETE_VISIBLE_ROWS + 3)
+            .map(|n| format!("/target-{n:02}"))
+            .collect::<Vec<_>>();
+        app.slash.visible_mut().unwrap().candidates = names
+            .iter()
+            .map(|n| slash::SlashCandidate {
+                insert_value: n.clone(),
+                primary: n.clone(),
                 secondary: None,
             })
             .collect();
-        state.dialog.selected = 6;
-        state.dialog.scroll_offset = 2;
+        let last = names.len() - 2;
+        for _ in 0..last {
+            slash::move_down(&mut app);
+        }
+        let rows = paint_hints(&app, &mut terminal);
+        let expected = &names[last + 1 - AUTOCOMPLETE_VISIBLE_ROWS..=last];
+        assert_eq!(rows.len(), expected.len());
+        for (row, name) in rows.iter().zip(expected) {
+            assert!(row.contains(name));
+            assert_eq!(row.contains("> "), name == &names[last]);
+        }
+        for hidden in names.iter().filter(|n| !expected.contains(n)) {
+            assert!(rows.iter().all(|r| !r.contains(hidden)));
+        }
+        for _ in 0..last {
+            slash::move_up(&mut app);
+        }
+        let rows = paint_hints(&app, &mut terminal);
+        for (row, name) in rows.iter().zip(&names[..AUTOCOMPLETE_VISIBLE_ROWS]) {
+            assert!(row.contains(name));
+        }
+        assert!(rows[0].contains("> "));
+        for _ in 0..last {
+            slash::move_down(&mut app);
+        }
+        assert!(
+            paint_hints(&app, &mut terminal)
+                .iter()
+                .any(|r| r.contains(&format!("> {}", names[last])))
+        );
+        slash::confirm_selection(&mut app);
+        assert_eq!(app.input.text(), format!("{} ", names[last]));
+        assert!(app.pending_submit.is_none());
 
-        let rows = composer_hint_rows(&app);
-
-        assert_eq!(rows.len(), AUTOCOMPLETE_VISIBLE_ROWS);
-        assert!(line_text(&rows[0]).starts_with("  \u{250c}\u{2500} "));
-        assert!(line_text(&rows[1]).starts_with("  \u{2502}  "));
-        assert!(line_text(&rows[4]).starts_with("  \u{2514}\u{2500} "));
-        assert!(line_text(&rows[0]).contains("/cmd2"));
-        assert!(line_text(&rows[4]).contains("/cmd6"));
-        assert!(line_text(&rows[4]).contains("> /cmd6"));
+        assert_wrapped_completion_targets(&names, &mut terminal);
     }
-
+    fn assert_wrapped_completion_targets(
+        names: &[String],
+        terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) {
+        for reverse in [false, true] {
+            let mut app = App::test_default();
+            app.input.set_text("/");
+            slash::sync_with_cursor(&mut app);
+            app.slash.visible_mut().unwrap().candidates = names
+                .iter()
+                .map(|name| slash::SlashCandidate {
+                    insert_value: name.clone(),
+                    primary: name.clone(),
+                    secondary: None,
+                })
+                .collect();
+            let expected = if reverse {
+                slash::move_up(&mut app);
+                names.last().unwrap()
+            } else {
+                for _ in 1..names.len() {
+                    slash::move_down(&mut app);
+                }
+                assert!(
+                    paint_hints(&app, terminal)
+                        .iter()
+                        .any(|row| row.contains(&format!("> {}", names.last().unwrap())))
+                );
+                slash::move_down(&mut app);
+                &names[0]
+            };
+            let rows = paint_hints(&app, terminal);
+            assert!(
+                rows.iter().any(|row| row.contains(&format!("> {expected}"))),
+                "wrapped selection invisible: {rows:?}"
+            );
+            let neighbor = if reverse { &names[names.len() - 2] } else { &names[1] };
+            assert!(
+                rows.iter().any(|row| row.contains(neighbor)),
+                "selection lost its neighboring rows: {rows:?}"
+            );
+            assert!(rows.len() <= AUTOCOMPLETE_VISIBLE_ROWS);
+            slash::confirm_selection(&mut app);
+            assert_eq!(app.input.text(), format!("{expected} "));
+            assert!(app.pending_submit.is_none());
+        }
+    }
+    fn assert_candidate_emphasis(
+        line: &ratatui::text::Line<'_>,
+        text: &str,
+        matched: &str,
+        selected: bool,
+    ) {
+        use ratatui::style::Modifier;
+        let actual = line_text(line);
+        let start = actual.find(text).unwrap();
+        let chars = line
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+            .collect::<Vec<_>>();
+        let start = actual[..start].chars().count();
+        let expected_match =
+            if matched.is_empty() { None } else { Some(text.find(matched).unwrap()) };
+        let highlighted = chars[start..start + text.chars().count()]
+            .iter()
+            .filter(|(_, style)| style.add_modifier.contains(Modifier::BOLD))
+            .map(|(c, _)| *c)
+            .collect::<String>();
+        assert_eq!(highlighted, matched, "{actual}");
+        if let Some(byte) = expected_match {
+            let mstart = start + text[..byte].chars().count();
+            assert!(
+                chars[mstart..mstart + matched.chars().count()]
+                    .iter()
+                    .all(|(_, s)| s.add_modifier.contains(Modifier::BOLD))
+            );
+        }
+        assert_eq!(actual[..actual.find(text).unwrap()].contains("> "), selected);
+    }
     #[test]
-    fn autocomplete_candidate_text_uses_dim_style() {
+    fn candidate_rows_preserve_original_text_match_emphasis_and_metadata_association() {
         let mut app = App::test_default();
         app.mention = Some(mention::MentionState::new(
             0,
             0,
-            String::new(),
-            vec![file_index::FileCandidate {
-                rel_path: "src/main.rs".to_owned(),
-                rel_path_lower: "src/main.rs".to_owned(),
-                basename_lower: "main.rs".to_owned(),
-                depth: 1,
-            }],
+            "i".into(),
+            vec![completion_file("界/İstanbul.rs"), completion_file("other.rs")],
         ));
-
         let rows = composer_hint_rows(&app);
-
-        let path_span = rows[0]
-            .spans
-            .iter()
-            .find(|span| span.content.as_ref() == "src/main.rs")
-            .expect("candidate path span");
-        assert_eq!(path_span.style.fg, Some(theme::DIM));
+        assert_candidate_emphasis(&rows[0], "界/İstanbul.rs", "İ", true);
+        assert_candidate_emphasis(&rows[1], "other.rs", "", false);
+        app.mention = None;
+        for (context, primary, query, matched) in [
+            (slash::SlashContext::CommandName, "/İnfo", "i", "İ"),
+            (
+                slash::SlashContext::Argument {
+                    command: "/model".into(),
+                    arg_index: 0,
+                    token_range: (7, 8),
+                },
+                "界/İstanbul",
+                "i",
+                "İ",
+            ),
+        ] {
+            app.input.set_text("/");
+            slash::sync_with_cursor(&mut app);
+            let state = app.slash.visible_mut().unwrap();
+            state.query = query.into();
+            state.context = context;
+            state.candidates = vec![
+                slash::SlashCandidate {
+                    insert_value: primary.into(),
+                    primary: primary.into(),
+                    secondary: Some("OWN_DETAIL".into()),
+                },
+                slash::SlashCandidate {
+                    insert_value: "other".into(),
+                    primary: "other".into(),
+                    secondary: None,
+                },
+            ];
+            let rows = composer_hint_rows(&app);
+            assert_candidate_emphasis(&rows[0], primary, matched, true);
+            assert!(line_text(&rows[0]).contains("OWN_DETAIL"));
+            assert!(!line_text(&rows[1]).contains("OWN_DETAIL"));
+        }
+        app.slash.clear();
+        let mut agent = crate::agent::model::AvailableAgent::new("inspector", "OWN_DESCRIPTION");
+        agent.model = Some("MODEL_MATCH".into());
+        app.sdk_inventory.available_agents =
+            vec![agent, crate::agent::model::AvailableAgent::new("helper", "OTHER_DESCRIPTION")];
+        for (query, matched) in [("in", "in"), ("MODEL_MATCH", "")] {
+            app.input.set_text(&format!("&{query}"));
+            subagent::sync_with_cursor(&mut app);
+            let rows = composer_hint_rows(&app);
+            assert_candidate_emphasis(&rows[0], "&inspector", matched, true);
+            let own = line_text(&rows[0]);
+            assert!(
+                own.contains("OWN_DESCRIPTION")
+                    && own.contains("MODEL_MATCH")
+                    && !own.contains("OTHER_DESCRIPTION")
+            );
+        }
+        app.input.set_text("&helper");
+        subagent::sync_with_cursor(&mut app);
+        let rows = composer_hint_rows(&app);
+        assert_candidate_emphasis(&rows[0], "&helper", "helper", true);
+        assert!(line_text(&rows[0]).contains("OTHER_DESCRIPTION"));
+        assert!(!line_text(&rows[0]).contains("model:"));
     }
 }

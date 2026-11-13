@@ -71,7 +71,12 @@ pub(super) async fn run_cli_command_and_refresh(
     tokio::task::spawn_blocking(move || {
         let claude_path = claude_cli::resolve_claude_path(cached_claude_path)?;
         claude_cli::run_command(&claude_path, &cwd_raw, &args)?;
-        let snapshot = refresh_inventory_blocking(&claude_path, &cwd_raw)?;
+        let snapshot = refresh_inventory_blocking(&claude_path, &cwd_raw).map_err(|error| {
+            format!(
+                "Plugin action `claude {}` completed, but inventory refresh failed: {error}",
+                args.join(" ")
+            )
+        })?;
         Ok((snapshot, claude_path))
     })
     .await
@@ -161,95 +166,199 @@ fn mcp_server_names_from_map(servers: &BTreeMap<String, Value>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{InventoryCli, assert_fixture_snapshot, settle};
     use super::*;
+    use crate::app::test_support::{app_with_connection, press};
+    use crossterm::event::KeyCode;
 
     #[test]
-    fn parses_installed_plugin_entries() {
-        let json = r#"
-[
-  {
-    "id": "frontend-design@claude-plugins-official",
-    "version": "55b58ec6e564",
-    "scope": "local",
-    "enabled": false,
-    "installedAt": "2026-02-05T15:37:39.555Z",
-    "lastUpdated": "2026-03-02T18:10:00.820Z",
-    "projectPath": "C:\\work"
-  }
-]
-"#;
-
-        let parsed = serde_json::from_str::<Vec<InstalledPluginJson>>(json).expect("parse json");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].id, "frontend-design@claude-plugins-official");
-        assert_eq!(parsed[0].scope, "local");
-        assert!(!parsed[0].enabled);
-        assert_eq!(parsed[0].project_path.as_deref(), Some("C:\\work"));
-    }
-
-    #[test]
-    fn detects_mcp_plugins_from_installed_payload() {
-        let json = r#"
-[
-  {
-    "id": "supabase@claude-plugins-official",
-    "scope": "local",
-    "enabled": true,
-    "mcpServers": {
-      "supabase": {
-        "type": "http",
-        "url": "https://mcp.supabase.com/mcp"
-      }
-    }
-  }
-]
-"#;
-
-        let parsed = serde_json::from_str::<Vec<InstalledPluginJson>>(json).expect("parse json");
-        let entry = installed_entry_from_json(parsed.into_iter().next().expect("entry"));
-
-        assert_eq!(entry.mcp_server_names, vec!["supabase"]);
-    }
-
-    #[test]
-    fn parses_marketplace_entries_and_sources() {
-        let available_json = r#"
-{
-  "installed": [],
-  "available": [
-    {
-      "pluginId": "frontend-design@claude-plugins-official",
-      "name": "frontend-design",
-      "description": "Create distinctive interfaces",
-      "marketplaceName": "claude-plugins-official",
-      "version": "1.0.0",
-      "source": "./plugins/frontend-design",
-      "installCount": 42
-    }
-  ]
-}
-"#;
-        let source_json = r#"
-[
-  {
-    "name": "claude-plugins-official",
-    "source": "github",
-    "repo": "anthropics/claude-plugins-official"
-  }
-]
-"#;
-
-        let parsed_available =
-            serde_json::from_str::<MarketplaceListJson>(available_json).expect("parse available");
-        let parsed_sources =
-            serde_json::from_str::<Vec<MarketplaceSourceJson>>(source_json).expect("parse sources");
-
-        assert_eq!(parsed_available.available.len(), 1);
+    fn inventory_commands_map_complete_independent_fixtures() {
+        let fixture = InventoryCli::new();
+        let snapshot =
+            refresh_inventory_blocking(&fixture.executable, &fixture.cwd()).expect("inventory");
+        assert_fixture_snapshot(&snapshot);
         assert_eq!(
-            parsed_available.available[0].marketplace_name.as_deref(),
-            Some("claude-plugins-official")
+            fixture.calls(),
+            [
+                vec!["plugin", "list", "--json"],
+                vec!["plugin", "list", "--available", "--json"],
+                vec!["plugin", "marketplace", "list", "--json"],
+            ]
         );
-        assert_eq!(parsed_available.available[0].install_count, Some(42));
-        assert_eq!(parsed_sources[0].repo.as_deref(), Some("anthropics/claude-plugins-official"));
+        fixture.write("installed.json", "[]");
+        fixture.write("available.json", r#"{"available":[]}"#);
+        fixture.write("sources.json", "[]");
+        let empty = refresh_inventory_blocking(&fixture.executable, &fixture.cwd())
+            .expect("empty inventory");
+        assert_eq!(
+            empty,
+            PluginsInventorySnapshot {
+                installed: vec![],
+                marketplace: vec![],
+                marketplaces: vec![]
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_inventory_after_a_persisted_action_recovers_without_repeating_the_mutation() {
+        for (mode, mutate) in
+            [("available", false), ("malformed", false), ("available", true), ("mutation", true)]
+        {
+            let fixture = InventoryCli::new();
+            let (mut app, mut commands) = app_with_connection();
+            fixture.attach(&mut app);
+            app.surface_mode =
+                crate::app::SurfaceMode::Fullscreen(crate::app::FullscreenView::Config);
+            app.config.active_tab = crate::app::ConfigTab::Plugins;
+            settle(&mut app, super::super::inventory::request_inventory_refresh).await;
+            let known = PluginsInventorySnapshot {
+                installed: app.plugins.installed.clone(),
+                marketplace: app.plugins.marketplace.clone(),
+                marketplaces: app.plugins.marketplaces.clone(),
+            };
+            assert_fixture_snapshot(&known);
+            assert!(commands.try_recv().is_err());
+            fixture.write("journal", "");
+            let before = fixture.read("installed.json");
+            fixture.write("failure", mode);
+            settle(&mut app, |app| {
+                if mutate {
+                    press(app, KeyCode::Enter); // alpha's installed action menu
+                    let overlay = app
+                        .config
+                        .installed_plugin_actions_overlay()
+                        .expect("selected action target");
+                    assert_eq!(overlay.plugin_id, "alpha@fixture");
+                    assert_eq!(overlay.scope, "user");
+                    press(app, KeyCode::Enter); // disable
+                } else {
+                    press(app, KeyCode::Char('r'));
+                }
+            })
+            .await;
+            let error = if mutate {
+                app.config.last_error.as_deref()
+            } else {
+                app.plugins.last_error.as_deref()
+            }
+            .expect("visible failure");
+            let expected_stage = if mode == "mutation" {
+                "plugin disable alpha@fixture --scope user"
+            } else {
+                "plugin list --available --json"
+            };
+            assert!(error.contains(expected_stage), "{error}");
+            assert!(
+                error.contains(if mode == "malformed" {
+                    "JSON"
+                } else if mode == "mutation" {
+                    "registration locked"
+                } else {
+                    "marketplace unavailable"
+                }),
+                "{error}"
+            );
+            let persisted = mutate && mode != "mutation";
+            if persisted {
+                assert!(
+                    error.contains("completed") && error.contains("refresh"),
+                    "must distinguish completed action from failed inventory: {error}"
+                );
+            }
+            assert_eq!(app.plugins.installed, known.installed);
+            assert_eq!(app.plugins.marketplace, known.marketplace);
+            assert_eq!(app.plugins.marketplaces, known.marketplaces);
+            assert!(commands.try_recv().is_err(), "unconfirmed result must not reload runtime");
+            assert_eq!(
+                fixture.read("installed.json"),
+                if persisted { fixture.read("installed-after.json") } else { before.clone() }
+            );
+            let mutation = vec!["plugin", "disable", "alpha@fixture", "--scope", "user"];
+            let mut expected: Vec<Vec<&str>> = if mutate { vec![mutation.clone()] } else { vec![] };
+            if mode != "mutation" {
+                expected.extend([
+                    vec!["plugin", "list", "--json"],
+                    vec!["plugin", "list", "--available", "--json"],
+                ]);
+            }
+            assert_eq!(fixture.calls(), expected);
+            recover_inventory_without_mutation(
+                &fixture,
+                &mut app,
+                &mut commands,
+                persisted,
+                expected,
+            )
+            .await;
+        }
+    }
+
+    async fn recover_inventory_without_mutation(
+        fixture: &InventoryCli,
+        app: &mut crate::app::App,
+        commands: &mut crate::agent::client::CommandReceiver,
+        persisted: bool,
+        mut expected: Vec<Vec<&str>>,
+    ) {
+        // Repair the listing, then use a read-only manual refresh. No action is replayed.
+        fixture.write("failure", "");
+        fixture.write(
+            "available.json",
+            r#"{"available":[{"pluginId":"recovered@new","name":"Recovered"}]}"#,
+        );
+        fixture.write("sources.json", r#"[{"name":"new","source":"git","repo":"recovery/repo"}]"#);
+        if !persisted {
+            fixture.write("installed.json", &fixture.read("installed-after.json"));
+        }
+        settle(app, |app| press(app, KeyCode::Char('r'))).await;
+        assert_eq!(
+            app.plugins
+                .installed
+                .iter()
+                .map(|p| (p.id.as_str(), p.enabled, p.version.as_deref()))
+                .collect::<Vec<_>>(),
+            [("alpha@fixture", false, Some("2.8"))]
+        );
+        assert_eq!(
+            app.plugins
+                .marketplace
+                .iter()
+                .map(|p| (p.plugin_id.as_str(), p.name.as_str()))
+                .collect::<Vec<_>>(),
+            [("recovered@new", "Recovered")]
+        );
+        assert_eq!(
+            app.plugins
+                .marketplaces
+                .iter()
+                .map(|p| (p.name.as_str(), p.repo.as_deref()))
+                .collect::<Vec<_>>(),
+            [("new", Some("recovery/repo"))]
+        );
+        expected.extend([
+            vec!["plugin", "list", "--json"],
+            vec!["plugin", "list", "--available", "--json"],
+            vec!["plugin", "marketplace", "list", "--json"],
+        ]);
+        assert_eq!(fixture.calls(), expected);
+        let reload = commands.try_recv().expect("explicit refresh reload");
+        assert!(
+            matches!(reload.command, crate::agent::wire::BridgeCommand::ReloadPlugins {ref session_id, force:false, ref add_plugins} if session_id=="session-1" && add_plugins.is_empty())
+        );
+        assert!(reload.request_id.is_some());
+        crate::app::handle_client_event(
+            app,
+            crate::agent::events::ClientEvent::RuntimeReloadCompleted {
+                session_id: "session-1".into(),
+                request_id: reload.request_id,
+                error_count: 0,
+                reconciliation_error: None,
+            },
+        );
+        assert!(app.config.last_error.is_none());
+        assert!(app.plugins.last_error.is_none());
+        assert!(app.plugins.pending_reload.is_none());
+        assert!(commands.try_recv().is_err());
     }
 }

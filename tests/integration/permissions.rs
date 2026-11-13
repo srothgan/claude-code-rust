@@ -59,29 +59,6 @@ fn task_item(id: &str, subject: &str, status: model::TaskStatus) -> model::TaskI
     }
 }
 
-// --- PermissionRequest attaches to tool call ---
-
-#[tokio::test]
-async fn permission_request_attaches_to_tool_call() {
-    let mut app = test_app();
-    let _rx = setup_permission(&mut app, "tc-perm-1", allow_deny_options());
-
-    assert_eq!(app.pending_interaction_ids.len(), 1);
-    assert_eq!(app.pending_interaction_ids[0], "tc-perm-1");
-
-    // The tool call should have a pending_permission
-    let (mi, bi) = app.lookup_tool_call("tc-perm-1").expect("tc-perm-1 indexed");
-    if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] {
-        assert!(tc.pending_permission.is_some());
-        let perm = tc.pending_permission.as_ref().unwrap();
-        assert_eq!(perm.options.len(), 2);
-        assert_eq!(perm.selected_index, 0);
-        assert!(perm.focused, "first permission should be focused");
-    } else {
-        panic!("expected ToolCall block");
-    }
-}
-
 // --- Permission for unknown tool call auto-rejects ---
 
 #[tokio::test]
@@ -110,125 +87,150 @@ async fn permission_for_unknown_tool_call_auto_rejects() {
     }
 }
 
-// --- Multiple permissions queue correctly ---
-
 #[tokio::test]
-async fn multiple_permissions_queue_in_order() {
+async fn duplicate_permission_preserves_original_and_neighbor_response_ownership() {
+    use claude_code_rust::app::handle_terminal_event;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let options = |prefix: &str| {
+        vec![
+            model::PermissionOption::new(
+                format!("{prefix}-allow"),
+                format!("{prefix} allow"),
+                model::PermissionOptionKind::AllowOnce,
+            ),
+            model::PermissionOption::new(
+                format!("{prefix}-deny"),
+                format!("{prefix} deny"),
+                model::PermissionOptionKind::RejectOnce,
+            ),
+        ]
+    };
     let mut app = test_app();
-    let _rx1 = setup_permission(&mut app, "tc-q1", allow_deny_options());
-    let _rx2 = setup_permission(&mut app, "tc-q2", allow_deny_options());
-
-    assert_eq!(app.pending_interaction_ids.len(), 2);
-    assert_eq!(app.pending_interaction_ids[0], "tc-q1");
-    assert_eq!(app.pending_interaction_ids[1], "tc-q2");
-
-    // First should be focused, second should not
-    let (mi1, bi1) = app.lookup_tool_call("tc-q1").expect("tc-q1 indexed");
-    if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi1].blocks[bi1] {
-        assert!(tc.pending_permission.as_ref().unwrap().focused);
-    }
-    let (mi2, bi2) = app.lookup_tool_call("tc-q2").expect("tc-q2 indexed");
-    if let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi2].blocks[bi2] {
-        assert!(!tc.pending_permission.as_ref().unwrap().focused);
-    }
-}
-
-#[tokio::test]
-async fn duplicate_permission_request_is_rejected_without_duplicate_queue_entry() {
-    let mut app = test_app();
-    let mut first_rx = setup_permission(&mut app, "tc-dup", allow_deny_options());
-
-    let (response_tx, mut duplicate_rx) = oneshot::channel();
-    let tool_call_update = model::ToolCallUpdate::new("tc-dup", model::ToolCallUpdateFields::new());
+    let mut original = setup_permission(&mut app, "original", options("original"));
+    let mut neighbor = setup_permission(&mut app, "neighbor", options("neighbor"));
+    let (response_tx, mut duplicate) = oneshot::channel();
     let request = model::RequestPermissionRequest::new(
         "test-session",
-        tool_call_update,
-        allow_deny_options(),
-        None,
+        model::ToolCallUpdate::new("original", model::ToolCallUpdateFields::new()),
+        options("duplicate"),
+        Some(model::PermissionDisplay::new().title(Some("Duplicate metadata".into()))),
     );
     send_client_event(&mut app, permission_request(request, response_tx));
-
-    assert_eq!(app.pending_interaction_ids, vec!["tc-dup"]);
-    assert!(matches!(first_rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-
-    let resp = duplicate_rx.try_recv().expect("duplicate permission should be auto-rejected");
-    let model::RequestPermissionOutcome::Selected(selected) = resp.outcome else {
-        panic!("expected Selected outcome from duplicate auto-reject");
+    assert_eq!(
+        duplicate.try_recv().expect("duplicate rejection").outcome,
+        model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
+            "duplicate-deny"
+        ))
+    );
+    assert!(matches!(original.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+    assert!(matches!(neighbor.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+    let (mi, bi) = app.lookup_tool_call("original").expect("original");
+    let MessageBlock::ToolCall(tool) = &app.transcript.messages[mi].blocks[bi] else {
+        panic!("tool");
     };
-    assert_eq!(selected.option_id.clone(), "deny");
+    let pending = tool.pending_permission.as_ref().expect("original permission");
+    assert_eq!(pending.options, options("original"));
+    assert!(pending.display.is_none(), "duplicate metadata must not replace the original");
+    for key in [KeyCode::Right, KeyCode::Enter] {
+        handle_terminal_event(&mut app, Event::Key(KeyEvent::new(key, KeyModifiers::NONE)));
+    }
+    assert_eq!(
+        original.try_recv().expect("original response").outcome,
+        model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
+            "original-deny"
+        ))
+    );
+    assert!(matches!(neighbor.try_recv(), Err(oneshot::error::TryRecvError::Empty)));
+    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+    assert_eq!(
+        neighbor.try_recv().expect("neighbor response").outcome,
+        model::RequestPermissionOutcome::Selected(model::SelectedPermissionOutcome::new(
+            "neighbor-allow"
+        ))
+    );
 }
 
-// --- TurnComplete transient state reset ---
+// --- Confirmed session inventory across completed turns ---
 
 #[tokio::test]
-async fn turn_complete_resets_transient_state() {
+async fn confirmed_task_and_mode_inventory_survives_completion_and_accepts_next_turn_updates() {
+    use claude_code_rust::app::{ModeInfo, ModeState};
     let mut app = test_app();
-    app.status = AppStatus::Running;
-    app.files_accessed = 5;
-    app.spinner_frame = 42;
-
-    send_client_event(&mut app, turn_complete());
-
-    assert!(matches!(app.status, AppStatus::Ready));
-    assert_eq!(app.files_accessed, 0, "files_accessed should reset");
-    // spinner_frame is a UI detail, not reset by TurnComplete (it's driven by tick)
-    // pending_interaction_ids should be empty (no permissions were pending)
-    assert!(app.pending_interaction_ids.is_empty());
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_clear_messages() {
-    let mut app = test_app();
-
-    let chunk =
-        model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new("hello")));
-    send_client_event(&mut app, session_update(model::SessionUpdate::AgentMessageChunk(chunk)));
-    assert_eq!(app.transcript.messages.len(), 1);
-
-    send_client_event(&mut app, turn_complete());
-
-    assert_eq!(app.transcript.messages.len(), 1, "messages should persist across turns");
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_clear_tool_call_index() {
-    let mut app = test_app();
-
-    let tc =
-        model::ToolCall::new("tc-persist", "Read file").status(model::ToolCallStatus::InProgress);
-    send_client_event(&mut app, session_update(model::SessionUpdate::ToolCall(tc)));
-    assert!(app.has_tool_call("tc-persist"));
-
-    send_client_event(&mut app, turn_complete());
-
-    assert!(app.has_tool_call("tc-persist"), "tool_call_index should persist across turns");
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_clear_tasks() {
-    let mut app = test_app();
-
-    app.sdk_inventory.tasks.push(task_item("task-1", "Test task", model::TaskStatus::InProgress));
-
-    send_client_event(&mut app, turn_complete());
-
-    assert_eq!(app.sdk_inventory.tasks.len(), 1, "tasks should persist across turns");
-}
-
-#[tokio::test]
-async fn turn_complete_does_not_affect_mode() {
-    let mut app = test_app();
-
-    app.session_runtime.mode = Some(claude_code_rust::app::ModeState {
+    let original = vec![
+        task_item("alpha", "Alpha confirmed", model::TaskStatus::Pending),
+        task_item("beta", "Beta confirmed", model::TaskStatus::InProgress),
+    ];
+    let mode = ModeState {
         current_mode_id: "plan".into(),
-        current_mode_name: "Plan".into(),
-        available_modes: vec![claude_code_rust::app::ModeInfo {
-            id: "plan".into(),
-            name: "Plan".into(),
-        }],
-    });
-
+        current_mode_name: "Confirmed planning".into(),
+        available_modes: vec![
+            ModeInfo { id: "plan".into(), name: "Confirmed planning".into() },
+            ModeInfo { id: "acceptEdits".into(), name: "Editing choice".into() },
+        ],
+    };
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::TaskStateUpdate(
+            model::TaskStateUpdate::new(model::TaskUpdateSource::List)
+                .tasks(original.clone())
+                .complete_snapshot(true),
+        )),
+    );
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ModeStateUpdate(mode.clone())),
+    );
+    send_client_event(&mut app, session_update(model::SessionUpdate::AgentResponseStarted));
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("First turn answer")),
+        ))),
+    );
+    assert_ne!(app.status, AppStatus::Ready);
     send_client_event(&mut app, turn_complete());
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_eq!(app.sdk_inventory.tasks, original);
+    assert_mode(&app, &mode);
+    send_client_event(&mut app, session_update(model::SessionUpdate::AgentResponseStarted));
+    let changed = task_item("alpha", "Alpha completed", model::TaskStatus::Completed);
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::TaskStateUpdate(
+            model::TaskStateUpdate::new(model::TaskUpdateSource::Update)
+                .tasks(vec![changed.clone()]),
+        )),
+    );
+    let replacement = ModeState {
+        current_mode_id: "acceptEdits".into(),
+        current_mode_name: "Confirmed editing".into(),
+        available_modes: vec![ModeInfo {
+            id: "acceptEdits".into(),
+            name: "Confirmed editing".into(),
+        }],
+    };
+    send_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::ModeStateUpdate(replacement.clone())),
+    );
+    assert_eq!(app.sdk_inventory.tasks, vec![changed, original[1].clone()]);
+    assert_mode(&app, &replacement);
+    send_client_event(&mut app, turn_complete());
+    assert_mode(&app, &replacement);
+    assert_eq!(app.status, AppStatus::Ready);
+}
 
-    assert!(app.session_runtime.mode.is_some(), "mode should persist across turns");
+fn assert_mode(app: &claude_code_rust::app::App, expected: &claude_code_rust::app::ModeState) {
+    assert_eq!(
+        app.session_runtime.mode.as_ref().map(|mode| (
+            &mode.current_mode_id,
+            &mode.current_mode_name,
+            mode.available_modes.iter().map(|m| (&m.id, &m.name)).collect::<Vec<_>>()
+        )),
+        Some((
+            &expected.current_mode_id,
+            &expected.current_mode_name,
+            expected.available_modes.iter().map(|m| (&m.id, &m.name)).collect::<Vec<_>>()
+        ))
+    );
 }

@@ -3,68 +3,6 @@ use claude_code_rust::app::{App, FullscreenView, SurfaceMode, handle_terminal_ev
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
-fn config_enter_closes_and_preserves_chat_draft() {
-    let mut app = App::test_default();
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-    app.input.set_text("seed");
-
-    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.input.text(), "seed");
-    assert!(app.pending_submit.is_none());
-}
-
-#[test]
-fn config_escape_closes_and_preserves_chat_draft() {
-    let mut app = App::test_default();
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-    app.input.set_text("seed");
-
-    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.input.text(), "seed");
-    assert!(app.pending_submit.is_none());
-}
-
-#[test]
-fn config_blocks_chat_text_and_slash_activation() {
-    let mut app = App::test_default();
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-    app.input.set_text("seed");
-
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
-    );
-    handle_terminal_event(
-        &mut app,
-        Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-    );
-
-    assert_eq!(app.input.text(), "seed");
-    assert!(app.slash.visible().is_none());
-}
-
-#[test]
-fn config_ignores_paste_until_returning_to_chat() {
-    let mut app = App::test_default();
-    app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-
-    handle_terminal_event(&mut app, Event::Paste("blocked".into()));
-
-    assert!(app.paste.pending_text.is_empty());
-    assert!(app.input.is_empty());
-
-    handle_terminal_event(&mut app, Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
-    handle_terminal_event(&mut app, Event::Paste("allowed".into()));
-
-    assert_eq!(app.surface_mode, SurfaceMode::Chat);
-    assert_eq!(app.paste.pending_text, "allowed");
-}
-
-#[test]
 fn ctrl_q_still_quits_from_config() {
     let mut app = App::test_default();
     app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);

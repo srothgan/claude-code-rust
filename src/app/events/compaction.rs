@@ -15,7 +15,7 @@ pub(super) fn handle_update(app: &mut App, update: model::CompactionUpdate) {
 
 fn handle_started(app: &mut App) {
     let was_active = app.turn.compaction.is_active();
-    app.begin_turn_activity(std::time::Instant::now());
+    app.begin_turn_activity(crate::app::activity::now());
     app.turn.compaction.begin();
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
@@ -27,10 +27,6 @@ fn handle_started(app: &mut App) {
 
 fn handle_boundary(app: &mut App, boundary: model::CompactionBoundary) {
     let attached_to_active = app.turn.compaction.apply_boundary(boundary);
-    app.session_runtime.session_usage.last_compaction_trigger = Some(boundary.trigger);
-    app.session_runtime.session_usage.last_compaction_pre_tokens = Some(boundary.pre_tokens);
-    app.session_runtime.session_usage.last_compaction_post_tokens = boundary.post_tokens;
-    app.session_runtime.session_usage.last_compaction_duration_ms = boundary.duration_ms;
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "compaction_boundary_applied",

@@ -61,30 +61,43 @@ pub fn start_service_status_check(app: &App) {
     );
 
     tokio::task::spawn_local(
-        async move {
-            let Some(issue) = resolve_service_status_issue().await else {
-                return;
-            };
-            tracing::info!(
-                target: crate::logging::targets::APP_NETWORK,
-                event_name = "service_issue_detected",
-                message = "service status issue detected",
-                outcome = "success",
-                severity = ?issue.severity,
-            );
-            let _ = event_tx
-                .send(ClientEvent::ServiceStatus {
-                    severity: issue.severity,
-                    message: issue.message,
-                })
-                .await;
-        }
+        run_service_status_check(
+            event_tx,
+            STATUSPAGE_SUMMARY_URL,
+            SERVICE_STATUS_TIMEOUT,
+            reqwest::Client::builder(),
+        )
         .instrument(service_status_span),
     );
 }
 
-async fn resolve_service_status_issue() -> Option<ServiceStatusIssue> {
-    let client = match reqwest::Client::builder().timeout(SERVICE_STATUS_TIMEOUT).build() {
+async fn run_service_status_check(
+    event_tx: tokio::sync::mpsc::Sender<ClientEvent>,
+    endpoint: &str,
+    timeout: Duration,
+    client_builder: reqwest::ClientBuilder,
+) {
+    let Some(issue) = resolve_service_status_issue(endpoint, timeout, client_builder).await else {
+        return;
+    };
+    tracing::info!(
+        target: crate::logging::targets::APP_NETWORK,
+        event_name = "service_issue_detected",
+        message = "service status issue detected",
+        outcome = "success",
+        severity = ?issue.severity,
+    );
+    let _ = event_tx
+        .send(ClientEvent::ServiceStatus { severity: issue.severity, message: issue.message })
+        .await;
+}
+
+async fn resolve_service_status_issue(
+    endpoint: &str,
+    timeout: Duration,
+    client_builder: reqwest::ClientBuilder,
+) -> Option<ServiceStatusIssue> {
+    let client = match client_builder.timeout(timeout).build() {
         Ok(client) => client,
         Err(error) => {
             tracing::warn!(
@@ -93,12 +106,12 @@ async fn resolve_service_status_issue() -> Option<ServiceStatusIssue> {
                 message = "service status client creation failed",
                 outcome = "failure",
                 error_message = %error,
-                url = STATUSPAGE_SUMMARY_URL,
+                url = endpoint,
             );
             return Some(connectivity_issue());
         }
     };
-    let response = match client.get(STATUSPAGE_SUMMARY_URL).send().await {
+    let response = match client.get(endpoint).send().await {
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(
@@ -107,7 +120,7 @@ async fn resolve_service_status_issue() -> Option<ServiceStatusIssue> {
                 message = "service status request failed",
                 outcome = "failure",
                 error_message = %error,
-                url = STATUSPAGE_SUMMARY_URL,
+                url = endpoint,
             );
             return Some(connectivity_issue());
         }
@@ -119,7 +132,7 @@ async fn resolve_service_status_issue() -> Option<ServiceStatusIssue> {
             message = "service status request failed",
             outcome = "failure",
             status = %response.status(),
-            url = STATUSPAGE_SUMMARY_URL,
+            url = endpoint,
         );
         return None;
     }
@@ -200,106 +213,227 @@ mod tests {
     }
 
     #[test]
-    fn all_operational_is_healthy() {
-        let s = summary(
-            vec![component("Claude Code", "operational"), component("claude.ai", "operational")],
-            vec![],
-        );
-        assert!(classify_summary(&s).is_none());
+    fn relevant_components_determine_the_worst_advisory_severity() {
+        use ServiceStatusSeverity::{Error, Warning};
+        let cases = [
+            (
+                vec![
+                    ("Claude Code", "operational"),
+                    ("Claude API (api.anthropic.com)", "operational"),
+                ],
+                None,
+            ),
+            (
+                vec![
+                    ("Claude Code", "operational"),
+                    ("Claude API (api.anthropic.com)", "under_maintenance"),
+                ],
+                None,
+            ),
+            (
+                vec![
+                    ("Claude Code", "under_maintenance"),
+                    ("Claude API (api.anthropic.com)", "operational"),
+                ],
+                None,
+            ),
+            (vec![("claude.ai", "major_outage"), ("Claude Code", "operational")], None),
+            (vec![("Claude Code", "degraded_performance")], Some(Warning)),
+            (vec![("Claude Code", "major_outage")], Some(Error)),
+            (vec![("Claude API (api.anthropic.com)", "partial_outage")], Some(Warning)),
+            (vec![("Claude API (api.anthropic.com)", "future_status")], Some(Warning)),
+            (
+                vec![
+                    ("Claude Code", "partial_outage"),
+                    ("Claude API (api.anthropic.com)", "degraded_performance"),
+                ],
+                Some(Warning),
+            ),
+        ];
+        for (components, expected) in cases {
+            let payload = summary(
+                components.iter().map(|(name, status)| component(name, status)).collect(),
+                vec![],
+            );
+            assert_eq!(
+                classify_summary(&payload).map(|issue| issue.severity),
+                expected,
+                "{components:?}"
+            );
+        }
+        for major in ["Claude Code", "Claude API (api.anthropic.com)"] {
+            let other = if major == "Claude Code" {
+                "Claude API (api.anthropic.com)"
+            } else {
+                "Claude Code"
+            };
+            for reversed in [false, true] {
+                let mut components = vec![
+                    component(major, "major_outage"),
+                    component(other, "degraded_performance"),
+                ];
+                if reversed {
+                    components.reverse();
+                }
+                assert_eq!(
+                    classify_summary(&summary(components, vec![])).expect("outage").severity,
+                    Error
+                );
+            }
+        }
     }
 
     #[test]
-    fn connectivity_issue_is_warning_with_user_facing_message() {
-        let issue = connectivity_issue();
-        assert_eq!(issue.severity, ServiceStatusSeverity::Warning);
-        assert_eq!(
-            issue.message,
-            "Claude Code could not connect to the internet. Please check your connection.",
-        );
+    fn advisory_uses_a_relevant_cause_or_useful_generic_fallback() {
+        let unrelated = incident("UNRELATED web login failure", &["claude.ai"]);
+        let relevant =
+            incident("DISTINCT API inference interruption", &["Claude API (api.anthropic.com)"]);
+        for (incidents, expected_cause) in [
+            (vec![unrelated.clone(), relevant], Some("DISTINCT API inference interruption")),
+            (vec![unrelated], None),
+            (vec![], None),
+        ] {
+            let issue = classify_summary(&summary(
+                vec![component("Claude Code", "partial_outage")],
+                incidents,
+            ))
+            .expect("advisory");
+            assert!(!issue.message.contains("UNRELATED"));
+            if let Some(cause) = expected_cause {
+                assert!(issue.message.contains(cause), "{}", issue.message);
+            } else {
+                assert!(issue.message.contains("Claude"));
+                assert!(issue.message.to_lowercase().contains("disrupt"), "{}", issue.message);
+            }
+        }
     }
 
-    #[test]
-    fn only_unrelated_component_degraded_is_healthy() {
-        let s = summary(
-            vec![
-                component("Claude Code", "operational"),
-                component("claude.ai", "degraded_performance"),
-                component("Claude for Government", "major_outage"),
-            ],
-            vec![],
-        );
-        assert!(classify_summary(&s).is_none());
+    async fn read_http_request(stream: &mut tokio::net::TcpStream) {
+        use tokio::io::AsyncReadExt as _;
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+            let count = stream.read(&mut buffer).await.expect("read local request");
+            assert!(count > 0, "request closed before headers");
+            request.extend_from_slice(&buffer[..count]);
+            assert!(request.len() < 8192, "bounded request headers");
+        }
     }
 
-    #[test]
-    fn claude_code_degraded_is_warning() {
-        let s = summary(vec![component("Claude Code", "degraded_performance")], vec![]);
-        let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(issue.severity, ServiceStatusSeverity::Warning);
+    async fn completed_worker(endpoint: &str) -> tokio::sync::mpsc::Receiver<ClientEvent> {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            run_service_status_check(
+                tx,
+                endpoint,
+                SERVICE_STATUS_TIMEOUT,
+                reqwest::Client::builder().no_proxy(),
+            ),
+        )
+        .await
+        .expect("status worker completed");
+        rx
     }
 
-    #[test]
-    fn claude_code_major_outage_is_error() {
-        let s = summary(vec![component("Claude Code", "major_outage")], vec![]);
-        let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(issue.severity, ServiceStatusSeverity::Error);
+    async fn assert_connectivity_warning(mut rx: tokio::sync::mpsc::Receiver<ClientEvent>) {
+        let Some(ClientEvent::ServiceStatus { severity, message }) = rx.recv().await else {
+            panic!("expected status advisory");
+        };
+        assert_eq!(severity, ServiceStatusSeverity::Warning);
+        assert!(message.to_lowercase().contains("connect"), "{message}");
+        assert!(rx.recv().await.is_none(), "one advisory per completed request");
     }
 
-    #[test]
-    fn claude_api_degraded_triggers_warning() {
-        let s = summary(
-            vec![
-                component("Claude Code", "operational"),
-                component("Claude API (api.anthropic.com)", "partial_outage"),
-            ],
-            vec![],
-        );
-        let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(issue.severity, ServiceStatusSeverity::Warning);
+    #[tokio::test]
+    async fn refused_status_connection_delivers_one_informative_warning() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let endpoint = format!("http://{}/summary", listener.local_addr().expect("address"));
+        drop(listener);
+        assert_connectivity_warning(completed_worker(&endpoint).await).await;
     }
 
-    #[test]
-    fn worst_severity_wins() {
-        let s = summary(
-            vec![
-                component("Claude Code", "degraded_performance"),
-                component("Claude API (api.anthropic.com)", "major_outage"),
-            ],
-            vec![],
-        );
-        let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(issue.severity, ServiceStatusSeverity::Error);
+    #[tokio::test]
+    async fn held_status_request_reaches_the_configured_deadline() {
+        use tokio::sync::oneshot;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let listener =
+                    tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");
+                let endpoint =
+                    format!("http://{}/summary", listener.local_addr().expect("address"));
+                let (accepted_tx, accepted_rx) = oneshot::channel();
+                let (release_tx, release_rx) = oneshot::channel();
+                let server = tokio::spawn(async move {
+                    let (mut stream, _) = listener.accept().await.expect("accept");
+                    read_http_request(&mut stream).await;
+                    accepted_tx.send(()).expect("request observed");
+                    release_rx.await.expect("release held connection");
+                    drop(stream);
+                });
+                let (tx, rx) = tokio::sync::mpsc::channel(4);
+                let worker = tokio::task::spawn_local(async move {
+                    run_service_status_check(
+                        tx,
+                        &endpoint,
+                        SERVICE_STATUS_TIMEOUT,
+                        reqwest::Client::builder().no_proxy(),
+                    )
+                    .await;
+                });
+                tokio::time::timeout(Duration::from_secs(10), accepted_rx)
+                    .await
+                    .expect("request reached server")
+                    .expect("accepted");
+                tokio::time::pause();
+                assert!(!worker.is_finished(), "held request must still be pending");
+                tokio::time::advance(SERVICE_STATUS_TIMEOUT).await;
+                tokio::time::timeout(Duration::from_millis(10), worker)
+                    .await
+                    .expect("production deadline terminated request")
+                    .expect("worker task");
+                assert_connectivity_warning(rx).await;
+                release_tx.send(()).expect("release server");
+                server.await.expect("server task");
+            })
+            .await;
     }
 
-    #[test]
-    fn uses_incident_name_in_message() {
-        let s = summary(
-            vec![component("Claude Code", "degraded_performance")],
-            vec![incident("Elevated errors on Claude Opus 4", &["Claude Code", "claude.ai"])],
-        );
-        let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(issue.message, "Claude Code status: Elevated errors on Claude Opus 4.");
-    }
-
-    #[test]
-    fn fallback_message_without_relevant_incident() {
-        let s = summary(
-            vec![component("Claude Code", "partial_outage")],
-            vec![incident("API issue", &["claude.ai"])],
-        );
-        let issue = classify_summary(&s).expect("expected issue");
-        assert_eq!(issue.message, "Claude Code status indicates a service disruption.");
-    }
-
-    #[test]
-    fn ignores_irrelevant_incident() {
-        let s = summary(
-            vec![
-                component("Claude Code", "operational"),
-                component("claude.ai", "degraded_performance"),
-            ],
-            vec![incident("claude.ai degraded", &["claude.ai"])],
-        );
-        assert!(classify_summary(&s).is_none());
+    #[tokio::test]
+    async fn completed_http_worker_admits_only_usable_successful_responses() {
+        use tokio::io::AsyncWriteExt as _;
+        const OUTAGE: &str = r#"{"components":[{"name":"Claude Code","status":"major_outage"}],"incidents":[{"name":"Fixture inference outage","components":[{"name":"Claude Code"}]}]}"#;
+        const HEALTHY: &str =
+            r#"{"components":[{"name":"Claude Code","status":"operational"}],"incidents":[]}"#;
+        for (status, body, delivers) in [
+            (200, OUTAGE, true),
+            (200, HEALTHY, false),
+            (503, OUTAGE, false),
+            (200, "{broken", false),
+            (200, r#"{"components":[]}"#, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("listener");
+            let endpoint = format!("http://{}/summary", listener.local_addr().expect("address"));
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                read_http_request(&mut stream).await;
+                let response = format!(
+                    "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.expect("response");
+            });
+            let mut events = completed_worker(&endpoint).await;
+            server.await.expect("server task");
+            if delivers {
+                let Some(ClientEvent::ServiceStatus { severity, message }) = events.recv().await
+                else {
+                    panic!("expected outage event");
+                };
+                assert_eq!(severity, ServiceStatusSeverity::Error);
+                assert!(message.contains("Fixture inference outage"));
+            }
+            assert!(events.recv().await.is_none(), "completed HTTP {status}: {body}");
+        }
     }
 }

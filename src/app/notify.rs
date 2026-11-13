@@ -274,12 +274,14 @@ fn notification_plan(
         _ => TerminalCapabilities::Other,
     };
     let escape_sequence = match protocol {
-        TerminalCapabilities::Kitty => {
-            Some(format!("\x1b]99;;Claude Code: {}\x1b\\", sanitize_message(body)))
-        }
-        TerminalCapabilities::Iterm2 | TerminalCapabilities::Ghostty => {
-            Some(format!("\x1b]9;Claude Code: {}\x1b\\", sanitize_message(body)))
-        }
+        TerminalCapabilities::Kitty => Some(format!(
+            "\x1b]99;;Claude Code: {}\x1b\\",
+            crate::ui::terminal_output::sanitize_osc_payload(body)
+        )),
+        TerminalCapabilities::Iterm2 | TerminalCapabilities::Ghostty => Some(format!(
+            "\x1b]9;Claude Code: {}\x1b\\",
+            crate::ui::terminal_output::sanitize_osc_payload(body)
+        )),
         TerminalCapabilities::Other => None,
     };
     let disabled = channel == Channel::NotificationsDisabled;
@@ -291,7 +293,7 @@ fn notification_plan(
                 || (channel == Channel::Auto && escape_sequence.is_none())),
         send_desktop: !disabled && !bell_only && escape_sequence.is_none(),
         escape_sequence: if disabled || bell_only { None } else { escape_sequence },
-        body: sanitize_message(body),
+        body: crate::ui::terminal_output::sanitize_osc_payload(body),
     }
 }
 
@@ -329,17 +331,6 @@ const fn notification_text(event: NotifyEvent) -> &'static str {
     }
 }
 
-fn sanitize_message(message: &str) -> String {
-    message
-        .chars()
-        .filter_map(|ch| match ch {
-            '\r' | '\n' | '\t' => Some(' '),
-            _ if ch.is_control() => None,
-            _ => Some(ch),
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PreferredNotifChannel {
     #[default]
@@ -373,50 +364,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn transport_plans_match_real_terminal_protocols_and_fallbacks() {
-        for (channel, terminal, prefix) in [
-            (PreferredNotifChannel::Iterm2, TerminalCapabilities::Iterm2, "\x1b]9;"),
-            (PreferredNotifChannel::Ghostty, TerminalCapabilities::Ghostty, "\x1b]9;"),
-            (PreferredNotifChannel::Kitty, TerminalCapabilities::Kitty, "\x1b]99;;"),
-        ] {
-            let plan = notification_plan(channel, terminal, "hello\n\x1bworld\x07\u{9c}");
-            assert_eq!(
-                plan.escape_sequence,
-                Some(format!("{prefix}Claude Code: hello world\x1b\\"))
-            );
-            assert!(!plan.ring_bell && !plan.send_desktop);
-            assert!(notification_plan(channel, TerminalCapabilities::Other, "hello").send_desktop);
-            assert_eq!(
-                notification_plan(PreferredNotifChannel::Auto, terminal, "hello"),
-                notification_plan(channel, terminal, "hello")
-            );
-        }
-        let auto =
-            notification_plan(PreferredNotifChannel::Auto, TerminalCapabilities::Other, "hello");
-        assert!(auto.ring_bell && auto.send_desktop);
-        let bell = notification_plan(
-            PreferredNotifChannel::TerminalBell,
-            TerminalCapabilities::Kitty,
-            "hello",
-        );
-        assert!(bell.ring_bell && !bell.send_desktop && bell.escape_sequence.is_none());
-        let both = notification_plan(
-            PreferredNotifChannel::Iterm2WithBell,
-            TerminalCapabilities::Iterm2,
-            "hello",
-        );
-        assert!(both.ring_bell && both.escape_sequence.is_some() && !both.send_desktop);
-        let disabled = notification_plan(
-            PreferredNotifChannel::NotificationsDisabled,
-            TerminalCapabilities::Kitty,
-            "hello",
-        );
-        assert!(
-            !disabled.ring_bell && !disabled.send_desktop && disabled.escape_sequence.is_none()
-        );
-    }
-
-    #[test]
     fn detects_terminal_notification_capabilities_without_confusing_platforms() {
         for (key, value, expected) in [
             ("TERM_PROGRAM", "iTerm.app", TerminalCapabilities::Iterm2),
@@ -433,3 +380,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "notify_audit_tests.rs"]
+mod audit_tests;

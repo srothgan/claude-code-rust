@@ -63,8 +63,10 @@ pub(crate) struct FileContent {
     pub deleted: bool,
 }
 
-fn command(cwd: &Path) -> Command {
+pub(super) fn command(cwd: &Path) -> Command {
     let mut command = Command::new("git");
+    #[cfg(test)]
+    super::tests::isolate_git(&mut command);
     command
         .current_dir(cwd)
         .args([

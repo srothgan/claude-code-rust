@@ -152,6 +152,7 @@ export type PendingPermission = {
   toolName: string;
   inputData: Record<string, unknown>;
   suggestions?: PermissionUpdate[];
+  offeredOptionIds?: ReadonlySet<string>;
 };
 
 export type PendingQuestion = {
@@ -433,29 +434,6 @@ export async function closeSessionWithLogging(
   });
 }
 
-export async function closeSessionsBeforeRegister(
-  replacementSession: SessionState,
-  staleSessions: SessionState[] | undefined,
-  requestId?: string,
-): Promise<void> {
-  if (!staleSessions || staleSessions.length === 0) {
-    return;
-  }
-
-  for (const stale of staleSessions) {
-    if (stale === replacementSession) {
-      continue;
-    }
-    if (sessions.get(stale.sessionId) === stale) {
-      sessions.delete(stale.sessionId);
-    }
-    await closeSessionWithLogging(stale, {
-      reason: "stale_before_register",
-      requestId,
-    });
-  }
-}
-
 export async function closeAllSessions(
   options: CloseSessionOptions = {},
 ): Promise<void> {
@@ -493,7 +471,6 @@ export async function createSession(params: {
   launchSettings: SessionLaunchSettings;
   connectEvent: ConnectEventKind;
   requestId?: string;
-  sessionsToCloseBeforeRegister?: SessionState[];
   sessionsToCloseAfterConnect?: SessionState[];
   resumeUpdates?: SessionUpdate[];
   restoredInput?: string;
@@ -511,8 +488,6 @@ export async function createSession(params: {
       .allowDangerouslySkipPermissions === true;
   const historyUpdateCount = params.resumeUpdates?.length ?? 0;
   const staleSessionCount = params.sessionsToCloseAfterConnect?.length ?? 0;
-  const staleSessionBeforeRegisterCount =
-    params.sessionsToCloseBeforeRegister?.length ?? 0;
 
   let session!: SessionState;
   const sessionIdForLogs = () => session?.sessionId ?? provisionalSessionId;
@@ -600,6 +575,7 @@ export async function createSession(params: {
         toolName,
         inputData: inputData,
         suggestions: options.suggestions,
+        offeredOptionIds: new Set(request.options.map(option => option.option_id)),
       }), () => emitPermissionRequestEvent(session.sessionId, request), options.signal,
       () => {
         emitInteractionCancelled(session.sessionId, toolUseId);
@@ -636,7 +612,6 @@ export async function createSession(params: {
       fork_session: params.forkSession === true,
       history_update_count: historyUpdateCount,
       stale_session_count: staleSessionCount,
-      stale_session_before_register_count: staleSessionBeforeRegisterCount,
       sdk_debug_enabled: enableSdkDebug,
       sdk_debug_file_configured: Boolean(sdkDebugFile),
       sdk_spawn_debug_enabled: enableSpawnDebug,
@@ -744,11 +719,6 @@ export async function createSession(params: {
   refreshCurrentModel(session);
   const { refreshSupportedModesForSession } = await import("./commands.js");
   refreshSupportedModesForSession(session);
-  await closeSessionsBeforeRegister(
-    session,
-    params.sessionsToCloseBeforeRegister,
-    params.requestId,
-  );
   sessions.set(provisionalSessionId, session);
   bridgeLogger.info({
     target: LOG_TARGETS.APP_SESSION,
@@ -1396,7 +1366,7 @@ export function handlePermissionResponse(
     return;
   }
 
-  const outcome = command.outcome as PermissionOutcome;
+  let outcome = command.outcome as PermissionOutcome;
   if (resolver.onOutcome) {
     bridgeLogger.info({
       target: LOG_TARGETS.BRIDGE_PERMISSION,
@@ -1427,6 +1397,9 @@ export function handlePermissionResponse(
       fields: { reason: "missing_resolver_callback" },
     });
     return;
+  }
+  if (outcome.outcome === "selected" && !resolver.offeredOptionIds?.has(outcome.option_id)) {
+    outcome = { outcome: "selected", option_id: "reject_once" };
   }
   const selectedOption =
     outcome.outcome === "selected" ? outcome.option_id : "cancelled";

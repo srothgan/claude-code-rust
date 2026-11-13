@@ -23,6 +23,7 @@ pub(crate) fn open_tab(app: &mut App, tab: ConfigTab) -> Result<(), String> {
     app.config.status_message = None;
     app.config.last_error = None;
     app.config.active_tab = tab;
+    app.config.read_only.reset();
     view::set_fullscreen_view(app, FullscreenView::Config);
     request_active_tab_side_effects(app);
     Ok(())
@@ -34,7 +35,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     }
     refresh_status_tab(app);
     if app.config.active_tab == ConfigTab::Usage {
-        app.config.usage_scroll = 0;
+        app.config.read_only.reset();
         crate::app::usage::request_refresh_if_needed(app);
     }
     if app.config.active_tab == ConfigTab::Plugins {
@@ -49,6 +50,7 @@ pub fn close(app: &mut App) {
 
 pub(crate) fn activate_tab(app: &mut App, tab: ConfigTab) {
     app.config.active_tab = tab;
+    app.config.read_only.reset();
     app.config.status_message = None;
     app.config.last_error = None;
     request_active_tab_side_effects(app);
@@ -77,24 +79,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     if handle_settings_key(app, key) {
         return;
     }
-    if app.config.active_tab == ConfigTab::Usage && key.modifiers.is_empty() {
-        let page = app.config.usage_visible_rows.max(1);
-        let scroll = app.config.usage_scroll;
-        let next = match key.code {
-            KeyCode::Up => Some(scroll.saturating_sub(1)),
-            KeyCode::Down => Some(scroll.saturating_add(1)),
-            KeyCode::PageUp => Some(scroll.saturating_sub(page)),
-            KeyCode::PageDown => Some(scroll.saturating_add(page)),
-            KeyCode::Home => Some(0),
-            KeyCode::End => Some(app.config.usage_max_scroll),
-            _ => None,
-        };
-        if let Some(next) = next {
-            app.config.usage_scroll = next.min(app.config.usage_max_scroll);
-            return;
-        }
-    }
 
+    if matches!(app.config.active_tab, ConfigTab::Status | ConfigTab::Usage)
+        && key.modifiers.is_empty()
+        && app.config.read_only.handle_key(key.code)
+    {
+        return;
+    }
+    handle_tab_action(app, key);
+}
+
+fn handle_tab_action(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
         (KeyCode::Char(ch), modifiers)
             if app.config.active_tab == ConfigTab::Status
@@ -325,7 +320,6 @@ fn request_active_tab_side_effects(app: &mut App) {
     refresh_status_tab(app);
     mcp::refresh_mcp_snapshot_if_needed(app);
     if app.config.active_tab == ConfigTab::Usage {
-        app.config.usage_scroll = 0;
         crate::app::usage::request_refresh_if_needed(app);
     }
     if app.config.active_tab == ConfigTab::Plugins {

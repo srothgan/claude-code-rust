@@ -217,34 +217,11 @@ fn extract_json_string_field(input: &str, field: &str) -> Option<String> {
     let start = input.find(&needle)? + needle.len();
     let rest = input[start..].trim_start();
     let colon_idx = rest.find(':')?;
-    let mut chars = rest[colon_idx + 1..].trim_start().chars();
-    if chars.next()? != '"' {
-        return None;
-    }
-
-    let mut escaped = false;
-    let mut out = String::new();
-    for ch in chars {
-        if escaped {
-            let mapped = match ch {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '"' => '"',
-                '\\' => '\\',
-                _ => ch,
-            };
-            out.push(mapped);
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' => escaped = true,
-            '"' => return Some(out),
-            _ => out.push(ch),
-        }
-    }
-    None
+    // Decode just the field value: permission diagnostics may prefix the JSON with prose.
+    serde_json::Deserializer::from_str(rest[colon_idx + 1..].trim_start())
+        .into_iter::<String>()
+        .next()?
+        .ok()
 }
 
 #[cfg(test)]
@@ -256,57 +233,77 @@ mod tests {
 
     #[test]
     fn error_previews_preserve_unicode_limits_and_escape_after_truncation() {
-        assert_eq!(super::error_preview(""), "");
-        assert_eq!(super::error_preview(&"é".repeat(240)), "é".repeat(240));
-        assert_eq!(super::error_preview(&"é".repeat(241)), format!("{}...", "é".repeat(240)));
-        let input = format!("{}\nxyz", "é".repeat(238));
-        assert_eq!(super::error_preview(&input), format!("{}\\nx...", "é".repeat(238)));
-        assert_eq!(crate::logging::preview_text("a\nb", 3), "a\nb");
+        assert_eq!(summarize_internal_error(""), "");
+        for (cause, expected) in [
+            ("é\n界🦀".to_owned(), "é\\n界🦀".to_owned()),
+            (format!("{}\n界🦀", "é".repeat(237)), format!("{}\\n界🦀", "é".repeat(237))),
+            (
+                format!("{}\n界🦀OMITTED_TAIL", "é".repeat(237)),
+                format!("{}\\n界🦀...", "é".repeat(237)),
+            ),
+        ] {
+            let payload = format!("<error><message>{cause}</message></error>");
+            let summary = summarize_internal_error(&payload);
+            assert_eq!(summary, expected);
+            assert!(!summary.contains('\n'));
+            assert!(!summary.contains("OMITTED_TAIL"));
+        }
     }
 
     #[test]
-    fn classifies_plan_limit_errors() {
-        assert_eq!(classify_turn_error("HTTP 429 Too Many Requests"), TurnErrorClass::PlanLimit);
-        assert_eq!(
-            classify_turn_error("turn failed: max budget exceeded"),
-            TurnErrorClass::PlanLimit
-        );
-    }
-
-    #[test]
-    fn classifies_auth_required_errors() {
-        assert_eq!(
-            classify_turn_error("authentication failed: please log in"),
-            TurnErrorClass::AuthRequired
-        );
-    }
-
-    #[test]
-    fn classifies_sdk_account_model_and_transient_errors() {
-        assert_eq!(classify_turn_error("oauth_org_not_allowed"), TurnErrorClass::AccountAccess);
-        assert_eq!(classify_turn_error("model_not_found"), TurnErrorClass::ModelUnavailable);
-        assert_eq!(
-            classify_turn_error("HTTP 529 overloaded_error"),
-            TurnErrorClass::TransientService
-        );
+    fn classifies_fallback_error_categories() {
+        for (payload, expected) in [
+            ("HTTP 429 Too Many Requests", TurnErrorClass::PlanLimit),
+            ("turn failed: max budget exceeded", TurnErrorClass::PlanLimit),
+            ("Usage blocked: insufficient quota for this account", TurnErrorClass::PlanLimit),
+            ("authentication failed: please log in", TurnErrorClass::AuthRequired),
+            ("oauth_org_not_allowed", TurnErrorClass::AccountAccess),
+            ("model_not_found", TurnErrorClass::ModelUnavailable),
+            ("HTTP 529 overloaded_error", TurnErrorClass::TransientService),
+            // An actionable cause remains actionable inside an SDK/transport wrapper.
+            ("Bridge command failed: MAX BUDGET exceeded", TurnErrorClass::PlanLimit),
+            ("Agent SDK: Authentication Failed: PLEASE LOG IN", TurnErrorClass::AuthRequired),
+            ("Bridge command failed: OAUTH_ORG_NOT_ALLOWED", TurnErrorClass::AccountAccess),
+            (
+                r#"{"error":{"type":"MODEL_NOT_FOUND","message":"resource missing"}}"#,
+                TurnErrorClass::ModelUnavailable,
+            ),
+            (
+                "<error><message>Service temporarily OVERLOADED</message></error>",
+                TurnErrorClass::TransientService,
+            ),
+            ("Bridge command failed: socket disappeared", TurnErrorClass::Internal),
+            ("worker stopped: socket disappeared", TurnErrorClass::Other),
+        ] {
+            assert_eq!(classify_turn_error(payload), expected, "payload: {payload}");
+        }
     }
 
     #[test]
     fn classifies_internal_errors() {
-        assert_eq!(
-            classify_turn_error(
-                r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#
-            ),
-            TurnErrorClass::Internal
-        );
-        assert!(looks_like_internal_error(
-            "<error><code>-32603</code><message>Adapter process crashed</message></error>"
-        ));
+        for payload in [
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"worker stopped"}}"#,
+            // No "rpc" token: this must be recognized by the error-code shape alone.
+            r#"{"error":{"code":-32603,"message":"worker stopped"}}"#,
+            "<error><message>worker stopped</message></error>",
+            "<error><code>-32603</code><message>Adapter process crashed</message></error>",
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#,
+            r#"Tool permission request failed: ZodError: [{"message":"Invalid input"}]"#,
+        ] {
+            assert_eq!(classify_turn_error(payload), TurnErrorClass::Internal, "{payload}");
+            assert!(looks_like_internal_error(payload), "{payload}");
+        }
+        let ordinary_failure = "worker stopped: socket disappeared";
+        assert_eq!(classify_turn_error(ordinary_failure), TurnErrorClass::Other);
+        assert!(!looks_like_internal_error(ordinary_failure));
     }
 
     #[test]
     fn classifies_other_errors() {
         assert_eq!(classify_turn_error("turn failed: timeout"), TurnErrorClass::Other);
+        let plain_bash_failure = "bash: unknown_command: command not found";
+        assert_eq!(classify_turn_error(plain_bash_failure), TurnErrorClass::Other);
+        assert!(!looks_like_internal_error(plain_bash_failure));
     }
 
     #[test]
@@ -328,11 +325,58 @@ mod tests {
     }
 
     #[test]
-    fn summarize_prefers_permission_schema_error_message() {
-        let payload = "Tool permission request failed: ZodError: [{\"message\":\"Invalid input: expected record, received undefined\"}]";
-        assert_eq!(
-            summarize_internal_error(payload),
-            "Tool permission request failed: Invalid input: expected record, received undefined"
+    fn summaries_preserve_useful_error_causes() {
+        for (payload, expected) in [
+            (r#"{"message":"caf\u00e9"}"#, "café"),
+            (
+                "<error><code>-32603</code><message>Adapter process crashed</message></error>",
+                "Adapter process crashed",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal rpc fault"}}"#,
+                "internal rpc fault",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","error":{"message":"quoted \"path\" C:\\work\ncaf\u00e9 \u754c \uD83E\uDD80"},"data":"irrelevant detail"}"#,
+                "quoted \"path\" C:\\work\\ncafé 界 🦀",
+            ),
+            (
+                "<error><message>worker stopped\ncheck socket</message><detail>irrelevant detail</detail></error>",
+                "worker stopped\\ncheck socket",
+            ),
+            (
+                "\n  \n  socket closed unexpectedly  \nignore later detail",
+                "socket closed unexpectedly",
+            ),
+            (r#"{"message":"bad\q"}"#, r#"{"message":"bad\q"}"#),
+            (r#"{"message":"unfinished \u00"#, r#"{"message":"unfinished \u00"#),
+            (r#"{"message":"unpaired \uD83E"}"#, r#"{"message":"unpaired \uD83E"}"#),
+        ] {
+            assert_eq!(summarize_internal_error(payload), expected, "payload: {payload}");
+        }
+
+        for (payload, cause) in [
+            (
+                r#"Tool permission request failed: ZodError: [{"message":"Invalid input: expected record, received undefined"}]"#,
+                "Invalid input: expected record, received undefined",
+            ),
+            (
+                r#"Tool permission request failed: ZodError: [{"message":"Denied \"C:\\work\"\nuser caf\u00e9 \uD83E\uDD80","path":["irrelevant detail"]}]"#,
+                "Denied \"C:\\work\"\\nuser café 🦀",
+            ),
+        ] {
+            let summary = summarize_internal_error(payload);
+            assert!(summary.contains("Tool permission request failed"));
+            assert!(summary.ends_with(cause), "{summary}");
+            assert!(!summary.contains("ZodError"), "{summary}");
+            assert!(!summary.contains("irrelevant detail"), "{summary}");
+        }
+
+        let malformed = r#"Tool permission request failed: ZodError: [{"message":"bad\q"}]"#;
+        let summary = summarize_internal_error(malformed);
+        assert!(
+            summary.contains(malformed),
+            "malformed diagnostic must remain faithful: {summary}"
         );
     }
 }

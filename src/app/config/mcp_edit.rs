@@ -60,6 +60,12 @@ pub(super) fn handle_overlay_paste(app: &mut App, text: &str) -> bool {
 
 fn handle_mcp_details_overlay_key(app: &mut App, key: KeyEvent) {
     match (key.code, key.modifiers) {
+        (
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End,
+            KeyModifiers::NONE,
+        ) => {
+            app.config.overlay_read_only.handle_key(key.code);
+        }
         (KeyCode::Esc, KeyModifiers::NONE) => app.config.clear_overlay(),
         (KeyCode::Up, KeyModifiers::NONE) => move_mcp_details_overlay_selection(app, -1),
         (KeyCode::Down, KeyModifiers::NONE) => move_mcp_details_overlay_selection(app, 1),
@@ -161,6 +167,7 @@ fn execute_mcp_server_action(app: &mut App, server_name: &str, action: McpServer
                 return;
             };
             remove_mcp_server_from_config(app, server_name, scope);
+            return;
         }
     }
 

@@ -79,10 +79,15 @@ where
     }
 }
 
-fn render_with_tui_markdown(text: &str, width: u16, bg: Option<Color>) -> Vec<Line<'static>> {
-    render_markdown_safe_with(text, bg, |text, bg| {
-        let rendered = tui_markdown::from_str_with_options(
-            text,
+fn render_with_tui_markdown(
+    text: &str,
+    events: Vec<pulldown_cmark::Event<'_>>,
+    width: u16,
+    bg: Option<Color>,
+) -> Vec<Line<'static>> {
+    render_markdown_safe_with(text, bg, |_text, bg| {
+        let rendered = tui_markdown::from_events_with_options(
+            events,
             &tui_markdown::Options::new(MarkdownStyle).table_width(width),
         );
         rendered
@@ -122,7 +127,6 @@ mod tests {
         line.spans.iter().map(|span| span.content.as_ref()).collect()
     }
     use super::*;
-    use std::panic::catch_unwind;
 
     fn rendered_text(lines: &[Line<'_>]) -> Vec<String> {
         lines.iter().map(line_text).collect()
@@ -138,101 +142,112 @@ mod tests {
 
     #[test]
     fn code_and_escaped_markers_do_not_acquire_list_indentation() {
-        for source in [
-            "~~~text\n- literal marker\n~~~",
-            "    - indented code",
-            "\\- escaped marker",
-            "3a ordinary text",
+        for (source, expected) in [
+            ("~~~text\n  - literal marker\n~~~", "  - literal marker"),
+            ("    - indented code", "- indented code"),
+            ("\\- escaped marker", "- escaped marker"),
+            ("3a ordinary text", "3a ordinary text"),
         ] {
-            let rows = document_rows(source, 60);
-            let content = rows
-                .iter()
-                .find(|row| {
-                    row.contains("marker") || row.contains("ordinary") || row.contains("indented")
-                })
-                .expect("literal content");
-            assert!(
-                !content.starts_with("  "),
-                "non-list source acquired list padding: {source:?}: {rows:?}"
-            );
+            assert!(document_rows(source, 60).iter().any(|r| r == expected), "{source}");
         }
+        let rows = document_rows("- Real item", 60);
+        let item = rows.iter().find(|r| r.contains("Real item")).unwrap();
+        assert_ne!(item, "Real item");
+        assert!(!item.contains("\\-"));
     }
 
     #[test]
     fn nested_list_wrapping_preserves_inline_styles_links_and_unicode() {
-        let lines = render_markdown_at_width(
-            "1. Parent\n   - **Bold** and *italic* [docs](https://example.com) 日本語😀 words words words",
-            28,
-            Some(Color::Blue),
-            false,
-        );
-        let text = lines.iter().map(line_text).collect::<Vec<_>>();
-        let content = text.join(" ");
-        for required in ["Bold", "italic", "https://example.com", "日本語😀"] {
-            assert!(content.contains(required), "lost inline content: {text:?}");
-        }
-        for (word, modifier) in
-            [("Bold", ratatui::style::Modifier::BOLD), ("italic", ratatui::style::Modifier::ITALIC)]
-        {
-            assert!(
-                lines.iter().flat_map(|line| &line.spans).any(|span| span.content.contains(word)
-                    && span.style.add_modifier.contains(modifier)),
-                "lost {word} formatting"
+        for bg in [None, Some(Color::Blue)] {
+            let lines = render_markdown_at_width(
+                "1. Parent\n   - **Bold** and *italic* [docs](https://example.test/a) \u{65e5}\u{672c}\u{8a9e}\u{1f600} one two three four",
+                28,
+                bg,
+                false,
             );
+            let physical = crate::ui::wrap::wrap_lines_to_physical_rows(&lines, 28);
+            let rows = rendered_text(&physical);
+            let parent = rows.iter().position(|r| r.contains("Parent")).unwrap();
+            let child = rows.iter().position(|r| r.contains("Bold")).unwrap();
+            assert!(child > parent);
+            assert!(rows[child].find("Bold").unwrap() > rows[parent].find("1.").unwrap());
+            let joined = rows[child..].join("");
+            let start = joined.find("Bold").unwrap();
+            assert_eq!(
+                joined[start..].chars().filter(|c| !c.is_whitespace()).collect::<String>(),
+                "Boldanditalicdocs(https://example.test/a)\u{65e5}\u{672c}\u{8a9e}\u{1f600}onetwothreefour"
+            );
+            assert!(physical.len() > child + 1);
+            for (word, modifier) in [("Bold", Modifier::BOLD), ("italic", Modifier::ITALIC)] {
+                let row = physical.iter().find(|l| line_text(l).contains(word)).unwrap();
+                let chars = styled_chars(row);
+                let text = chars.iter().map(|(c, _)| *c).collect::<String>();
+                let offset = text[..text.find(word).unwrap()].chars().count();
+                assert!(
+                    chars[offset..offset + word.len()]
+                        .iter()
+                        .all(|(_, s)| s.add_modifier.contains(modifier))
+                );
+            }
+            for line in &physical {
+                assert!(line.width() <= 28);
+                // The physical wrapper pads unused cells; only the list's occupied region owns this background.
+                let occupied = line_text(line).trim_end().chars().count();
+                for (_, style) in styled_chars(line).into_iter().take(occupied) {
+                    if let Some(bg) = bg {
+                        assert_eq!(style.bg, Some(bg), "background on {:?}", line_text(line));
+                    } else {
+                        assert_ne!(style.bg, Some(Color::Blue));
+                    }
+                }
+            }
         }
-        let physical = crate::ui::wrap::wrap_lines_to_physical_rows(&lines, 28);
-        assert!(physical.iter().all(|line| crate::ui::wrap::line_display_width(line) <= 28));
-        assert!(
-            lines
-                .iter()
-                .flat_map(|line| &line.spans)
-                .all(|span| span.style.bg == Some(Color::Blue))
-        );
-        let child = text.iter().position(|row| row.contains("- Bold")).expect("nested item");
-        let parent_column = text[0].find("1.").expect("parent marker");
-        assert!(text[child].find('-').unwrap() > parent_column, "nesting lost: {text:?}");
     }
 
     #[test]
     fn table_and_code_inside_a_list_preserve_cells_and_literal_code_lines() {
         let rows = document_rows(
-            "1. Parent\n\n   | Name | Value |\n   | --- | --- |\n   | Alpha | Beta |\n\n   ~~~text\n   - literal code\n       indented code\n   ~~~\n\n   Tail paragraph.",
-            60,
+            "1. Parent\n\n   | Name | Value |\n   | --- | --- |\n   | Alpha | Bravo |\n   | Gamma | Delta |\n\n   ~~~text\n   - literal code\n       indented code\n   ~~~\n\n   Tail paragraph.",
+            70,
         );
-        let header = rows.iter().find(|row| row.contains("Name")).expect("table header");
-        let data = rows.iter().find(|row| row.contains("Alpha")).expect("table row");
-        assert!(header.contains("Value") && data.contains("Beta"), "lost cells: {rows:?}");
-        assert_eq!(header.find('│'), data.find('│'), "table columns shifted: {rows:?}");
-        assert!(rows.iter().any(|row| row.trim() == "Tail paragraph."));
-        let code = rows.iter().position(|row| row == "- literal code").expect("literal code line");
-        assert_eq!(
-            rows[code + 1],
-            "    indented code",
-            "literal code lines or indentation were lost: {rows:?}"
-        );
+        let header = rows.iter().position(|r| r.contains("Name") && r.contains("Value")).unwrap();
+        let column = |row: &str, word: &str| {
+            unicode_width::UnicodeWidthStr::width(&row[..row.find(word).unwrap()])
+        };
+        for (left, right) in [("Alpha", "Bravo"), ("Gamma", "Delta")] {
+            let i = rows.iter().position(|r| r.contains(left)).unwrap();
+            assert!(i > header);
+            assert_eq!(column(&rows[i], left), column(&rows[header], "Name"));
+            assert_eq!(column(&rows[i], right), column(&rows[header], "Value"));
+            assert!(column(&rows[i], left) < column(&rows[i], right));
+        }
+        let code = rows.iter().position(|r| r.trim_start() == "- literal code").unwrap();
+        let indent = rows[code].len() - rows[code].trim_start().len();
+        assert_eq!(rows[code + 1], format!("{}    indented code", " ".repeat(indent)));
+        assert!(rows[code + 2..].iter().any(|r| r.trim() == "Tail paragraph."));
     }
 
     #[test]
-    fn render_markdown_safe_handles_common_and_edge_case_inputs_without_panicking() {
-        let inputs = [
-            "- [ ] one\n- [x] two",
-            "- [ ] Move todos below input top line",
-            "- [ ]\n- [x]\n- [ ]",
-            "- [x] done\n  - [ ] child",
-            "1. [ ] numbered checklist marker",
-            "[]()[]()[]()",
-            "```md\n- [ ] fenced checklist\n```",
-            "> - [ ] blockquote checklist\n>\n> text",
-            "# Heading\n- [ ] item\n\n| a | b |\n|---|---|\n| x | y |",
-            "- [ ] [link](https://example.com) [",
-            "- [ ] \u{200d}\u{200d}\u{200d}",
-        ];
-
-        for input in inputs {
-            let result = catch_unwind(|| render_markdown_safe(input, None));
-            assert!(result.is_ok(), "input triggered panic: {input}");
-            assert!(!result.unwrap().is_empty(), "input rendered zero lines: {input}");
-        }
+    fn checklist_state_and_malformed_input_remain_readable() {
+        let rows = document_rows("- [ ] Pending\n- [x] Complete\n  - [ ] Child", 70);
+        let pending = rows.iter().find(|r| r.contains("Pending")).unwrap();
+        let complete = rows.iter().find(|r| r.contains("Complete")).unwrap();
+        assert_ne!(pending.split("Pending").next(), complete.split("Complete").next());
+        let child = rows.iter().find(|r| r.contains("Child")).unwrap();
+        assert!(child.find("Child").unwrap() > pending.find("Pending").unwrap());
+        assert!(
+            document_rows("```md\n- [ ] literal\n```", 70).iter().any(|r| r == "- [ ] literal")
+        );
+        let malformed = document_rows("Unfinished [label](broken", 70);
+        assert!(malformed.iter().any(|r| r == "Unfinished [label](broken"));
+        let quoted =
+            document_rows("> Report\n>\n> | Owner | Status |\n> |---|---|\n> | Ada | Ready |", 70);
+        let row = quoted.iter().find(|r| r.contains("Ada")).unwrap();
+        assert!(row.contains("Ready"));
+        assert!(
+            quoted.iter().position(|r| r.contains("Report")).unwrap()
+                < quoted.iter().position(|r| r.contains("Ada")).unwrap()
+        );
     }
 
     #[test]
@@ -248,17 +263,23 @@ mod tests {
     }
 
     #[test]
-    fn unordered_lists_preserve_surrounding_paragraph_separators() {
-        let lines = render_markdown_safe("Intro\n\n- One\n- Two\n\nOutro", None);
-
-        assert_eq!(rendered_text(&lines), vec!["Intro", "", "- One", "- Two", "", "Outro"]);
-    }
-
-    #[test]
-    fn ordered_lists_preserve_surrounding_paragraph_separators() {
-        let lines = render_markdown_safe("Intro\n\n1. One\n2. Two\n\nOutro", None);
-
-        assert_eq!(rendered_text(&lines), vec!["Intro", "", "1. One", "2. Two", "", "Outro"]);
+    fn lists_preserve_paragraph_gaps_item_order_and_numbering() {
+        for (items, ordered) in [("- One\n- Two", false), ("1. One\n2. Two", true)] {
+            let rows =
+                rendered_text(&render_markdown_safe(&format!("Intro\n\n{items}\n\nOutro"), None));
+            let first = rows.iter().position(|r| r.ends_with("One")).unwrap();
+            let second = rows.iter().position(|r| r.ends_with("Two")).unwrap();
+            assert_eq!(rows[..first], ["Intro", ""]);
+            assert_eq!(second, first + 1);
+            assert_eq!(rows[second + 1..], ["", "Outro"]);
+            if ordered {
+                assert!(rows[first].starts_with("1."));
+                assert!(rows[second].starts_with("2."));
+            } else {
+                assert!(!rows[first].trim_start().starts_with("One"));
+                assert_eq!(rows[first].strip_suffix("One"), rows[second].strip_suffix("Two"));
+            }
+        }
     }
 
     #[test]
@@ -271,101 +292,133 @@ mod tests {
     }
 
     #[test]
-    fn fenced_code_keeps_list_like_lines_unchanged() {
-        let lines = render_markdown_safe("```md\n- Not a rendered list\n```", None);
-
-        assert_eq!(rendered_text(&lines), vec!["md", "- Not a rendered list"]);
-    }
-
-    #[test]
-    fn headings_render_bold_without_markers() {
+    fn headings_preserve_order_and_differ_from_body_without_source_markers() {
         let lines = render_markdown_safe("# Title\n\nBody\n\n## Section", None);
-        let text = rendered_text(&lines);
-
-        for heading in ["Title", "Section"] {
-            let line = lines.iter().find(|line| line_text(line) == heading).expect("heading row");
-            assert!(
-                line.spans.iter().all(|span| line
-                    .style
-                    .patch(span.style)
-                    .add_modifier
-                    .contains(Modifier::BOLD)),
-                "{heading} lost heading style: {text:?}"
-            );
+        let rows = rendered_text(&lines);
+        let body = rows.iter().position(|r| r == "Body").unwrap();
+        let body_style = styled_chars(&lines[body])[0].1;
+        for (heading, before) in [("Title", true), ("Section", false)] {
+            let i = rows.iter().position(|r| r == heading).unwrap();
+            assert_eq!(i < body, before);
+            assert!(styled_chars(&lines[i]).iter().any(|(_, style)| *style != body_style));
         }
-        assert!(!text.iter().any(|line| line.contains('#')), "{text:?}");
+        assert!(!rows.iter().any(|r| r.contains('#')));
     }
 
     #[test]
-    fn fenced_code_renders_hash_lines_verbatim_under_a_language_label() {
-        let lines = render_markdown_safe(
-            "Intro\n\n```bash\n#!/usr/bin/env bash\n# install deps\n  npm ci\n```\n\nAfter",
-            None,
-        );
-
-        assert_eq!(
-            rendered_text(&lines),
-            vec![
-                "Intro",
-                "",
-                "bash",
-                "#!/usr/bin/env bash",
-                "# install deps",
-                "  npm ci",
-                "",
-                "After"
-            ]
-        );
-        let label = lines[2].spans.iter().find(|span| span.content == "bash").expect("label span");
-        assert_eq!(label.style, MarkdownStyle::code_label());
-    }
-
-    #[test]
-    fn unlabelled_and_indented_code_use_a_generic_label() {
-        for source in ["```\nplain\n```", "    plain"] {
-            let lines = render_markdown_safe(source, None);
-            assert_eq!(rendered_text(&lines), vec!["code", "plain"], "{source:?}");
+    fn code_kinds_preserve_literal_body_language_and_separators() {
+        for (source, expected, language) in [
+            (
+                "```bash\n# heading\n- list\n- [ ] checklist\n  alpha  beta\n```",
+                vec!["# heading", "- list", "- [ ] checklist", "  alpha  beta"],
+                Some("bash"),
+            ),
+            ("```\nplain  source\n```", vec!["plain  source"], None),
+            ("    indented  source", vec!["indented  source"], None),
+        ] {
+            let rows =
+                rendered_text(&render_markdown_safe(&format!("Intro\n\n{source}\n\nAfter"), None));
+            let first = rows.iter().position(|r| r == expected[0]).unwrap();
+            assert!(first > 1);
+            assert_eq!(rows[first..first + expected.len()], expected);
+            assert!(!rows[first - 1].trim().is_empty());
+            if let Some(language) = language {
+                assert_eq!(rows[first - 1], language);
+            } else {
+                assert_ne!(rows[first - 1], expected[0]);
+            }
+            assert_eq!(rows[..first - 1], ["Intro", ""]);
+            assert_eq!(rows[first + expected.len()..], ["", "After"]);
         }
     }
 
     #[test]
     fn quoted_code_wraps_inside_the_quote_column() {
-        let code = "let value = compute_something_long(alpha, beta);";
-        let rows = document_rows(&format!("> ```rust\n> {code}\n> ```"), 24);
-
-        assert_eq!(rows[0], "> rust");
-        let body = &rows[1..];
-        assert!(body.len() > 1, "code must wrap at the available width: {rows:?}");
-        for row in body {
-            assert!(row.starts_with("> "), "wrapped code escaped its quote: {rows:?}");
-            assert!(crate::ui::wrap::display_width(row) <= 24);
+        let code = "    let  value = \"\u{754c}  alpha beta gamma\";  END";
+        for width in [24, 40] {
+            let lines = render_markdown_at_width(
+                &format!("> ```rust\n> {code}\n> ```"),
+                width,
+                None,
+                false,
+            );
+            let rows = rendered_text(&lines);
+            let label = rows.iter().position(|r| r.ends_with("rust")).unwrap();
+            let prefix = rows[label].strip_suffix("rust").unwrap();
+            assert!(!prefix.trim().is_empty());
+            let body = &rows[label + 1..];
+            assert!(body.len() > 1);
+            let recovered = body
+                .iter()
+                .map(|r| r.strip_prefix(prefix).expect("quoted continuation"))
+                .collect::<String>();
+            assert_eq!(recovered, code);
+            assert!(lines.iter().all(|l| l.width() <= usize::from(width)));
         }
-        let joined = body.iter().map(|row| &row[2..]).collect::<String>();
-        assert_eq!(joined.replace(' ', ""), code.replace(' ', ""));
     }
 
     #[test]
     fn preserved_newlines_become_line_breaks_outside_code() {
-        let lines = render_markdown_at_width(
-            "first line\nsecond line\n\n- item one\n  continued\n\n```sh\necho a\necho b\n```",
-            80,
-            None,
-            true,
-        );
-        let text = rendered_text(&lines);
-
-        for row in ["first line", "second line", "- item one", "continued", "echo a", "echo b"] {
-            assert!(text.iter().any(|line| line == row), "missing {row:?}: {text:?}");
+        for ending in ["\n", "\r\n"] {
+            let source="first line\nsecond line\n\n- item one\n  continued\n\n```sh\necho  a  \necho b\n```".replace('\n',ending);
+            for preserve in [true, false] {
+                let rows = rendered_text(&render_markdown_at_width(&source, 80, None, preserve));
+                let first = rows.iter().position(|r| r.contains("first line")).unwrap();
+                if preserve {
+                    assert_eq!(&rows[first..first + 2], ["first line", "second line"]);
+                } else {
+                    assert_eq!(rows[first], "first line second line");
+                }
+                let item = rows.iter().position(|r| r.contains("item one")).unwrap();
+                assert!(item > first);
+                if preserve {
+                    assert_eq!(rows[item + 1].trim_start(), "continued");
+                } else {
+                    assert!(rows[item].contains("continued"));
+                }
+                let code = rows.iter().position(|r| r == "echo  a  ").unwrap();
+                assert_eq!(rows[code + 1], "echo b");
+                assert!(code > item);
+            }
         }
-        assert!(text.iter().all(|line| !line.ends_with(' ')), "trailing spaces: {text:?}");
     }
 
+    fn styled_chars(line: &Line<'_>) -> Vec<(char, Style)> {
+        line.spans
+            .iter()
+            .flat_map(|span| span.content.chars().map(|ch| (ch, line.style.patch(span.style))))
+            .collect()
+    }
     #[test]
-    fn list_markers_preserve_requested_background() {
-        let lines = render_markdown_safe("- One", Some(Color::Blue));
-
-        assert_eq!(rendered_text(&lines), vec!["- One"]);
-        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Blue));
-        assert!(lines[0].spans.iter().all(|span| span.style.bg == Some(Color::Blue)));
+    fn reference_links_resolve_across_code_in_synchronous_and_cursor_layout() {
+        for with_code in [false, true] {
+            let code = if with_code { "\n\n```text\n[Literal][alpha]\n```" } else { "" };
+            let source = format!(
+                "[Alpha][alpha]{code}\n\n[Beta][beta]\n\n[alpha]: https://alpha.test/a\n[beta]: https://beta.test/b\n"
+            );
+            let control = crate::ui::layout_control::LayoutControl::uninterrupted();
+            let synchronous = render_markdown_at_width(&source, 100, None, false);
+            let mut cursor = DocumentCursor::new(&source, &control);
+            let mut resumed = Vec::new();
+            while let Some(lines) = cursor.next(&source, 100, None, false, &control) {
+                resumed.extend(lines);
+            }
+            for lines in [synchronous, resumed] {
+                let rows = rendered_text(&lines);
+                let alpha = rows
+                    .iter()
+                    .position(|r| r.contains("Alpha") && !r.contains("Literal"))
+                    .unwrap();
+                let beta = rows.iter().position(|r| r.contains("Beta")).unwrap();
+                assert!(alpha < beta);
+                assert_eq!(rows[alpha], "Alpha (https://alpha.test/a)");
+                assert_eq!(rows[beta], "Beta (https://beta.test/b)");
+                if with_code {
+                    let literal = rows.iter().position(|r| r == "[Literal][alpha]").unwrap();
+                    assert!(alpha < literal && literal < beta);
+                    assert_eq!(rows[literal - 1], "text");
+                }
+            }
+        }
     }
 }

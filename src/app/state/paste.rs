@@ -56,6 +56,12 @@ impl PasteState {
         self.pending_session = None;
     }
 
+    /// Explicit composer discard also cancels held typing, retro-capture and Enter suppression.
+    pub fn discard_input(&mut self) {
+        self.clear_all_sessions();
+        self.burst = paste_burst::PasteBurstDetector::default();
+    }
+
     pub fn clear_all_sessions(&mut self) {
         self.clear_pending_queue();
         self.clear_active_session();

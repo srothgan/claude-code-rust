@@ -5,7 +5,8 @@ use crate::agent::model::EffortLevel;
 use crate::agent::wire::BridgeCommand;
 use pretty_assertions::assert_eq;
 
-const DRAFT: &str = "keep my draft";
+const DRAFT: &str = "keep my draft [Image #1]";
+const IMAGE: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGP4z8AAQg0AD3oDfnfpf5cAAAAASUVORK5CYII=";
 
 fn session_app() -> (App, CommandReceiver) {
     let (mut app, commands) = app_with_bridge_connection();
@@ -15,8 +16,8 @@ fn session_app() -> (App, CommandReceiver) {
     app.session_runtime.config_options.insert("effortLevel".to_owned(), serde_json::json!("high"));
     app.input.set_text(DRAFT);
     let _ = app.input.set_cursor_col(4);
-    app.pending_images = vec![crate::app::clipboard_image::ImageAttachment {
-        data: "image".to_owned(),
+    app.input.image_payloads = vec![crate::app::clipboard_image::ImageAttachment {
+        data: IMAGE.to_owned(),
         mime_type: "image/png".to_owned(),
     }];
     (app, commands)
@@ -56,11 +57,6 @@ fn press_every_session_shortcut(app: &mut App) {
     for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down, KeyCode::BackTab] {
         shift(app, code);
     }
-}
-
-async fn next_command(commands: &mut CommandReceiver) -> Option<BridgeCommand> {
-    tokio::task::yield_now().await;
-    commands.try_recv().ok().map(|envelope| envelope.command)
 }
 
 fn mode_request(mode: &str) -> BridgeCommand {
@@ -108,228 +104,164 @@ fn current_mode(app: &App) -> &str {
 fn assert_composer_intact(app: &App) {
     assert_eq!(app.input.text(), DRAFT);
     assert_eq!(app.input.cursor_col(), 4);
-    assert_eq!(app.pending_images.len(), 1);
+    assert_eq!(app.input.image_payloads, [fixture_image()]);
     assert!(app.pending_submit.is_none());
-}
-
-async fn assert_session_unchanged(app: &App, commands: &mut CommandReceiver) {
-    assert_eq!(next_command(commands).await, None);
-    assert_ne!(app.status, AppStatus::CommandPending);
-    assert_eq!(current_mode(app), "default");
-    assert_eq!(app.session_effort(), Some(EffortLevel::High));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn shift_arrows_and_shift_tab_cycle_modes_in_both_directions() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-
-            shift(&mut app, KeyCode::Left);
+    for (order, initial, steps) in [
+        (
+            vec!["default", "acceptEdits", "plan"],
+            "default",
+            vec![
+                (KeyCode::Left, "plan"),
+                (KeyCode::Right, "default"),
+                (KeyCode::BackTab, "acceptEdits"),
+                (KeyCode::Left, "default"),
+            ],
+        ),
+        (
+            vec!["review", "plan", "default"],
+            "default",
+            vec![
+                (KeyCode::Right, "review"),
+                (KeyCode::BackTab, "plan"),
+                (KeyCode::Left, "review"),
+                (KeyCode::Left, "default"),
+            ],
+        ),
+    ] {
+        let (mut app, mut commands) = session_app();
+        mode_metadata(&mut app, initial, &order);
+        let mut old = initial;
+        for (code, target) in steps {
+            dispatch(&mut app, |app| shift(app, code)).await;
+            assert_eq!(received(&mut commands).await, mode_request(target));
+            assert_eq!(current_mode(&app), old);
             assert_eq!(app.status, AppStatus::CommandPending);
-            assert_eq!(current_mode(&app), "default");
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("plan")));
-            ack_mode(&mut app, "plan");
+            mode_metadata(&mut app, target, &order);
+            assert_eq!(current_mode(&app), target);
             assert_eq!(app.status, AppStatus::Ready);
-
-            shift(&mut app, KeyCode::Right);
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("default")));
-            ack_mode(&mut app, "default");
-
-            shift(&mut app, KeyCode::BackTab);
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("acceptEdits")));
-            ack_mode(&mut app, "acceptEdits");
-
-            shift(&mut app, KeyCode::Left);
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("default")));
-            ack_mode(&mut app, "default");
-
-            assert_eq!(current_mode(&app), "default");
             assert_composer_intact(&app);
+            assert!(commands.try_recv().is_err());
+            old = target;
+        }
+    }
+    mode_rejection_and_pending_gate().await;
+    for absent in [false, true] {
+        let (mut app, mut commands) = session_app();
+        if absent {
+            app.session_runtime.mode = None;
+        } else {
+            mode_metadata(&mut app, "default", &["default"]);
+        }
+        dispatch(&mut app, |app| {
+            shift(app, KeyCode::Left);
+            shift(app, KeyCode::Right);
+            shift(app, KeyCode::BackTab);
         })
         .await;
+        assert!(commands.try_recv().is_err());
+        assert_composer_intact(&app);
+        mode_metadata(&mut app, "default", &["default", "plan"]);
+        dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+        assert_eq!(received(&mut commands).await, mode_request("plan"));
+        mode_metadata(&mut app, "plan", &["default", "plan"]);
+        assert_eq!(current_mode(&app), "plan");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn shift_up_and_down_step_through_supported_effort_levels_and_stop_at_the_ends() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-
-            shift(&mut app, KeyCode::Up);
-            assert_eq!(app.status, AppStatus::CommandPending);
-            assert_eq!(app.session_effort(), Some(EffortLevel::High));
-            assert_eq!(next_command(&mut commands).await, Some(effort_request("max")));
-            ack_effort(&mut app, "max");
+    let (mut app, mut commands) = session_app();
+    for (key, old, target) in [
+        (KeyCode::Up, EffortLevel::High, "max"),
+        (KeyCode::Down, EffortLevel::Max, "high"),
+        (KeyCode::Down, EffortLevel::High, "low"),
+    ] {
+        dispatch(&mut app, |app| shift(app, key)).await;
+        assert_eq!(received(&mut commands).await, effort_request(target));
+        assert_eq!(app.session_effort(), Some(old));
+        ack_effort(&mut app, target);
+        assert_eq!(app.session_effort().unwrap().as_stored(), target);
+        assert_composer_intact(&app);
+        if target == "max" || target == "low" {
+            dispatch(&mut app, |app| {
+                shift(app, if target == "max" { KeyCode::Up } else { KeyCode::Down });
+            })
+            .await;
+            assert!(commands.try_recv().is_err());
             assert_eq!(app.status, AppStatus::Ready);
-            assert_eq!(app.session_effort(), Some(EffortLevel::Max));
-
-            shift(&mut app, KeyCode::Up);
-            assert_eq!(next_command(&mut commands).await, None);
-            assert_eq!(app.status, AppStatus::Ready);
-
-            shift(&mut app, KeyCode::Down);
-            assert_eq!(next_command(&mut commands).await, Some(effort_request("high")));
-            ack_effort(&mut app, "high");
-
-            shift(&mut app, KeyCode::Down);
-            assert_eq!(next_command(&mut commands).await, Some(effort_request("low")));
-            ack_effort(&mut app, "low");
-
-            shift(&mut app, KeyCode::Down);
-            assert_eq!(next_command(&mut commands).await, None);
-            assert_eq!(app.status, AppStatus::Ready);
-            assert_eq!(app.session_effort(), Some(EffortLevel::Low));
-            assert_composer_intact(&app);
-        })
-        .await;
+        }
+    }
+    for (key, target) in [(KeyCode::Up, "xhigh"), (KeyCode::Down, "medium")] {
+        let (mut app, mut commands) = session_app();
+        model_metadata(
+            &mut app,
+            effort_model(&[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High]),
+        );
+        dispatch(&mut app, |app| shift(app, KeyCode::Up)).await;
+        assert!(commands.try_recv().is_err());
+        model_metadata(&mut app, effort_model(&[EffortLevel::Medium, EffortLevel::XHigh]));
+        dispatch(&mut app, |app| shift(app, key)).await;
+        assert_eq!(received(&mut commands).await, effort_request(target));
+        assert_eq!(app.session_effort(), Some(EffortLevel::High));
+        reject_pending_change(&mut app, "distinct effort rejection");
+        assert!(canonical_messages_contain_text(&app, "distinct effort rejection"));
+        assert_eq!(app.session_effort(), Some(EffortLevel::High));
+        assert_composer_intact(&app);
+        dispatch(&mut app, |app| shift(app, key)).await;
+        assert_eq!(received(&mut commands).await, effort_request(target));
+        ack_effort(&mut app, target);
+        assert_eq!(app.session_effort().unwrap().as_stored(), target);
+        assert_composer_intact(&app);
+    }
+    effort_metadata_controls().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn effort_shortcuts_follow_the_levels_of_the_current_model() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            app.session_runtime.current_model =
-                Some(effort_model(&[EffortLevel::Low, EffortLevel::Medium, EffortLevel::High]));
-            shift(&mut app, KeyCode::Up);
-            assert_eq!(next_command(&mut commands).await, None);
-
-            app.session_runtime.current_model =
-                Some(effort_model(&[EffortLevel::Medium, EffortLevel::XHigh]));
-            shift(&mut app, KeyCode::Up);
-            assert_eq!(next_command(&mut commands).await, Some(effort_request("xhigh")));
-            reject_pending_change(&mut app, "SDK rejected effort");
-
-            shift(&mut app, KeyCode::Down);
-            assert_eq!(next_command(&mut commands).await, Some(effort_request("medium")));
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn effort_shortcuts_send_nothing_when_the_model_lacks_effort_support() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            app.session_runtime.current_model = Some(
-                effort_model(&[EffortLevel::Low, EffortLevel::High, EffortLevel::Max])
-                    .supports_effort(false),
-            );
-
-            shift(&mut app, KeyCode::Up);
-            shift(&mut app, KeyCode::Down);
-
-            assert_session_unchanged(&app, &mut commands).await;
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn effort_shortcuts_send_nothing_while_the_session_effort_is_unknown() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            app.session_runtime.config_options.remove("effortLevel");
-
-            shift(&mut app, KeyCode::Up);
-            shift(&mut app, KeyCode::Down);
-
-            assert_eq!(next_command(&mut commands).await, None);
-            assert_eq!(app.status, AppStatus::Ready);
-            assert_eq!(app.session_effort(), None);
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn rapid_shortcuts_send_one_request_until_the_change_is_acknowledged() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-
-            shift(&mut app, KeyCode::Right);
-            shift(&mut app, KeyCode::Right);
-            shift(&mut app, KeyCode::Up);
-            shift(&mut app, KeyCode::BackTab);
-
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("acceptEdits")));
-            assert_eq!(next_command(&mut commands).await, None);
+async fn only_exact_shortcut_modifiers_change_session_controls() {
+    let (mut app, mut commands) = session_app();
+    for (key, col) in [(KeyCode::Left, 3), (KeyCode::Right, 4)] {
+        dispatch(&mut app, |app| press(app, key, KeyModifiers::NONE)).await;
+        assert_eq!(app.input.cursor(), (0, col));
+        assert_eq!(app.input.text(), DRAFT);
+        assert!(commands.try_recv().is_err());
+    }
+    for key in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
+        for modifier in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            dispatch(&mut app, |app| press(app, key, modifier | KeyModifiers::SHIFT)).await;
+            assert!(commands.try_recv().is_err());
             assert_eq!(current_mode(&app), "default");
             assert_eq!(app.session_effort(), Some(EffortLevel::High));
-
-            ack_mode(&mut app, "acceptEdits");
-            shift(&mut app, KeyCode::Right);
-            assert_eq!(next_command(&mut commands).await, Some(mode_request("plan")));
-            assert_composer_intact(&app);
-        })
-        .await;
+            assert_eq!(app.input.text(), DRAFT);
+            assert_eq!(app.input.image_payloads, [fixture_image()]);
+        }
+    }
+    dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+    assert_eq!(received(&mut commands).await, mode_request("acceptEdits"));
+    ack_mode(&mut app, "acceptEdits");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rejected_effort_change_keeps_the_acknowledged_effort() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-
-            shift(&mut app, KeyCode::Down);
-            assert_eq!(next_command(&mut commands).await, Some(effort_request("low")));
-            reject_pending_change(&mut app, "SDK rejected effort");
-
-            assert_eq!(app.status, AppStatus::Ready);
-            assert_eq!(app.session_effort(), Some(EffortLevel::High));
-            assert!(canonical_messages_contain_text(&app, "SDK rejected effort"));
-            assert_composer_intact(&app);
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn arrows_with_extra_modifiers_do_not_change_mode_or_effort() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
-                for modifiers in [
-                    KeyModifiers::SHIFT | KeyModifiers::CONTROL,
-                    KeyModifiers::SHIFT | KeyModifiers::ALT,
-                ] {
-                    press(&mut app, code, modifiers);
-                    assert_eq!(next_command(&mut commands).await, None, "{modifiers:?}+{code:?}");
-                }
-            }
-            assert_session_unchanged(&app, &mut commands).await;
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn plain_arrows_keep_moving_the_cursor() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-
-            press(&mut app, KeyCode::Left, KeyModifiers::NONE);
-            assert_eq!(app.input.cursor_col(), 3);
-            press(&mut app, KeyCode::Right, KeyModifiers::NONE);
-
-            assert_session_unchanged(&app, &mut commands).await;
-            assert_composer_intact(&app);
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn session_shortcuts_do_not_reach_past_a_focused_permission() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            let mut response_rx = attach_pending_permission(
-                &mut app,
-                "perm-1",
+async fn session_shortcuts_preserve_focused_permission_and_question_responses() {
+    let (mut app, mut commands) = session_app();
+    append_tool_call_block(&mut app, "control-permission");
+    let (tx, mut rx) = oneshot::channel();
+    handle_client_event(
+        &mut app,
+        ClientEvent::PermissionRequest {
+            session_id: "test-session".into(),
+            request: model::RequestPermissionRequest::new(
+                "test-session",
+                model::ToolCallUpdate::new(
+                    "control-permission",
+                    model::ToolCallUpdateFields::new(),
+                ),
                 vec![
                     model::PermissionOption::new(
-                        "allow",
+                        "allow-once",
                         "Allow",
                         model::PermissionOptionKind::AllowOnce,
                     ),
@@ -339,128 +271,421 @@ async fn session_shortcuts_do_not_reach_past_a_focused_permission() {
                         model::PermissionOptionKind::RejectOnce,
                     ),
                 ],
-                true,
-            );
-
-            press_every_session_shortcut(&mut app);
-
-            assert_session_unchanged(&app, &mut commands).await;
-            assert_eq!(app.focus_owner(), FocusOwner::Permission);
-            assert!(matches!(
-                response_rx.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            ));
-        })
-        .await;
+                None,
+            ),
+            response_tx: tx,
+        },
+    );
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(permission_focus_state(&app, "control-permission"), Some(true));
+    dispatch(&mut app, press_every_session_shortcut).await;
+    assert_no_controls(&mut commands);
+    assert_composer_intact(&app);
+    crate::app::test_support::assert_pending(&mut rx);
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    crate::app::test_support::assert_permission_response(&mut rx, "deny");
+    assert_eq!(app.focus_owner(), FocusOwner::Input);
+    dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+    assert_eq!(received(&mut commands).await, mode_request("acceptEdits"));
+    ack_mode(&mut app, "acceptEdits");
+    assert_composer_intact(&app);
+    question_isolation().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn session_shortcuts_do_not_reach_past_a_focused_question() {
-    tokio::task::LocalSet::new()
+async fn session_shortcuts_preserve_usable_file_and_slash_completion() {
+    for file in [true, false] {
+        let (mut app, mut commands) = session_app();
+        let fixture = tempfile::tempdir().unwrap();
+        if file {
+            app.cwd_raw = fixture.path().to_string_lossy().into_owned();
+            app.file_index.root = Some(fixture.path().to_path_buf());
+            app.file_index.respect_gitignore = app.config.respect_gitignore_effective();
+            app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
+            app.file_index.entries.insert(
+                "fixture.txt".into(),
+                crate::app::file_index::FileCandidate {
+                    rel_path: "fixture.txt".into(),
+                    rel_path_lower: "fixture.txt".into(),
+                    basename_lower: "fixture.txt".into(),
+                    depth: 0,
+                },
+            );
+        }
+        app.input.set_text(if file {
+            "@fixture keep my draft [Image #1]"
+        } else {
+            "/mo keep my draft [Image #1]"
+        });
+        app.input.image_payloads = vec![fixture_image()];
+        app.input.set_cursor(0, if file { 7 } else { 2 });
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        if file {
+            await_correlated_file_search(&mut app, "fixture", &["fixture.txt"]);
+        }
+        assert_eq!(app.focus_owner(), FocusOwner::Mention);
+        dispatch(&mut app, press_every_session_shortcut).await;
+        assert_no_controls(&mut commands);
+        if file {
+            assert_eq!(app.mention.as_ref().expect("same active token").query, "fixture");
+            assert_completion_menu(&app, &["fixture.txt"], Some("fixture.txt"));
+        } else {
+            select_slash_for_render(&mut app, "/mode");
+            assert_selected_slash_row(&app, "/mode");
+        }
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(
+            app.input.text(),
+            if file {
+                "@'fixture.txt' keep my draft [Image #1]"
+            } else {
+                "/mode keep my draft [Image #1]"
+            }
+        );
+        assert!(app.pending_submit.is_none());
+        assert_eq!(app.input.image_payloads, [fixture_image()]);
+        if app.focus_owner() == FocusOwner::Mention {
+            press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        }
+        app.input.set_text(DRAFT);
+        app.input.image_payloads = vec![fixture_image()];
+        app.input.set_cursor(0, 3);
+        press(&mut app, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(app.focus_owner(), FocusOwner::Input);
+        dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+        assert_eq!(received(&mut commands).await, mode_request("acceptEdits"));
+        ack_mode(&mut app, "acceptEdits");
+        assert_composer_intact(&app);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_shortcuts_do_nothing_in_a_fullscreen_view() {
+    let (mut app, mut commands) = session_app();
+    app.trust.status = crate::app::trust::TrustStatus::Trusted;
+    dispatch(&mut app, |app| crate::app::config::open(app).expect("trusted config action")).await;
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
+    dispatch(&mut app, press_every_session_shortcut).await;
+    assert_no_controls(&mut commands);
+    assert_eq!(app.surface_mode, SurfaceMode::Fullscreen(FullscreenView::Config));
+    dispatch(&mut app, |app| press(app, KeyCode::Char('c'), KeyModifiers::CONTROL)).await;
+    assert_eq!(app.surface_mode, SurfaceMode::Chat);
+    assert_composer_intact(&app);
+    dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+    assert_eq!(received(&mut commands).await, mode_request("acceptEdits"));
+    ack_mode(&mut app, "acceptEdits");
+    assert_composer_intact(&app);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_shortcuts_do_nothing_during_a_turn() {
+    let (mut app, mut commands) = session_app();
+    app.input.set_text("start control turn");
+    app.input.image_payloads.clear();
+    dispatch(&mut app, |app| crate::app::test_support::press(app, KeyCode::Enter)).await;
+    let request = received(&mut commands).await;
+    assert!(
+        matches!(request,BridgeCommand::Prompt {session_id,chunks,..} if session_id=="test-session" && chunks.iter().any(|c|c.kind=="text" && c.value==serde_json::json!("start control turn")))
+    );
+    assert_no_controls(&mut commands);
+    app.input.set_text(DRAFT);
+    app.input.set_cursor(0, 4);
+    app.input.image_payloads = vec![fixture_image()];
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentActivityUpdate(
+            model::AgentActivityPhase::Thinking,
+        )),
+    );
+    assert_eq!(app.status, AppStatus::Thinking);
+    dispatch(&mut app, press_every_session_shortcut).await;
+    assert_no_controls(&mut commands);
+    assert_composer_intact(&app);
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("control reply ")),
+        ))),
+    );
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentActivityUpdate(
+            model::AgentActivityPhase::Working,
+        )),
+    );
+    assert_eq!(app.status, AppStatus::Running);
+    let owner = app.active_turn_assistant_idx().unwrap();
+    let id = app.transcript.messages[owner].id;
+    dispatch(&mut app, press_every_session_shortcut).await;
+    assert_no_controls(&mut commands);
+    assert_composer_intact(&app);
+    assert_eq!(current_mode(&app), "default");
+    assert_eq!(app.session_effort(), Some(EffortLevel::High));
+    handle_client_event(
+        &mut app,
+        session_update(model::SessionUpdate::AgentMessageChunk(model::ContentChunk::new(
+            model::ContentBlock::Text(model::TextContent::new("continued")),
+        ))),
+    );
+    assert_eq!(app.active_turn_assistant_idx(), Some(owner));
+    assert_eq!(app.transcript.messages[owner].id, id);
+    assert!(
+        matches!(&app.transcript.messages[owner].blocks[0],MessageBlock::Text(t) if t.text=="control reply continued")
+    );
+    handle_client_event(&mut app, turn_complete(None));
+    assert_eq!(app.status, AppStatus::Ready);
+    assert_no_controls(&mut commands);
+    dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+    assert_eq!(received(&mut commands).await, mode_request("acceptEdits"));
+    ack_mode(&mut app, "acceptEdits");
+    assert_composer_intact(&app);
+}
+
+fn fixture_image() -> crate::app::clipboard_image::ImageAttachment {
+    crate::app::clipboard_image::ImageAttachment {
+        data: IMAGE.into(),
+        mime_type: "image/png".into(),
+    }
+}
+
+// Await completion of every local task spawned by this action. Negative command
+// assertions after this barrier cannot win a race against a queued dispatch.
+async fn dispatch(app: &mut App, action: impl FnOnce(&mut App)) {
+    let tasks = tokio::task::LocalSet::new();
+    tasks
         .run_until(async {
-            let (mut app, mut commands) = session_app();
-            let mut response_rx = attach_pending_question(
+            action(app);
+        })
+        .await;
+    tokio::time::timeout(Duration::from_secs(2), tasks).await.expect("dispatch tasks complete");
+}
+
+async fn received(commands: &mut CommandReceiver) -> BridgeCommand {
+    tokio::time::timeout(Duration::from_secs(2), commands.recv_envelope())
+        .await
+        .expect("bounded command")
+        .expect("command")
+        .command
+}
+
+fn assert_no_controls(commands: &mut CommandReceiver) {
+    while let Ok(envelope) = commands.try_recv() {
+        assert!(
+            !matches!(
+                envelope.command,
+                BridgeCommand::SetMode { .. }
+                    | BridgeCommand::SetEffort { .. }
+                    | BridgeCommand::Prompt { .. }
+                    | BridgeCommand::CancelTurn { .. }
+            ),
+            "unexpected exclusive command: {:?}",
+            envelope.command
+        );
+    }
+}
+
+fn mode_metadata(app: &mut App, current: &str, order: &[&str]) {
+    handle_client_event(
+        app,
+        session_update(model::SessionUpdate::ModeStateUpdate(crate::app::ModeState {
+            current_mode_id: current.into(),
+            current_mode_name: current.into(),
+            available_modes: order
+                .iter()
+                .map(|id| crate::app::ModeInfo { id: (*id).into(), name: (*id).into() })
+                .collect(),
+        })),
+    );
+}
+
+fn model_metadata(app: &mut App, model: model::CurrentModel) {
+    handle_client_event(
+        app,
+        session_update(model::SessionUpdate::CurrentModelUpdate(model::CurrentModelUpdate::new(
+            model,
+        ))),
+    );
+}
+
+async fn mode_rejection_and_pending_gate() {
+    let (mut app, mut commands) = session_app();
+    dispatch(&mut app, |app| shift(app, KeyCode::Left)).await;
+    assert_eq!(received(&mut commands).await, mode_request("plan"));
+    ack_mode(&mut app, "plan");
+    dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+    assert_eq!(received(&mut commands).await, mode_request("default"));
+    reject_pending_change(&mut app, "distinct mode rejection");
+    assert_eq!(current_mode(&app), "plan");
+    assert!(canonical_messages_contain_text(&app, "distinct mode rejection"));
+    assert_composer_intact(&app);
+    dispatch(&mut app, |app| {
+        shift(app, KeyCode::Right);
+        press_every_session_shortcut(app);
+    })
+    .await;
+    assert_eq!(received(&mut commands).await, mode_request("default"));
+    assert!(commands.try_recv().is_err());
+    assert_eq!(current_mode(&app), "plan");
+    ack_effort(&mut app, "high");
+    assert_eq!(app.status, AppStatus::CommandPending);
+    dispatch(&mut app, press_every_session_shortcut).await;
+    assert!(commands.try_recv().is_err());
+    ack_mode(&mut app, "default");
+    assert_eq!(app.status, AppStatus::Ready);
+    dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+    assert_eq!(received(&mut commands).await, mode_request("acceptEdits"));
+    ack_mode(&mut app, "acceptEdits");
+    assert_composer_intact(&app);
+}
+
+async fn effort_metadata_controls() {
+    for missing_current in [false, true] {
+        let (mut app, mut commands) = session_app();
+        if missing_current {
+            app.session_runtime.config_options.remove("effortLevel");
+        } else {
+            model_metadata(
                 &mut app,
-                "question-1",
+                effort_model(&[EffortLevel::Low, EffortLevel::High, EffortLevel::Max])
+                    .supports_effort(false),
+            );
+        }
+        dispatch(&mut app, |app| {
+            shift(app, KeyCode::Up);
+            shift(app, KeyCode::Down);
+        })
+        .await;
+        assert!(commands.try_recv().is_err());
+        assert_eq!(app.status, AppStatus::Ready);
+        assert_composer_intact(&app);
+        assert_eq!(
+            app.session_effort(),
+            if missing_current { None } else { Some(EffortLevel::High) }
+        );
+        if missing_current {
+            ack_effort(&mut app, "high");
+        } else {
+            model_metadata(&mut app, effort_model(&[EffortLevel::High, EffortLevel::Max]));
+        }
+        dispatch(&mut app, |app| shift(app, KeyCode::Up)).await;
+        assert_eq!(received(&mut commands).await, effort_request("max"));
+        assert_eq!(app.session_effort(), Some(EffortLevel::High));
+        ack_effort(&mut app, "max");
+        assert_eq!(app.session_effort(), Some(EffortLevel::Max));
+        assert_composer_intact(&app);
+    }
+}
+
+async fn question_isolation() {
+    let (mut app, mut commands) = session_app();
+    append_tool_call_block(&mut app, "control-question");
+    let (tx, mut rx) = oneshot::channel();
+    handle_client_event(
+        &mut app,
+        ClientEvent::QuestionRequest {
+            session_id: "test-session".into(),
+            request: model::RequestQuestionRequest::new(
+                "test-session",
+                model::ToolCallUpdate::new("control-question", model::ToolCallUpdateFields::new()),
                 model::QuestionPrompt::new(
-                    "Choose one",
-                    "Question",
+                    "Choose",
+                    "Control",
                     false,
                     vec![
                         model::QuestionOption::new("yes", "Yes"),
                         model::QuestionOption::new("no", "No"),
                     ],
                 ),
-                true,
-            );
-
-            press_every_session_shortcut(&mut app);
-
-            assert_session_unchanged(&app, &mut commands).await;
-            assert_eq!(app.focus_owner(), FocusOwner::Permission);
-            assert!(matches!(
-                response_rx.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            ));
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn session_shortcuts_leave_an_open_mention_menu_in_place() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            app.mention = Some(mention::MentionState::new(
                 0,
-                0,
-                String::new(),
-                vec![crate::app::file_index::FileCandidate {
-                    rel_path: "src/lib.rs".to_owned(),
-                    rel_path_lower: "src/lib.rs".to_owned(),
-                    basename_lower: "lib.rs".to_owned(),
-                    depth: 1,
-                }],
-            ));
-            app.claim_focus_target(FocusTarget::Mention);
-            assert_eq!(app.focus_owner(), FocusOwner::Mention);
-
-            for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
-                shift(&mut app, code);
-            }
-
-            assert!(app.mention.is_some());
-            assert_eq!(app.focus_owner(), FocusOwner::Mention);
-            assert_session_unchanged(&app, &mut commands).await;
-        })
-        .await;
+                1,
+            ),
+            response_tx: tx,
+        },
+    );
+    press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(question_focus_state(&app, "control-question"), Some(true));
+    dispatch(&mut app, press_every_session_shortcut).await;
+    crate::app::test_support::assert_pending(&mut rx);
+    assert_no_controls(&mut commands);
+    assert_composer_intact(&app);
+    // Shift+Tab legitimately enters the question's notes editor.
+    if app.tool_call("control-question").unwrap().pending_question.as_ref().unwrap().editing_notes {
+        press(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    }
+    press(&mut app, KeyCode::Home, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(
+        rx.try_recv().expect("explicit question answer").outcome,
+        model::RequestQuestionOutcome::Answered(model::AnsweredQuestionOutcome::new(vec![
+            "no".into()
+        ]))
+    );
+    assert_eq!(app.focus_owner(), FocusOwner::Input);
+    dispatch(&mut app, |app| shift(app, KeyCode::Right)).await;
+    assert_eq!(received(&mut commands).await, mode_request("acceptEdits"));
+    ack_mode(&mut app, "acceptEdits");
+    assert_composer_intact(&app);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn session_shortcuts_leave_an_open_slash_menu_in_place() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            show_config_slash_menu(&mut app);
-            app.claim_focus_target(FocusTarget::Mention);
-
-            for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
-                shift(&mut app, code);
-            }
-
-            assert!(app.slash.is_visible());
-            assert_session_unchanged(&app, &mut commands).await;
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn session_shortcuts_do_nothing_in_a_fullscreen_view() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            app.surface_mode = SurfaceMode::Fullscreen(FullscreenView::Config);
-            app.terminal_lifecycle =
-                TerminalLifecycleState::Running(SurfaceMode::Fullscreen(FullscreenView::Config));
-
-            press_every_session_shortcut(&mut app);
-
-            assert_session_unchanged(&app, &mut commands).await;
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn session_shortcuts_do_nothing_during_a_turn() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let (mut app, mut commands) = session_app();
-            app.status = AppStatus::Thinking;
-
-            press_every_session_shortcut(&mut app);
-
-            assert_session_unchanged(&app, &mut commands).await;
-            assert_eq!(app.status, AppStatus::Thinking);
-        })
-        .await;
+async fn session_control_send_failure_releases_pending_state_and_allows_retry() {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(IMAGE).unwrap();
+    assert_eq!(
+        image::load_from_memory(&bytes).unwrap().to_rgba8().into_raw(),
+        [255, 0, 0, 255, 0, 0, 255, 128]
+    );
+    for mode in [false, true] {
+        let (mut app, commands) = session_app();
+        drop(commands);
+        let key = if mode { KeyCode::Right } else { KeyCode::Down };
+        dispatch(&mut app, |app| shift(app, key)).await;
+        assert_eq!(app.status, AppStatus::CommandPending);
+        let event = tokio::time::timeout(Duration::from_secs(2), app.event_rx.recv())
+            .await
+            .expect("real send failure")
+            .expect("failure event");
+        let ClientEvent::SlashCommandError { session_id, message } = &event else {
+            panic!("expected send failure")
+        };
+        assert_eq!(session_id.as_deref(), Some("test-session"));
+        assert!(message.contains(if mode { "/mode" } else { "/effort" }));
+        assert!(message.contains("closed"));
+        let cause = message.clone();
+        handle_client_event(&mut app, event);
+        assert_eq!(app.status, AppStatus::Ready);
+        assert_eq!(current_mode(&app), "default");
+        assert_eq!(app.session_effort(), Some(EffortLevel::High));
+        assert_composer_intact(&app);
+        assert!(canonical_messages_contain_text(&app, &cause));
+        let (connection, mut commands) = crate::agent::client::AgentConnection::test_channel();
+        app.session_runtime.conn = Some(Rc::new(connection));
+        dispatch(&mut app, |app| shift(app, key)).await;
+        assert_eq!(
+            received(&mut commands).await,
+            if mode { mode_request("acceptEdits") } else { effort_request("low") }
+        );
+        assert_eq!(current_mode(&app), "default");
+        assert_eq!(app.session_effort(), Some(EffortLevel::High));
+        if mode {
+            ack_mode(&mut app, "acceptEdits");
+        } else {
+            ack_effort(&mut app, "low");
+        }
+        assert_eq!(app.status, AppStatus::Ready);
+        assert_composer_intact(&app);
+        assert!(commands.try_recv().is_err());
+        dispatch(&mut app, |app| shift(app, if mode { KeyCode::Left } else { KeyCode::Up })).await;
+        assert_eq!(
+            received(&mut commands).await,
+            if mode { mode_request("default") } else { effort_request("high") }
+        );
+        if mode {
+            ack_mode(&mut app, "default");
+        } else {
+            ack_effort(&mut app, "high");
+        }
+        assert_composer_intact(&app);
+    }
 }

@@ -124,11 +124,6 @@ pub(super) fn find_text_block_split(text: &str) -> Option<TextSplitDecision> {
 }
 
 #[cfg(test)]
-pub(super) fn find_text_block_split_index(text: &str) -> Option<usize> {
-    find_text_block_split(text).map(|decision| decision.split_at)
-}
-
-#[cfg(test)]
 mod tests {
     use super::{TranscriptUpdateSource, handle_agent_message_chunk};
     use crate::agent::model;
@@ -190,52 +185,160 @@ mod tests {
         assert!(block.has_source_message_uuid("assistant-part-2"));
     }
 
-    #[test]
-    fn sdk_context_markdown_uses_the_active_assistant_rendering_path() {
-        let mut app = App::test_default();
-        app.status = crate::app::AppStatus::Thinking;
-        app.transcript.messages.push(ChatMessage::new(MessageRole::Assistant, Vec::new(), None));
-        app.bind_active_turn_assistant(0);
-        let markdown =
-            "## Context usage\n\n| Category | Tokens |\n| --- | ---: |\n| System | 100 |";
+    fn assert_default_split(prefix: &str, suffix: &str, kind: super::TextSplitKind) {
+        let source = format!("{prefix}{suffix}");
+        let split = super::find_text_block_split(&source).expect("eligible source boundary");
+        assert_eq!(split.kind, kind);
+        assert_eq!(split.split_at, prefix.len());
+        assert!(source.is_char_boundary(split.split_at));
+        assert!(!prefix.is_empty() && !suffix.is_empty());
+        assert_eq!(&source[..split.split_at], prefix);
+        assert_eq!(&source[split.split_at..], suffix);
+    }
 
+    #[test]
+    fn split_prefers_double_newline() {
+        assert_default_split("first\n\n", "second", super::TextSplitKind::ParagraphBoundary);
+        assert_eq!(super::find_text_block_split("first\n\n"), None);
+    }
+
+    #[test]
+    fn split_soft_limit_prefers_newline() {
+        let policy = super::default_cache_split_policy();
+        let exact = format!("{}\n", "a".repeat(policy.soft_limit_bytes - 1));
+        assert_default_split(&exact, &"b".repeat(32), super::TextSplitKind::Generic);
+        // T072/9's candidate precedes the threshold; growth, not candidate position, enables it.
+        let early = "ordinary paragraph line\n";
+        let growth = "b".repeat(policy.soft_limit_bytes - early.len());
+        assert_default_split(early, &growth, super::TextSplitKind::Generic);
+    }
+
+    #[test]
+    fn split_hard_limit_uses_sentence_when_needed() {
+        let prefix =
+            format!("{}.", "a".repeat(super::default_cache_split_policy().hard_limit_bytes + 32));
+        assert_default_split(&prefix, " tail", super::TextSplitKind::Generic);
+    }
+
+    #[test]
+    fn split_ignores_double_newline_inside_code_fence() {
+        for source in ["```\nline1\n\nline2\n```", "```rust\nfirst\n\nsecond\n```"] {
+            assert_eq!(super::find_text_block_split(source), None);
+        }
+    }
+
+    fn stream(app: &mut App, value: &str, source_uuid: Option<&str>) {
         handle_agent_message_chunk(
-            &mut app,
-            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(markdown)))
-                .source_message_uuid(Some("context-assistant-1".to_owned())),
+            app,
+            model::ContentChunk::new(model::ContentBlock::Text(model::TextContent::new(value)))
+                .source_message_uuid(source_uuid.map(str::to_owned)),
             TranscriptUpdateSource::Live,
         );
+    }
 
-        let text_blocks = app.transcript.messages[0]
+    fn owned_text(app: &App, owner: usize) -> Vec<(&str, TextBlockSpacing)> {
+        app.transcript.messages[owner]
             .blocks
             .iter()
-            .filter_map(|block| match block {
-                MessageBlock::Text(block) => Some(block),
-                _ => None,
+            .map(|block| {
+                let MessageBlock::Text(block) = block else { panic!("streamed text block") };
+                (block.text.as_str(), block.trailing_spacing)
             })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            text_blocks.iter().map(|block| block.text.as_str()).collect::<String>(),
-            markdown
-        );
-        assert!(
-            text_blocks.iter().all(|block| block.has_source_message_uuid("context-assistant-1"))
-        );
+            .collect()
+    }
 
-        let rendered = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
-            &mut app,
-            100,
-            &std::collections::BTreeSet::new(),
-            None,
+    fn assert_owned_source_uuid(app: &App, owner: usize, source_uuid: &str) {
+        for block in &app.transcript.messages[owner].blocks {
+            let MessageBlock::Text(block) = block else { panic!("streamed text block") };
+            let actual = block.source_message_uuids.iter().map(String::as_str).collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                [source_uuid],
+                "source UUID follows the {:?} block",
+                block.trailing_spacing,
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_one_chunk_releases_each_paragraph_before_extending_its_tail() {
+        let mut app = App::test_default();
+        stream(&mut app, "p1\n\np2\n\np3", None);
+        let owner = app.active_turn_assistant_idx().expect("live owner");
+        assert_eq!(
+            owned_text(&app, owner),
+            [
+                ("p1\n\n", TextBlockSpacing::ParagraphBreak),
+                ("p2\n\n", TextBlockSpacing::ParagraphBreak),
+                ("p3", TextBlockSpacing::None),
+            ]
         );
-        let text = rendered
-            .rows()
-            .iter()
-            .map(|row| row.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n");
-        for expected in ["Context usage", "Category", "Tokens", "System", "100"] {
-            assert!(text.contains(expected), "missing rendered context fragment: {expected}");
+        stream(&mut app, " extended", None);
+        assert_eq!(
+            owned_text(&app, owner),
+            [
+                ("p1\n\n", TextBlockSpacing::ParagraphBreak),
+                ("p2\n\n", TextBlockSpacing::ParagraphBreak),
+                ("p3 extended", TextBlockSpacing::None),
+            ]
+        );
+    }
+
+    #[test]
+    fn unbroken_unicode_stream_preserves_source_until_a_legal_boundary_arrives() {
+        let policy = super::default_cache_split_policy();
+        let source_uuid = "a79-source";
+        let unicode = "\u{754c}".repeat(policy.hard_limit_bytes / "\u{754c}".len() + 1);
+        assert!(
+            !unicode.is_char_boundary(policy.hard_limit_bytes),
+            "a forced byte cut bisects a scalar"
+        );
+        let ascii = "a".repeat(policy.hard_limit_bytes + 1);
+        for source in [&unicode, &ascii] {
+            assert!(
+                source.len() > policy.soft_limit_bytes && source.len() > policy.hard_limit_bytes
+            );
+            for (separator, spacing) in
+                [("\n", TextBlockSpacing::Continuation), ("\n\n", TextBlockSpacing::ParagraphBreak)]
+            {
+                let mut app = App::test_default();
+                let mut received = String::new();
+                let chars = source.chars().collect::<Vec<_>>();
+                for part in chars.chunks(policy.soft_limit_bytes / 3) {
+                    let chunk = part.iter().collect::<String>();
+                    received.push_str(&chunk);
+                    stream(&mut app, &chunk, Some(source_uuid));
+                    let owner = app.active_turn_assistant_idx().expect("live owner");
+                    let blocks = owned_text(&app, owner);
+                    assert_eq!(blocks.iter().map(|(text, _)| *text).collect::<String>(), received);
+                    assert!(
+                        blocks.iter().all(|(_, spacing)| *spacing == TextBlockSpacing::None),
+                        "no completed boundary exists in unbroken source"
+                    );
+                    assert_owned_source_uuid(&app, owner, source_uuid);
+                }
+                let owner = app.active_turn_assistant_idx().unwrap();
+                let prefix = format!("{source}{separator}");
+                stream(&mut app, &format!("{separator}distinct tail"), Some(source_uuid));
+                assert_eq!(
+                    owned_text(&app, owner),
+                    [(prefix.as_str(), spacing), ("distinct tail", TextBlockSpacing::None)]
+                );
+                assert_owned_source_uuid(&app, owner, source_uuid);
+                stream(&mut app, " extended", Some(source_uuid));
+                assert_eq!(
+                    owned_text(&app, owner),
+                    [
+                        (prefix.as_str(), spacing),
+                        ("distinct tail extended", TextBlockSpacing::None)
+                    ]
+                );
+                assert_eq!(
+                    owned_text(&app, owner).iter().map(|(text, _)| *text).collect::<String>(),
+                    format!("{prefix}distinct tail extended")
+                );
+                assert_owned_source_uuid(&app, owner, source_uuid);
+            }
         }
     }
 }

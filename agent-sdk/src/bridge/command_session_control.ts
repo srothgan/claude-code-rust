@@ -288,8 +288,9 @@ async function setMode(
     emitSessionUpdate(session.sessionId, {
       type: "mode_state_update",
       mode: buildModeState(session, session.mode),
-    });
+    }, requestId);
   } catch (error) {
+    if (session.closing || session.sessionId !== command.session_id) return;
     const message = error instanceof Error ? error.message : String(error);
     if (permissionModeFailureLooksUnsupported(mode, message)) {
       const changed = markModeUnavailableForSession(session, mode);
@@ -371,13 +372,15 @@ async function setAgent(
   if (!session) {
     return;
   }
+  const sessionId = session.sessionId;
   try {
     if (command.agent !== null && !session.availableAgents?.some(agent => agent.name === command.agent)) throw new Error("Choose an available agent.");
     await deps.applySessionAgent(session.query, command.agent);
-    if (session.closing) return;
+    if (session.closing || session.sessionId !== sessionId) return;
     deps.emitAgentConfigOptionUpdate(session.sessionId, command.agent);
     await refreshModelControls(session);
   } catch (error) {
+    if (session.closing || session.sessionId !== sessionId) return;
     const message = error instanceof Error ? error.message : String(error);
     slashError(
       command.session_id,
@@ -418,6 +421,7 @@ async function handleUltracode(
     session.ultracode = state;
     emitUltracodeUpdate(session);
     await refreshSessionEffort(session);
+    if (!current()) return;
     if (command.enabled && !session.ultracode.effective) {
       slashError(
         command.session_id,
@@ -575,6 +579,7 @@ async function reloadSkillsAndStyles(
     session.sessionId,
     requestId,
   );
+  if (session.closing) return;
   const skills = await settleReload(
     "skills",
     () => session.query.reloadSkills(),
@@ -582,6 +587,7 @@ async function reloadSkillsAndStyles(
     session.sessionId,
     requestId,
   );
+  if (session.closing) return;
   writeEvent(
     {
       event: "skills_and_styles_reloaded",

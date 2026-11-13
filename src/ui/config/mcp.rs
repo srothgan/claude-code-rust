@@ -20,6 +20,10 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph, Wrap};
 
+#[cfg(test)]
+#[path = "mcp_audit_tests.rs"]
+mod audit_tests;
+
 pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     let content_area = area;
     if content_area.width == 0 || content_area.height == 0 {
@@ -66,7 +70,7 @@ pub(super) fn render(frame: &mut Frame, area: Rect, app: &App) {
     render_server_list(frame, sections[1], app);
 }
 
-pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
+pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &mut App) {
     let Some(overlay) = app.config.mcp_details_overlay() else {
         return;
     };
@@ -89,7 +93,7 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
         OverlayChrome {
             title: overlay.server_name.as_str(),
             subtitle: None,
-            help: Some("Up/Down select | Enter run | Esc cancel"),
+            help: Some("Up/Down select | Enter run | PgUp/PgDn scroll | Home/End | Esc cancel"),
             message: app.config.overlay_message.as_ref(),
         },
     );
@@ -97,7 +101,7 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
     if action_lines.is_empty() {
         let body =
             server.map_or_else(server_missing_lines, |server| server_detail_lines(app, server));
-        frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), rendered.body_area);
+        render_details_body(frame, rendered.body_area, body, &mut app.config);
         return;
     }
 
@@ -112,14 +116,27 @@ pub(super) fn render_details_overlay(frame: &mut Frame, area: Rect, app: &App) {
         .split(rendered.body_area);
 
     let body = server.map_or_else(server_missing_lines, |server| server_detail_lines(app, server));
-    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), sections[0]);
+    let selected_index = overlay.selected_index;
+    render_details_body(frame, sections[0], body, &mut app.config);
     render_overlay_separator(frame, sections[1]);
     let action_scroll =
-        selected_scroll(2usize.saturating_add(overlay.selected_index), 1, sections[2].height);
+        selected_scroll(2usize.saturating_add(selected_index), 1, sections[2].height);
     frame.render_widget(
         Paragraph::new(action_lines).scroll((action_scroll, 0)).wrap(Wrap { trim: false }),
         sections[2],
     );
+}
+
+fn render_details_body(
+    frame: &mut Frame,
+    area: Rect,
+    body: Vec<Line<'static>>,
+    config: &mut crate::app::config::ConfigState,
+) {
+    let paragraph = Paragraph::new(body).wrap(Wrap { trim: false });
+    let height = u16::try_from(paragraph.line_count(area.width.max(1))).unwrap_or(u16::MAX);
+    config.overlay_read_only.resize(area.height, height);
+    frame.render_widget(paragraph.scroll((config.overlay_read_only.offset(), 0)), area);
 }
 
 pub(super) fn render_callback_url_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -319,22 +336,7 @@ fn elicitation_field_value(
     use crate::app::config::mcp::form::Draft;
     match &field.draft {
         Draft::Text(text) => {
-            // Keep the insertion point visible without changing the saved answer.
-            // Escaped line breaks let multiline pastes remain editable in this row.
-            let mut chars: Vec<char> = text.text.chars().collect();
-            let cursor = text.cursor.min(chars.len());
-            if editing {
-                chars.insert(cursor, '|');
-            }
-            let limit = usize::from(width.saturating_sub(8)).max(1);
-            let start = if editing { cursor.saturating_sub(limit / 2) } else { 0 };
-            let display: String = chars.iter().skip(start).take(limit).collect();
-            format!(
-                "  [{}{}{}]",
-                if start > 0 { "..." } else { "" },
-                display.replace('\n', "\\n").replace('\r', "\\r"),
-                if start + limit < chars.len() { "..." } else { "" }
-            )
+            elicitation_text_value(&text.text, editing.then_some(text.cursor), width)
         }
         Draft::Boolean(value) => format!("  [{}] {}", if *value { "x" } else { " " }, value),
         Draft::Choice { options, selected } => format!(
@@ -354,6 +356,59 @@ fn elicitation_field_value(
             )
         }
     }
+}
+
+fn elicitation_text_value(text: &str, cursor: Option<usize>, width: u16) -> String {
+    use unicode_width::UnicodeWidthStr;
+
+    // Measure the displayed units after escaping line breaks. A wide character
+    // or an escaped newline must not wrap the answer away from its field title.
+    let units: Vec<String> = text
+        .chars()
+        .map(|ch| match ch {
+            '\n' => "\\n".into(),
+            '\r' => "\\r".into(),
+            _ => ch.to_string(),
+        })
+        .collect();
+    let cursor = cursor.map(|index| index.min(units.len()));
+    let fits = units.iter().map(|unit| unit.width()).sum::<usize>() + usize::from(cursor.is_some())
+        <= usize::from(width.saturating_sub(4));
+    // Reserve overflow indicators only when needed; short answers remain whole.
+    let budget = usize::from(width.saturating_sub(if fits { 4 } else { 10 }));
+    let mut start = if fits { 0 } else { cursor.unwrap_or(0) };
+    let mut used = usize::from(cursor.is_some());
+    while start > 0 {
+        let previous_width = units[start - 1].width();
+        if used + previous_width > budget / 2 {
+            break;
+        }
+        start -= 1;
+        used += previous_width;
+    }
+    let mut end = if fits { 0 } else { cursor.unwrap_or(0) };
+    while end < units.len() && used + units[end].width() <= budget {
+        used += units[end].width();
+        end += 1;
+    }
+    let mut display = String::from("  [");
+    if start > 0 {
+        display.push_str("...");
+    }
+    for (index, unit) in units.iter().enumerate().take(end).skip(start) {
+        if cursor == Some(index) {
+            display.push('|');
+        }
+        display.push_str(unit);
+    }
+    if cursor == Some(end) {
+        display.push('|');
+    }
+    if end < units.len() {
+        display.push_str("...");
+    }
+    display.push(']');
+    display
 }
 
 pub(super) fn render_auth_redirect_overlay(frame: &mut Frame, area: Rect, app: &App) {
@@ -853,7 +908,6 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::collections::BTreeMap;
 
     fn render_form(app: &App, width: u16, height: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -941,211 +995,5 @@ mod tests {
                 assert_eq!(row.contains('\u{203a}'), focus == 5 + index);
             }
         }
-    }
-
-    #[test]
-    fn elicitation_scroll_keeps_the_focused_field_and_validation_visible() {
-        let mut app = App::test_default();
-        let properties = (0..20)
-            .map(|index| {
-                (
-                    format!("field-{index:02}"),
-                    serde_json::json!({"type":"string","default":format!("answer-{index:02}")}),
-                )
-            })
-            .collect::<serde_json::Map<_, _>>();
-        app.mcp.elicitations.insert(form_request(
-            serde_json::json!({"type":"object","properties":properties}),
-            vec![],
-        ));
-        let original = render_form(&app, 61, 25);
-        let heading = original.iter().position(|row| row.contains("UI form request")).unwrap();
-        let first = original.iter().position(|row| row.contains("field-00")).unwrap();
-        let entry = app.mcp.elicitations.active_mut().unwrap();
-        entry.focus = 19;
-        entry.error = Some("Correct the selected field.".into());
-        let rows = render_form(&app, 61, 25);
-        assert!(rows[heading].contains("UI form request"));
-        assert!(!rows[first].contains("field-00"));
-        let selected = rows.iter().position(|row| row.contains("field-19")).unwrap();
-        assert!(selected > heading);
-        assert!(rows[selected].contains('\u{203a}'));
-        assert!(rows[selected + 1].contains("answer-19"));
-        assert!(rows.iter().any(|row| row.contains("Correct the selected field.")));
-        app.mcp.elicitations.active_mut().unwrap().focus = 20;
-        let rows = render_form(&app, 61, 25);
-        assert!(rows[heading].contains("UI form request"));
-        assert!(rows.iter().any(|row| row.contains('\u{203a}') && row.contains("Accept")));
-        app.mcp.elicitations.active_mut().unwrap().focus = 19;
-        let rows = render_form(&app, 35, 18);
-        let narrow_heading = rows.iter().position(|row| row.contains("UI form request")).unwrap();
-        let selected = rows.iter().position(|row| row.contains("field-19")).unwrap();
-        assert!(selected > narrow_heading);
-        assert!(rows[selected].contains('\u{203a}'));
-        assert!(rows.iter().skip(selected + 1).any(|row| row.contains("answer-19")));
-        app.mcp.elicitations.active_mut().unwrap().focus = 0;
-        let rows = render_form(&app, 61, 25);
-        assert!(rows[heading].contains("UI form request"));
-        assert!(rows[first].contains("field-00"));
-    }
-    #[test]
-    fn a_long_field_description_does_not_push_the_editable_answer_off_screen() {
-        let mut app = App::test_default();
-        app.mcp.elicitations.insert(form_request(serde_json::json!({"type":"object","properties":{
-            "answer":{"type":"string","title":"Editable answer","default":"visible-value","description":"Long help text. ".repeat(200)}
-        }}),vec![]));
-        let rows = render_form(&app, 61, 25);
-        let selected = rows.iter().position(|row| row.contains("Editable answer")).unwrap();
-        assert!(rows[selected].contains('\u{203a}'));
-        assert!(rows[selected + 1].contains("visible-value"));
-    }
-
-    #[test]
-    fn unsupported_elicitation_forms_explain_why_and_offer_only_decline_and_cancel() {
-        let mut app = App::test_default();
-        app.mcp.elicitations.insert(form_request(
-            serde_json::json!({"type":"object","properties":{"nested":{"type":"object"}}}),
-            vec![],
-        ));
-        let rows = render_form(&app, 87, 30);
-        assert!(rows.iter().any(|row| row.contains("Unsupported field type")));
-        assert!(rows.iter().any(|row| row.contains("Decline")));
-        assert!(rows.iter().any(|row| row.contains("Cancel")));
-        assert!(!rows.iter().any(|row| row.contains("Accept")));
-    }
-
-    fn render_mcp(app: &App, width: u16, height: u16) -> String {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| {
-                super::render(frame, frame.area(), app);
-            })
-            .expect("draw");
-        let buffer = terminal.backend().buffer().clone();
-        buffer
-            .content
-            .chunks(usize::from(buffer.area.width))
-            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    #[test]
-    fn renders_no_session_state_without_session_id_header() {
-        let app = App::test_default();
-        let rendered = render_mcp(&app, 120, 28);
-        assert!(rendered.contains("MCP servers"));
-        assert!(rendered.contains("No active session"));
-        assert!(!rendered.contains("Session:"));
-    }
-
-    #[test]
-    fn renders_live_server_snapshot_as_list_only() {
-        let mut app = App::test_default();
-        app.session_runtime.session_id = Some(crate::agent::model::SessionId::new("session-1"));
-        app.mcp.servers = vec![
-            McpServerStatus {
-                name: "notion".to_owned(),
-                status: McpServerConnectionStatus::NeedsAuth,
-                server_info: None,
-                error: None,
-                config: Some(McpServerStatusConfig::Http {
-                    url: "https://mcp.notion.com/mcp".to_owned(),
-                    headers: BTreeMap::new(),
-                    tools: vec![crate::agent::model::McpServerToolPolicy {
-                        name: "search".to_owned(),
-                        permission_policy: Some(
-                            crate::agent::model::McpServerToolPermissionPolicy::Ask,
-                        ),
-                        org_max_permission: None,
-                    }],
-                    timeout: Some(5000),
-                    request_timeout_ms: Some(30000),
-                    always_load: Some(true),
-                }),
-                scope: Some("user".to_owned()),
-                source: None,
-                tools: vec![],
-            },
-            McpServerStatus {
-                name: "filesystem".to_owned(),
-                status: McpServerConnectionStatus::Connected,
-                server_info: Some(crate::agent::model::McpServerInfo {
-                    name: "Filesystem".to_owned(),
-                    version: "1.2.3".to_owned(),
-                }),
-                error: None,
-                config: Some(McpServerStatusConfig::Stdio {
-                    command: "npx".to_owned(),
-                    args: vec![
-                        "-y".to_owned(),
-                        "@modelcontextprotocol/server-filesystem".to_owned(),
-                    ],
-                    env: BTreeMap::new(),
-                    timeout: None,
-                    request_timeout_ms: None,
-                    always_load: None,
-                }),
-                scope: Some("project".to_owned()),
-                source: None,
-                tools: vec![crate::agent::model::McpTool {
-                    name: "read_file".to_owned(),
-                    description: Some("Read a file".to_owned()),
-                    annotations: Some(crate::agent::model::McpToolAnnotations {
-                        read_only: Some(true),
-                        destructive: Some(false),
-                        open_world: Some(false),
-                    }),
-                }],
-            },
-        ];
-        app.config.mcp_selected_server_index = 1;
-
-        let rendered = render_mcp(&app, 120, 30);
-        assert!(rendered.contains("total 2"));
-        assert!(rendered.contains("connected 1"));
-        assert!(rendered.contains("needs auth 1"));
-        assert!(rendered.contains("filesystem"));
-        assert!(rendered.contains("project"));
-        assert!(rendered.contains("Filesystem 1.2.3"));
-        assert!(rendered.contains("1 tool"));
-        assert!(!rendered.contains("Details"));
-        assert!(!rendered.contains("Servers"));
-    }
-
-    #[test]
-    fn config_lines_render_latest_mcp_fields() {
-        let lines = config_lines(&McpServerStatusConfig::Http {
-            url: "https://mcp.notion.com/mcp".to_owned(),
-            headers: BTreeMap::new(),
-            tools: vec![
-                crate::agent::model::McpServerToolPolicy {
-                    name: "search".to_owned(),
-                    permission_policy: Some(
-                        crate::agent::model::McpServerToolPermissionPolicy::Deny,
-                    ),
-                    org_max_permission: None,
-                },
-                crate::agent::model::McpServerToolPolicy {
-                    name: "lookup".to_owned(),
-                    permission_policy: None,
-                    org_max_permission: Some(crate::agent::model::McpServerOrgMaxPermission::Ask),
-                },
-            ],
-            timeout: Some(5000),
-            request_timeout_ms: Some(30000),
-            always_load: Some(true),
-        });
-        let text = lines.iter().map(Line::to_string).collect::<Vec<_>>().join("\n");
-
-        assert!(text.contains("5000 ms"));
-        assert!(text.contains("30000 ms"));
-        assert!(text.contains("enabled"));
-        assert!(text.contains("search"));
-        assert!(text.contains("always deny"));
-        assert!(text.contains("lookup"));
-        assert!(text.contains("not specified"));
-        assert!(text.contains("org max ask"));
     }
 }

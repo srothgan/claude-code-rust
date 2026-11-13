@@ -90,6 +90,8 @@ pub(super) struct WrappedLineLayout {
 
 impl WrappedLineLayout {
     pub(super) fn new(line: Line<'static>, width: u16) -> Self {
+        #[cfg(test)]
+        test_work::record_layout();
         let paragraph = Paragraph::new(Text::from(line)).wrap(Wrap { trim: false });
         let height = u16::try_from(paragraph.line_count(width).max(1)).unwrap_or(u16::MAX);
         Self { paragraph, width, height }
@@ -117,6 +119,8 @@ impl WrappedLineLayout {
         let offset = u16::try_from(start).unwrap_or(self.height);
         let area = Rect::new(0, 0, self.width, height);
         let mut buffer = Buffer::empty(area);
+        #[cfg(test)]
+        test_work::record_cells(buffer.content.len());
         self.paragraph.scroll((offset, 0)).render(area, &mut buffer);
         let mut rendered = Vec::with_capacity(usize::from(height));
         for row in 0..height {
@@ -126,6 +130,51 @@ impl WrappedLineLayout {
             rendered.push(buffer_row_to_line(&buffer, area, row));
         }
         rendered
+    }
+}
+
+/// Per-thread observations of actual layout and rasterization work, independent
+/// of cancellation polling. Snapshot differences also allow nested measurements.
+#[cfg(test)]
+pub(super) mod test_work {
+    use std::cell::Cell;
+
+    #[derive(Clone, Copy, Debug, Default)]
+    pub(crate) struct Work {
+        pub layouts: usize,
+        pub cells: usize,
+    }
+
+    thread_local! {
+        static WORK: Cell<Work> = const { Cell::new(Work { layouts: 0, cells: 0 }) };
+    }
+
+    pub(super) fn record_layout() {
+        WORK.with(|counter| {
+            let work = counter.get();
+            counter.set(Work { layouts: work.layouts + 1, ..work });
+        });
+    }
+
+    pub(super) fn record_cells(cells: usize) {
+        WORK.with(|counter| {
+            let work = counter.get();
+            counter.set(Work { cells: work.cells + cells, ..work });
+        });
+    }
+
+    pub(super) fn snapshot() -> Work {
+        WORK.with(Cell::get)
+    }
+
+    pub(crate) fn measure<T>(run: impl FnOnce() -> T) -> (T, Work) {
+        let before = WORK.with(Cell::get);
+        let result = run();
+        let after = WORK.with(Cell::get);
+        (
+            result,
+            Work { layouts: after.layouts - before.layouts, cells: after.cells - before.cells },
+        )
     }
 }
 
@@ -517,14 +566,33 @@ mod tests {
     fn windowed_rows_handle_zero_width_and_empty_or_cancelled_windows() {
         use super::super::layout_control::LayoutControl;
         let control = LayoutControl::uninterrupted();
-        let layout = WrappedLineLayout::new(Line::from("text"), 0);
-        assert_eq!(layout.height(), 1);
-        assert_eq!(layout.render(0..1, &control), vec![Line::default()]);
-        let layout = WrappedLineLayout::new(Line::from("text"), 2);
-        assert!(layout.render(2..2, &control).is_empty());
-        let layout = WrappedLineLayout::new(Line::from("text"), 2);
+        assert_eq!(
+            WrappedLineLayout::new(Line::from("text"), 0).render(0..1, &control),
+            vec![Line::default()]
+        );
+        assert!(WrappedLineLayout::new(Line::from("text"), 2).render(2..2, &control).is_empty());
         control.cancel();
-        assert!(layout.render(0..2, &control).is_empty());
+        assert!(WrappedLineLayout::new(Line::from("text"), 2).render(0..2, &control).is_empty());
+        let before = test_work::snapshot();
+        let observe = || test_work::snapshot().cells > before.cells;
+        let interrupted = LayoutControl::new(&observe);
+        assert!(
+            WrappedLineLayout::new(Line::from("alpha beta gamma delta"), 6)
+                .render(0..4, &interrupted)
+                .is_empty()
+        );
+        assert!(interrupted.cancelled());
+        let lines = [Line::from("FIRST"), Line::from("SECOND"), Line::from("THIRD")];
+        let before = test_work::snapshot();
+        let observe = || test_work::snapshot().layouts > before.layouts + 1;
+        let interrupted = LayoutControl::new(&observe);
+        assert!(wrap_lines_with_control(&lines, 20, &interrupted).is_empty());
+        assert!(interrupted.cancelled());
+        let good = wrap_lines_with_control(&lines, 20, &LayoutControl::uninterrupted());
+        assert_eq!(
+            good.iter().map(|l| line_text(l).trim_end().to_owned()).collect::<Vec<_>>(),
+            ["FIRST", "SECOND", "THIRD"]
+        );
     }
 
     #[test]
@@ -563,18 +631,22 @@ mod tests {
     }
 
     #[test]
-    fn wrap_plain_preserves_explicit_newlines() {
-        assert_eq!(wrap_plain("alpha\nbeta", 16), vec!["alpha".to_owned(), "beta".to_owned()]);
-    }
-
-    #[test]
-    fn wrap_plain_handles_cjk_width() {
-        assert_eq!(wrap_plain("你好 世界", 4), vec!["你好".to_owned(), "世界".to_owned()]);
-    }
-
-    #[test]
-    fn wrap_plain_wraps_long_emoji_graphemes() {
-        assert_eq!(wrap_plain("👩‍💻👩‍💻👩‍💻", 4), vec!["👩‍💻👩‍💻".to_owned(), "👩‍💻".to_owned()]);
+    fn plain_wrapping_preserves_breaks_cell_width_and_grapheme_identity() {
+        for (source, width, expected) in [
+            ("alpha\nbeta", 16, vec!["alpha", "beta"]),
+            ("alpha\n\nbeta\n", 16, vec!["alpha", "", "beta", ""]),
+            ("\u{4f60}\u{597d} \u{4e16}\u{754c}", 4, vec!["\u{4f60}\u{597d}", "\u{4e16}\u{754c}"]),
+            (
+                "\u{1f469}\u{200d}\u{1f4bb}\u{1f469}\u{200d}\u{1f4bb}\u{1f469}\u{200d}\u{1f4bb}",
+                4,
+                vec![
+                    "\u{1f469}\u{200d}\u{1f4bb}\u{1f469}\u{200d}\u{1f4bb}",
+                    "\u{1f469}\u{200d}\u{1f4bb}",
+                ],
+            ),
+        ] {
+            assert_eq!(wrap_plain(source, width), expected);
+        }
     }
 
     #[test]
@@ -596,14 +668,28 @@ mod tests {
 
     #[test]
     fn wrap_styled_chunks_preserves_styles() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
         let lines = wrap_styled_chunks(
-            &[StyledChunk {
-                text: "bold text".to_owned(),
-                style: Style::default().add_modifier(Modifier::BOLD),
-            }],
-            32,
+            &[
+                StyledChunk { text: "plain ".into(), style: Style::default() },
+                StyledChunk { text: "BOLD WORDS".into(), style: bold },
+                StyledChunk { text: " reset".into(), style: Style::default() },
+            ],
+            8,
         );
-        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(
+            lines.iter().map(line_text).collect::<Vec<_>>(),
+            ["plain", "BOLD", "WORDS", "reset"]
+        );
+        for line in &lines {
+            let expected = line_text(line) == "BOLD" || line_text(line) == "WORDS";
+            for span in &line.spans {
+                assert_eq!(
+                    line.style.patch(span.style).add_modifier.contains(Modifier::BOLD),
+                    expected
+                );
+            }
+        }
     }
 
     #[test]
@@ -634,5 +720,36 @@ mod tests {
             rows.into_iter().map(|line| line_text(&line)).collect::<Vec<_>>(),
             vec!["XX one", "   two"]
         );
+    }
+    #[test]
+    fn exhausted_and_wide_prefixes_preserve_order_content_and_styles() {
+        use ratatui::style::Color;
+        for (prefix, width, expected) in [
+            ("", 5, vec!["alpha", "beta"]),
+            ("TAG:", 4, vec!["TAG:", "alph", "a", "beta"]),
+            ("PREFIX:", 4, vec!["PREF", "IX:", "alph", "a", "beta"]),
+            ("\u{754c}: ", 8, vec!["\u{754c}: alph", "    a", "    beta"]),
+            ("\u{754c}\u{754c}", 4, vec!["\u{754c}\u{754c}", "alph", "a", "beta"]),
+        ] {
+            let lines = wrap_styled_chunks_with_hanging_prefix(
+                &[StyledChunk { text: prefix.into(), style: Style::new().fg(Color::Cyan) }],
+                &[StyledChunk { text: "alpha beta".into(), style: Style::new().fg(Color::Yellow) }],
+                width,
+                Style::new().bg(Color::Blue),
+            );
+            assert_eq!(lines.iter().map(line_text).collect::<Vec<_>>(), expected);
+            for line in &lines {
+                assert!(line.width() <= width);
+                for span in &line.spans {
+                    let style = line.style.patch(span.style);
+                    assert_eq!(style.bg, Some(Color::Blue));
+                    if span.content.trim().is_empty() {
+                        continue;
+                    }
+                    let body = span.content.chars().any(char::is_lowercase);
+                    assert_eq!(style.fg, Some(if body { Color::Yellow } else { Color::Cyan }));
+                }
+            }
+        }
     }
 }

@@ -30,107 +30,24 @@ pub fn run_support_command(
 #[cfg(test)]
 mod tests {
     use super::run_support_command;
-    use crate::{Cli, Command, ConfigArgs, ConfigCommand, ConfigPathArgs, DoctorArgs, LogsArgs};
+    use crate::Cli;
 
     #[test]
-    fn no_subcommand_uses_interactive_path() {
-        let cli = test_cli(None);
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
-
-        assert_eq!(result, None);
-        assert!(stdout.is_empty());
-        assert!(stderr.is_empty());
-    }
-
-    #[test]
-    fn resume_uses_interactive_path() {
-        let cli = test_cli(Some(Command::Resume {
-            session_id: Some("abc-123".to_owned()),
-            prompt: None,
-        }));
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
-
-        assert_eq!(result, None);
-        assert!(stdout.is_empty());
-        assert!(stderr.is_empty());
-    }
-
-    #[test]
-    fn doctor_is_a_support_command() {
-        let cli = test_cli(Some(Command::Doctor(DoctorArgs { json: true, strict: false })));
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
-
-        assert_eq!(result, Some(0));
-        assert!(!stdout.is_empty());
-        assert!(stderr.is_empty());
-        let report: serde_json::Value = serde_json::from_slice(&stdout).expect("doctor JSON");
-        let checks = report["checks"].as_array().expect("doctor checks");
-        for id in ["runtime_log_dir", "legacy_log_path"] {
-            assert!(checks.iter().any(|check| check["id"] == id), "missing {id}");
-        }
-        assert!(checks.iter().all(|check| check["id"] != "perf_log_dir"));
-    }
-
-    #[test]
-    fn logs_is_a_support_command() {
-        let cli = test_cli(Some(Command::Logs(LogsArgs {
-            path: true,
-            latest: false,
-            tail: None,
-            bundle: false,
-            output: None,
-            yes: false,
-        })));
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
-
-        assert_eq!(result, Some(0));
-        assert!(!stdout.is_empty());
-        assert!(stderr.is_empty());
-    }
-
-    #[test]
-    fn config_is_a_support_command() {
-        let cli = test_cli(Some(Command::Config(ConfigArgs {
-            command: Some(ConfigCommand::Path(ConfigPathArgs { json: false, which: None })),
-        })));
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        let result = run_support_command(&cli, &mut stdout, &mut stderr).expect("dispatch");
-
-        assert_eq!(result, Some(0));
-        assert!(!stdout.is_empty());
-        assert!(stderr.is_empty());
-    }
-
-    fn test_cli(command: Option<Command>) -> Cli {
-        Cli {
-            command,
-            prompt: None,
-            resume: None,
-            continue_session: false,
-            session_options: crate::SessionOptions::default(),
-            session_config: crate::SessionConfigArgs::default(),
-            no_update_check: false,
-            dir: None,
-            bridge_script: None,
-            enable_logs: false,
-            diagnostics_preset: None,
-            log_file: None,
-            log_filter: None,
-            log_append: false,
+    fn interactive_launches_defer_silently_to_the_application() {
+        use clap::Parser;
+        let cases: &[&[&str]] = &[
+            &["claude-rs"],
+            &["claude-rs", "resume"],
+            &["claude-rs", "resume", "session-1", "initial prompt"],
+            &["claude-rs", "--resume"],
+            &["claude-rs", "--continue"],
+        ];
+        for args in cases {
+            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
+            cli.validate().unwrap();
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            assert_eq!(run_support_command(&cli, &mut stdout, &mut stderr).unwrap(), None);
+            assert!(stdout.is_empty() && stderr.is_empty(), "{args:?}");
         }
     }
 }

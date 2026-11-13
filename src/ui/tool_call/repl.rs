@@ -222,108 +222,93 @@ mod tests {
     }
 
     #[test]
-    fn code_only_input_has_no_body() {
-        let tc = repl_tool_call(
-            json!({ "code": "await main()" }),
-            None,
-            model::ToolCallStatus::InProgress,
-        );
-
-        assert!(!has_structured_body(&tc));
-    }
-
-    #[test]
-    fn output_body_renders_field_rows_in_order() {
-        let tc = repl_tool_call(
-            json!({}),
-            Some(
-                "Error: boom\nStdout: out\nStderr: err\nResult: {\"ok\":true}\nRegistered tools: fetch, parse\nImages: 2\nDocuments: 1",
-            ),
+    fn repl_cards_associate_partial_channels_failures_and_retained_result_tails() {
+        use crate::ui::tool_call::test_support::card_body;
+        let mut failed = repl_tool_call(
+            json!({"code":"private_requested_code()"}),
+            Some("Error: EXECUTION-REFUSED\nStdout: partial-out-17\nStderr: partial-err-93"),
             model::ToolCallStatus::Failed,
         );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Error: boom",
-                "Stdout: out",
-                "Stderr: err",
-                "Result: {\"ok\":true}",
-                "Registered tools: fetch, parse",
-                "Images: 2",
-                "Documents: 1",
-            ]
+        let rows = card_body(&mut failed, 120);
+        for expected in
+            ["Error: EXECUTION-REFUSED", "Stdout: partial-out-17", "Stderr: partial-err-93"]
+        {
+            assert!(rows.contains(&expected.to_owned()), "{rows:?}");
+        }
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.contains("private_requested_code") || row.starts_with("Result:"))
         );
-    }
-
-    #[test]
-    fn raw_replay_labels_are_mapped_and_media_payloads_are_counted() {
-        let tc = repl_tool_call(
+        let mut partial = repl_tool_call(
             json!({}),
             Some(
-                "stdout: out\nstderr: err\nresult: {\"ok\":true}\nregisteredTools: [\"fetch\",\"parse\"]\nimages: [{\"base64\":\"secret-image\",\"mediaType\":\"image/png\"}]\ndocuments: [{\"base64\":\"secret-document\"},{\"base64\":\"secret-document-2\"}]",
+                "Result: {\"answer\":17}\nRegistered tools: fetch-events, decode-record\nImages: 2\nDocuments: 1\nImages omitted: 3\nFailed image page: 4 (file manual.pdf: render failed)\nFailed image pages omitted: 2\nDocuments omitted: 1",
             ),
             model::ToolCallStatus::Completed,
         );
-
-        let lines = render_tool_content(&tc);
-        let rendered = rendered_line_texts(&lines);
-
-        assert_eq!(
-            rendered,
-            vec![
-                "Stdout: out",
-                "Stderr: err",
-                "Result: {\"ok\":true}",
-                "Registered tools: fetch, parse",
-                "Images: 1",
-                "Documents: 2",
-            ]
+        let rows = card_body(&mut partial, 120);
+        for expected in [
+            "Result: {\"answer\":17}",
+            "Registered tools: fetch-events, decode-record",
+            "Images: 2",
+            "Documents: 1",
+            "Images omitted: 3",
+            "Failed image page: 4 (file manual.pdf: render failed)",
+            "Failed image pages omitted: 2",
+            "Documents omitted: 1",
+        ] {
+            assert!(rows.contains(&expected.to_owned()), "{rows:?}");
+        }
+        let content = format!("Result: {} FINAL-RESULT-TAIL", "omitted-middle ".repeat(120));
+        let mut long = repl_tool_call(json!({}), Some(&content), model::ToolCallStatus::Completed);
+        crate::ui::tool_call::test_support::set_result_fields(
+            &mut long,
+            &[("Result", content.strip_prefix("Result: ").expect("result fixture"))],
         );
-        assert!(!rendered.iter().any(|line| line.contains("secret-image")));
-        assert!(!rendered.iter().any(|line| line.contains("secret-document")));
+        let rows = card_body(&mut long, 40);
+        assert!(rows.iter().any(|row| row.contains("FINAL-RESULT-TAIL")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("hidden")), "{rows:?}");
+        assert!(!rows.iter().any(|row| row.len() > 40));
+        assert_eq!(long.content[0], model::ToolCallContent::from(content.as_str()));
     }
 
     #[test]
-    fn long_result_body_stays_bounded_after_wrapping() {
-        let long_result = (0..120).map(|idx| format!("word{idx}")).collect::<Vec<_>>().join(" ");
-        let tc = repl_tool_call(
-            json!({}),
-            Some(&format!("Result: {long_result}")),
-            model::ToolCallStatus::Completed,
-        );
-
-        let body = super::super::standard::ToolBodyCursor::default().render(
-            &tc,
-            40,
-            &crate::ui::layout_control::LayoutControl::uninterrupted(),
-        );
-        let rendered = rendered_line_texts(&body);
-
-        assert_eq!(body.len(), super::super::TOOL_BODY_MAX_LINES);
-        assert!(rendered.iter().any(|line| line.contains("hidden")));
-    }
-
-    #[test]
-    fn omission_and_failed_page_fields_render_as_structured_rows() {
-        let tc = repl_tool_call(
-            json!({}),
-            Some(
-                "Images omitted: 3\nFailed image page: 4 (file manual.pdf: render failed)\nFailed image pages omitted: 2\nDocuments omitted: 1",
-            ),
-            model::ToolCallStatus::Completed,
-        );
-
-        assert_eq!(
-            rendered_line_texts(&render_tool_content(&tc)),
-            vec![
-                "Images omitted: 3",
-                "Failed image page: 4 (file manual.pdf: render failed)",
-                "Failed image pages omitted: 2",
-                "Documents omitted: 1",
-            ]
-        );
+    fn confirmed_repl_channels_keep_label_looking_payloads_literal_in_the_normal_card() {
+        use crate::ui::tool_call::test_support::{card_body, confirmed_receipt};
+        for labels in [vec!["Stdout", "Images", "Documents"], vec!["Stderr", "Result"]] {
+            let mut tc = confirmed_receipt("repl-literal-channels");
+            let original = tc.content.clone();
+            let metadata = tc.output_metadata.as_mut().expect("wire metadata");
+            let presentation = metadata.presentation.as_mut().expect("wire sections");
+            // Compact independently framed channel cases fit without clipping; the canonical receipt remains intact.
+            presentation.sections[0].fields.retain(|field| labels.contains(&field.label.as_str()));
+            let rows = card_body(&mut tc, 120);
+            if labels.contains(&"Stdout") {
+                let start = rows
+                    .iter()
+                    .position(|row| row == "Stdout: first stdout")
+                    .expect("stdout label");
+                assert_eq!(
+                    &rows[start + 1..start + 5],
+                    ["Images: [1,2]", "Result: literal stdout value", "", "last stdout"]
+                );
+                assert!(rows.contains(&"Images: 2".to_owned()));
+                assert!(rows.contains(&"Documents: 1".to_owned()));
+                assert!(!rows.iter().any(|row| row.contains("stderr only")));
+            } else {
+                let start =
+                    rows.iter().position(|row| row == "Stderr: stderr only").expect("stderr label");
+                assert_eq!(rows[start + 1], "Documents: [fake]");
+                assert!(rows.contains(&"Result: {\"actual\":false,\"count\":9}".to_owned()));
+                assert!(!rows.iter().any(|row| row.contains("first stdout")));
+            }
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row.contains("PRIVATE-IMAGE") || row.contains("PRIVATE-DOCUMENT"))
+            );
+            assert_eq!(tc.content, original);
+        }
     }
 }

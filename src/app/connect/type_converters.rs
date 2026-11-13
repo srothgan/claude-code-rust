@@ -616,135 +616,8 @@ pub(super) fn convert_mode_state(mode: types::ModeState) -> ModeState {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        convert_account_info, convert_tool_call, convert_tool_call_update,
-        convert_tool_call_update_fields, map_available_commands_update, map_available_models,
-        map_permission_request, map_question_request, map_session_update,
-    };
+    use super::{map_permission_request, map_question_request, map_session_update};
     use crate::agent::{model, types};
-
-    #[test]
-    fn shared_session_types_keep_wire_tokens_defaults_and_unknown_values() {
-        for (payload, expected) in [
-            (
-                serde_json::json!({"type": "runtime_session_state_update", "state": "requires_action"}),
-                model::SessionUpdate::RuntimeSessionStateUpdate(
-                    model::RuntimeSessionState::RequiresAction,
-                ),
-            ),
-            (
-                serde_json::json!({"type": "system_notice_update", "severity": "warning", "message": "notice"}),
-                model::SessionUpdate::SystemNoticeUpdate {
-                    severity: model::SystemNoticeSeverity::Warning,
-                    message: "notice".into(),
-                },
-            ),
-        ] {
-            assert_eq!(
-                map_session_update(serde_json::from_value(payload).expect("wire event")),
-                Some(expected)
-            );
-        }
-        assert_eq!(
-            serde_json::from_str::<types::ApiRetryError>("\"future_error\"")
-                .expect("open error vocabulary"),
-            model::ApiRetryError::Unknown
-        );
-        assert_eq!(
-            serde_json::from_str::<types::CompactionFailureCode>("\"future_failure\"")
-                .expect("open compaction failure vocabulary"),
-            model::CompactionFailureCode::Unknown
-        );
-        let command: types::AvailableCommand =
-            serde_json::from_value(serde_json::json!({"name": "review", "description": "Review"}))
-                .expect("minimal command");
-        assert!(command.aliases.is_empty());
-        assert!(!command.builtin);
-        let metadata: types::ToolOutputMetadata = serde_json::from_value(
-            serde_json::json!({"read": {"file_path": "notes.md", "start_line": 4}}),
-        )
-        .expect("minimal output metadata");
-        assert!(!metadata.staged);
-        assert!(!metadata.structured_content_omitted);
-        assert_eq!(
-            serde_json::to_value(metadata).expect("output metadata")["read"],
-            serde_json::json!({"file_path": "notes.md", "start_line": 4})
-        );
-    }
-
-    #[test]
-    fn read_wire_updates_replace_cached_preview_without_changing_source() {
-        use crate::agent::events::ClientEvent;
-        use crate::agent::wire::{BridgeEvent, EventEnvelope};
-        use crate::app::{App, MessageBlock};
-        use crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding;
-
-        let mut app = App::test_default();
-        app.session_runtime.activate_session("read-session".into());
-        let source = "# Notes\r\n\r\n\t**literal**  \r\n";
-        let updates = [
-            serde_json::json!({ "type": "tool_call", "tool_call": {
-                "tool_call_id": "read-1", "title": "Read notes.md", "kind": "read",
-                "status": "in_progress", "content": [{ "type": "content", "content": { "type": "text", "text": "old preview" } }],
-                "raw_input": { "file_path": "notes.md" }, "locations": [], "meta": { "claudeCode": { "toolName": "Read" } }
-            }}),
-            serde_json::json!({ "type": "tool_call_update", "tool_call_update": {
-                "tool_call_id": "read-1", "fields": {
-                    "status": "completed", "raw_output": source,
-                    "content": [{ "type": "content", "content": { "type": "text", "text": source } }],
-                    "output_metadata": { "read": { "file_path": "notes.md", "start_line": 60 } }
-                }
-            }}),
-        ];
-        for (index, update) in updates.into_iter().enumerate() {
-            let event: EventEnvelope = serde_json::from_value(serde_json::json!({
-                "event": "session_update", "session_id": "read-session", "update": update
-            }))
-            .expect("Read wire event");
-            let BridgeEvent::SessionUpdate { session_id, update } = event.event else {
-                panic!("expected session update")
-            };
-            crate::app::events::handle_client_event(
-                &mut app,
-                ClientEvent::SessionUpdate {
-                    session_id,
-                    update: map_session_update(update).expect("mapped Read update"),
-                },
-            );
-            let (mi, bi) = app.lookup_tool_call("read-1").expect("Read card");
-            for width in [24, 80] {
-                let rendered = serialize_live_rows_with_boundaries_excluding(
-                    &mut app,
-                    width,
-                    &std::collections::BTreeSet::new(),
-                    None,
-                );
-                let segment = rendered
-                    .segments()
-                    .iter()
-                    .find(|segment| segment.msg_idx == mi && segment.block_idx == Some(bi))
-                    .expect("Read card segment");
-                let rows = rendered.segment_rows(segment).expect("Read card rows");
-                let body = rows
-                    .iter()
-                    .map(|row| {
-                        row.spans.iter().map(|span| span.content.as_ref()).collect::<String>()
-                    })
-                    .find(|text| text.trim_start().starts_with(['│', '└']))
-                    .expect("Read body row");
-                if index == 0 {
-                    assert_eq!(body.trim(), "└─ old preview");
-                } else {
-                    assert_eq!(body.trim(), "│  60  # Notes");
-                    let MessageBlock::ToolCall(tc) = &app.transcript.messages[mi].blocks[bi] else {
-                        panic!("expected Read card")
-                    };
-                    assert_eq!(tc.content, vec![model::ToolCallContent::from(source)]);
-                    assert_eq!(tc.read_output_metadata().expect("Read metadata").start_line, 60);
-                }
-            }
-        }
-    }
 
     #[test]
     fn completed_result_cards_follow_acknowledged_clock_changes_through_cached_live_layout() {
@@ -848,64 +721,6 @@ mod tests {
     }
 
     #[test]
-    fn map_available_models_preserves_optional_fast_and_auto_metadata() {
-        let mapped = map_available_models(vec![
-            types::AvailableModel {
-                id: "sonnet".to_owned(),
-                resolved_model: Some("claude-sonnet-5".to_owned()),
-                display_name: "Claude Sonnet".to_owned(),
-                description: Some("Balanced model".to_owned()),
-                supports_effort: true,
-                supported_effort_levels: vec![
-                    types::EffortLevel::Low,
-                    types::EffortLevel::Medium,
-                    types::EffortLevel::High,
-                    types::EffortLevel::XHigh,
-                    types::EffortLevel::Max,
-                ],
-                supports_adaptive_thinking: Some(true),
-                supports_fast_mode: Some(true),
-                supports_auto_mode: Some(false),
-            },
-            types::AvailableModel {
-                id: "haiku".to_owned(),
-                resolved_model: None,
-                display_name: "Claude Haiku".to_owned(),
-                description: None,
-                supports_effort: false,
-                supported_effort_levels: Vec::new(),
-                supports_adaptive_thinking: None,
-                supports_fast_mode: None,
-                supports_auto_mode: None,
-            },
-        ]);
-
-        assert_eq!(
-            mapped,
-            vec![
-                model::AvailableModel::new("sonnet", "Claude Sonnet")
-                    .resolved_model("claude-sonnet-5")
-                    .description("Balanced model")
-                    .supports_effort(true)
-                    .supported_effort_levels(vec![
-                        model::EffortLevel::Low,
-                        model::EffortLevel::Medium,
-                        model::EffortLevel::High,
-                        model::EffortLevel::XHigh,
-                        model::EffortLevel::Max,
-                    ])
-                    .supports_adaptive_thinking(Some(true))
-                    .supports_fast_mode(Some(true))
-                    .supports_auto_mode(Some(false)),
-                model::AvailableModel::new("haiku", "Claude Haiku")
-                    .supports_adaptive_thinking(None)
-                    .supports_fast_mode(None)
-                    .supports_auto_mode(None),
-            ]
-        );
-    }
-
-    #[test]
     fn current_model_wire_update_preserves_sdk_effort_levels() {
         let update = serde_json::from_value(serde_json::json!({
             "type": "current_model_update", "current_model": {
@@ -931,140 +746,6 @@ mod tests {
     }
 
     #[test]
-    fn convert_account_info_maps_gateway_and_unknown_providers_to_app_model() {
-        let gateway = convert_account_info(types::AccountInfo {
-            email: Some("user@example.com".to_owned()),
-            organization: Some("org-1".to_owned()),
-            subscription_type: Some("Claude Max".to_owned()),
-            token_source: Some("oauth".to_owned()),
-            api_key_source: Some("user".to_owned()),
-            api_provider: Some("gateway".to_owned()),
-        });
-
-        assert_eq!(gateway.email.as_deref(), Some("user@example.com"));
-        assert_eq!(gateway.api_provider, Some(model::AccountApiProvider::Gateway));
-        assert_eq!(gateway.login_method_label(), "External provider");
-
-        let unknown = convert_account_info(types::AccountInfo {
-            api_provider: Some("customGateway".to_owned()),
-            ..Default::default()
-        });
-
-        assert_eq!(
-            unknown.api_provider,
-            Some(model::AccountApiProvider::Other("customGateway".to_owned()))
-        );
-        assert_eq!(
-            unknown.api_provider.as_ref().map(model::AccountApiProvider::label),
-            Some("customGateway")
-        );
-    }
-
-    #[test]
-    fn map_lifecycle_updates_preserves_new_sdk_state() {
-        assert_eq!(
-            map_session_update(types::SessionUpdate::ApiRetryUpdate {
-                attempt: 2,
-                max_retries: 4,
-                retry_delay_ms: 1500.0,
-                error_status: Some(529),
-                error: types::ApiRetryError::ServerError,
-            }),
-            Some(model::SessionUpdate::ApiRetryUpdate {
-                attempt: 2,
-                max_retries: 4,
-                retry_delay_ms: 1500.0,
-                error_status: Some(529),
-                error: model::ApiRetryError::ServerError,
-            })
-        );
-        for (wire_error, model_error) in [
-            (types::ApiRetryError::ModelNotFound, model::ApiRetryError::ModelNotFound),
-            (types::ApiRetryError::OauthOrgNotAllowed, model::ApiRetryError::OauthOrgNotAllowed),
-            (types::ApiRetryError::Overloaded, model::ApiRetryError::Overloaded),
-        ] {
-            assert_eq!(
-                map_session_update(types::SessionUpdate::ApiRetryUpdate {
-                    attempt: 1,
-                    max_retries: 4,
-                    retry_delay_ms: 1000.0,
-                    error_status: None,
-                    error: wire_error,
-                }),
-                Some(model::SessionUpdate::ApiRetryUpdate {
-                    attempt: 1,
-                    max_retries: 4,
-                    retry_delay_ms: 1000.0,
-                    error_status: None,
-                    error: model_error,
-                })
-            );
-        }
-        assert_eq!(
-            map_session_update(types::SessionUpdate::RuntimeSessionStateUpdate {
-                state: types::RuntimeSessionState::RequiresAction,
-            }),
-            Some(model::SessionUpdate::RuntimeSessionStateUpdate(
-                model::RuntimeSessionState::RequiresAction,
-            ))
-        );
-        assert_eq!(
-            map_session_update(types::SessionUpdate::PromptSuggestionUpdate {
-                suggestion: "Add tests".to_owned(),
-            }),
-            Some(model::SessionUpdate::PromptSuggestionUpdate("Add tests".to_owned()))
-        );
-        assert_eq!(
-            map_session_update(types::SessionUpdate::SessionStatusUpdate {
-                status: types::SessionStatus::Requesting,
-            }),
-            Some(model::SessionUpdate::SessionStatusUpdate(model::SessionStatus::Requesting))
-        );
-        assert_eq!(
-            map_session_update(types::SessionUpdate::SystemNoticeUpdate {
-                severity: types::SystemNoticeSeverity::Warning,
-                message: "Plugin install failed.".to_owned(),
-            }),
-            Some(model::SessionUpdate::SystemNoticeUpdate {
-                severity: model::SystemNoticeSeverity::Warning,
-                message: "Plugin install failed.".to_owned(),
-            })
-        );
-        assert_eq!(
-            map_session_update(types::SessionUpdate::CompactionUpdate {
-                update: types::CompactionUpdate::Boundary {
-                    trigger: types::CompactionTrigger::Manual,
-                    pre_tokens: 123_456,
-                    post_tokens: Some(20_000),
-                    duration_ms: Some(1_500),
-                },
-            }),
-            Some(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Boundary(
-                model::CompactionBoundary {
-                    trigger: model::CompactionTrigger::Manual,
-                    pre_tokens: 123_456,
-                    post_tokens: Some(20_000),
-                    duration_ms: Some(1_500),
-                }
-            )))
-        );
-        assert_eq!(
-            map_session_update(types::SessionUpdate::CompactionUpdate {
-                update: types::CompactionUpdate::Finished {
-                    result: types::CompactionResult::Failed,
-                    error_code: Some(types::CompactionFailureCode::TooFewGroups),
-                    error: Some("Prompt is too long".to_owned()),
-                },
-            }),
-            Some(model::SessionUpdate::CompactionUpdate(model::CompactionUpdate::Finished {
-                result: model::CompactionResult::Failed,
-                error_code: Some(model::CompactionFailureCode::TooFewGroups),
-                error: Some("Prompt is too long".to_owned()),
-            }))
-        );
-    }
-
-    #[test]
     fn session_title_updates_decode_from_the_bridge_wire() {
         let decode = |json: &str| {
             map_session_update(serde_json::from_str::<types::SessionUpdate>(json).expect("wire"))
@@ -1085,224 +766,6 @@ mod tests {
         assert_eq!(
             decode(r#"{"type":"session_title_update","title":"name\u009c\u007f\u001b[2J"}"#),
             Some(model::SessionUpdate::SessionTitleUpdate(Some("name[2J".to_owned())))
-        );
-    }
-
-    #[test]
-    fn map_session_update_converts_task_state_update() {
-        let update: types::SessionUpdate = serde_json::from_value(serde_json::json!({
-            "type": "task_state_update",
-            "source": "task_update",
-            "tasks": [
-                {
-                    "task_id": "task-1",
-                    "subject": "Run checks",
-                    "description": "Validate the branch",
-                    "active_form": "Running checks",
-                    "status": "in_progress",
-                    "owner": "agent",
-                    "blocks": ["task-2"],
-                    "blocked_by": ["task-0"],
-                    "metadata": { "phase": "6A" },
-                    "source_tool_call_id": "tool-1"
-                }
-            ],
-            "removed_task_ids": ["task-old"],
-            "is_complete_snapshot": false
-        }))
-        .expect("task state update should deserialize");
-
-        let mapped = map_session_update(update).expect("task state update should map");
-        let model::SessionUpdate::TaskStateUpdate(update) = mapped else {
-            panic!("expected task state update");
-        };
-
-        assert_eq!(update.source, model::TaskUpdateSource::Update);
-        assert_eq!(update.removed_task_ids, vec!["task-old"]);
-        assert!(!update.is_complete_snapshot);
-        assert_eq!(update.tasks.len(), 1);
-        assert_eq!(update.tasks[0].task_id, "task-1");
-        assert_eq!(update.tasks[0].status, model::TaskStatus::InProgress);
-        assert_eq!(update.tasks[0].metadata, Some(serde_json::json!({ "phase": "6A" })));
-    }
-
-    #[test]
-    fn map_session_update_preserves_source_message_uuid() {
-        let mapped = map_session_update(types::SessionUpdate::AgentMessageChunk {
-            content: types::ContentBlock::Text { text: "hello".to_owned() },
-            source_message_uuid: Some("assistant-1".to_owned()),
-        })
-        .expect("message chunk should map");
-
-        let model::SessionUpdate::AgentMessageChunk(chunk) = mapped else {
-            panic!("expected agent message chunk");
-        };
-        assert_eq!(chunk.source_message_uuid.as_deref(), Some("assistant-1"));
-    }
-
-    #[test]
-    fn map_session_update_preserves_external_message_provenance() {
-        let mapped = map_session_update(types::SessionUpdate::ExternalMessageUpdate {
-            content: "Peer message".to_owned(),
-            source_message_uuid: Some("message-peer".to_owned()),
-            origin: types::MessageOrigin {
-                kind: "peer".to_owned(),
-                subkind: Some("peer-send-message".to_owned()),
-                from: Some("reported-route".to_owned()),
-                name: Some("Build session".to_owned()),
-                from_session: Some("session-peer".to_owned()),
-                sender_task_id: Some("task-peer".to_owned()),
-                verified_peer_pid: Some(4242),
-                from_mode: Some("bypass".to_owned()),
-            },
-        })
-        .expect("external update should map");
-
-        let model::SessionUpdate::ExternalMessageUpdate(update) = mapped else {
-            panic!("expected external message update");
-        };
-        assert_eq!(update.content, "Peer message");
-        assert_eq!(update.source_message_uuid.as_deref(), Some("message-peer"));
-        assert_eq!(update.origin.kind, "peer");
-        assert_eq!(update.origin.name.as_deref(), Some("Build session"));
-        assert_eq!(update.origin.from_session.as_deref(), Some("session-peer"));
-        assert_eq!(update.origin.verified_peer_pid, Some(4242));
-        assert_eq!(update.origin.from_mode.as_deref(), Some("bypass"));
-    }
-
-    #[test]
-    fn rate_limit_enablement_survives_both_conversion_paths() {
-        for enabled in [None, Some(false), Some(true)] {
-            let raw = serde_json::json!({
-                "status": "allowed_warning", "overage_enabled": enabled, "is_using_overage": false
-            });
-            let direct: model::RateLimitUpdate =
-                serde_json::from_value(raw.clone()).expect("rate limit");
-            let mut update = raw;
-            update["type"] = serde_json::json!("rate_limit_update");
-            let mapped =
-                map_session_update(serde_json::from_value(update).expect("session update"))
-                    .expect("mapped update");
-            let model::SessionUpdate::RateLimitUpdate(flattened) = mapped else {
-                panic!("rate limit update");
-            };
-            assert_eq!(direct.overage_enabled, enabled);
-            assert_eq!(flattened.overage_enabled, enabled);
-            assert_eq!(flattened.is_using_overage, Some(false));
-        }
-    }
-
-    #[test]
-    fn map_session_update_preserves_rate_limit_credits_metadata() {
-        let mapped = map_session_update(types::SessionUpdate::RateLimitUpdate {
-            status: types::RateLimitStatus::Rejected,
-            error_code: Some("credits_required".to_owned()),
-            resets_at: None,
-            utilization: None,
-            rate_limit_type: None,
-            limit_scope: None,
-            overage_enabled: None,
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: None,
-            is_using_overage: None,
-            surpassed_threshold: None,
-            can_user_purchase_credits: Some(true),
-            has_chargeable_saved_payment_method: Some(false),
-        })
-        .expect("rate limit update should map");
-
-        let model::SessionUpdate::RateLimitUpdate(update) = mapped else {
-            panic!("expected rate limit update");
-        };
-        assert_eq!(update.status, model::RateLimitStatus::Rejected);
-        assert_eq!(update.error_code.as_deref(), Some("credits_required"));
-        assert_eq!(update.can_user_purchase_credits, Some(true));
-        assert_eq!(update.has_chargeable_saved_payment_method, Some(false));
-    }
-
-    #[test]
-    fn map_session_update_converts_transcript_retraction() {
-        let mapped = map_session_update(types::SessionUpdate::TranscriptRetraction {
-            retraction: types::TranscriptRetraction {
-                message_uuids: vec!["old-1".to_owned()],
-                reason: types::TranscriptRetractionReason::AssistantSupersedes,
-                request_id: Some("req-1".to_owned()),
-                trigger: None,
-                direction: None,
-                original_model: None,
-                fallback_model: None,
-                scope: Some("local".to_owned()),
-                api_refusal_category: None,
-                api_refusal_explanation: None,
-                content: None,
-            },
-        })
-        .expect("transcript retraction should map");
-
-        let model::SessionUpdate::TranscriptRetraction(retraction) = mapped else {
-            panic!("expected transcript retraction");
-        };
-        assert_eq!(retraction.message_uuids, vec!["old-1"]);
-        assert_eq!(retraction.reason, model::TranscriptRetractionReason::AssistantSupersedes);
-        assert_eq!(retraction.request_id.as_deref(), Some("req-1"));
-    }
-
-    #[test]
-    fn map_permission_request_preserves_display_and_mcp_provenance() {
-        let (request, tool_call_id) = map_permission_request(
-            "session-1",
-            types::PermissionRequest {
-                tool_call: types::ToolCall {
-                    tool_call_id: "tool-1".to_owned(),
-                    title: "Bash npm test".to_owned(),
-                    kind: "execute".to_owned(),
-                    status: "in_progress".to_owned(),
-                    source_message_uuid: None,
-                    content: Vec::new(),
-                    raw_input: None,
-                    raw_output: None,
-                    output_metadata: None,
-                    task_metadata: None,
-                    locations: Vec::new(),
-                    meta: None,
-                },
-                options: vec![types::PermissionOption {
-                    option_id: "allow".to_owned(),
-                    name: "Allow".to_owned(),
-                    description: None,
-                    kind: "allow_once".to_owned(),
-                }],
-                display: Some(types::PermissionDisplay {
-                    title: Some("Claude wants to run tests".to_owned()),
-                    display_name: Some("Run tests".to_owned()),
-                    description: Some("This command reads project files".to_owned()),
-                    default_to_no: false,
-                    suppress_always_allow_rule: false,
-                }),
-                mcp_server: Some(types::McpServerProvenance {
-                    name: "filesystem".to_owned(),
-                    source: "project".to_owned(),
-                }),
-            },
-        );
-
-        assert_eq!(tool_call_id, "tool-1");
-        assert_eq!(
-            request.display,
-            Some(
-                model::PermissionDisplay::new()
-                    .title(Some("Claude wants to run tests".to_owned()))
-                    .display_name(Some("Run tests".to_owned()))
-                    .description(Some("This command reads project files".to_owned())),
-            )
-        );
-        assert_eq!(
-            request.mcp_server,
-            Some(model::McpServerProvenance {
-                name: "filesystem".to_owned(),
-                source: "project".to_owned(),
-            })
         );
     }
 
@@ -1388,398 +851,159 @@ mod tests {
         );
     }
 
-    #[test]
-    fn convert_tool_call_update_fields_preserves_output_metadata() {
-        let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
-            status: Some("completed".to_owned()),
-            output_metadata: Some(types::ToolOutputMetadata {
-                presentation: None,
-                timing: None,
-                staged: false,
-                structured_content_omitted: true,
-                bash: Some(types::BashOutputMetadata {
-                    assistant_auto_backgrounded: Some(true),
-                    timed_out_after_ms: Some(10_000),
-                    background_cwd_hint: Some("session cwd unchanged".to_owned()),
-                    background_ends_with_final_response: Some(true),
-                    background_wakes_owner: Some(true),
-                }),
-                agent: Some(types::AgentOutputMetadata {
-                    resolved_model: Some("claude-sonnet-4-7".to_owned()),
-                    models_used: Some(vec![
-                        "claude-opus-4-8".to_owned(),
-                        "claude-sonnet-4-7".to_owned(),
-                    ]),
-                }),
-                web_fetch: Some(types::WebFetchOutputMetadata {
-                    artifact_read: Some(types::WebFetchArtifactReadMetadata {
-                        slug: "dashboard".to_owned(),
-                        ver: Some("v2".to_owned()),
-                        seeded: Some(false),
-                    }),
-                }),
-                skill: Some(types::SkillOutputMetadata { background: Some(true) }),
-                read: Some(types::ReadOutputMetadata {
-                    file_path: "src/lib.rs".into(),
-                    start_line: 42,
-                }),
-                non_execution: Some(types::ToolNonExecutionMetadata {
-                    kind: "interrupted".to_owned(),
-                    user_feedback: Some("Stopped intentionally.".to_owned()),
-                }),
-            }),
-            ..types::ToolCallUpdateFields::default()
-        });
-
-        assert_eq!(
-            fields.output_metadata,
-            Some(
-                model::ToolOutputMetadata::new()
-                    .structured_content_omitted(true)
-                    .bash(Some(
-                        model::BashOutputMetadata::new()
-                            .assistant_auto_backgrounded(Some(true))
-                            .timed_out_after_ms(Some(10_000))
-                            .background_cwd_hint(Some("session cwd unchanged".to_owned()))
-                            .background_ends_with_final_response(Some(true))
-                            .background_wakes_owner(Some(true)),
-                    ))
-                    .agent(Some(
-                        model::AgentOutputMetadata::new()
-                            .resolved_model(Some("claude-sonnet-4-7".to_owned()))
-                            .models_used(Some(vec![
-                                "claude-opus-4-8".to_owned(),
-                                "claude-sonnet-4-7".to_owned(),
-                            ])),
-                    ))
-                    .web_fetch(Some(
-                        model::WebFetchOutputMetadata::new().artifact_read(Some(
-                            model::WebFetchArtifactReadMetadata::new("dashboard")
-                                .ver(Some("v2".to_owned()))
-                                .seeded(Some(false)),
-                        ))
-                    ))
-                    .skill(Some(model::SkillOutputMetadata::new().background(Some(true))))
-                    .read(Some(model::ReadOutputMetadata {
-                        file_path: "src/lib.rs".into(),
-                        start_line: 42,
-                    }))
-                    .non_execution(Some(
-                        model::ToolNonExecutionMetadata::new("interrupted")
-                            .user_feedback(Some("Stopped intentionally.".to_owned())),
-                    ))
-            )
-        );
+    fn permission_wire_fixture() -> serde_json::Value {
+        serde_json::json!({
+            "tool_call": {"tool_call_id":"mapped-tool", "title":"Inspect build", "kind":"execute", "status":"in_progress",
+                "content":[], "locations":[], "raw_input":{"command":"check-build"},
+                "meta":{"claudeCode":{"toolName":"Bash"}}},
+            "options":[
+                {"option_id":"permit-build", "name":"Run build", "description":"Once only", "kind":"allow_once"},
+                {"option_id":"refuse-build", "name":"Stop build", "description":"Leave files alone", "kind":"reject_once"}],
+            "mcp_server":{"name":"build-server", "source":"project"}
+        })
     }
 
     #[test]
-    fn convert_tool_call_update_preserves_source_message_uuid() {
-        let update = convert_tool_call_update(types::ToolCallUpdate {
-            tool_call_id: "tool-1".to_owned(),
-            source_message_uuid: Some("user-result".to_owned()),
-            fields: types::ToolCallUpdateFields::default(),
-        });
-
-        assert_eq!(update.source_message_uuid.as_deref(), Some("user-result"));
-    }
-
-    #[test]
-    fn map_available_commands_update_preserves_source_and_generation() {
-        let update = map_available_commands_update(
-            vec![types::AvailableCommand {
-                name: "project-command".to_owned(),
-                description: "Project command".to_owned(),
-                input_hint: Some("<value>".to_owned()),
-                aliases: vec!["project-alias".to_owned()],
-                builtin: true,
-            }],
-            Some("commands_changed".to_owned()),
-            Some(3),
-        );
-
-        assert_eq!(
-            update,
-            model::AvailableCommandsUpdate::new(vec![
-                model::AvailableCommand::new("project-command", "Project command")
-                    .input_hint("<value>")
-                    .aliases(vec!["project-alias".to_owned()])
-                    .builtin(true)
-            ])
-            .source("commands_changed")
-            .generation(3)
-        );
-    }
-
-    #[test]
-    fn convert_tool_status_maps_killed() {
-        assert_eq!(super::convert_tool_status("killed"), model::ToolCallStatus::Killed);
-    }
-
-    #[test]
-    fn convert_tool_call_update_fields_preserves_task_metadata() {
-        let fields = convert_tool_call_update_fields(types::ToolCallUpdateFields {
-            task_metadata: Some(types::TaskMetadata {
-                end_time: Some(123),
-                total_paused_ms: Some(45),
-                error: Some("Task stopped".to_owned()),
-                is_backgrounded: Some(true),
-                spawn_depth: Some(2),
-                request_id: Some("request-1".to_owned()),
-                subagent_type: Some("tester".to_owned()),
-                task_description: Some("Validate changes".to_owned()),
-                task_type: Some("remote_agent".to_owned()),
-                workflow_name: Some("release-check".to_owned()),
-                prompt: Some("Run validation".to_owned()),
-                output_file: Some("C:/tmp/output.md".to_owned()),
-                summary: Some("Validation complete".to_owned()),
-                terminal_status: Some("completed".to_owned()),
-                terminal_reason: Some("worker_restart".to_owned()),
-                blocked: Some(true),
-                parent_agent_id: Some("agent-parent".to_owned()),
-                ambient: Some(true),
-                subagent_retry: None,
-            }),
-            ..types::ToolCallUpdateFields::default()
-        });
-
-        assert_eq!(
-            fields.task_metadata,
-            Some(
-                model::TaskMetadata::new()
-                    .end_time(Some(123))
-                    .total_paused_ms(Some(45))
-                    .error(Some("Task stopped".to_owned()))
-                    .backgrounded(Some(true))
-                    .spawn_depth(Some(2))
-                    .request_id(Some("request-1".to_owned()))
-                    .subagent_type(Some("tester".to_owned()))
-                    .task_description(Some("Validate changes".to_owned()))
-                    .task_type(Some("remote_agent".to_owned()))
-                    .workflow_name(Some("release-check".to_owned()))
-                    .prompt(Some("Run validation".to_owned()))
-                    .output_file(Some("C:/tmp/output.md".to_owned()))
-                    .summary(Some("Validation complete".to_owned()))
-                    .terminal_status(Some("completed".to_owned()))
-                    .terminal_reason(Some("worker_restart".to_owned()))
-                    .blocked(Some(true))
-                    .parent_agent_id(Some("agent-parent".to_owned()))
-                    .ambient(Some(true)),
-            )
-        );
-    }
-
-    #[test]
-    fn convert_tool_call_preserves_task_metadata() {
-        let tool_call = convert_tool_call(types::ToolCall {
-            tool_call_id: "tool-task".to_owned(),
-            title: "Agent task".to_owned(),
-            kind: "think".to_owned(),
-            status: "killed".to_owned(),
-            source_message_uuid: Some("assistant-tool".to_owned()),
-            content: Vec::new(),
-            raw_input: None,
-            raw_output: None,
-            output_metadata: None,
-            task_metadata: Some(types::TaskMetadata {
-                end_time: Some(77),
-                total_paused_ms: Some(11),
-                error: Some("Task stopped".to_owned()),
-                is_backgrounded: Some(false),
-                spawn_depth: Some(1),
-                request_id: Some("request-2".to_owned()),
-                subagent_type: Some("reviewer".to_owned()),
-                task_description: Some("Review changes".to_owned()),
-                task_type: Some("local_workflow".to_owned()),
-                workflow_name: Some("review-flow".to_owned()),
-                prompt: Some("Review changes".to_owned()),
-                output_file: Some("C:/tmp/review.md".to_owned()),
-                summary: Some("Review stopped".to_owned()),
-                terminal_status: Some("killed".to_owned()),
-                terminal_reason: Some("worker_restart".to_owned()),
-                blocked: Some(false),
-                parent_agent_id: Some("agent-root".to_owned()),
-                ambient: Some(false),
-                subagent_retry: None,
-            }),
-            locations: Vec::new(),
-            meta: None,
-        });
-
-        assert_eq!(tool_call.status, model::ToolCallStatus::Killed);
-        assert_eq!(tool_call.source_message_uuid.as_deref(), Some("assistant-tool"));
-        assert_eq!(
-            tool_call.task_metadata,
-            Some(
-                model::TaskMetadata::new()
-                    .end_time(Some(77))
-                    .total_paused_ms(Some(11))
-                    .error(Some("Task stopped".to_owned()))
-                    .backgrounded(Some(false))
-                    .spawn_depth(Some(1))
-                    .request_id(Some("request-2".to_owned()))
-                    .subagent_type(Some("reviewer".to_owned()))
-                    .task_description(Some("Review changes".to_owned()))
-                    .task_type(Some("local_workflow".to_owned()))
-                    .workflow_name(Some("review-flow".to_owned()))
-                    .prompt(Some("Review changes".to_owned()))
-                    .output_file(Some("C:/tmp/review.md".to_owned()))
-                    .summary(Some("Review stopped".to_owned()))
-                    .terminal_status(Some("killed".to_owned()))
-                    .terminal_reason(Some("worker_restart".to_owned()))
-                    .blocked(Some(false))
-                    .parent_agent_id(Some("agent-root".to_owned()))
-                    .ambient(Some(false)),
-            )
-        );
-    }
-
-    #[test]
-    fn convert_tool_call_preserves_diff_repository() {
-        let tool_call = convert_tool_call(types::ToolCall {
-            tool_call_id: "tool-1".to_owned(),
-            title: "Write src/main.rs".to_owned(),
-            kind: "edit".to_owned(),
-            status: "completed".to_owned(),
-            source_message_uuid: None,
-            content: vec![types::ToolCallContent::Diff {
-                old_path: "src/main.rs".to_owned(),
-                new_path: "src/main.rs".to_owned(),
-                old: "old".to_owned(),
-                new: "new".to_owned(),
-                repository: Some("acme/project".to_owned()),
-            }],
-            raw_input: None,
-            raw_output: None,
-            output_metadata: None,
-            task_metadata: None,
-            locations: Vec::new(),
-            meta: None,
-        });
-
-        assert_eq!(
-            tool_call.content,
-            vec![model::ToolCallContent::Diff(
-                model::Diff::new("src/main.rs", "new")
-                    .old_text(Some("old"))
-                    .repository(Some("acme/project".to_owned())),
-            )]
-        );
-    }
-
-    #[test]
-    fn convert_tool_call_preserves_mcp_resource_blob_path() {
-        let tool_call = convert_tool_call(types::ToolCall {
-            tool_call_id: "tool-2".to_owned(),
-            title: "ReadMcpResource docs file://manual.pdf".to_owned(),
-            kind: "read".to_owned(),
-            status: "completed".to_owned(),
-            source_message_uuid: None,
-            content: vec![types::ToolCallContent::McpResource {
-                uri: "file://manual.pdf".to_owned(),
-                mime_type: Some("application/pdf".to_owned()),
-                text: Some(
-                    "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf"
-                        .to_owned(),
-                ),
-                blob_saved_to: Some("C:\\tmp\\manual.pdf".to_owned()),
-            }],
-            raw_input: None,
-            raw_output: None,
-            output_metadata: None,
-            task_metadata: None,
-            locations: Vec::new(),
-            meta: None,
-        });
-
-        assert_eq!(
-            tool_call.content,
-            vec![model::ToolCallContent::McpResource(
-                model::McpResource::new("file://manual.pdf")
-                    .mime_type(Some("application/pdf".to_owned()))
-                    .text(Some(
-                        "[Resource from docs at file://manual.pdf] Saved to C:\\tmp\\manual.pdf"
-                            .to_owned(),
-                    ))
-                    .blob_saved_to(Some("C:\\tmp\\manual.pdf".to_owned())),
-            )]
-        );
-    }
-
-    #[test]
-    fn convert_tool_call_preserves_mcp_resource_link_metadata() {
-        let annotations = std::collections::BTreeMap::from([(
-            "audience".to_owned(),
-            serde_json::json!(["user"]),
-        )]);
-        let tool_call = convert_tool_call(types::ToolCall {
-            tool_call_id: "tool-link".to_owned(),
-            title: "Export report".to_owned(),
-            kind: "other".to_owned(),
-            status: "completed".to_owned(),
-            source_message_uuid: None,
-            content: vec![types::ToolCallContent::ResourceLink {
-                uri: "mcp://docs/report.csv".to_owned(),
-                name: "report.csv".to_owned(),
-                title: Some("Quarterly report".to_owned()),
-                description: Some("Generated report".to_owned()),
-                mime_type: Some("text/csv".to_owned()),
-                size: Some(42),
-                annotations: Some(annotations.clone()),
-            }],
-            raw_input: None,
-            raw_output: None,
-            output_metadata: None,
-            task_metadata: None,
-            locations: Vec::new(),
-            meta: None,
-        });
-
-        assert_eq!(
-            tool_call.content,
-            vec![model::ToolCallContent::ResourceLink(
-                model::McpResourceLink::new("mcp://docs/report.csv", "report.csv")
-                    .title(Some("Quarterly report".to_owned()))
-                    .description(Some("Generated report".to_owned()))
-                    .mime_type(Some("text/csv".to_owned()))
-                    .size(Some(42))
-                    .annotations(Some(annotations)),
-            )]
-        );
-    }
-
-    #[test]
-    fn mcp_wire_status_preserves_sdk_config_and_policy_fields() {
-        let mapped: model::McpServerStatus = serde_json::from_value(serde_json::json!({
-            "name": "notion", "status": "needs-auth", "config": {
-                "type": "http", "url": "https://mcp.notion.com/mcp", "tools": [
-                    {"name": "search", "permission_policy": "always_deny", "org_max_permission": "blocked"},
-                    {"name": "lookup", "org_max_permission": "ask"}
-                ], "timeout": 5000, "request_timeout_ms": 30000, "always_load": true
-            }, "scope": "project", "source": "project"
-        })).expect("MCP status wire payload");
-        assert_eq!(mapped.status, model::McpServerConnectionStatus::NeedsAuth);
-        assert!(mapped.tools.is_empty());
-        assert_eq!(
-            serde_json::to_value(&mapped).expect("serialize status")["status"],
-            "needs-auth"
-        );
-        let Some(model::McpServerStatusConfig::Http {
-            tools,
-            timeout,
-            request_timeout_ms,
-            always_load,
-            ..
-        }) = mapped.config
-        else {
-            panic!("expected http MCP config");
+    fn mapped_permission_metadata_drives_the_actual_default_response() {
+        use crate::app::test_support::{
+            admit_tool, app_with_connection, assert_permission_response, press, request_permission,
         };
-        assert_eq!(timeout, Some(5000));
-        assert_eq!(request_timeout_ms, Some(30000));
-        assert_eq!(always_load, Some(true));
-        assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].permission_policy, Some(model::McpServerToolPermissionPolicy::Deny));
-        assert_eq!(tools[0].org_max_permission, Some(model::McpServerOrgMaxPermission::Blocked));
-        assert_eq!(tools[1].permission_policy, None);
-        assert_eq!(tools[1].org_max_permission, Some(model::McpServerOrgMaxPermission::Ask));
+        for (display, expected_display, expected_id) in [
+            (serde_json::Value::Null, None, "permit-build"),
+            (
+                serde_json::json!({"title":"  ","display_name":"\t","description":"\n"}),
+                None,
+                "permit-build",
+            ),
+            (
+                serde_json::json!({"default_to_no":true}),
+                Some(model::PermissionDisplay::new().default_to_no(true)),
+                "refuse-build",
+            ),
+            (
+                serde_json::json!({"default_to_no":false,"suppress_always_allow_rule":true}),
+                Some(model::PermissionDisplay::new().suppress_always_allow_rule(true)),
+                "permit-build",
+            ),
+            (
+                serde_json::json!({"title":"  Build approval  ","display_name":" Build action ","description":" Changes outputs ","default_to_no":true,"suppress_always_allow_rule":true}),
+                Some(
+                    model::PermissionDisplay::new()
+                        .title(Some("  Build approval  ".into()))
+                        .display_name(Some(" Build action ".into()))
+                        .description(Some(" Changes outputs ".into()))
+                        .default_to_no(true)
+                        .suppress_always_allow_rule(true),
+                ),
+                "refuse-build",
+            ),
+        ] {
+            let mut fixture = permission_wire_fixture();
+            if !display.is_null() {
+                fixture["display"] = display;
+            }
+            let (request, id) = map_permission_request(
+                "session-1",
+                serde_json::from_value(fixture).expect("literal request"),
+            );
+            assert_eq!(id, "mapped-tool");
+            assert_eq!(request.session_id.to_string(), "session-1");
+            assert_eq!(request.tool_call.tool_call_id, "mapped-tool");
+            assert_eq!(request.tool_call.fields.title.as_deref(), Some("Inspect build"));
+            assert_eq!(request.tool_call.fields.kind, Some(model::ToolKind::Execute));
+            assert_eq!(request.tool_call.fields.status, Some(model::ToolCallStatus::InProgress));
+            assert_eq!(
+                request.tool_call.fields.raw_input,
+                Some(serde_json::json!({"command":"check-build"}))
+            );
+            assert_eq!(
+                request.tool_call.meta,
+                Some(serde_json::json!({"claudeCode":{"toolName":"Bash"}}))
+            );
+            assert_eq!(
+                request.options,
+                vec![
+                    model::PermissionOption::new(
+                        "permit-build",
+                        "Run build",
+                        model::PermissionOptionKind::AllowOnce
+                    )
+                    .description(Some("Once only".into())),
+                    model::PermissionOption::new(
+                        "refuse-build",
+                        "Stop build",
+                        model::PermissionOptionKind::RejectOnce
+                    )
+                    .description(Some("Leave files alone".into())),
+                ]
+            );
+            assert_eq!(request.display, expected_display);
+            assert_eq!(
+                request.mcp_server,
+                Some(model::McpServerProvenance {
+                    name: "build-server".into(),
+                    source: "project".into()
+                })
+            );
+            let (mut app, mut commands) = app_with_connection();
+            app.status = crate::app::AppStatus::Running;
+            admit_tool(
+                &mut app,
+                model::ToolCall::new("mapped-tool", "Inspect build")
+                    .status(model::ToolCallStatus::InProgress),
+            );
+            let mut receiver = request_permission(&mut app, request);
+            press(&mut app, crossterm::event::KeyCode::Enter);
+            assert_permission_response(&mut receiver, expected_id);
+            assert!(commands.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn unknown_permission_kinds_are_reject_once_without_losing_option_identity() {
+        for reverse in [false, true] {
+            let mut fixture = permission_wire_fixture();
+            fixture["options"].as_array_mut().expect("options").push(serde_json::json!({
+                "option_id":"future-id", "name":"Future choice", "description":"Future explanation", "kind":"future_permission_kind"
+            }));
+            if reverse {
+                fixture["options"].as_array_mut().expect("options").reverse();
+            }
+            let (request, id) = map_permission_request(
+                "unknown-session",
+                serde_json::from_value(fixture).expect("wire request"),
+            );
+            assert_eq!(id, "mapped-tool");
+            assert_eq!(request.tool_call.tool_call_id, "mapped-tool");
+            assert_eq!(request.session_id.to_string(), "unknown-session");
+            let mut expected = vec![
+                model::PermissionOption::new(
+                    "permit-build",
+                    "Run build",
+                    model::PermissionOptionKind::AllowOnce,
+                )
+                .description(Some("Once only".into())),
+                model::PermissionOption::new(
+                    "refuse-build",
+                    "Stop build",
+                    model::PermissionOptionKind::RejectOnce,
+                )
+                .description(Some("Leave files alone".into())),
+                model::PermissionOption::new(
+                    "future-id",
+                    "Future choice",
+                    model::PermissionOptionKind::RejectOnce,
+                )
+                .description(Some("Future explanation".into())),
+            ];
+            if reverse {
+                expected.reverse();
+            }
+            assert_eq!(request.options, expected);
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "mapping_audit_tests.rs"]
+mod audit_tests;

@@ -240,7 +240,6 @@ fn respond_permission_cancel(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::keymap::KeyContext;
     use crate::app::{
         App, AppStatus, ChatMessage, InlinePermission, MessageBlock, MessageRole, ToolCallInfo,
     };
@@ -306,78 +305,6 @@ mod tests {
         rx
     }
 
-    fn add_tool_without_permission(app: &mut App, tool_id: &str) {
-        let msg_idx = app.transcript.messages.len();
-        app.transcript.messages.push(assistant_tool_msg(test_tool_call(tool_id)));
-        app.index_tool_call(tool_id.to_owned(), msg_idx, 0);
-    }
-
-    fn permission_focused(app: &App, tool_id: &str) -> bool {
-        let Some((mi, bi)) = app.lookup_tool_call(tool_id) else {
-            return false;
-        };
-        let Some(MessageBlock::ToolCall(tc)) =
-            app.transcript.messages.get(mi).and_then(|m| m.blocks.get(bi))
-        else {
-            return false;
-        };
-        tc.pending_permission.as_ref().is_some_and(|permission| permission.focused)
-    }
-
-    #[test]
-    fn step2_up_down_rotates_permission_focus_and_enter_targets_focused_prompt() {
-        let mut app = App::test_default();
-        app.status = AppStatus::Ready;
-        let mut rx1 = add_permission(&mut app, "perm-1", allow_options(), true);
-        let mut rx2 = add_permission(&mut app, "perm-2", allow_options(), false);
-
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1", "perm-2"]);
-        assert!(permission_focused(&app, "perm-1"));
-        assert!(!permission_focused(&app, "perm-2"));
-
-        let consumed = execute_permission_action(
-            &mut app,
-            InteractionAction::MoveNext,
-            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-        );
-        assert_eq!(consumed, KeyOutcome::Handled(true));
-        assert_eq!(app.pending_interaction_ids, vec!["perm-2", "perm-1"]);
-        assert!(permission_focused(&app, "perm-2"));
-        assert!(!permission_focused(&app, "perm-1"));
-
-        let consumed = execute_permission_action(
-            &mut app,
-            InteractionAction::Confirm,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        );
-        assert_eq!(consumed, KeyOutcome::Handled(true));
-
-        let resp2 = rx2.try_recv().expect("focused permission should receive response");
-        let model::RequestPermissionOutcome::Selected(sel2) = resp2.outcome else {
-            panic!("expected selected permission response");
-        };
-        assert_eq!(sel2.option_id.clone(), "allow-once");
-        assert!(matches!(rx1.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
-        assert_eq!(app.pending_interaction_ids, vec!["perm-1"]);
-    }
-
-    #[test]
-    fn default_permission_keymap_has_no_letter_shortcuts() {
-        let app = App::test_default();
-
-        for key in [
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::Char('\u{19}'), KeyModifiers::NONE),
-        ] {
-            assert_eq!(app.keymap.action_for_event(KeyContext::InlinePermission, key), None);
-        }
-    }
-
     #[test]
     fn permission_actions_are_ignored_when_prompt_is_not_focused() {
         let mut app = App::test_default();
@@ -404,60 +331,166 @@ mod tests {
         assert!(matches!(rx.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
     }
 
-    #[test]
-    fn keeps_non_tool_blocks_untouched() {
-        let app = App::test_default();
-        assert!(app.transcript.messages.is_empty());
-    }
-
-    #[test]
-    fn esc_cancels_permission_when_no_reject_option_exists() {
-        let mut app = App::test_default();
-        let mut rx = add_permission(
-            &mut app,
-            "perm-1",
-            vec![model::PermissionOption::new(
-                "allow-once",
-                "Allow once",
-                PermissionOptionKind::AllowOnce,
-            )],
-            true,
+    fn admitted_permission(
+        app: &mut App,
+        id: &str,
+        plan: bool,
+    ) -> oneshot::Receiver<model::RequestPermissionResponse> {
+        use crate::app::test_support::{admit_tool, permission_options, request_permission};
+        admit_tool(
+            app,
+            model::ToolCall::new(id, format!("Command {id}"))
+                .status(model::ToolCallStatus::InProgress)
+                .meta(serde_json::json!({"claudeCode":{"toolName":"Bash"}})),
         );
-
-        respond_permission_cancel(&mut app);
-
-        let resp = rx.try_recv().expect("permission should be cancelled");
-        assert!(matches!(resp.outcome, model::RequestPermissionOutcome::Cancelled));
-    }
-
-    #[test]
-    fn permission_response_for_subagent_child_uses_child_tool_id() {
-        let mut app = App::test_default();
-        add_tool_without_permission(&mut app, "agent-1");
-        let mut child_rx = add_permission(&mut app, "bash-1", allow_options(), true);
-        crate::app::test_support::set_tool_scope(
-            &mut app,
-            "agent-1",
-            crate::app::ToolCallScope::SubagentRoot,
-        );
-        crate::app::test_support::set_tool_scope(
-            &mut app,
-            "bash-1",
-            crate::app::ToolCallScope::SubagentChild { parent_tool_use_id: "agent-1".to_owned() },
-        );
-
-        let consumed = execute_permission_action(
-            &mut app,
-            InteractionAction::Confirm,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        );
-
-        assert_eq!(consumed, KeyOutcome::Handled(true));
-        let response = child_rx.try_recv().expect("child permission should receive response");
-        let model::RequestPermissionOutcome::Selected(selected) = response.outcome else {
-            panic!("expected selected permission response");
+        let options = if plan {
+            vec![
+                model::PermissionOption::new(
+                    format!("{id}-approve"),
+                    "Approve plan",
+                    PermissionOptionKind::PlanApprove,
+                ),
+                model::PermissionOption::new(
+                    format!("{id}-reject"),
+                    "Reject plan",
+                    PermissionOptionKind::PlanReject,
+                ),
+            ]
+        } else {
+            permission_options(id)
         };
-        assert_eq!(selected.option_id, "allow-once");
-        assert_eq!(app.pending_interaction_ids, Vec::<String>::new());
+        request_permission(
+            app,
+            model::RequestPermissionRequest::new(
+                "session-1",
+                model::ToolCallUpdate::new(id, model::ToolCallUpdateFields::new()),
+                options,
+                None,
+            ),
+        )
+    }
+
+    fn permission_card_rows(app: &mut App, id: &str) -> Vec<ratatui::text::Line<'static>> {
+        let (mi, bi) = app.lookup_tool_call(id).expect("requested tool");
+        let live = crate::ui::inline_chat_rows::serialize_live_rows_with_boundaries_excluding(
+            app,
+            100,
+            &std::collections::BTreeSet::default(),
+            None,
+        );
+        let rows: Vec<_> = live
+            .segments()
+            .iter()
+            .filter(|segment| segment.msg_idx == mi && segment.block_idx == Some(bi))
+            .flat_map(|segment| live.segment_rows(segment).expect("own tool region").to_vec())
+            .collect();
+        rows
+    }
+
+    fn card_option_styles(app: &mut App, id: &str, labels: &[&str]) -> Vec<ratatui::style::Style> {
+        let rows = permission_card_rows(app, id);
+        labels
+            .iter()
+            .map(|label| {
+                let row = rows
+                    .iter()
+                    .find(|row| row.to_string().contains(label))
+                    .expect("own option rendered");
+                let position = row.to_string().find(label).expect("option label");
+                let mut offset = 0;
+                row.spans
+                    .iter()
+                    .find(|span| {
+                        offset += span.content.len();
+                        position < offset
+                    })
+                    .expect("label style")
+                    .style
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ordinary_permission_keys_target_the_focused_request_and_preserve_the_draft() {
+        use crate::app::test_support::{
+            app_with_connection, assert_pending, assert_permission_response, press,
+        };
+        let (mut app, mut commands) = app_with_connection();
+        app.status = AppStatus::Running;
+        app.push_message_tracked(ChatMessage::new(
+            MessageRole::User,
+            vec![MessageBlock::Text(crate::app::TextBlock::from_complete("preserved transcript"))],
+            None,
+        ));
+        let mut first = admitted_permission(&mut app, "first", false);
+        let mut second = admitted_permission(&mut app, "second", false);
+        app.input.set_text("preserved draft");
+        let labels = ["first once", "first always", "first deny"];
+        let styles = card_option_styles(&mut app, "first", &labels);
+        assert_ne!(styles[0], styles[1]);
+        assert_eq!(styles[1], styles[2]);
+        press(&mut app, KeyCode::Down);
+        let styles = card_option_styles(
+            &mut app,
+            "second",
+            &["second once", "second always", "second deny"],
+        );
+        assert_ne!(styles[0], styles[1]);
+        let rows = permission_card_rows(&mut app, "first");
+        assert!(rows.iter().any(|row| row.to_string().contains("Tab to focus")));
+        assert!(!rows.iter().any(|row| row.to_string().contains("first once")));
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Right);
+        let styles = card_option_styles(&mut app, "first", &labels);
+        assert_ne!(styles[1], styles[0]);
+        assert_eq!(styles[0], styles[2]);
+        press(&mut app, KeyCode::Enter);
+        assert_permission_response(&mut first, "first-always");
+        assert_pending(&mut second);
+        press(&mut app, KeyCode::Enter);
+        assert_permission_response(&mut second, "second-once");
+        assert_eq!(app.input.text(), "preserved draft");
+        assert!(commands.try_recv().is_err(), "answering must not submit or cancel the turn");
+        let MessageBlock::Text(text) = &app.transcript.messages[0].blocks[0] else {
+            panic!("user transcript");
+        };
+        assert_eq!(text.text, "preserved transcript");
+    }
+
+    #[test]
+    fn plan_vertical_keys_select_options_and_escape_rejects_only_the_current_request() {
+        use crate::app::test_support::{
+            app_with_connection, assert_pending, assert_permission_response, press,
+        };
+        for (plan, keys, expected) in [
+            (true, vec![KeyCode::Down, KeyCode::Enter], "first-reject"),
+            (true, vec![KeyCode::Down, KeyCode::Up, KeyCode::Enter], "first-approve"),
+            (true, vec![KeyCode::Esc], "first-reject"),
+            (false, vec![KeyCode::Esc], "first-deny"),
+        ] {
+            let (mut app, mut commands) = app_with_connection();
+            app.status = AppStatus::Running;
+            let mut first = admitted_permission(&mut app, "first", plan);
+            let mut second = admitted_permission(&mut app, "second", false);
+            app.input.set_text("keep draft");
+            for key in keys {
+                press(&mut app, key);
+                if plan && matches!(key, KeyCode::Down | KeyCode::Up) {
+                    let styles =
+                        card_option_styles(&mut app, "first", &["Approve plan", "Reject plan"]);
+                    let selected = usize::from(key == KeyCode::Down);
+                    assert!(styles[selected].add_modifier.contains(ratatui::style::Modifier::BOLD));
+                    assert!(
+                        !styles[1 - selected].add_modifier.contains(ratatui::style::Modifier::BOLD)
+                    );
+                }
+            }
+            assert_permission_response(&mut first, expected);
+            assert_pending(&mut second);
+            assert!(commands.try_recv().is_err(), "first Escape must not cancel the turn");
+            press(&mut app, KeyCode::Enter);
+            assert_permission_response(&mut second, "second-once");
+            assert_eq!(app.input.text(), "keep draft");
+        }
     }
 }

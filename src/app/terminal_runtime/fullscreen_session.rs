@@ -1,22 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::app::App;
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use std::io::Stdout;
 
-type StdoutTerminal = Terminal<CrosstermBackend<Stdout>>;
-
-pub(super) struct FullscreenTerminalSession {
-    terminal: StdoutTerminal,
+pub(super) struct FullscreenTerminalSession<B: Backend = CrosstermBackend<Stdout>> {
+    terminal: Terminal<B>,
 }
 
-impl FullscreenTerminalSession {
-    pub(super) fn new() -> anyhow::Result<Self> {
-        Terminal::new(CrosstermBackend::new(std::io::stdout()))
+impl<B: Backend<Error = std::io::Error>> FullscreenTerminalSession<B> {
+    pub(super) fn new(backend: B) -> anyhow::Result<Self> {
+        Terminal::new(backend)
             .map(|terminal| Self { terminal })
-            .map_err(|err| anyhow!("failed to construct fullscreen terminal session: {err}"))
+            .context("failed to construct fullscreen terminal session")
     }
 
     pub(super) fn draw(&mut self, app: &mut App) -> anyhow::Result<()> {

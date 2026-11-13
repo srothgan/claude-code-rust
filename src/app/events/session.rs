@@ -57,7 +57,7 @@ pub(super) fn handle_connected_client_event(app: &mut App, event: ConnectedEvent
     if let Some(slot) = take_connection_slot() {
         app.session_runtime.conn = Some(slot.conn);
     }
-    app.startup.mark_connected(std::time::Instant::now());
+    app.startup.mark_connected(crate::app::input_event_now());
     apply_session_cwd(app, cwd);
     reset_for_new_session(
         app,
@@ -690,23 +690,14 @@ fn push_connection_error_message(app: &mut App, error: &str) {
     push_system_message_with_severity(app, None, &message);
 }
 
-fn shorten_cwd_display(cwd_raw: &str) -> String {
-    if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if cwd_raw.starts_with(home_str.as_ref()) {
-            return format!("~{}", &cwd_raw[home_str.len()..]);
-        }
-    }
-    cwd_raw.to_owned()
-}
-
 fn sync_welcome_cwd(app: &mut App) {
     app.sync_welcome_snapshot();
 }
 
 pub(super) fn apply_session_cwd(app: &mut App, cwd_raw: String) {
     app.cwd_raw = cwd_raw;
-    app.cwd = shorten_cwd_display(&app.cwd_raw);
+    let home = app.settings_home_override.clone().or_else(dirs::home_dir);
+    app.cwd = super::super::cwd::display(std::path::Path::new(&app.cwd_raw), home.as_deref());
     app.sync_git_context();
     sync_welcome_cwd(app);
     app.reconcile_trust_state_from_preferences_and_cwd();
@@ -737,8 +728,7 @@ fn maybe_open_startup_session_picker(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::file_index::FileCandidate;
-    use crate::app::{App, MessageRole, PendingUserMessage};
+    use crate::app::{App, PendingUserMessage};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -827,35 +817,63 @@ mod tests {
 
     #[test]
     fn startup_diagnostics_preserve_reason_and_bounded_redacted_sdk_guidance() {
-        let failure = crate::agent::events::ConnectionFailure {
-            message: "raw error".to_owned(),
-            startup_failure: Some(crate::agent::types::StartupFailure {
-                reason: "future_reason".to_owned(),
-                errors: vec![
-                    format!(
-                        "SDK worktree guidance ANTHROPIC_API_KEY=private-key Bearer private-token {}",
-                        "x".repeat(2_000)
-                    );
-                    20
-                ],
-            }),
-            request_id: Some("connect-logs".to_owned()),
-        };
-        let startup = failure.startup_failure.as_ref().expect("startup failure");
-        let (reason, errors) = startup_failure_diagnostics(startup);
-        assert_eq!(reason, "future_reason");
-        assert_eq!(errors.len(), 8);
-        assert!(errors.iter().all(|error| error.chars().count() == 1_024));
-        assert!(errors.iter().all(|error| error.contains("SDK worktree guidance")));
-        assert!(errors.iter().all(|error| error.contains("[redacted]")));
-        assert!(
-            errors
-                .iter()
-                .all(|error| !error.contains("private-key") && !error.contains("private-token"))
-        );
         let mut app = App::test_default();
-        handle_connection_failure(&mut app, &failure);
-        assert_eq!(app.transcript.messages.len(), 1);
+        let mut errors = vec![
+            format!(
+                "SAFE filesystem guidance ANTHROPIC_API_KEY=error-secret {} OMITTED_LONG_TAIL",
+                "\u{754c}".repeat(1500)
+            ),
+            "SAFE shell guidance Bearer bearer-secret".into(),
+        ];
+        errors.extend((2..8).map(|i| format!("SAFE guidance {i}")));
+        errors.push("OMITTED_NINTH_ENTRY".into());
+        let records = crate::logging::test_capture::capture(|| {
+            super::super::handle_client_event(
+                &mut app,
+                crate::agent::events::ClientEvent::ConnectionFailed(
+                    crate::agent::events::ConnectionFailure {
+                        message: "RAW_PRIVATE_DETAIL".into(),
+                        startup_failure: Some(crate::agent::types::StartupFailure {
+                            reason: "future_reason ANTHROPIC_API_KEY=reason-secret".into(),
+                            errors,
+                        }),
+                        request_id: Some("connect-diagnostic-owner".into()),
+                    },
+                ),
+            );
+        });
+        let record = records.iter().find(|r| r["event_name"] == "sdk_startup_failed").unwrap();
+        assert_eq!(record["request_id"], "connect-diagnostic-owner");
+        assert!(record["startup_failure_reason"].as_str().unwrap().starts_with("future_reason"));
+        let values: Vec<String> =
+            serde_json::from_str(record["startup_failure_errors"].as_str().unwrap()).unwrap();
+        assert_eq!(values.len(), 8);
+        assert!(values[0].contains("SAFE filesystem guidance"));
+        assert!(values[1].contains("SAFE shell guidance"));
+        for (i, value) in values.iter().enumerate().skip(2) {
+            assert_eq!(value, &format!("SAFE guidance {i}"));
+        }
+        assert!(values.iter().all(|v| v.chars().count() <= 1024));
+        assert!(values[1].chars().count() < 1024);
+        assert!(record["startup_failure_reason"].as_str().unwrap().chars().count() <= 1024);
+        let captured = serde_json::to_string(&records).unwrap();
+        for secret in [
+            "error-secret",
+            "bearer-secret",
+            "reason-secret",
+            "OMITTED_LONG_TAIL",
+            "OMITTED_NINTH_ENTRY",
+            "RAW_PRIVATE_DETAIL",
+        ] {
+            assert!(!captured.contains(secret), "private fixture value appeared in diagnostics");
+        }
+        let shown = crate::app::test_support::transcript_region(&mut app, 0);
+        assert!(shown.contains("Claude Code startup failed"));
+        assert!(
+            !shown.contains("SAFE filesystem")
+                && !shown.contains("PRIVATE")
+                && !shown.contains("secret")
+        );
     }
 
     fn wait_for(app: &mut App, timeout: Duration, mut predicate: impl FnMut(&App) -> bool) {
@@ -871,177 +889,236 @@ mod tests {
         assert!(predicate(app), "condition not met before timeout");
     }
 
-    fn candidate(rel_path: &str) -> FileCandidate {
-        FileCandidate {
-            rel_path: rel_path.to_owned(),
-            rel_path_lower: rel_path.to_lowercase(),
-            basename_lower: rel_path.rsplit('/').next().unwrap_or(rel_path).to_lowercase(),
-            depth: rel_path.matches('/').count(),
+    #[test]
+    fn rewind_outcomes_report_owned_totals_and_release_the_pending_command() {
+        use crate::agent::events::ClientEvent;
+        use crate::app::test_support::*;
+        for skipped in [None, Some(0), Some(4)] {
+            let (mut app, mut rx) = rewind_fixture();
+            begin_fixture_rewind(&mut app, &mut rx, "code");
+            app.input.set_text("next unsent draft");
+            let mut result = rewind_outcome(skipped);
+            result.session_id = "stale-session".into();
+            super::super::handle_client_event(
+                &mut app,
+                ClientEvent::RewindResultReceived { result: result.clone() },
+            );
+            assert!(!app.composer_access().can_submit());
+            assert!(rewind_notices(&app).is_empty());
+            result.session_id = "session-1".into();
+            super::super::handle_client_event(
+                &mut app,
+                ClientEvent::RewindResultReceived { result },
+            );
+            let expected = if skipped.is_some_and(|v| v > 0) {
+                SystemSeverity::Warning
+            } else {
+                SystemSeverity::Info
+            };
+            let notices = rewind_notices(&app);
+            assert_eq!(notices.len(), 1);
+            assert_eq!(notices[0].0, expected);
+            let index = notices[0].1;
+            let shown = transcript_region(&mut app, index);
+            for fragment in ["3 files", "11 insertions", "7 deletions"] {
+                assert!(shown.contains(fragment), "{shown}");
+            }
+            assert_eq!(shown.contains("4 unsafe linked paths"), skipped == Some(4));
+            assert_eq!(app.input.text(), "next unsent draft");
+            assert!(app.composer_access().can_submit());
+            assert!(rx.try_recv().is_err());
+            crate::app::input_submit::submit_input(&mut app);
+            expect_session_prompt(&mut rx, "session-1", "next unsent draft", &[], &[]);
         }
     }
 
-    fn successful_rewind(skipped_links: Option<u64>) -> model::RewindResult {
+    #[test]
+    fn session_root_handoff_replaces_selectable_file_completions() {
+        use crate::app::test_support::*;
+        for replacement in [false, true] {
+            let old = tempfile::tempdir().unwrap();
+            let new = tempfile::tempdir().unwrap();
+            std::fs::write(old.path().join("before.rs"), "old root").unwrap();
+            std::fs::write(new.path().join("after.rs"), "new root").unwrap();
+            let (mut app, mut rx) = app_with_connection();
+            super::super::handle_client_event(
+                &mut app,
+                session_connection("session-1", old.path()),
+            );
+            drain_session_refreshes(&mut rx, "session-1");
+            select_root_candidate(&mut app, "@before", "before.rs");
+            let event = if replacement {
+                session_replacement("new-root", new.path(), vec![], None)
+            } else {
+                session_connection("new-root", new.path())
+            };
+            super::super::handle_client_event(&mut app, event);
+            drain_session_refreshes(&mut rx, "new-root");
+            select_root_candidate(&mut app, "@after", "after.rs");
+            assert!(
+                app.mention.as_ref().unwrap().candidates.iter().all(|c| c.rel_path != "before.rs")
+            );
+            press(&mut app, crossterm::event::KeyCode::Tab);
+            assert_eq!(app.input.text(), "@'after.rs' ");
+            press(&mut app, crossterm::event::KeyCode::Char('!'));
+            crate::app::input_submit::submit_input(&mut app);
+            expect_session_prompt(&mut rx, "new-root", "@'after.rs' !", &[], &[]);
+        }
+    }
+
+    fn select_root_candidate(app: &mut App, query: &str, expected: &str) {
+        app.input.set_text(query);
+        crate::app::mention::sync_with_cursor(app);
+        wait_for(app, Duration::from_secs(5), |app| {
+            app.mention
+                .as_ref()
+                .is_some_and(|m| m.candidates.iter().any(|c| c.rel_path == expected))
+        });
+        assert_eq!(app.mention.as_ref().unwrap().candidates[0].rel_path, expected);
+    }
+
+    fn rewind_fixture() -> (App, crate::agent::client::CommandReceiver) {
+        use crate::app::test_support::*;
+        let (mut app, mut rx) = app_with_connection();
+        app.input.set_text("Original user source");
+        crate::app::input_submit::submit_input(&mut app);
+        expect_session_prompt(&mut rx, "session-1", "Original user source", &[], &[]);
+        deliver_update(
+            &mut app,
+            source_chunk("Original answer preserved", "original-answer", false),
+        );
+        super::super::handle_client_event(
+            &mut app,
+            crate::agent::events::ClientEvent::TurnComplete {
+                session_id: "session-1".into(),
+                queued_turn_count: None,
+                terminal_reason: None,
+            },
+        );
+        drain_session_refreshes(&mut rx, "session-1");
+        (app, rx)
+    }
+
+    fn begin_fixture_rewind(
+        app: &mut App,
+        rx: &mut crate::agent::client::CommandReceiver,
+        mode: &str,
+    ) {
+        app.sdk_inventory.rewind_targets = vec![model::RewindTarget {
+            uuid: "target-user".into(),
+            first_text: "Target source".into(),
+            input_text: "Target source".into(),
+            index: 0,
+            previous_assistant_uuid: None,
+            resume_anchor_uuid: None,
+        }];
+        assert!(crate::app::slash::try_handle_submit(app, &format!("/rewind target-user {mode}")));
+        let crate::agent::wire::BridgeCommand::Rewind {
+            session_id,
+            target_user_message_id,
+            restore_mode,
+            ..
+        } = rx.try_recv().unwrap().command
+        else {
+            panic!("Rewind");
+        };
+        assert_eq!(session_id, "session-1");
+        assert_eq!(target_user_message_id, "target-user");
+        assert_eq!(
+            restore_mode,
+            if mode == "both" {
+                crate::agent::types::RewindRestoreMode::Both
+            } else {
+                crate::agent::types::RewindRestoreMode::Code
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    fn rewind_outcome(skipped_links: Option<u64>) -> model::RewindResult {
         model::RewindResult {
-            session_id: "session-1".to_owned(),
+            session_id: "session-1".into(),
             restore_mode: model::RewindRestoreMode::Code,
             status: model::RewindResultStatus::Success,
             file_result: Some(model::RewindFilesResult {
                 can_rewind: true,
                 error: None,
-                files_changed: vec!["src/main.rs".to_owned()],
-                insertions: Some(2),
-                deletions: Some(1),
+                files_changed: vec!["one.rs".into(), "two.rs".into(), "three.rs".into()],
+                insertions: Some(11),
+                deletions: Some(7),
                 skipped_links,
             }),
             message: None,
         }
     }
 
-    #[test]
-    fn successful_rewind_reports_skipped_unsafe_paths_without_inflating_file_count() {
-        assert_eq!(
-            rewind_result_message(&successful_rewind(None)),
-            "Restored code for 1 file (2 insertions, 1 deletions)."
-        );
-        assert_eq!(
-            rewind_result_message(&successful_rewind(Some(0))),
-            "Restored code for 1 file (2 insertions, 1 deletions)."
-        );
-        assert_eq!(
-            rewind_result_message(&successful_rewind(Some(2))),
-            "Restored tracked code for 1 file (2 insertions, 1 deletions), but 2 unsafe linked paths were skipped."
-        );
+    fn rewind_notices(app: &App) -> Vec<(SystemSeverity, usize)> {
+        app.transcript
+            .messages
+            .iter()
+            .enumerate()
+            .flat_map(|(i, m)| {
+                m.blocks.iter().filter_map(move |b| {
+                    if let crate::app::MessageBlock::Notice(n) = b {
+                        Some((n.severity, i))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect()
     }
 
     #[test]
-    fn connection_failure_recovers_pending_user_messages_into_composer() {
-        let mut app = App::test_default();
-        assert!(
-            app.pending_user_messages
-                .try_push_sending(PendingUserMessage::sending(
-                    "message-1".to_owned(),
-                    "queued message".to_owned(),
-                    Vec::new(),
-                ))
-                .is_ok()
+    fn partial_rewind_preserves_the_conversation_and_reports_applied_code_with_its_failure() {
+        use crate::agent::events::ClientEvent;
+        use crate::app::test_support::*;
+        let (mut app, mut rx) = rewind_fixture();
+        let original_ids: Vec<_> = app.transcript.messages.iter().map(|m| m.id).collect();
+        begin_fixture_rewind(&mut app, &mut rx, "both");
+        app.input.set_text("Unsent next draft");
+        let draft = app.input.snapshot();
+        let mut result = rewind_outcome(Some(2));
+        result.restore_mode = model::RewindRestoreMode::Both;
+        result.status = model::RewindResultStatus::PartialFailure;
+        result.session_id = "stale-session".into();
+        result.message = Some("STALE partial failure".into());
+        super::super::handle_client_event(
+            &mut app,
+            ClientEvent::RewindResultReceived { result: result.clone() },
         );
-        app.input.set_text("newer draft");
-
-        handle_connection_failed_event(&mut app, "bridge stopped");
-
-        assert!(app.pending_user_messages.is_empty());
-        assert_eq!(app.input.text(), "queued message\nnewer draft");
-        assert_eq!(app.status, AppStatus::Error);
-    }
-
-    #[test]
-    fn successful_rewind_with_skips_emits_warning() {
-        let mut app = App::test_default();
-        app.session_runtime.session_id = Some(model::SessionId::new("session-1"));
-
-        handle_rewind_result_event(&mut app, &successful_rewind(Some(1)));
-
-        let message = app.transcript.messages.last().expect("rewind notice");
-        assert!(matches!(message.role, MessageRole::System(Some(SystemSeverity::Warning))));
-    }
-
-    #[test]
-    fn fast_mode_disabled_reason_wording_covers_target_values() {
-        for reason in [
-            "free",
-            "preference",
-            "extra_usage_disabled",
-            "network_error",
-            "unknown",
-            "not_first_party",
-            "disabled_by_env",
-            "model_not_allowed",
-            "sdk_opt_in_required",
-            "pending",
-            "future-reason",
-        ] {
-            assert!(!fast_mode_disabled_message(reason).is_empty());
+        assert!(rewind_notices(&app).is_empty());
+        assert!(!app.composer_access().can_submit());
+        result.session_id = "session-1".into();
+        result.message = Some(
+            "Code was restored, but conversation commit failed: fixture commit refused".into(),
+        );
+        super::super::handle_client_event(&mut app, ClientEvent::RewindResultReceived { result });
+        assert_eq!(app.session_runtime.session_id.as_ref().unwrap().as_str(), "session-1");
+        assert_eq!(app.input.snapshot(), draft);
+        assert_eq!(
+            app.transcript
+                .messages
+                .iter()
+                .take(original_ids.len())
+                .map(|m| m.id)
+                .collect::<Vec<_>>(),
+            original_ids
+        );
+        let notices = rewind_notices(&app);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].0, SystemSeverity::Error);
+        let shown = transcript_region(&mut app, notices[0].1);
+        for fragment in
+            ["Code was restored", "conversation commit failed", "fixture commit refused"]
+        {
+            assert!(shown.contains(fragment), "{shown}");
         }
-    }
-
-    #[test]
-    fn connected_refreshes_file_index_candidates_for_new_cwd() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("new.rs"), "").expect("write file");
-        let mut app = App::test_default();
-        app.file_index.generation = 3;
-        app.file_index.entries.insert("stale.rs".to_owned(), candidate("stale.rs"));
-        app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
-
-        handle_connected_client_event(
-            &mut app,
-            ConnectedEventData {
-                session_id: model::SessionId::new("session-1"),
-                cwd: dir.path().to_string_lossy().into_owned(),
-                current_model: model::CurrentModel::new("model", "model", "model")
-                    .authoritative(true),
-                available_models: Vec::new(),
-                mode: None,
-                fast_mode_state: model::FastModeState::Off,
-                fast_mode_disabled_reason: None,
-                ultracode: None,
-                history_updates: Vec::new(),
-            },
-        );
-
-        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
-        assert!(app.file_index.generation > 3);
-        assert!(app.file_index.scan.is_some());
-        assert!(app.file_index.watch.is_some());
-        assert!(app.file_index.entries.is_empty());
-        assert!(app.mention.is_none());
-        wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.status.is_finished() && app.file_index.entries.contains_key("new.rs")
-        });
-        assert_eq!(
-            app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["new.rs"]
-        );
-    }
-
-    #[test]
-    fn session_replaced_refreshes_file_index_candidates_for_replaced_cwd() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("after.rs"), "").expect("write file");
-        let mut app = App::test_default();
-        app.file_index.generation = 8;
-        app.file_index.entries.insert("before.rs".to_owned(), candidate("before.rs"));
-        app.file_index.status = crate::app::file_index::FileIndexStatus::Complete;
-
-        handle_session_replaced_event(
-            &mut app,
-            SessionReplacedEventData {
-                session_id: model::SessionId::new("session-2"),
-                cwd: dir.path().to_string_lossy().into_owned(),
-                current_model: model::CurrentModel::new("model", "model", "model")
-                    .authoritative(true),
-                available_models: Vec::new(),
-                mode: None,
-                fast_mode_state: model::FastModeState::Off,
-                fast_mode_disabled_reason: None,
-                ultracode: None,
-                history_updates: Vec::new(),
-                restored_input: None,
-            },
-        );
-
-        assert_eq!(app.file_index.root.as_deref(), Some(dir.path()));
-        assert!(app.file_index.generation > 8);
-        assert!(app.file_index.scan.is_some());
-        assert!(app.file_index.watch.is_some());
-        assert!(app.file_index.entries.is_empty());
-        assert!(app.mention.is_none());
-        wait_for(&mut app, Duration::from_secs(2), |app| {
-            app.file_index.status.is_finished() && app.file_index.entries.contains_key("after.rs")
-        });
-        assert_eq!(
-            app.file_index.entries.keys().map(String::as_str).collect::<Vec<_>>(),
-            vec!["after.rs"]
-        );
+        assert!(!shown.contains("STALE"));
+        assert!(rx.try_recv().is_err());
+        assert!(app.composer_access().can_submit());
+        assert!(app.transcript.messages.iter().any(|m|m.blocks.iter().any(|b|matches!(b,crate::app::MessageBlock::Text(t) if t.text == "Original answer preserved"))));
+        crate::app::input_submit::submit_input(&mut app);
+        expect_session_prompt(&mut rx, "session-1", "Unsent next draft", &[], &[]);
     }
 }

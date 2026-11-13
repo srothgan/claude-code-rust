@@ -2,7 +2,7 @@
 
 use super::super::{App, NoticeDedupKey, RateLimitIncidentKey, SystemSeverity};
 use crate::agent::model;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 fn format_rate_limit_type(raw: &str) -> &str {
     match raw {
@@ -19,10 +19,8 @@ fn format_rate_limit_type(raw: &str) -> &str {
 }
 
 /// Format an epoch timestamp as a countdown and UTC wall-clock: "4h 23m at 14:30 UTC".
-fn format_resets_at(epoch_secs: f64) -> String {
+fn format_resets_at(epoch_secs: f64, now: SystemTime) -> String {
     use std::time::{Duration, UNIX_EPOCH};
-
-    let now = std::time::SystemTime::now();
 
     let countdown = match (UNIX_EPOCH + Duration::from_secs_f64(epoch_secs)).duration_since(now) {
         Ok(d) => {
@@ -46,7 +44,7 @@ fn format_resets_at(epoch_secs: f64) -> String {
     format!("{countdown} at {h:02}:{m:02} UTC")
 }
 
-fn format_rate_limit_warning(update: &model::RateLimitUpdate) -> String {
+fn format_rate_limit_warning(update: &model::RateLimitUpdate, now: SystemTime) -> String {
     let intro = if update.limit_scope.as_deref() == Some("group_pool") {
         "Approaching shared group rate limit"
     } else {
@@ -93,7 +91,7 @@ fn format_rate_limit_warning(update: &model::RateLimitUpdate) -> String {
     // Resets in X at HH:MM
     if let Some(resets_at) = update.resets_at {
         use std::fmt::Write;
-        let _ = write!(message, " Resets in {}.", format_resets_at(resets_at));
+        let _ = write!(message, " Resets in {}.", format_resets_at(resets_at, now));
     }
 
     message
@@ -115,6 +113,10 @@ fn reset_bucket_from_epoch_secs(value: f64) -> Option<u64> {
 }
 
 pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitUpdate) {
+    handle_rate_limit_update_at(app, update, SystemTime::now());
+}
+
+fn handle_rate_limit_update_at(app: &mut App, update: &model::RateLimitUpdate, now: SystemTime) {
     tracing::debug!(
         target: crate::logging::targets::APP_SESSION,
         event_name = "rate_limit_update_applied",
@@ -137,7 +139,7 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
         // Rejections are reported by the turn result, which carries its own error text.
         model::RateLimitStatus::Allowed | model::RateLimitStatus::Rejected => {}
         model::RateLimitStatus::AllowedWarning => {
-            let summary = format_rate_limit_warning(update);
+            let summary = format_rate_limit_warning(update, now);
             super::notices::upsert_turn_notice(
                 app,
                 rate_limit_notice_key(update),
@@ -149,78 +151,5 @@ pub(super) fn handle_rate_limit_update(app: &mut App, update: &model::RateLimitU
 }
 
 #[cfg(test)]
-mod tests {
-    use super::format_rate_limit_warning;
-    use crate::agent::model::{RateLimitStatus, RateLimitUpdate};
-
-    #[test]
-    fn overage_warning_requires_enabled_and_available_allowance() {
-        for enabled in [None, Some(false), Some(true)] {
-            for status in [
-                None,
-                Some(RateLimitStatus::Allowed),
-                Some(RateLimitStatus::AllowedWarning),
-                Some(RateLimitStatus::Rejected),
-            ] {
-                for disabled_reason in [None, Some("out_of_credits")] {
-                    let update: RateLimitUpdate = serde_json::from_value(serde_json::json!({
-                        "status": "allowed_warning", "overage_enabled": enabled,
-                        "overage_status": status, "overage_disabled_reason": disabled_reason,
-                        "is_using_overage": false
-                    }))
-                    .expect("warning fixture");
-                    let summary = format_rate_limit_warning(&update);
-                    let available = enabled == Some(true)
-                        && matches!(
-                            status,
-                            Some(RateLimitStatus::Allowed | RateLimitStatus::AllowedWarning)
-                        )
-                        && disabled_reason.is_none();
-                    assert_eq!(
-                        summary.contains("can continue"),
-                        available,
-                        "{update:?}: {summary}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn current_use_does_not_override_an_unavailable_allowance() {
-        for disabled in [false, true] {
-            let update: RateLimitUpdate = serde_json::from_value(serde_json::json!({
-                "status": "allowed_warning", "overage_enabled": !disabled,
-                "is_using_overage": true
-            }))
-            .expect("warning fixture");
-            let summary = format_rate_limit_warning(&update);
-            assert_eq!(summary.contains("are using"), !disabled);
-            assert!(!summary.contains("can continue"));
-        }
-    }
-
-    #[test]
-    fn seven_day_overage_included_rate_limit_type_renders_readable_label() {
-        let update = RateLimitUpdate {
-            status: RateLimitStatus::AllowedWarning,
-            error_code: None,
-            resets_at: None,
-            utilization: Some(0.92),
-            rate_limit_type: Some("seven_day_overage_included".to_owned()),
-            limit_scope: None,
-            overage_enabled: None,
-            overage_status: None,
-            overage_resets_at: None,
-            overage_disabled_reason: None,
-            is_using_overage: None,
-            surpassed_threshold: None,
-            can_user_purchase_credits: None,
-            has_chargeable_saved_payment_method: None,
-        };
-
-        let summary = format_rate_limit_warning(&update);
-        assert!(summary.contains("7-day overage-included rate limit"));
-        assert!(!summary.contains("seven_day_overage_included"));
-    }
-}
+#[path = "rate_limit_audit_tests.rs"]
+mod audit_tests;

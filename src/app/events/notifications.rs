@@ -39,6 +39,9 @@ mod tests {
     use serde_json::{Value, json};
     use std::cell::RefCell;
 
+    #[path = "notification_audit_tests.rs"]
+    mod live_feedback;
+
     thread_local! { static DELIVERIES: RefCell<Vec<NotificationDelivery>> = const { RefCell::new(Vec::new()) }; }
     fn collect(delivery: NotificationDelivery) {
         DELIVERIES.with(|items| items.borrow_mut().push(delivery));
@@ -74,8 +77,11 @@ mod tests {
         );
     }
     fn sdk(app: &mut App, notification: &Value, replay: bool) {
+        sdk_session(app, "session-1", notification, replay);
+    }
+    fn sdk_session(app: &mut App, session: &str, notification: &Value, replay: bool) {
         let envelope: crate::agent::wire::EventEnvelope = serde_json::from_value(json!({
-            "event": "session_update", "session_id": "session-1", "update": { "type": "notification_update", "notification": notification, "replay": replay }
+            "event": "session_update", "session_id": session, "update": { "type": "notification_update", "notification": notification, "replay": replay }
         })).expect("SDK notification wire event");
         let crate::agent::wire::BridgeEvent::SessionUpdate { update: wire_update, .. } =
             envelope.event
@@ -87,7 +93,13 @@ mod tests {
         else {
             panic!("notification update")
         };
-        update(app, model::SessionUpdate::NotificationUpdate { notification, replay });
+        crate::app::handle_client_event(
+            app,
+            ClientEvent::SessionUpdate {
+                session_id: session.into(),
+                update: model::SessionUpdate::NotificationUpdate { notification, replay },
+            },
+        );
     }
     fn proactive(id: &str) -> Value {
         json!({ "origin": "model_tool", "session_id": "session-1", "tool_use_id": id, "text": "Review is ready", "push_sent": true, "local_sent": false, "disabled_reason": "no_transport", "sent_at": "2026-10-04T10:00:00Z" })
@@ -170,204 +182,5 @@ mod tests {
         assert_eq!(delivered["notification_method"], "TerminalBell");
         assert_eq!(delivered["ring_bell"], true);
         assert!(!serde_json::to_string(&logs).expect("diagnostics").contains("Review is ready"));
-    }
-
-    #[test]
-    fn history_reconnect_and_sdk_replay_preserve_transcript_without_resending_alerts() {
-        let mut app = app();
-        app.notifications.on_focus_lost();
-        let history = vec![
-            model::SessionUpdate::NotificationUpdate {
-                notification: serde_json::from_value(notice("history-notice")).expect("notice"),
-                replay: false,
-            },
-            model::SessionUpdate::ToolCall(
-                model::ToolCall::new("old-tool", "Old notification")
-                    .status(model::ToolCallStatus::Completed),
-            ),
-        ];
-        super::super::session_reset::load_resume_history(&mut app, &history);
-        sdk(&mut app, &proactive("old-tool"), false);
-        sdk(&mut app, &proactive("sdk-replay"), true);
-        sdk(&mut app, &proactive("sdk-replay"), false);
-        assert!(deliveries().is_empty());
-        sdk(&mut app, &notice("history-notice"), false);
-        sdk(&mut app, &notice("new-notice"), false);
-        sdk(&mut app, &notice("new-notice"), false);
-        let text = |app: &App| {
-            app.transcript
-                .messages
-                .iter()
-                .flat_map(|message| &message.blocks)
-                .filter_map(|block| match block {
-                    crate::app::MessageBlock::Notice(notice) => Some(notice.text.text.as_str()),
-                    _ => None,
-                })
-                .filter(|text| *text == "Native notice")
-                .count()
-        };
-        assert_eq!(text(&app), 2); // Reused native key is a new notice with a new UUID.
-        super::super::session_reset::load_resume_history(&mut app, &history);
-        assert_eq!(text(&app), 1); // Reconnect rebuilds historical visibility.
-        sdk(&mut app, &proactive("new-live-tool"), false);
-        assert_eq!(deliveries().len(), 1);
-    }
-
-    #[test]
-    fn waiting_questions_notify_once_and_respect_the_actions_category() {
-        let logs = notification_logs(|| {
-            let mut app = app();
-            app.notifications.on_focus_lost();
-            for (id, enabled) in [
-                ("question-loading", None),
-                ("question-off", Some(false)),
-                ("question-on", Some(true)),
-            ] {
-                if let Some(enabled) = enabled {
-                    set(&mut app, "notifications.actionsRequired", json!(enabled));
-                } else {
-                    app.config.snapshot = None;
-                }
-                let should_notify = enabled == Some(true);
-                update(
-                    &mut app,
-                    model::SessionUpdate::ToolCall(model::ToolCall::new(id, "AskUserQuestion")),
-                );
-                for _ in 0..2 {
-                    let (tx, _rx) = tokio::sync::oneshot::channel();
-                    let request = model::RequestQuestionRequest::new(
-                        "session-1",
-                        model::ToolCallUpdate::new(id, model::ToolCallUpdateFields::new()),
-                        model::QuestionPrompt::new(
-                            "Proceed?",
-                            "Choice",
-                            false,
-                            vec![model::QuestionOption::new("yes", "Yes")],
-                        ),
-                        0,
-                        1,
-                    );
-                    crate::app::events::handle_client_event(
-                        &mut app,
-                        ClientEvent::QuestionRequest {
-                            session_id: "session-1".into(),
-                            request,
-                            response_tx: tx,
-                        },
-                    );
-                }
-                let sent = deliveries();
-                assert_eq!(sent.len(), usize::from(should_notify));
-                if should_notify {
-                    assert!(sent[0].body.contains("Question required"));
-                }
-                crate::app::events::handle_client_event(
-                    &mut app,
-                    ClientEvent::InteractionCancelled {
-                        session_id: "session-1".into(),
-                        interaction_id: id.into(),
-                    },
-                );
-                assert!(app.pending_interaction_ids.is_empty());
-            }
-        });
-        let decisions: Vec<_> = logs
-            .iter()
-            .filter(|record| record["event_name"] == "notification_delivery_decided")
-            .collect();
-        assert_eq!(decisions.len(), 3);
-        for (record, id, reason) in [
-            (decisions[0], "question-loading", "settings_unavailable"),
-            (decisions[1], "question-off", "category_disabled"),
-            (decisions[2], "question-on", "transport_selected"),
-        ] {
-            assert_eq!(record["span"]["session_id"], "session-1");
-            assert_eq!(record["span"]["interaction_id"], id);
-            assert_eq!(record["category"], "QuestionRequired");
-            assert_eq!(record["reason"], reason);
-        }
-        assert_eq!(decisions[2]["outcome"], "dispatch");
-        assert!(!serde_json::to_string(&logs).expect("diagnostics").contains("Proceed?"));
-    }
-
-    #[test]
-    fn actual_waiting_interactions_and_successful_completion_use_independent_categories() {
-        let mut app = app();
-        app.notifications.on_focus_lost();
-        update(
-            &mut app,
-            model::SessionUpdate::ToolCall(model::ToolCall::new("permission-1", "Read a file")),
-        );
-        let permission = || {
-            model::RequestPermissionRequest::new(
-                "session-1",
-                model::ToolCallUpdate::new("permission-1", model::ToolCallUpdateFields::new()),
-                vec![model::PermissionOption::new(
-                    "allow",
-                    "Allow",
-                    model::PermissionOptionKind::AllowOnce,
-                )],
-                None,
-            )
-        };
-        for _ in 0..2 {
-            let (tx, _rx) = tokio::sync::oneshot::channel();
-            crate::app::events::handle_client_event(
-                &mut app,
-                ClientEvent::PermissionRequest {
-                    session_id: "session-1".into(),
-                    request: permission(),
-                    response_tx: tx,
-                },
-            );
-        }
-        assert_eq!(deliveries().len(), 1);
-        crate::app::events::handle_client_event(
-            &mut app,
-            ClientEvent::InteractionCancelled {
-                session_id: "session-1".into(),
-                interaction_id: "permission-1".into(),
-            },
-        );
-        assert!(app.pending_interaction_ids.is_empty());
-        set(&mut app, "notifications.actionsRequired", json!(false));
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        crate::app::events::handle_client_event(
-            &mut app,
-            ClientEvent::PermissionRequest {
-                session_id: "session-1".into(),
-                request: permission(),
-                response_tx: tx,
-            },
-        );
-        assert!(deliveries().is_empty());
-        let complete = || ClientEvent::TurnComplete {
-            session_id: "session-1".into(),
-            queued_turn_count: None,
-            terminal_reason: None,
-        };
-        app.status = crate::app::AppStatus::Running;
-        crate::app::events::handle_client_event(&mut app, complete());
-        crate::app::events::handle_client_event(&mut app, complete());
-        assert_eq!(deliveries().len(), 1);
-        set(&mut app, "notifications.turnComplete", json!(false));
-        app.status = crate::app::AppStatus::Running;
-        crate::app::events::handle_client_event(&mut app, complete());
-        assert!(deliveries().is_empty());
-        set(&mut app, "notifications.turnComplete", json!(true));
-        app.status = crate::app::AppStatus::Running;
-        app.turn.cancel_requested = true;
-        crate::app::events::handle_client_event(&mut app, complete());
-        assert!(deliveries().is_empty());
-        app.status = crate::app::AppStatus::Running;
-        crate::app::events::handle_client_event(
-            &mut app,
-            ClientEvent::TurnComplete {
-                session_id: "session-1".into(),
-                queued_turn_count: None,
-                terminal_reason: Some(crate::agent::types::TerminalReason::AbortedStreaming),
-            },
-        );
-        assert!(deliveries().is_empty());
     }
 }

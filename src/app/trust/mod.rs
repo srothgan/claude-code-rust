@@ -134,3 +134,8 @@ fn is_ctrl_shortcut(key: KeyEvent, ch: char) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod audit_tests;
+#[cfg(test)]
+pub(crate) mod test_support;

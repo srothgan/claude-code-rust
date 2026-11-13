@@ -91,8 +91,7 @@ fn workflow_status_label(value: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::agent::model;
-    use crate::ui::theme;
-    use crate::ui::tool_call::test_support::{rendered_line_texts, tool_call};
+    use crate::ui::tool_call::test_support::{card_body, tool_call};
     use pretty_assertions::assert_eq;
     use serde_json::json;
 
@@ -106,75 +105,83 @@ mod tests {
 
     #[test]
     fn input_body_renders_workflow_fields_without_script_body() {
-        let tc = workflow_tool_call(
-            json!({
-                "name": "spec",
-                "script": "export const meta = { name: 'spec' };",
-                "args": { "topic": "rendering", "retry": false },
-                "scriptPath": "C:/work/.claude/workflows/spec.js",
-                "resumeFromRunId": "run-1"
-            }),
-            None,
-            model::ToolCallStatus::InProgress,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Name: spec",
-                "Script path: C:/work/.claude/workflows/spec.js",
-                "Script: inline",
-                "Args: {\"retry\":false,\"topic\":\"rendering\"}",
-                "Resume run ID: run-1",
-            ]
-        );
-        assert_eq!(lines[0].spans[0].style.fg, Some(theme::DIM));
+        let cases = [
+            (
+                json!({"name":"release-review","args":{"topic":"literal: review","retry":false}}),
+                vec!["Name: release-review"],
+                vec!["Script:", "Script path:", "Resume run ID:"],
+            ),
+            (
+                json!({"script":"export const meta = { name: 'private-source-sentinel', description: 'check', phases: [] };","args":{"topic":"literal: review","retry":false}}),
+                vec!["Script: inline"],
+                vec!["private-source-sentinel", "Name:", "Script path:"],
+            ),
+            (
+                json!({"scriptPath":"C:/work space/check.js","resumeFromRunId":"prior-run-42","args":{"topic":"literal: review","retry":false}}),
+                vec!["Script path: C:/work space/check.js", "Resume run ID: prior-run-42"],
+                vec!["Script: inline", "Name:"],
+            ),
+        ];
+        for (input, expected, absent) in cases {
+            let mut tc = workflow_tool_call(input, None, model::ToolCallStatus::InProgress);
+            let body = card_body(&mut tc, 120);
+            for value in expected {
+                assert!(body.iter().any(|line| line == value), "{body:?}");
+            }
+            for value in absent {
+                assert!(!body.iter().any(|line| line.contains(value)), "{body:?}");
+            }
+            let args = body
+                .iter()
+                .find_map(|line| line.strip_prefix("Args: "))
+                .expect("literal arguments");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(args).unwrap(),
+                json!({"topic":"literal: review","retry":false})
+            );
+        }
     }
 
     #[test]
     fn output_body_renders_status_task_and_optional_fields() {
-        let tc = workflow_tool_call(
-            json!({}),
-            Some(
-                "Status: async launched\nTask ID: wf-1\nTask type: local_workflow\nWorkflow name: spec\nRun ID: run-1\nSummary: started\nTranscript dir: C:/tmp/transcripts\nScript path: C:/tmp/workflow.js\nSession URL: https://claude.ai/session/1\nWarning: branch diverged",
+        for (receipt, status, expected, absent) in [
+            (
+                "Status: async launched\nTask ID: local-task-17\nTask type: local_workflow\nWorkflow name: release-review\nRun ID: local-run-83\nTranscript dir: C:/session/transcripts\nScript path: C:/session/check.js\nWarning: branch diverged",
+                model::ToolCallStatus::Detached,
+                vec![
+                    "Task ID: local-task-17",
+                    "Run ID: local-run-83",
+                    "Transcript dir: C:/session/transcripts",
+                    "Script path: C:/session/check.js",
+                    "Warning: branch diverged",
+                ],
+                vec!["Session URL:", "tc-workflow"],
             ),
-            model::ToolCallStatus::InProgress,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec![
-                "Status: async launched",
-                "Task ID: wf-1",
-                "Task type: local_workflow",
-                "Workflow name: spec",
-                "Run ID: run-1",
-                "Summary: started",
-                "Transcript dir: C:/tmp/transcripts",
-                "Script path: C:/tmp/workflow.js",
-                "Session URL: https://claude.ai/session/1",
-                "Warning: branch diverged",
-            ]
-        );
-    }
-
-    #[test]
-    fn raw_output_labels_are_normalized_defensively() {
-        let tc = workflow_tool_call(
-            json!({}),
-            Some("status: remote_launched\ntaskId: wf-2\nerror: syntax failed"),
-            model::ToolCallStatus::Failed,
-        );
-
-        let lines = render_tool_content(&tc);
-
-        assert_eq!(
-            rendered_line_texts(&lines),
-            vec!["Status: remote launched", "Task ID: wf-2", "Error: syntax failed"]
-        );
+            (
+                "Status: remote launched\nTask ID: remote-task-29\nTask type: remote_workflow\nSession URL: https://claude.ai/session/remote-61\nSummary: remote review started",
+                model::ToolCallStatus::Detached,
+                vec![
+                    "Task ID: remote-task-29",
+                    "Session URL: https://claude.ai/session/remote-61",
+                    "Summary: remote review started",
+                ],
+                vec!["Run ID:", "local-task-17", "tc-workflow"],
+            ),
+            (
+                "Error: syntax failed at check.js:12",
+                model::ToolCallStatus::Failed,
+                vec!["Error: syntax failed at check.js:12"],
+                vec!["Task ID:", "Run ID:", "Session URL:"],
+            ),
+        ] {
+            let mut tc = workflow_tool_call(json!({}), Some(receipt), status);
+            let body = card_body(&mut tc, 120);
+            for value in expected {
+                assert!(body.iter().any(|line| line == value), "{body:?}");
+            }
+            for value in absent {
+                assert!(!body.iter().any(|line| line.contains(value)), "{body:?}");
+            }
+        }
     }
 }
