@@ -20,8 +20,6 @@ use super::{
     TextBlock, TranscriptUpdateSource,
 };
 use crate::agent::model;
-#[cfg(all(test, target_os = "macos"))]
-use crate::app::keys::CMD_MOD;
 #[cfg(test)]
 use crate::app::keys::WORD_NAV_MOD;
 use crate::app::keys::{KeyOutcome, RuntimeCommand, reclaim_input_from_inline_prompt_if_needed};

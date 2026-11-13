@@ -286,7 +286,7 @@ fn archive_preserves_selected_safe_records_and_excludes_private_sources() {
                 "forbidden-environment",
                 "forbidden-project",
             ] {
-                assert!(!text.contains(secret), "{secret}: {text}");
+                assert!(!text.contains(secret), "private fixture value appeared in exported logs");
             }
         }
         for (name, expected) in [

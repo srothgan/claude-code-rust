@@ -322,13 +322,13 @@ async fn host_usage_fallback_preserves_source_policy_cached_data_and_retry() {
                 }
                 let mut server =
                     Server::new(status, body, mode, Some(fixture.project.join("attempts")));
-                let mut oauth = server.probe();
+                let mut http = server.probe();
                 if credential == "missing" {
-                    oauth.credentials = None;
+                    http.credentials = None;
                 } else if credential == "expired" {
-                    oauth.credentials.as_mut().unwrap().expires_at = Some(UNIX_EPOCH);
+                    http.credentials.as_mut().unwrap().expires_at = Some(UNIX_EPOCH);
                 }
-                let _guard = ProbeGuard::install(HostProbe { oauth, cli: fixture.probe() });
+                let _guard = ProbeGuard::install(HostProbe { http, cli: fixture.probe() });
                 let (mut app, commands) = crate::app::test_support::app_with_connection();
                 let mut commands = Some(commands);
                 if origin == "direct" {
@@ -394,7 +394,7 @@ async fn host_usage_fallback_preserves_source_policy_cached_data_and_retry() {
                         Some(fixture.project.join("attempts")),
                     );
                     let _retry = ProbeGuard::install(HostProbe {
-                        oauth: retry.probe(),
+                        http: retry.probe(),
                         cli: fixture.probe(),
                     });
                     request_refresh(&mut app);
@@ -470,7 +470,7 @@ async fn held_host_refresh_carries_original_epoch_and_cwd_and_empty_failure_stay
             let mut server =
                 Server::new(401, "denied", "gated", Some(fixture.project.join("attempts")));
             let _guard =
-                ProbeGuard::install(HostProbe { oauth: server.probe(), cli: fixture.probe() });
+                ProbeGuard::install(HostProbe { http: server.probe(), cli: fixture.probe() });
             let (mut app, _) = crate::app::test_support::app_with_connection();
             app.session_runtime.conn = None;
             app.session_runtime.session_scope_epoch = 7;
@@ -501,7 +501,7 @@ async fn held_host_refresh_carries_original_epoch_and_cwd_and_empty_failure_stay
 
             let mut failure = Server::new(503, "fixture outage", "reply", None);
             let _failure =
-                ProbeGuard::install(HostProbe { oauth: failure.probe(), cli: fixture.probe() });
+                ProbeGuard::install(HostProbe { http: failure.probe(), cli: fixture.probe() });
             let (mut empty, _) = crate::app::test_support::app_with_connection();
             empty.session_runtime.conn = None;
             request_refresh(&mut empty);

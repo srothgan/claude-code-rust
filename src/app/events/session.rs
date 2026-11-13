@@ -865,7 +865,7 @@ mod tests {
             "OMITTED_NINTH_ENTRY",
             "RAW_PRIVATE_DETAIL",
         ] {
-            assert!(!captured.contains(secret), "leaked {secret}");
+            assert!(!captured.contains(secret), "private fixture value appeared in diagnostics");
         }
         let shown = crate::app::test_support::transcript_region(&mut app, 0);
         assert!(shown.contains("Claude Code startup failed"));

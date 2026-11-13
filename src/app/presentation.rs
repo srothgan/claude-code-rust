@@ -739,7 +739,7 @@ mod tests {
             assert!(!shown.contains("Observed"));
             assert!(!shown.contains("(observed)"));
             if let Some(time) = time {
-                assert!(shown.contains(time), "{uuid}: {shown}");
+                assert!(shown.contains(time), "historical message is missing its timestamp");
                 assert!(!message.timing.timestamp.unwrap().observed);
             } else {
                 assert!(message.timing.timestamp.is_none());

@@ -282,7 +282,7 @@ fn format_remaining_until(target: SystemTime, now: SystemTime) -> String {
 
 #[derive(Clone)]
 struct HostProbe {
-    oauth: oauth::Probe,
+    http: oauth::Probe,
     cli: cli::Probe,
 }
 
@@ -292,7 +292,7 @@ impl HostProbe {
         if let Some(probe) = TEST_PROBE.with(|slot| slot.borrow().clone()) {
             return probe;
         }
-        Self { oauth: oauth::Probe::system(), cli: cli::Probe::system() }
+        Self { http: oauth::Probe::system(), cli: cli::Probe::system() }
     }
 }
 
@@ -305,7 +305,7 @@ async fn refresh_snapshot_auto(
     probe: &HostProbe,
     cwd_raw: String,
 ) -> Result<UsageSnapshot, UsageRefreshFailure> {
-    match probe.oauth.fetch_snapshot().await {
+    match probe.http.fetch_snapshot().await {
         Ok(snapshot) => Ok(snapshot),
         Err(error) if error.should_fallback_to_cli() => {
             let oauth_message = error.into_message();

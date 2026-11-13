@@ -180,8 +180,9 @@ try {
       send("message_stop", {});
       res.end();
     } catch (error) {
+      console.error(error);
       res.writeHead(500);
-      res.end(String(error));
+      res.end("Local fixture request failed");
     }
   });
   await new Promise((resolve, reject) => {

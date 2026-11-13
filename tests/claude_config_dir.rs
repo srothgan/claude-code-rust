@@ -126,7 +126,10 @@ impl ProfileFixture {
             "wrong-default-model",
             "wrong-default-theme",
         ] {
-            assert!(!text.contains(secret), "leaked {secret}");
+            assert!(
+                !text.contains(secret),
+                "private fixture value appeared in configuration report"
+            );
         }
     }
 }

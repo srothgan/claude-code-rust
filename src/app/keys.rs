@@ -57,9 +57,6 @@ impl From<bool> for KeyOutcome {
 }
 
 #[cfg(all(test, target_os = "macos"))]
-pub(crate) const CMD_MOD: KeyModifiers = KeyModifiers::SUPER;
-
-#[cfg(all(test, target_os = "macos"))]
 pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::ALT;
 #[cfg(all(test, not(target_os = "macos")))]
 pub(crate) const WORD_NAV_MOD: KeyModifiers = KeyModifiers::CONTROL;

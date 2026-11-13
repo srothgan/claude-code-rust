@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import readline from "node:readline";
@@ -2093,11 +2093,39 @@ test("continue selects the newest eligible project session with correlated fork 
 });
 
 function launchJournal(journal: string): BridgeEnvelope[] {
-  return readFileSync(journal, "utf8")
-    .trim()
+  const source = readFileSync(journal, "utf8");
+  // A native call can still be appending the last record during this snapshot.
+  // Only newline-terminated records have crossed the journal boundary.
+  const end = source.lastIndexOf("\n");
+  if (end < 0) return [];
+  return source.slice(0, end)
     .split("\n")
+    .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as BridgeEnvelope);
 }
+
+test("launch journal exposes complete records while native calls are still appending", () => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "launch-journal-")));
+  const journal = join(directory, "calls.jsonl");
+  try {
+    writeFileSync(journal, "");
+    assert.deepEqual(launchJournal(journal), []);
+    const first = '{"type":"query","queryId":"initial"}\n';
+    const next = Buffer.from('{"type":"query","queryId":"next-🦀"}\n');
+    const split = next.indexOf(Buffer.from("🦀")) + 2;
+    writeFileSync(journal, Buffer.concat([Buffer.from(first), next.subarray(0, split)]));
+    assert.deepEqual(launchJournal(journal), [{ type: "query", queryId: "initial" }]);
+    appendFileSync(journal, next.subarray(split));
+    assert.deepEqual(launchJournal(journal), [
+      { type: "query", queryId: "initial" },
+      { type: "query", queryId: "next-🦀" },
+    ]);
+    appendFileSync(journal, '{"invalid"\n');
+    assert.throws(() => launchJournal(journal), SyntaxError, "complete malformed records remain errors");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("launch dispatch forwards explicit payloads and preserves SDK defaults when options are omitted", async () => {
   for (const explicit of [true, false]) {

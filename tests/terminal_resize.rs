@@ -1865,6 +1865,9 @@ fn activity_stays_above_queue_and_out_of_scrollback_through_wait_resize_and_comp
     test.signal("thinking");
     test.wait_region_text(0, "live", "Thinking");
     test.submit("QUEUED_ACTIVITY", "QUEUED_ACTIVITY");
+    // Enter is deferred until the input drain settles. A following paste must
+    // start only after the queue has accepted this draft.
+    test.wait_region_text(0, "hint", "QUEUED_ACTIVITY");
     let offset = test.log_offset();
     test.paste("DRAFT_ACTIVITY");
     test.wait_composer_text(offset, "DRAFT_ACTIVITY");
@@ -3190,6 +3193,17 @@ fn ctrl_v_attaches_the_system_clipboard_image_and_sends_it_with_the_prompt() {
 
 #[test]
 fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes() {
+    fn dismiss_footer_and_settings(test: &mut TerminalTest) {
+        test.send(b"\x1b");
+        test.wait_until("footer editor closed", |test| {
+            let rows = test.screen_rows();
+            rows.iter().any(|row| row.contains("Footer") && row.contains("Custom layout"))
+                && !rows.iter().any(|row| row.contains("Running subagents"))
+        });
+        // Consecutive raw Escape bytes can decode as one Alt+Escape on Unix.
+        test.send(b"\x1b");
+    }
+
     let inherited = tempfile::tempdir().expect("inherited app profile");
     let inherited_path = inherited.path().join("settings.json");
     let original = include_str!("fixtures/app-settings/hidden-subagents.json");
@@ -3238,8 +3252,7 @@ fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes()
                     .any(|field| field["id"] == "runningSubagents" && field["visible"] == false)
             })
     });
-    test.send(b"\x1b"); // Close footer editor.
-    test.send(b"\x1b"); // Return to chat.
+    dismiss_footer_and_settings(&mut test);
     test.wait_until("saved footer hides count", |test| {
         test.screen_rows().iter().any(|row| row.contains("[READY]") && !row.contains("AGENTS:"))
     });
@@ -3252,8 +3265,7 @@ fn app_preferences_are_isolated_from_an_inherited_profile_for_reads_and_writes()
             .iter()
             .any(|row| row.contains("Running subagents") && row.contains("[ ]"))
     });
-    test.send(b"\x1b");
-    test.send(b"\x1b");
+    dismiss_footer_and_settings(&mut test);
     test.wait_screen("Type a message");
     test.send(b"\x1b[D");
     test.wait_screen_with("Review parser", &["Subagents", "running"]);
