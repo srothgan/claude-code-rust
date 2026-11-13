@@ -855,6 +855,33 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn bash_owner_wake_flag_survives_the_tool_update_wire() {
+        for value in [Some(true), Some(false), None] {
+            let mut bash = serde_json::json!({});
+            if let Some(value) = value {
+                bash["background_wakes_owner"] = serde_json::json!(value);
+            }
+            let envelope: EventEnvelope = serde_json::from_value(serde_json::json!({
+                "event":"session_update","session_id":"s1","update":{"type":"tool_call_update","tool_call_update":{"tool_call_id":"bash-1","fields":{"output_metadata":{"bash":bash}}}}
+            })).expect("wire event");
+            let BridgeEvent::SessionUpdate {
+                update: types::SessionUpdate::ToolCallUpdate { tool_call_update },
+                ..
+            } = envelope.event
+            else {
+                panic!("tool update")
+            };
+            let metadata =
+                tool_call_update.fields.output_metadata.expect("metadata").bash.expect("bash");
+            assert_eq!(metadata.background_wakes_owner, value);
+            assert_eq!(
+                serde_json::to_value(metadata).expect("encoded").get("background_wakes_owner"),
+                Some(&value.map_or(serde_json::Value::Null, serde_json::Value::Bool))
+            );
+        }
+    }
+
+    #[test]
     fn saved_scheduler_and_queue_sections_survive_the_wire_without_losing_item_identity() {
         let fixtures: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/tool-result-times.json"))
@@ -1298,6 +1325,30 @@ mod tests {
             };
             assert_eq!(overage_enabled, enabled);
             assert_eq!(is_using_overage, Some(false));
+        }
+    }
+    #[test]
+    fn usage_recommendations_preserve_optional_availability_and_sdk_fields() {
+        for recommendations in [
+            None,
+            Some(serde_json::json!([])),
+            Some(serde_json::json!([
+                {"key":"future_source", "pct":37.5, "title":"Review the source", "detail":"SDK explanation"}
+            ])),
+        ] {
+            let mut window = serde_json::json!({"request_count":4,"session_count":2});
+            if let Some(value) = &recommendations {
+                window["recommendations"] = value.clone();
+            }
+            let event: BridgeEvent = serde_json::from_value(serde_json::json!({
+                "event":"usage_snapshot", "session_id":"usage-session", "snapshot":{"activity_day":window}
+            })).expect("usage envelope");
+            let BridgeEvent::UsageSnapshot { snapshot: Some(snapshot), .. } = event else {
+                panic!("usage snapshot");
+            };
+            let day = snapshot.activity_day.expect("day");
+            let encoded = serde_json::to_value(day).expect("encoded day");
+            assert_eq!(encoded.get("recommendations"), recommendations.as_ref());
         }
     }
 }

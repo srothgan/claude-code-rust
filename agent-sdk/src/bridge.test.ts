@@ -60,6 +60,10 @@ bridgeSdkLoader.deregister();
 const bridgeFixtureTimers = { setTimeout, clearTimeout };
 
 const STARTUP_REASONS = {
+  managed_settings_not_delivered: true,
+  config_file_invalid: true,
+  initialize_not_first: true,
+  sandbox_required_unavailable: true,
   org_pin_api_key_conflict: true,
   provider_not_allowed: true,
   org_verify_failed: true,
@@ -7730,8 +7734,8 @@ test("TaskCreate publishes its typed task only after the native result and keeps
   const created = publishedTool([...start, ...result], session.sessionId, "create-target");
   assert.equal(created.status, "completed");
   for (const frame of publishedToolFrames(result, session.sessionId, "create-target")) {
-    assert.equal(frame.raw_output, undefined);
-    assert.equal(frame.content, undefined);
+    assert.equal(frame.raw_output, 'Description: Independent created detail\nMetadata: {"phase":"fixture","approved":false}');
+    assert.deepEqual(frame.content, [{ type: "content", content: { type: "text", text: 'Description: Independent created detail\nMetadata: {"phase":"fixture","approved":false}' } }]);
   }
   assert.doesNotMatch(JSON.stringify(result), /NATIVE-CREATE-SUCCESS-PROSE/);
   const follow = captureBridgeEvents(() =>
@@ -9394,7 +9398,7 @@ test("question responses preserve sequential selection, skip and preview ownersh
         toolUseID: "sequential-question",
         updatedInput: {
           ...originalInput,
-          answers: { "Choose target": "Production" },
+          answers: { "Choose target": "Production", "Choose region": "Skipped" },
           annotations: {
             "Choose target": { preview: "EXPLICIT-PREVIEW\n exact  ", notes: "Use production" },
           },
@@ -9694,7 +9698,7 @@ test("invalid advertised-question selections deny only their operation without a
       assert.deepEqual(reuseResult, {
         behavior: "allow",
         toolUseID: "explicit-after-invalid",
-        updatedInput: { ...peerQuestionInput, answers: {} },
+        updatedInput: { ...peerQuestionInput, answers: { "Choose peer route": "Skipped" } },
       });
     });
   }
@@ -17615,4 +17619,129 @@ test("confirmed native receipts and literal REPL channels survive live wire deli
 			);
 		}
 	}
+});
+
+
+test("usage recommendations distinguish unavailable, empty, and partially valid data", () => {
+  const window = (recommendations: unknown) => normalizeStructuredUsage({
+    behaviors: { day: { request_count: 2, session_count: 1, recommendations } },
+  }).activity_day;
+  for (const missing of [undefined, null, "invalid"]) {
+    assert.equal(window(missing)?.recommendations, undefined);
+  }
+  assert.deepEqual(window([])?.recommendations, []);
+  assert.deepEqual(window([
+    null,
+    { key: "plugin", pct: 30, title: "" },
+    { key: "plugin", pct: Number.NaN, title: "Invalid share" },
+    { key: "future", pct: 150, title: " Keep SDK wording ", detail: " Explanation " },
+    { key: "plugin", pct: -1, title: "Review this plugin", detail: 42 },
+  ])?.recommendations, [
+    { key: "future", pct: 100, title: "Keep SDK wording", detail: "Explanation" },
+    { key: "plugin", pct: 0, title: "Review this plugin" },
+  ]);
+});
+
+
+test("usage requests deliver day/week recommendations without applying SDK fixes", async () => {
+  const { readFileSync } = await import("node:fs");
+  const raw = JSON.parse(readFileSync(new URL("../../tests/fixtures/sdk-usage-recommendations.json", import.meta.url), "utf8"));
+  const session = makeSessionState();
+  const query = {
+    async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() {
+      assert.equal(this, query, "preserve the query receiver");
+      return raw;
+    },
+  };
+  session.query = query as unknown as SessionState["query"];
+  session.input.enqueue = () => assert.fail("usage must never enqueue corrective messages");
+  sessions.set(session.sessionId, session);
+  try {
+    const request = parseCommandEnvelope(JSON.stringify({ command: "get_usage", session_id: session.sessionId, request_id: "recommendations" }));
+    assert.ok(request.command.command === "get_usage");
+    const events = await captureBridgeEventsAsync(() => handleSessionDataCommand(
+      request.command as Extract<import("./types.js").BridgeCommand, { command: "get_usage" }>, request.requestId, {
+        generatePersistedSessionTitle, buildSessionMutationOptions, rewindTargetsFromSessionMessages,
+        handleRewind: async () => assert.fail("unused"),
+      },
+    ));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].session_id, session.sessionId);
+    assert.equal(events[0].request_id, "recommendations");
+    const snapshot = events[0].snapshot as import("./types.js").StructuredUsageSnapshot;
+    assert.deepEqual(snapshot.activity_day?.recommendations, [
+      { key: "max_effort", pct: 71, title: "Lower effort for routine work", detail: "Review /effort before your next task." },
+      { key: "plugin", pct: 53, title: "Review the Alpha plugin", detail: "Alpha contributes instructions to local requests." },
+      { key: "plugin", pct: 35, title: "Review the Beta plugin" },
+    ]);
+    assert.deepEqual(snapshot.activity_week?.recommendations, [
+      { key: "future_behavior", pct: 81, title: "Review the weekly workflow", detail: "This suggestion applies to the last seven days." },
+    ]);
+    assert.equal(snapshot.five_hour?.utilization, 42);
+    assert.equal(snapshot.session?.total_cost_usd, 1.25);
+  } finally {
+    sessions.delete(session.sessionId);
+  }
+});
+
+
+test("closing drains an available write-loss frame after the final result without changing success", async () => {
+  const session = makeSessionState();
+  session.connected = true;
+  let closeQuery!: () => void;
+  let reachedFinalResult!: () => void;
+  let initialize!: (value: object) => void;
+  const closed = new Promise<void>(resolve => { closeQuery = resolve; });
+  const resultDelivered = new Promise<void>(resolve => { reachedFinalResult = resolve; });
+  const initialization = new Promise<object>(resolve => { initialize = resolve; });
+  session.query = {
+    initializationResult: () => initialization,
+    close: () => { closeQuery(); initialize({}); },
+    async *[Symbol.asyncIterator]() {
+      yield { type: "result", subtype: "success", is_error: false, result: "Valid answer" };
+      reachedFinalResult();
+      await closed;
+      yield { type: "system", subtype: "session_writes_lost", uuid: "close-loss", error_code: "ENOSPC", lost: ["transcript"], transcript_session_ids: ["saved-before-clear"] };
+    },
+  } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+  const events = await captureBridgeEventsAsync(async () => {
+    startSessionTasks(session);
+    await resultDelivered;
+    await closeSession(session);
+  });
+  const complete = events.findIndex(event => event.event === "turn_complete");
+  const warning = events.findIndex(event => (event.update as { type?: string })?.type === "system_notice_update");
+  assert.ok(complete >= 0 && warning > complete);
+  assert.match(String((events[warning].update as { message: string }).message), /saved-before-clear/);
+  assert.equal(events.some(event => event.event === "turn_error" || event.event === "connection_failed"), false);
+});
+
+
+test("note-only answers stay free text while blank answers use the advertised skip protocol", async () => {
+  for (const advertised of [true, false]) {
+    for (const notes of ["  Use the canary deployment instead  ", "  "]) {
+      const session = makeSessionState();
+      session.sdkCapabilities = new Set(advertised ? ["ask_user_question_unanswered_v1"] : []);
+      session.query = { getSettings: async () => ({ sources: [] }) } as unknown as import("@anthropic-ai/claude-agent-sdk").Query;
+      const input = { questions: [{ question: "Where?", header: "Target", multiSelect: false, options: [{ label: "Production", description: "", preview: "Production preview" }, { label: "Staging", description: "" }] }] };
+      const base = createToolCall("note-question", "AskUserQuestion", input);
+      const events = await captureBridgeEventsAsync(async () => {
+        const pending = requestAskUserQuestionAnswers(session, base.tool_call_id, input, base);
+        await new Promise(resolve => setImmediate(resolve));
+        session.pendingQuestions.get(base.tool_call_id)?.onOutcome({ outcome: "answered", selected_option_ids: [], annotation: { notes } });
+        const result = await pending;
+        assert.equal(result.behavior, "allow");
+        if (result.behavior !== "allow") throw new Error("expected answer");
+        assert.deepEqual(result.updatedInput?.answers, { "Where?": notes.trim() || "Skipped" });
+        assert.deepEqual(result.updatedInput?.annotations, notes.trim()
+          ? { "Where?": { notes: notes.trim() } }
+          : advertised ? { "Where?": { unanswered: "skipped" } } : undefined);
+      });
+      const completed = events.map(event => event.update as { tool_call_update?: { fields?: { status?: string; raw_input?: { question_results?: Array<{ selected_options: unknown[]; annotation?: unknown }> } } } })
+        .find(update => update?.tool_call_update?.fields?.status === "completed")?.tool_call_update?.fields;
+      assert.deepEqual(completed?.raw_input?.question_results?.[0]?.selected_options, []);
+      assert.deepEqual(completed?.raw_input?.question_results?.[0]?.annotation, notes.trim()
+        ? { notes: notes.trim() } : advertised ? { unanswered: "skipped" } : undefined);
+    }
+  }
 });

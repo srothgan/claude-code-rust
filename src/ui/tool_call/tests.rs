@@ -42,6 +42,72 @@ fn rendered_line_texts_trimmed(lines: &[Line<'static>]) -> Vec<String> {
 }
 
 #[test]
+fn task_create_completed_cards_render_saved_descriptions_and_never_stale_input() {
+    for description in [Some("Saved by the SDK"), None] {
+        let mut tc =
+            test_tool_call("Create review task", "TaskCreate", model::ToolCallStatus::Completed);
+        tc.raw_input = Some(serde_json::json!({"description":"Stale original input"}));
+        tc.output_metadata = Some(serde_json::from_value(serde_json::json!({"presentation":{"sections":[{"fields":description.map_or_else(Vec::new, |description| vec![serde_json::json!({"label":"Description","value":{"type":"text","value":description}})])}]}})).expect("metadata"));
+        let mut lines = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            120,
+            crate::ui::SpinnerState::Static,
+            &mut lines,
+        );
+        let rows = rendered_line_texts(&lines);
+        assert!(!rows.iter().any(|row| row.contains("Stale original input")));
+        assert_eq!(
+            rows.iter().any(|row| row.contains("Description: Saved by the SDK")),
+            description.is_some()
+        );
+    }
+}
+
+#[test]
+fn bash_owner_wake_badge_preserves_the_command_output() {
+    for value in [Some(true), Some(false), None] {
+        let mut tc = test_tool_call("Background work", "Bash", model::ToolCallStatus::Completed);
+        tc.output_metadata = Some(
+            model::ToolOutputMetadata::new()
+                .bash(Some(model::BashOutputMetadata::new().background_wakes_owner(value))),
+        );
+        tc.terminal_output = Some("Command output retained".to_owned());
+        let mut lines = Vec::new();
+        render_tool_call_cached(
+            &mut tc,
+            ToolCallRenderContext::default(),
+            120,
+            crate::ui::SpinnerState::Static,
+            &mut lines,
+        );
+        let rows = rendered_line_texts(&lines);
+        assert_eq!(rows[0].contains("[wakes owning subagent]"), value == Some(true));
+        assert!(rows.iter().skip(1).any(|row| row.contains("Command output retained")));
+    }
+}
+
+#[test]
+fn completed_question_note_only_answer_has_no_selected_option() {
+    let mut tc = test_tool_call("Question", "AskUserQuestion", model::ToolCallStatus::Completed);
+    tc.raw_input = Some(
+        serde_json::json!({"question_results":[{"header":"Target","question":"Where?","selected_options":[],"annotation":{"notes":"Use canary instead"}}]}),
+    );
+    let mut lines = Vec::new();
+    render_tool_call_cached(
+        &mut tc,
+        ToolCallRenderContext::default(),
+        120,
+        crate::ui::SpinnerState::Static,
+        &mut lines,
+    );
+    let rows = rendered_line_texts(&lines);
+    assert!(rows.iter().any(|row| row.contains("Notes: Use canary instead")));
+    assert!(!rows.iter().any(|row| row.contains("[x]") || row.contains("Skipped")));
+}
+
+#[test]
 fn mcp_omission_badge_preserves_readable_output() {
     let mut tool = test_tool_call("export", "mcp__docs__export", model::ToolCallStatus::Completed);
     tool.output_metadata = Some(model::ToolOutputMetadata::new().structured_content_omitted(true));

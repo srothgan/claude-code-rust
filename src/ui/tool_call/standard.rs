@@ -216,7 +216,7 @@ fn finish_standard_body(
         content_lines.extend(render_permission_lines(tc, perm));
     }
     if let Some(ref question) = tc.pending_question {
-        content_lines.extend(render_question_lines(question));
+        content_lines.extend(render_question_lines(question, content_width));
     }
 
     let last_idx = content_lines.len().saturating_sub(1);

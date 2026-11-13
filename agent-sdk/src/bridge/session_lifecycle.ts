@@ -179,6 +179,7 @@ export type PendingWorkerShutdown = {
 };
 
 export type SessionState = {
+  sdkCapabilities?: Set<string>;
   pluginInventory?: import("../types.js").SessionPlugin[];
   /** Folders requested at process launch, not evidence of successful loading. */
   pluginLaunchPaths?: string[];

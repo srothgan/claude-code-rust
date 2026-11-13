@@ -4,7 +4,7 @@ use super::chat_terminal::NativeTerminalIo;
 use super::panic_hook::restore_once;
 use crossterm::cursor::{Hide, SetCursorStyle, Show};
 use crossterm::event::{DisableFocusChange, EnableFocusChange};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -33,7 +33,7 @@ pub(super) struct TerminalModes<I: ModeIo = NativeTerminalIo> {
     pub(super) io: I,
     alternate_screen: AtomicBool,
     restored: AtomicBool,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     keyboard_enhancement_active: AtomicBool,
 }
 
@@ -43,7 +43,7 @@ impl<I: ModeIo> TerminalModes<I> {
             io,
             alternate_screen: AtomicBool::new(false),
             restored: AtomicBool::new(false),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             keyboard_enhancement_active: AtomicBool::new(false),
         }
     }
@@ -65,7 +65,7 @@ impl<I: ModeIo> TerminalModes<I> {
         let mut outcome = Ok(false);
         restore_once(&self.restored, || {
             let exit = self.exit_fullscreen();
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             let remaining = shutdown_restore_actions()
                 .iter()
                 .copied()
@@ -74,9 +74,9 @@ impl<I: ModeIo> TerminalModes<I> {
                         || self.keyboard_enhancement_active.load(Ordering::SeqCst)
                 })
                 .collect::<Vec<_>>();
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             let actions = remaining.as_slice();
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             let actions = shutdown_restore_actions();
             let shell = self.apply(actions);
             outcome = exit.and(shell).map(|()| true);
@@ -120,14 +120,14 @@ impl<I: ModeIo> TerminalModes<I> {
                 TerminalModeAction::EnableLineWrap => {
                     self.io.command(crossterm::terminal::EnableLineWrap)
                 }
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 TerminalModeAction::PushKeyboardEnhancement => {
                     self.keyboard_enhancement_active.store(true, Ordering::SeqCst);
                     self.io.command(PushKeyboardEnhancementFlags(
                         KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
                     ))
                 }
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 TerminalModeAction::PopKeyboardEnhancement => {
                     let result = self.io.command(PopKeyboardEnhancementFlags);
                     if result.is_ok() {
@@ -169,15 +169,15 @@ pub(super) enum TerminalModeAction {
     RestoreDefaultCursorShape,
     DisableLineWrap,
     EnableLineWrap,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     PushKeyboardEnhancement,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     PopKeyboardEnhancement,
 }
 
 const CHAT_STARTUP_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::EnableRawMode,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PushKeyboardEnhancement,
     TerminalModeAction::EnableFocusChange,
     TerminalModeAction::DisableLineWrap,
@@ -204,7 +204,7 @@ const SHUTDOWN_RESTORE_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];
@@ -214,7 +214,7 @@ const RELEASE_TO_CHILD_ACTIONS: &[TerminalModeAction] = &[
     TerminalModeAction::ShowCursor,
     TerminalModeAction::EnableLineWrap,
     TerminalModeAction::DisableFocusChange,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     TerminalModeAction::PopKeyboardEnhancement,
     TerminalModeAction::DisableRawMode,
 ];

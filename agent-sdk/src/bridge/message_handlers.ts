@@ -459,6 +459,27 @@ function handleInformationalSystemMessage(
   }
 }
 
+function handleSessionWritesLostMessage(session: SessionState, msg: Record<string, unknown>): void {
+  const lost = Array.isArray(msg.lost) ? msg.lost.filter((value): value is string => typeof value === "string") : [];
+  if (lost.length === 0) return;
+  const reason = msg.error_code === "ENOSPC" ? "the disk is full"
+    : msg.error_code === "EDQUOT" ? "the disk quota is exhausted" : "storage writes failed";
+  const details: string[] = [];
+  if (lost.includes("transcript")) {
+    const ids = Array.isArray(msg.transcript_session_ids)
+      ? msg.transcript_session_ids.filter((value): value is string => typeof value === "string" && value.length > 0)
+      : [];
+    details.push(ids.length > 0 ? `Transcript data was not saved for sessions: ${ids.join(", ")}.` : "Session transcript data was not saved.");
+  }
+  if (lost.includes("global_config")) details.push("Global configuration changes were not saved.");
+  const message = [`Claude could not save session data because ${reason}.`, ...details,
+    "Free disk space or increase the quota before the next run. Received results remain valid."].join(" ");
+  const uuid = typeof msg.uuid === "string" ? msg.uuid : "";
+  if (!shouldEmitInformationalMessage(session, "warning", message, uuid ? `session_writes_lost:${uuid}` : "")) return;
+  bridgeLogger.warn({ target: LOG_TARGETS.APP_SESSION, eventName: "sdk_session_writes_lost", message: "Claude could not save session data", outcome: "failure", sessionId: session.sessionId, fields: { error_code: msg.error_code, lost, transcript_session_ids: msg.transcript_session_ids } });
+  emitSystemNoticeUpdate(session, "warning", message);
+}
+
 /** Longest hook output excerpt in a log record or a notice, in characters. */
 const HOOK_OUTPUT_EXCERPT_LIMIT = 240;
 /** Most hook notices held for a session that has not connected yet. */
@@ -1246,6 +1267,8 @@ function resolveToolProgressTarget(
   toolUseId: string,
   parentToolUseId: string,
 ): { toolUseId: string; source: ToolProgressCorrelationSource } | null {
+  // SDK hook heartbeats are not tool invocations; their parent is not a timing target.
+  if (toolUseId.startsWith("hook-") && !session.toolCalls.has(toolUseId)) return null;
   if (taskToolUseId && session.toolCalls.has(taskToolUseId)) {
     return { toolUseId: taskToolUseId, source: "task" };
   }
@@ -1910,7 +1933,7 @@ export function handleSdkMessage(
   const type = typeof msg.type === "string" ? msg.type : "";
   const subtype =
     type === "system" && typeof msg.subtype === "string" ? msg.subtype : "";
-  if (subtype !== "worker_shutting_down") {
+  if (subtype !== "worker_shutting_down" && subtype !== "session_writes_lost") {
     cancelPendingWorkerShutdown(session);
   }
   logSdkMessageOrigin(session, msg);
@@ -1945,6 +1968,10 @@ export function handleSdkMessage(
   }
 
   if (type === "system") {
+    if (subtype === "session_writes_lost") {
+      handleSessionWritesLostMessage(session, msg);
+      return;
+    }
     if (handleFallbackRetractionMessage(session, subtype, msg)) {
       return;
     }
@@ -2130,6 +2157,11 @@ export function handleSdkMessage(
     }
 
     if (subtype === "init") {
+      session.sdkCapabilities = new Set(
+        Array.isArray(msg.capabilities)
+          ? msg.capabilities.filter((value): value is string => typeof value === "string")
+          : [],
+      );
       const previousSessionId = session.sessionId;
       const incomingSessionId =
         typeof msg.session_id === "string" ? msg.session_id : session.sessionId;

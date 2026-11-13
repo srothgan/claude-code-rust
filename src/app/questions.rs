@@ -36,7 +36,7 @@ pub(super) fn tick_idle_timeout(app: &mut App, now: Instant) {
             .idle_timeout
             .is_some_and(|timeout| now.saturating_duration_since(question.last_activity) >= timeout)
     }) {
-        respond_question_with_selection(app, true);
+        respond_question(app);
         app.request_active_surface_repaint();
     }
 }
@@ -114,9 +114,6 @@ pub(super) fn execute_question_action(
             KeyOutcome::Handled(true)
         }
         InteractionAction::Confirm => {
-            if option_count == 0 {
-                return KeyOutcome::Ignored;
-            }
             respond_question(app);
             KeyOutcome::Handled(true)
         }
@@ -410,23 +407,16 @@ fn toggle_question_selection(app: &mut App) {
                 question.selected_option_indices.remove(&idx);
             }
         } else {
+            let was_selected = question.selected_option_indices.contains(&idx);
             question.selected_option_indices.clear();
-            question.selected_option_indices.insert(idx);
+            if !was_selected {
+                question.selected_option_indices.insert(idx);
+            }
         }
         tc.invalidate_render_cache();
         changed = true;
     }
     invalidate_if_changed(app, dirty_idx, changed);
-}
-
-fn question_selected_indices(question: &crate::app::InlineQuestion) -> Vec<usize> {
-    if question.prompt.multi_select {
-        if question.selected_option_indices.is_empty() {
-            return vec![question.focused_option_index];
-        }
-        return question.selected_option_indices.iter().copied().collect();
-    }
-    vec![question.focused_option_index]
 }
 
 fn question_annotation(
@@ -454,20 +444,12 @@ fn question_annotation(
 }
 
 fn respond_question(app: &mut App) {
-    respond_question_with_selection(app, false);
-}
-
-fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
     let Some(tool_id) = pop_next_valid_interaction_id(app) else {
         return;
     };
 
     if let Some(pending) = app.mutate_tool_call(&tool_id, |tool| tool.pending_question.take()) {
-        let selected_indices = if auto_continue {
-            pending.selected_option_indices.iter().copied().collect()
-        } else {
-            question_selected_indices(&pending)
-        };
+        let selected_indices = pending.selected_option_indices.iter().copied().collect::<Vec<_>>();
         let selected_option_ids = selected_indices
             .iter()
             .filter_map(|idx| pending.prompt.options.get(*idx))
@@ -475,19 +457,7 @@ fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
             .collect::<Vec<_>>();
         let annotation = question_annotation(&pending, &selected_indices);
 
-        if selected_option_ids.is_empty() && !auto_continue {
-            tracing::warn!(
-                target: crate::logging::targets::APP_PERMISSION,
-                event_name = "question_response_rejected",
-                message = "question response rejected because no valid option IDs were resolved",
-                outcome = "failure",
-                tool_call_id = %tool_id,
-                selected_option_count = selected_indices.len(),
-            );
-            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
-                model::RequestQuestionOutcome::Cancelled,
-            ));
-        } else {
+        if selected_option_ids.len() == selected_indices.len() {
             tracing::debug!(
                 target: crate::logging::targets::APP_PERMISSION,
                 event_name = "question_response_applied",
@@ -501,6 +471,18 @@ fn respond_question_with_selection(app: &mut App, auto_continue: bool) {
                 model::RequestQuestionOutcome::Answered(
                     model::AnsweredQuestionOutcome::new(selected_option_ids).annotation(annotation),
                 ),
+            ));
+        } else {
+            tracing::warn!(
+                target: crate::logging::targets::APP_PERMISSION,
+                event_name = "question_response_rejected",
+                message = "question response rejected because selected option IDs were invalid",
+                outcome = "failure",
+                tool_call_id = %tool_id,
+                selected_option_count = selected_indices.len(),
+            );
+            let _ = pending.response_tx.send(model::RequestQuestionResponse::new(
+                model::RequestQuestionOutcome::Cancelled,
             ));
         }
 
@@ -720,7 +702,7 @@ mod tests {
         use crate::app::test_support::{app_with_connection, assert_pending, press};
         for (multi, navigation, expected, preview) in [
             (false, vec![KeyCode::Right], vec!["target-b"], Some("Preview B")),
-            (true, vec![], vec!["target-a"], Some("Preview A")),
+            (true, vec![KeyCode::Char(' ')], vec!["target-a"], Some("Preview A")),
             (
                 true,
                 vec![
@@ -755,6 +737,7 @@ mod tests {
             press(&mut app, KeyCode::Enter);
             answer(&mut receiver, &expected, preview, Some("note"));
             assert_pending(&mut peer);
+            press(&mut app, KeyCode::Char(' '));
             press(&mut app, KeyCode::Enter);
             answer(&mut peer, &["peer-a"], None, None);
             assert_eq!(app.input.text(), "unrelated draft");
@@ -817,6 +800,7 @@ mod tests {
         answer(&mut receiver, &["edit-b"], Some("Preview B"), Some("\u{4e2d}A\u{e9}\u{1f680}Z"));
         assert_pending(&mut peer);
         assert_eq!(app.input.text(), "draft unchanged");
+        press(&mut app, KeyCode::Char(' '));
         press(&mut app, KeyCode::Enter);
         answer(&mut peer, &["neighbor-a"], None, None);
         assert!(commands.try_recv().is_err());
@@ -894,6 +878,97 @@ mod tests {
                     crate::agent::wire::BridgeCommand::Prompt { .. }
                         | crate::agent::wire::BridgeCommand::CancelTurn { .. }
                 ));
+            }
+        }
+    }
+    #[test]
+    fn single_choice_can_submit_notes_without_selecting_initial_focus_or_a_deselected_option() {
+        for toggle_twice in [false, true] {
+            let mut app = App::test_default();
+            let mut rx = add_question(
+                &mut app,
+                "notes-only",
+                model::QuestionPrompt::new(
+                    "Where?",
+                    "Target",
+                    false,
+                    vec![
+                        model::QuestionOption::new("first", "Production")
+                            .preview(Some("Do not attach this".to_owned())),
+                        model::QuestionOption::new("second", "Staging"),
+                    ],
+                ),
+                true,
+            );
+            if toggle_twice {
+                for _ in 0..2 {
+                    execute_question_action(
+                        &mut app,
+                        InteractionAction::ToggleSelection,
+                        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+                    );
+                }
+            }
+            execute_question_action(
+                &mut app,
+                InteractionAction::ToggleNotes,
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            );
+            for ch in "Use canary instead".chars() {
+                handle_question_note_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                );
+            }
+            execute_question_action(
+                &mut app,
+                InteractionAction::Confirm,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let model::RequestQuestionOutcome::Answered(answer) =
+                rx.try_recv().expect("submitted note").outcome
+            else {
+                panic!("answered")
+            };
+            assert!(answer.selected_option_ids.is_empty());
+            assert_eq!(
+                answer.annotation,
+                Some(model::QuestionAnnotation::new().notes(Some("Use canary instead".to_owned())))
+            );
+            assert!(app.pending_interaction_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn confirming_untouched_focus_submits_an_empty_answer_and_escape_cancels() {
+        for cancel in [false, true] {
+            let mut app = App::test_default();
+            let mut rx = add_question(
+                &mut app,
+                "blank",
+                model::QuestionPrompt::new(
+                    "Where?",
+                    "Target",
+                    false,
+                    vec![model::QuestionOption::new("first", "Production")],
+                ),
+                true,
+            );
+            execute_question_action(
+                &mut app,
+                if cancel { InteractionAction::Cancel } else { InteractionAction::Confirm },
+                KeyEvent::new(
+                    if cancel { KeyCode::Esc } else { KeyCode::Enter },
+                    KeyModifiers::NONE,
+                ),
+            );
+            match rx.try_recv().expect("response").outcome {
+                model::RequestQuestionOutcome::Cancelled => assert!(cancel),
+                model::RequestQuestionOutcome::Answered(answer) => {
+                    assert!(!cancel);
+                    assert!(answer.selected_option_ids.is_empty());
+                    assert!(answer.annotation.is_none());
+                }
             }
         }
     }

@@ -419,7 +419,7 @@ fn tool<'a>(app: &'a crate::app::App, id: &str) -> &'a crate::app::ToolCallInfo 
 }
 fn metadata_fixture() -> Value {
     json!({"structured_content_omitted":true,
-        "bash":{"assistant_auto_backgrounded":true,"timed_out_after_ms":10000,"background_cwd_hint":"session cwd unchanged","background_ends_with_final_response":true},
+        "bash":{"assistant_auto_backgrounded":true,"timed_out_after_ms":10000,"background_cwd_hint":"session cwd unchanged","background_ends_with_final_response":true,"background_wakes_owner":true},
         "agent":{"resolved_model":"resolved-sonnet","models_used":["used-opus","used-sonnet"]},
         "web_fetch":{"artifact_read":{"slug":"dashboard","ver":"v2","seeded":false}},
         "skill":{"background":true},"read":{"file_path":"src/lib.rs","start_line":42},

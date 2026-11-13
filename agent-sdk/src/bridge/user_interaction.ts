@@ -39,6 +39,8 @@ export type AskUserQuestionPrompt = {
 export const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
 export const QUESTION_CHOICE_KIND = "question_choice";
 
+type QuestionResultAnnotation = QuestionAnnotation & { unanswered?: "skipped" };
+
 export const EXIT_PLAN_MODE_TOOL_NAME = "ExitPlanMode";
 export const PLAN_APPROVE_KIND = "plan_approve";
 export const PLAN_REJECT_KIND = "plan_reject";
@@ -239,7 +241,7 @@ function askUserQuestionTranscript(
 function askUserQuestionCompletedRawInput(
   prompts: AskUserQuestionPrompt[],
   answers: Record<string, string>,
-  annotations: Record<string, QuestionAnnotation>,
+  annotations: Record<string, QuestionResultAnnotation>,
   questionResults: Json[],
 ): Json {
   return {
@@ -262,7 +264,7 @@ function askUserQuestionCompletedRawInput(
 }
 
 function questionAnnotationsJson(
-  annotations: Record<string, QuestionAnnotation>,
+  annotations: Record<string, QuestionResultAnnotation>,
 ): { [key: string]: Json } {
   return Object.fromEntries(
     Object.entries(annotations).map(([question, annotation]) => [
@@ -270,6 +272,7 @@ function questionAnnotationsJson(
       {
         ...(annotation.preview ? { preview: annotation.preview } : {}),
         ...(annotation.notes ? { notes: annotation.notes } : {}),
+        ...(annotation.unanswered ? { unanswered: annotation.unanswered } : {}),
       },
     ]),
   );
@@ -310,7 +313,7 @@ export async function requestAskUserQuestionAnswers(
   }
 
   const answers: Record<string, string> = {};
-  const annotations: Record<string, QuestionAnnotation> = {};
+  const annotations: Record<string, QuestionResultAnnotation> = {};
   const transcript: Array<{
     header: string;
     question: string;
@@ -392,10 +395,16 @@ export async function requestAskUserQuestionAnswers(
       };
     }
 
-    const answer = selectedOptions.length === 0 ? "Skipped" : selectedOptions.map((option) => option.label).join(", ");
-    if (selectedOptions.length > 0) answers[prompt.question] = answer;
-    const annotation = deriveAnnotation(selectedOptions, outcome.annotation);
-    if (annotation) {
+    const annotation: QuestionResultAnnotation = deriveAnnotation(selectedOptions, outcome.annotation) ?? {};
+    const answer = selectedOptions.length > 0
+      ? selectedOptions.map((option) => option.label).join(", ")
+      : annotation.notes ?? "Skipped";
+    answers[prompt.question] = answer;
+    if (selectedOptions.length === 0 && !annotation.notes &&
+        session.sdkCapabilities?.has("ask_user_question_unanswered_v1")) {
+      annotation.unanswered = "skipped";
+    }
+    if (Object.keys(annotation).length > 0) {
       annotations[prompt.question] = annotation;
     }
     transcript.push({
@@ -414,11 +423,12 @@ export async function requestAskUserQuestionAnswers(
         ...(option.description ? { description: option.description } : {}),
         ...(option.preview ? { preview: option.preview } : {}),
       })),
-      ...(annotation
+      ...(Object.keys(annotation).length > 0
         ? {
             annotation: {
               ...(annotation.preview ? { preview: annotation.preview } : {}),
               ...(annotation.notes ? { notes: annotation.notes } : {}),
+              ...(annotation.unanswered ? { unanswered: annotation.unanswered } : {}),
             },
           }
         : {}),

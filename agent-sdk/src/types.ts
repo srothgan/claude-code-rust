@@ -208,6 +208,7 @@ export interface BashOutputMetadata {
   timed_out_after_ms?: number;
   background_cwd_hint?: string;
   background_ends_with_final_response?: boolean;
+  background_wakes_owner?: boolean;
 }
 
 export interface AgentOutputMetadata {
@@ -820,11 +821,19 @@ export interface StructuredSessionUsage {
 export interface StructuredActivityWindow {
   request_count: number;
   session_count: number;
+  recommendations?: StructuredUsageRecommendation[];
   behaviors: StructuredBehaviorAttribution[];
   agents: StructuredNamedAttribution[];
   skills: StructuredNamedAttribution[];
   plugins: StructuredNamedAttribution[];
   mcp_servers: StructuredNamedAttribution[];
+}
+
+export interface StructuredUsageRecommendation {
+  key: string;
+  pct: number;
+  title: string;
+  detail?: string;
 }
 
 export interface StructuredBehaviorAttribution {

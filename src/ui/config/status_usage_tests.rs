@@ -376,6 +376,7 @@ fn activity() -> crate::app::UsageActivitySummary {
     let named = |name: &str, pct| vec![UsageNamedAttribution { name: name.into(), pct }];
     UsageActivitySummary {
         day: Some(UsageActivityWindow {
+            recommendations: None,
             request_count: 7,
             session_count: 2,
             behaviors: vec![],
@@ -385,6 +386,7 @@ fn activity() -> crate::app::UsageActivitySummary {
             mcp_servers: named("day-server", 44.0),
         }),
         week: Some(UsageActivityWindow {
+            recommendations: None,
             request_count: 31,
             session_count: 9,
             behaviors: vec![],
@@ -405,16 +407,16 @@ fn named_activity_retains_day_week_category_associations_and_local_scope() {
     for width in [40, 100] {
         let rendered = rows(&shell(&mut app, width, 60));
         let detail = card(&rendered, "Approximate local activity");
-        let (day, week) = detail.split_once("Last 7 days:").unwrap();
+        let (day, week) = detail.split_once("Last 7 days").unwrap();
         for (region, count, associations, wrong) in [
             (
                 day,
                 "7 requests across 2 sessions",
                 [
-                    "Agents: day-agent 11%",
-                    "Skills: day-skill 22%",
-                    "Plugins: day-plugin 33%",
-                    "MCP servers: day-server 44%",
+                    "Agents day-agent 11%",
+                    "Skills day-skill 22%",
+                    "Plugins day-plugin 33%",
+                    "MCP servers day-server 44%",
                 ],
                 "week-",
             ),
@@ -422,14 +424,15 @@ fn named_activity_retains_day_week_category_associations_and_local_scope() {
                 week,
                 "31 requests across 9 sessions",
                 [
-                    "Agents: week-agent 55%",
-                    "Skills: week-skill 66%",
-                    "Plugins: week-plugin 77%",
-                    "MCP servers: week-server 88%",
+                    "Agents week-agent 55%",
+                    "Skills week-skill 66%",
+                    "Plugins week-plugin 77%",
+                    "MCP servers week-server 88%",
                 ],
                 "day-",
             ),
         ] {
+            let region = region.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(region.contains(count), "{region}");
             for pair in associations {
                 assert!(region.contains(pair), "{pair}: {region}");

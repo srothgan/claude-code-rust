@@ -326,14 +326,28 @@ fn render_output_object(object: &Map<String, Value>) -> Vec<Line<'static>> {
                 .unwrap_or_default();
             let additional = additional_json(
                 artifact,
-                &["title", "url", "favicon", "updatedAt", "rel", "pinned"],
+                &[
+                    "title",
+                    "url",
+                    "favicon",
+                    "updatedAt",
+                    "rel",
+                    "pinned",
+                    "outsidersMayHaveWritten",
+                ],
             )
             .map(|value| format!(" — additional {value}"))
             .unwrap_or_default();
+            let outside_writers =
+                if typed::json_bool(artifact, "outsidersMayHaveWritten") == Some(true) {
+                    " — may contain changes by external writers"
+                } else {
+                    ""
+                };
             lines.push(fields::render_dynamic_field(
                 format!("Artifact {}", index + 1),
                 format!(
-                    "{}{title} — {url}{favicon}{updated}{pinned}{additional}",
+                    "{}{title} — {url}{favicon}{updated}{pinned}{outside_writers}{additional}",
                     relation.unwrap_or_default()
                 ),
             ));
@@ -1277,5 +1291,24 @@ mod tests {
     fn json_suffix(row: &str) -> Value {
         let start = row.find('{').expect("additional values must be visible");
         serde_json::from_str(&row[start..]).expect("literal additional JSON values")
+    }
+    #[test]
+    fn outside_writer_warning_belongs_only_to_the_reported_artifact() {
+        let tc = artifact_tool_call(
+            json!({"action":"list"}),
+            Some(
+                r#"{"truncated":true,"nextCursor":"next-page","artifacts":[{"title":"Own","url":"https://artifact.local/own","outsidersMayHaveWritten":false},{"title":"Shared","url":"https://artifact.local/shared","outsidersMayHaveWritten":true},{"title":"Unknown","url":"https://artifact.local/unknown"}]}"#,
+            ),
+        );
+        let rows = rendered_line_texts(&render_tool_content(&tc));
+        for (label, warned) in
+            [("Artifact 1:", false), ("Artifact 2:", true), ("Artifact 3:", false)]
+        {
+            let row = rows.iter().find(|row| row.starts_with(label)).expect("artifact row");
+            assert_eq!(row.contains("may contain changes by external writers"), warned);
+            assert!(!row.contains("outsidersMayHaveWritten"));
+        }
+        assert!(rows.iter().any(|row| row.contains("next-page")));
+        assert!(rows.iter().any(|row| row == "Truncated: yes"));
     }
 }

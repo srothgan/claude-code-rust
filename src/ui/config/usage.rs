@@ -205,14 +205,19 @@ fn render_extra_usage(buffer: &mut Buffer, area: Rect, extra_usage: &ExtraUsage)
 }
 
 fn render_session_usage(buffer: &mut Buffer, area: Rect, session: &SessionUsageSummary) {
-    render_detail_card(buffer, area, "Current session totals", &format_session_usage(session));
+    render_detail_card(
+        buffer,
+        area,
+        "Current session totals",
+        Text::from(format_session_usage(session)),
+    );
 }
 
 fn render_activity(buffer: &mut Buffer, area: Rect, activity: &UsageActivitySummary) {
-    render_detail_card(buffer, area, "Approximate local activity", &format_activity(activity));
+    render_detail_card(buffer, area, "Approximate local activity", format_activity(activity));
 }
 
-fn render_detail_card(buffer: &mut Buffer, area: Rect, title: &str, detail: &str) {
+fn render_detail_card(buffer: &mut Buffer, area: Rect, title: &str, detail: Text<'_>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -220,7 +225,7 @@ fn render_detail_card(buffer: &mut Buffer, area: Rect, title: &str, detail: &str
     draw(buffer, block.clone(), area);
     draw(
         buffer,
-        Paragraph::new(detail.to_owned()).wrap(Wrap { trim: false }),
+        Paragraph::new(detail).wrap(Wrap { trim: false }),
         area.inner(Margin { vertical: 1, horizontal: 2 }),
     );
 }
@@ -301,72 +306,120 @@ fn format_duration_ms(milliseconds: f64) -> String {
     }
 }
 
-fn format_activity(activity: &UsageActivitySummary) -> String {
+fn format_activity(activity: &UsageActivitySummary) -> Text<'static> {
     let mut rows = Vec::new();
     if let Some(day) = activity.day.as_ref() {
-        rows.push(format_activity_window("Last 24 hours", day));
+        rows.extend(format_activity_window("Last 24 hours", day));
     }
     if let Some(week) = activity.week.as_ref() {
-        rows.push(format_activity_window("Last 7 days", week));
+        if !rows.is_empty() {
+            rows.push(Line::default());
+        }
+        rows.extend(format_activity_window("Last 7 days", week));
     }
-    rows.push(
+    rows.push(Line::default());
+    rows.push(Line::styled(
+        "Recommendation percentages show local usage affected, not estimated savings.",
+        Style::default().fg(theme::DIM),
+    ));
+    rows.push(Line::styled(
         "Local transcript scan; approximate, behavior categories overlap, and data excludes other devices and claude.ai."
             .to_owned(),
-    );
-    rows.join("\n")
+        Style::default().fg(theme::DIM),
+    ));
+    Text::from(rows)
 }
 
-fn format_activity_window(label: &str, window: &UsageActivityWindow) -> String {
-    let mut rows = vec![format!(
-        "{label}: {} {} across {} {}",
-        window.request_count,
-        if window.request_count == 1 { "request" } else { "requests" },
-        window.session_count,
-        if window.session_count == 1 { "session" } else { "sessions" }
-    )];
-    if !window.behaviors.is_empty() {
-        rows.push(format!(
-            "Behaviors: {}",
-            window
-                .behaviors
-                .iter()
-                .take(5)
-                .map(|item| {
-                    format!(
-                        "{} {:.0}% ({} {})",
-                        item.key.replace('_', " "),
-                        item.pct,
-                        item.count,
-                        if item.count == 1 { "request" } else { "requests" }
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
+fn format_activity_window(label: &str, window: &UsageActivityWindow) -> Vec<Line<'static>> {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut rows = vec![
+        Line::styled(label.to_owned(), bold),
+        activity_field(
+            "Activity",
+            format!(
+                "{} {} across {} {}",
+                window.request_count,
+                if window.request_count == 1 { "request" } else { "requests" },
+                window.session_count,
+                if window.session_count == 1 { "session" } else { "sessions" }
+            ),
+        ),
+    ];
+    for (index, item) in window.behaviors.iter().take(5).enumerate() {
+        rows.push(activity_field(
+            if index == 0 { "Behaviors" } else { "" },
+            format!(
+                "{} {:.0}% ({} {})",
+                item.key.replace('_', " "),
+                item.pct,
+                item.count,
+                if item.count == 1 { "request" } else { "requests" }
+            ),
         ));
     }
     append_named_attributions(&mut rows, "Agents", &window.agents);
     append_named_attributions(&mut rows, "Skills", &window.skills);
     append_named_attributions(&mut rows, "Plugins", &window.plugins);
     append_named_attributions(&mut rows, "MCP servers", &window.mcp_servers);
-    rows.join("\n")
+    rows.push(Line::default());
+    rows.push(Line::styled("Recommendations", bold));
+    match &window.recommendations {
+        None => rows.push(Line::styled(
+            "  Recommendations unavailable for this period.",
+            Style::default().fg(theme::DIM),
+        )),
+        Some(items) if items.is_empty() => {
+            rows.push(Line::styled(
+                "  No recommendations for this period.",
+                Style::default().fg(theme::DIM),
+            ));
+        }
+        Some(items) => {
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    rows.push(Line::default());
+                }
+                rows.push(Line::from(vec![
+                    Span::raw("  - "),
+                    Span::styled(item.title.clone(), bold),
+                    Span::raw(format!(" ({:.0}%)", item.pct)),
+                ]));
+                if let Some(detail) = &item.detail {
+                    rows.extend(detail.lines().map(|line| {
+                        Line::styled(format!("    {line}"), Style::default().fg(theme::DIM))
+                    }));
+                }
+            }
+        }
+    }
+    rows
+}
+
+fn activity_field(label: &str, value: String) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{label:<11}"), Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::raw(value),
+    ])
 }
 
 fn append_named_attributions(
-    rows: &mut Vec<String>,
+    rows: &mut Vec<Line<'static>>,
     label: &str,
     items: &[crate::app::UsageNamedAttribution],
 ) {
     if items.is_empty() {
         return;
     }
-    rows.push(format!(
-        "{label}: {}",
+    rows.push(activity_field(
+        label,
         items
             .iter()
             .take(5)
             .map(|item| format!("{} {:.0}%", item.name, item.pct))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", "),
     ));
 }
 
@@ -397,15 +450,15 @@ fn extra_usage_height(extra_usage: &ExtraUsage, width: u16) -> u16 {
 }
 
 fn session_usage_height(session: &SessionUsageSummary, width: u16) -> u16 {
-    detail_card_height(&format_session_usage(session), width)
+    detail_card_height(Text::from(format_session_usage(session)), width)
 }
 
 fn activity_height(activity: &UsageActivitySummary, width: u16) -> u16 {
-    detail_card_height(&format_activity(activity), width)
+    detail_card_height(format_activity(activity), width)
 }
 
-fn detail_card_height(detail: &str, width: u16) -> u16 {
-    wrapped_height(Text::from(detail.to_owned()), width.saturating_sub(4)).saturating_add(2)
+fn detail_card_height(detail: Text<'_>, width: u16) -> u16 {
+    wrapped_height(detail, width.saturating_sub(4)).saturating_add(2)
 }
 
 fn error_height(error: &str, width: u16) -> u16 {
@@ -465,14 +518,10 @@ mod tests {
         crate::app::usage::apply_structured_sdk_result(&mut app, Some(snapshot), None);
         for width in [80, 120] {
             let rows = render_usage_rows(&app, width, 40);
-            let day = rows
-                .iter()
-                .position(|row| row.contains("Last 24 hours: 20 requests across 2 sessions"))
-                .expect("day heading");
-            let week = rows
-                .iter()
-                .position(|row| row.contains("Last 7 days: 100 requests across 9 sessions"))
-                .expect("week heading");
+            let day =
+                rows.iter().position(|row| row.contains("Last 24 hours")).expect("day heading");
+            let week =
+                rows.iter().position(|row| row.contains("Last 7 days")).expect("week heading");
             let end = rows
                 .iter()
                 .position(|row| row.contains("Local transcript scan"))
@@ -488,6 +537,8 @@ mod tests {
             };
             let day_rows = compact(&day_rows);
             let week_rows = compact(&week_rows);
+            assert!(day_rows.contains(&compact("20 requests across 2 sessions")));
+            assert!(week_rows.contains(&compact("100 requests across 9 sessions")));
             for (day_value, week_value) in [
                 ("max effort 71% (7 requests)", "max effort 81% (17 requests)"),
                 ("workflow 62% (6 requests)", "workflow 72% (16 requests)"),
@@ -511,3 +562,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "usage_recommendation_tests.rs"]
+mod recommendation_tests;

@@ -175,7 +175,27 @@ test("fresh native sessions observe host-saved idle preferences and a real reset
   ]);
 });
 
-test("SDK 0.3.302 native streaming accumulates citation deltas into completed text blocks", async () => {
+test("the installed SDK supports usage, settings, and SDK-rendered context without a model request", async () => {
+  const result = await probe("usage-context", "default");
+  assert.equal(result.hasSettings, true);
+  const requests = result.requests as Array<{ method: string; route: string }>;
+  assert.deepEqual(
+    requests.filter(request => request.route.split("?")[0] === "/v1/messages"),
+    [],
+    "native usage/settings/context controls make no model generation requests",
+  );
+  const usage = result.usage as { rate_limits_available: boolean; behaviors: unknown; session: { total_cost_usd: number } };
+  assert.equal(usage.rate_limits_available, false);
+  assert.equal(usage.behaviors, null);
+  assert.equal(usage.session.total_cost_usd, 0);
+  const context = result.context as { percentage: number; totalTokens: number; maxTokens: number };
+  assert.ok(Number.isFinite(context.percentage));
+  assert.ok(context.totalTokens >= 0);
+  assert.ok(context.maxTokens > 0);
+  assert.match(String(result.markdown), /context usage/i);
+});
+
+test("native SDK streaming accumulates citation deltas into completed text blocks", async () => {
   const result = await probe("citations", "default");
   assert.equal(result.calls, 1);
   const messages = result.messages as Array<{ type: string; content?: unknown; event?: { type?: string; delta?: { type?: string } } }>;
@@ -186,4 +206,47 @@ test("SDK 0.3.302 native streaming accumulates citation deltas into completed te
       encrypted_index: "fixture-only", cited_text: "Evidence",
     }],
   }]]);
+});
+
+
+test("native outside-write protection blocks writes even when a narrower scope sets false", async () => {
+  for (const policy of ["true", "false", "inherited"]) {
+    const result = await probe("outside-write", policy);
+    assert.equal(result.outsideWritten, policy === "false", JSON.stringify(result));
+    const messages = result.messages as Array<{ type: string; content?: Array<{ type: string; tool_use_id?: string; is_error?: boolean }> }>;
+    const response = messages.flatMap(message => message.content ?? []).find(block => block.type === "tool_result" && block.tool_use_id === "write-outside");
+    assert.ok(response, JSON.stringify(result));
+    assert.equal(response.is_error === true, policy !== "false");
+  }
+});
+
+
+test("native TaskCreate reports the description saved after hook input correction", async () => {
+  const result = await probe("task-create", "default");
+  const messages = result.messages as Array<{ toolUseResult?: { task?: { description?: string } } }>;
+  const saved = messages.find(message => message.toolUseResult?.task)?.toolUseResult?.task;
+  assert.equal(saved?.description, "Saved after the hook correction", JSON.stringify(result));
+});
+
+
+test("native questions accept note-only text and echo the advertised skip annotation", async () => {
+  for (const policy of ["notes", "skip"]) {
+    const result = await probe("question", policy);
+    const messages = result.messages as Array<{ toolUseResult?: { answers?: Record<string, string>; annotations?: Record<string, { notes?: string; unanswered?: string }> } }>;
+    const output = messages.find(message => message.toolUseResult?.answers)?.toolUseResult;
+    assert.equal(output?.answers?.["Where?"], policy === "notes" ? "Use canary instead" : "Skipped", JSON.stringify(result));
+    assert.deepEqual(output?.annotations?.["Where?"], policy === "notes" ? { notes: "Use canary instead" } : { unanswered: "skipped" });
+  }
+});
+
+
+test("repeated native Reads both return file text instead of an unchanged-file sentinel", async () => {
+  const result = await probe("repeated-read", "default");
+  const messages = result.messages as Array<{ content?: Array<{ type: string; tool_use_id?: string; content?: unknown }> }>;
+  for (const id of ["repeated-read-1", "repeated-read-2"]) {
+    const response = messages.flatMap(message => message.content ?? []).find(block => block.type === "tool_result" && block.tool_use_id === id);
+    assert.ok(response, JSON.stringify(result));
+    assert.match(JSON.stringify(response.content), /Repeated reads retain this exact text/);
+    assert.doesNotMatch(JSON.stringify(response.content), /file_unchanged/);
+  }
 });

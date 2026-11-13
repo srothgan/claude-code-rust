@@ -91,6 +91,9 @@ pub struct StructuredSessionUsage {
 pub struct StructuredActivityWindow {
     pub request_count: u64,
     pub session_count: u64,
+    /// None means unavailable; an empty list means the SDK returned no recommendations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recommendations: Option<Vec<StructuredUsageRecommendation>>,
     #[serde(default)]
     pub behaviors: Vec<StructuredBehaviorAttribution>,
     #[serde(default)]
@@ -101,6 +104,16 @@ pub struct StructuredActivityWindow {
     pub plugins: Vec<StructuredNamedAttribution>,
     #[serde(default)]
     pub mcp_servers: Vec<StructuredNamedAttribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StructuredUsageRecommendation {
+    pub key: String,
+    /// Share of weighted local usage affected, not projected savings.
+    pub pct: f64,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

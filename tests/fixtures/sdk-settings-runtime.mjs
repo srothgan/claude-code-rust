@@ -40,13 +40,16 @@ async function save(id, value) {
   assert.equal(result.persistence, "saved", `${id}: ${result.error ?? result.persistence}`);
   assert.notEqual(result.application, "blocked", result.error);
   const saved = JSON.parse(fs.readFileSync(settingsFile, "utf8"));
+  const descriptor = snapshot.catalog.find(setting => setting.id === id);
+  assert.ok(descriptor, `catalog entry ${id}`);
+  const persisted = descriptor.key_path.reduce((object, key) => object?.[key], saved);
   if (value === undefined)
-    assert.equal(Object.hasOwn(saved, id), false, `${id}: reset removes leaf`);
-  else assert.deepEqual(saved[id], value, `${id}: persisted selected leaf before launch`);
+    assert.equal(persisted, undefined, `${id}: reset removes leaf`);
+  else assert.deepEqual(persisted, value, `${id}: persisted selected leaf before launch`);
   return saved;
 }
 
-async function nativeTurn(observe, submitPrompt = true) {
+async function nativeTurn(observe, submitPrompt = true, probeOptions = {}) {
   const input = new AsyncQueue();
   const children = [];
   let q,
@@ -76,6 +79,7 @@ async function nativeTurn(observe, submitPrompt = true) {
         strictMcpConfig: true,
         tools: [],
         maxTurns: 1,
+        ...probeOptions,
         persistSession: false,
         spawnClaudeCodeProcess(options) {
           const child = host.spawnClaudeCodeProcess(options);
@@ -92,7 +96,7 @@ async function nativeTurn(observe, submitPrompt = true) {
         q.close();
       }, 15_000);
     });
-    const result = await Promise.race([observe(q), deadline]);
+    const result = await Promise.race([observe(q, input), deadline]);
     assert.equal(timedOut, false, "watchdog closure is not a completed observation");
     return result;
   } finally {
@@ -129,11 +133,62 @@ try {
       observations.push({ saved, effective });
     }
     console.log(JSON.stringify({ observations }));
+  } else if (type === "usage-context") {
+    const requests = [];
+    server = http.createServer((request, response) => {
+      requests.push({ method: request.method, route: request.url });
+      if (new URL(request.url, "http://127.0.0.1").pathname === "/v1/messages/count_tokens") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ input_tokens: 10 }));
+        return;
+      }
+      response.writeHead(500);
+      response.end("Context and usage controls must not request a model");
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.address().port}`;
+    const result = await nativeTurn(async (q, input) => {
+      await q.initializationResult();
+      const settings = await q.getSettings();
+      const usage = await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+      const context = await q.getContextUsage({ detail: "summary" });
+      input.enqueue({
+        type: "user", session_id: "", parent_tool_use_id: null,
+        message: { role: "user", content: "/context" },
+      });
+      let markdown = "";
+      for await (const message of q) {
+        if (message.type === "assistant") {
+          markdown += message.message.content.filter(block => block.type === "text")
+            .map(block => block.text).join("\n");
+        }
+        if (message.type === "result") {
+          assert.equal(message.is_error, false);
+          break;
+        }
+      }
+      return { usage, context, markdown, hasSettings: !!settings.effective };
+    }, false);
+    console.log(JSON.stringify({ ...result, requests }));
   } else {
     const generation = [],
       hookRequests = [],
       otherRequests = [],
       messages = [];
+    const outsidePath = path.resolve(cwd, "../outside-write.txt");
+    const readPath = path.join(cwd, "repeated-read.txt");
+    if (type === "repeated-read") fs.writeFileSync(readPath, "Repeated reads retain this exact text.\n");
+    const toolProbe = {
+      "outside-write": { name: "Write", input: { file_path: outsidePath, content: "fixture-only" }, turns: 1 },
+      "task-create": { name: "TaskCreate", input: { subject: "Review", description: "Original request" }, turns: 1 },
+      "repeated-read": { name: "Read", input: { file_path: readPath }, turns: 2 },
+      "question": { name: "AskUserQuestion", input: { questions: [{ question: "Where?", header: "Target", multiSelect: false, options: [{ label: "Production", description: "First choice" }, { label: "Staging", description: "Second choice" }] }] }, turns: 1 },
+    }[type];
+    let capabilities = [];
+    if (type === "outside-write") {
+      await save("permissions.blockWritesOutsideWorkingDirectories", policy !== "false");
+      if (policy === "inherited") fs.writeFileSync(path.join(cwd, ".claude/settings.local.json"), JSON.stringify({ permissions: { blockWritesOutsideWorkingDirectories: false } }));
+    }
     server = http.createServer(async (req, res) => {
       try {
         let raw = "";
@@ -168,10 +223,13 @@ try {
               ...(type === "citations" ? { citations: [citation] } : {}),
             },
           ],
-          stop_reason: "end_turn",
+          stop_reason: toolProbe && generation.length <= toolProbe.turns ? "tool_use" : "end_turn",
           stop_sequence: null,
           usage: { input_tokens: 10, output_tokens: 5 },
         };
+        if (toolProbe && generation.length <= toolProbe.turns) {
+          message.content = [{ type: "tool_use", id: type === "outside-write" ? "write-outside" : `${type}-${generation.length}`, name: toolProbe.name, input: toolProbe.input }];
+        }
         if (data.stream) {
           res.writeHead(200, { "Content-Type": "text/event-stream" });
           const send = (event, data) =>
@@ -183,12 +241,12 @@ try {
           send("content_block_start", {
             type: "content_block_start",
             index: 0,
-            content_block: { type: "text", text: "" },
+            content_block: message.content[0].type === "tool_use" ? { ...message.content[0], input: {} } : { type: "text", text: "" },
           });
           send("content_block_delta", {
             type: "content_block_delta",
             index: 0,
-            delta: { type: "text_delta", text: reply },
+            delta: message.content[0].type === "tool_use" ? { type: "input_json_delta", partial_json: JSON.stringify(message.content[0].input) } : { type: "text_delta", text: reply },
           });
           if (type === "citations")
             send("content_block_delta", {
@@ -199,7 +257,7 @@ try {
           send("content_block_stop", { type: "content_block_stop", index: 0 });
           send("message_delta", {
             type: "message_delta",
-            delta: { stop_reason: "end_turn", stop_sequence: null },
+            delta: { stop_reason: message.stop_reason, stop_sequence: null },
             usage: { output_tokens: 5 },
           });
           send("message_stop", { type: "message_stop" });
@@ -224,7 +282,7 @@ try {
     process.env.ANTHROPIC_BASE_URL = base;
     const journal = path.join(cwd, "hook-invocations.jsonl");
     let saved, handler;
-    if (type !== "citations") {
+    if (type === "command" || type === "http") {
       const failure = path.join(cwd, "fail.mjs");
       fs.writeFileSync(
         failure,
@@ -239,6 +297,7 @@ try {
     }
     await nativeTurn(async (q) => {
       for await (const msg of q) {
+        if (msg.type === "system" && msg.subtype === "init") capabilities = msg.capabilities ?? [];
         messages.push({
           type: msg.type,
           subtype: msg.subtype,
@@ -249,10 +308,20 @@ try {
           is_error: msg.is_error,
           errors: msg.errors,
           content: msg.message?.content,
+          ...(toolProbe ? { toolUseResult: msg.tool_use_result ?? msg.toolUseResult } : {}),
           ...(type === "citations" ? { event: msg.event } : {}),
         });
       }
-    });
+    }, true, toolProbe ? {
+      tools: [toolProbe.name], maxTurns: toolProbe.turns + 1,
+      canUseTool: async (_name, input) => {
+        if (type !== "question") return { behavior: "allow", updatedInput: input };
+        const notes = policy === "notes" ? "Use canary instead" : undefined;
+        const annotation = notes ? { notes } : capabilities.includes("ask_user_question_unanswered_v1") ? { unanswered: "skipped" } : undefined;
+        return { behavior: "allow", updatedInput: { ...input, answers: { "Where?": notes ?? "Skipped" }, ...(annotation ? { annotations: { "Where?": annotation } } : {}) } };
+      },
+      ...(type === "task-create" ? { hooks: { PreToolUse: [{ matcher: "TaskCreate", hooks: [async input => ({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...input.tool_input, description: "Saved after the hook correction" } } })] }] } } : {}),
+    } : {});
     // The retained citation test also requires a completed successful native turn.
     if (type === "citations") {
       assert.ok(
@@ -275,6 +344,7 @@ try {
         generation,
         hookRequests,
         commandHooks,
+      ...(type === "outside-write" ? { outsideWritten: fs.existsSync(outsidePath) } : {}),
         otherRequests,
         messages,
         calls: generation.length,

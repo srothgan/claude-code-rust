@@ -1,0 +1,25 @@
+{
+  "fixture_kind": "synthetic SDK 0.3.311 contract example, not a captured account response",
+  "rate_limits_available": true,
+  "rate_limits": { "five_hour": { "utilization": 42, "resets_at": null } },
+  "session": { "total_cost_usd": 1.25 },
+  "behaviors": {
+    "day": {
+      "request_count": 20,
+      "session_count": 2,
+      "recommendations": [
+        { "key": "max_effort", "pct": 71, "title": "Lower effort for routine work", "detail": "Review /effort before your next task." },
+        { "key": "plugin", "pct": 53, "title": "Review the Alpha plugin", "detail": "Alpha contributes instructions to local requests." },
+        { "key": "plugin", "pct": 35, "title": "Review the Beta plugin" }
+      ],
+      "fix": { "keys": ["max_effort"], "messages": ["/effort medium", "FIX-MUST-NOT-BE-SUBMITTED"] }
+    },
+    "week": {
+      "request_count": 100,
+      "session_count": 9,
+      "recommendations": [
+        { "key": "future_behavior", "pct": 81, "title": "Review the weekly workflow", "detail": "This suggestion applies to the last seven days." }
+      ]
+    }
+  }
+}

@@ -1202,3 +1202,41 @@ test("a background subagent with no recorded outcome is rebuilt as interrupted, 
     "a recorded outcome is kept",
   );
 });
+
+
+test("restored TaskCreate cards use saved descriptions without replacing original input", () => {
+  for (const description of ["Saved by the SDK", "", undefined]) {
+    const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+    const messages = [
+      { ...base, type: "assistant" as const, uuid: "create", message: { role: "assistant", content: [{ type: "tool_use", id: "task", name: "TaskCreate", input: { subject: "Review", description: "Original input" } }] } },
+      { ...base, type: "user" as const, uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "task", content: "Task created" }] }, toolUseResult: { task: { id: "1", subject: "Review", ...(description === undefined ? {} : { description }) } } },
+    ];
+    for (const subagentTranscript of [false, true]) {
+    const updates = mapSessionMessagesToEntries(messages, subagentTranscript);
+    const original = updates.find(update => update.type === "tool_call");
+    assert.ok(original?.type === "tool_call");
+    assert.deepEqual(original.tool_call.raw_input, { subject: "Review", description: "Original input" });
+    const result = updates.find(update => update.type === "tool_call_update" && update.tool_call_update.fields.status === "completed");
+    assert.ok(result?.type === "tool_call_update");
+    const fields = result.tool_call_update.fields.output_metadata?.presentation?.sections.flatMap(section => section.fields ?? []);
+    const expected = description ?? "Original input";
+    assert.deepEqual(fields?.filter(field => field.label === "Description").map(field => field.value), expected ? [{ type: "text", value: expected }] : []);
+    }
+  }
+});
+
+
+test("retained search results keep partial matches and their timeout warning", () => {
+  const base = { session_id: "fixture", parent_tool_use_id: null, parent_agent_id: null };
+  for (const name of ["Glob", "Grep"]) {
+    const messages = [
+      { ...base, type: "assistant" as const, uuid: "search", message: { role: "assistant", content: [{ type: "tool_use", id: "search", name, input: { pattern: "needle" } }] } },
+      { ...base, type: "user" as const, uuid: "result", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "search", content: "partial result" }] }, toolUseResult: { mode: "files_with_matches", filenames: ["partial.rs"], numFiles: 1, timedOut: true, truncated: true } },
+    ];
+    const updates = mapSessionMessagesToUpdates(messages);
+    const result = updates.find(update => update.type === "tool_call_update" && update.tool_call_update.fields.status === "completed");
+    assert.ok(result?.type === "tool_call_update");
+    assert.match(String(result.tool_call_update.fields.raw_output), /partial\.rs/);
+    assert.match(String(result.tool_call_update.fields.raw_output), /timed out; results may be incomplete/);
+  }
+});

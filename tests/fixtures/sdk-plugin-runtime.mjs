@@ -136,6 +136,8 @@ try {
   Object.assign(process.env, {
     CLAUDE_CONFIG_DIR: profile,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    // Keep schemas in the prompt so MCP attachment exercises cache-impact holds.
+    ENABLE_TOOL_SEARCH: "false",
     ANTHROPIC_AUTH_TOKEN: "local-fixture-token",
   });
   server = http.createServer(async (req, res) => {
@@ -162,7 +164,7 @@ try {
         content: [],
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 10, output_tokens: 5 },
+        usage: { input_tokens: 10, cache_creation_input_tokens: 2048, output_tokens: 5 },
       };
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       const send = (type, data) =>

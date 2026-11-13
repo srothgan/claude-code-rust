@@ -19,6 +19,7 @@ import type {
   StructuredNamedAttribution,
   StructuredSessionUsage,
   StructuredUsageSnapshot,
+  StructuredUsageRecommendation,
   StructuredUsageWindow,
 } from "../types.js";
 import { asRecordOrNull } from "./shared.js";
@@ -404,15 +405,36 @@ function structuredActivityWindow(
   ) {
     return undefined;
   }
+  const recommendations = structuredUsageRecommendations(record?.recommendations);
   return {
     request_count: Math.trunc(requestCount),
     session_count: Math.trunc(sessionCount),
+    ...(recommendations !== undefined ? { recommendations } : {}),
     behaviors: structuredBehaviorAttributions(record?.behaviors),
     agents: structuredNamedAttributions(record?.agents),
     skills: structuredNamedAttributions(record?.skills),
     plugins: structuredNamedAttributions(record?.plugins),
     mcp_servers: structuredNamedAttributions(record?.mcp_servers),
   };
+}
+
+function structuredUsageRecommendations(
+  value: unknown,
+): StructuredUsageRecommendation[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value.flatMap((entry) => {
+    const record = asRecordOrNull(entry);
+    const key = typeof record?.key === "string" ? record.key.trim() : "";
+    const title = typeof record?.title === "string" ? record.title.trim() : "";
+    const pct = finiteNumber(record, "pct");
+    if (!key || !title || pct === undefined) {
+      return [];
+    }
+    const detail = typeof record?.detail === "string" ? record.detail.trim() : "";
+    return [{ key, title, pct: Math.max(0, Math.min(100, pct)), ...(detail ? { detail } : {}) }];
+  });
 }
 
 function structuredBehaviorAttributions(

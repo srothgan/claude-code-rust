@@ -120,11 +120,13 @@ Letter shortcuts such as `Ctrl+A`, `Ctrl+Y`, or `Ctrl+N` are not permission shor
 | `Left`, `Up` | Move to the previous option. |
 | `Right`, `Down` | Move to the next option. |
 | `Home`, `End` | Move to first or last option. |
-| `Space` | Toggle/select where applicable. |
-| `Enter` | Submit. |
+| `Space` | Select or deselect the focused option. |
+| `Enter` | Submit selected options and notes, or skip when both are empty. |
 | `Esc` | Cancel. |
 | `Tab` | Toggle notes or move focus. |
 | `Shift+Tab` | Move focus backward. |
+
+Initial focus does not select an answer. Arrow keys select an option for a single-choice question; use Space to deselect it. To answer only with your own text, leave every option unselected, press Tab to edit notes, type your answer and press Enter. Notes submitted with no selection become the answer. Notes submitted with a selection accompany that selected answer.
 
 ## MCP input forms
 

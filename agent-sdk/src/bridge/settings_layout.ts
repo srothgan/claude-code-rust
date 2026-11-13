@@ -55,6 +55,7 @@ const CATEGORY_SETTINGS: Record<string, string[]> = {
     "useAutoModeDuringPlan",
     "permissions.disableBypassPermissionsMode",
     "permissions.blockReadsOutsideWorkingDirectories",
+    "permissions.blockWritesOutsideWorkingDirectories",
     "permissions.allow",
     "permissions.ask",
     "permissions.deny",

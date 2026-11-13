@@ -239,7 +239,7 @@ fn render_plan_approval_lines(tc: &ToolCallInfo, perm: &InlinePermission) -> Vec
 }
 
 #[allow(clippy::too_many_lines)]
-pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'static>> {
+pub(super) fn render_question_lines(question: &InlineQuestion, width: u16) -> Vec<Line<'static>> {
     let progress = match question.total_questions {
         total if total > 0 => format!(" ({}/{total})", question.question_index + 1),
         _ => String::new(),
@@ -283,14 +283,14 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     if let Some(timeout) = question.idle_timeout {
         lines.push(Line::styled(
             format!(
-                "  Auto-continue after {}s idle; unselected questions are skipped.",
+                "  Auto-continue after {}s idle; questions without selections or notes are skipped.",
                 timeout.as_secs()
             ),
             Style::default().fg(theme::DIM),
         ));
     }
 
-    if horizontal {
+    let horizontal_line = horizontal.then(|| {
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (i, opt) in question.prompt.options.iter().enumerate() {
             if i > 0 {
@@ -312,12 +312,13 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                 Style::default().fg(Color::Gray)
             };
             let marker = if checked { "[x] " } else { "[ ] " };
-            if question.prompt.multi_select {
-                spans.push(Span::styled(marker, Style::default().fg(theme::DIM)));
-            }
+            spans.push(Span::styled(marker, Style::default().fg(theme::DIM)));
             spans.push(Span::styled(opt.label.clone(), style));
         }
-        lines.push(Line::from(spans));
+        Line::from(spans)
+    });
+    if let Some(line) = horizontal_line.filter(|line| line.width() <= usize::from(width)) {
+        lines.push(line);
     } else {
         for (i, opt) in question.prompt.options.iter().enumerate() {
             let selected = i == question.focused_option_index;
@@ -338,11 +339,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                     },
                 ),
                 Span::styled(
-                    if question.prompt.multi_select {
-                        if checked { "[x] " } else { "[ ] " }
-                    } else {
-                        ""
-                    },
+                    if checked { "[x] " } else { "[ ] " },
                     Style::default().fg(theme::DIM),
                 ),
                 Span::styled(opt.label.clone(), name_style),
@@ -354,7 +351,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         }
     }
 
-    let answer_text_indent = question_answer_text_indent(question);
+    let answer_text_indent = "        ";
     if let Some(preview) = question
         .prompt
         .options
@@ -397,17 +394,13 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
 
     lines.push(Line::from(Span::styled(
         if question.prompt.multi_select {
-            "  Left/Right move  Space toggle  Tab notes  Enter confirm  Esc cancel"
+            "  Left/Right move  Space toggle  Tab notes  Enter submit/skip  Esc cancel"
         } else {
-            "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
+            "  Left/Right select  Space toggle  Tab notes  Enter submit/skip  Esc cancel"
         },
         Style::default().fg(theme::DIM),
     )));
     lines
-}
-
-fn question_answer_text_indent(question: &InlineQuestion) -> &'static str {
-    if question.prompt.multi_select { "        " } else { "    " }
 }
 
 fn option_description_suffix(description: Option<&str>) -> Span<'static> {
@@ -750,6 +743,29 @@ mod card_tests {
             let rows = interaction_card(&mut app, "target", 100);
             assert_focused_option(&rows, LABELS, 1);
             assert_checks(&rows, [true, true, true]);
+        }
+    }
+    #[test]
+    fn question_selection_markers_distinguish_initial_focus_toggle_and_deselection() {
+        for (multi, width) in
+            [false, true].into_iter().flat_map(|multi| [32, 48, 100].map(|width| (multi, width)))
+        {
+            let mut app = interaction_app(vec![tool("AskUserQuestion")]);
+            let _response = attach_question(&mut app, "target", prompt(multi, false));
+            for selected in [false, true, false] {
+                let rows = interaction_card(&mut app, "target", width);
+                for label in LABELS {
+                    let row = rows
+                        .iter()
+                        .find(|row| row.spans.iter().any(|span| span.content == label))
+                        .expect("own option");
+                    let at = row.spans.iter().position(|span| span.content == label).unwrap();
+                    let marker = &row.spans[at - 1].content;
+                    assert_eq!(marker.contains("[x]"), selected && label == LABELS[0]);
+                    assert_eq!(marker.contains("[ ]"), !(selected && label == LABELS[0]));
+                }
+                press(&mut app, KeyCode::Char(' '));
+            }
         }
     }
 }

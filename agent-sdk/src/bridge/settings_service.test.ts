@@ -1387,3 +1387,38 @@ test("Unix settings staging and replacement retain actual owner-only and existin
     },
   ]);
 });
+
+
+test("outside-write protection saves booleans in each scope and resets only that field", async () => {
+  const id = "permissions.blockWritesOutsideWorkingDirectories";
+  for (const scope of ["user", "project", "local"] as const) {
+    await write(scope, { permissions: { deny: ["Bash(rm *)"] }, future: "keep" });
+    const snapshot = await inspectSettings(cwd);
+    const row = snapshot.catalog.find(row => row.id === id);
+    assert.equal(row?.kind, "boolean");
+    assert.equal(row?.category, "permissions");
+    const invalid = await mutateSetting(cwd, mutation(snapshot, id, scope, "true"));
+    assert.equal(invalid.persistence, "failure");
+    const saved = await mutateSetting(cwd, mutation(await inspectSettings(cwd), id, scope, true));
+    assert.equal(saved.persistence, "saved");
+    const source = saved.snapshot?.sources.find(source => source.scope === scope);
+    assert.ok(source);
+    assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { permissions: { deny: ["Bash(rm *)"], blockWritesOutsideWorkingDirectories: true }, future: "keep" });
+    const reset = await mutateSetting(cwd, mutation(await inspectSettings(cwd), id, scope));
+    assert.equal(reset.persistence, "saved");
+    assert.deepEqual(JSON.parse(await fs.readFile(source.path, "utf8")), { permissions: { deny: ["Bash(rm *)"] }, future: "keep" });
+  }
+});
+
+
+test("outside-write settings retain source values and the SDK saved cascade rather than claiming runtime enforcement", async () => {
+  const id = "permissions.blockWritesOutsideWorkingDirectories";
+  await write("project", { permissions: { blockWritesOutsideWorkingDirectories: true } });
+  await write("local", { permissions: { blockWritesOutsideWorkingDirectories: false } });
+  const snapshot = await inspectSettings(cwd);
+  assert.equal(snapshot.values.find(value => value.id === id)?.value, false);
+  assert.equal(snapshot.sources.find(source => source.scope === "project")?.values.find(value => value.id === id)?.value, true);
+  assert.equal(snapshot.sources.find(source => source.scope === "local")?.values.find(value => value.id === id)?.value, false);
+  const reset = await mutateSetting(cwd, mutation(snapshot, id, "local"));
+  assert.equal(reset.snapshot?.values.find(value => value.id === id)?.value, true);
+});

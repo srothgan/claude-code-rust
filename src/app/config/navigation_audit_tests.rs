@@ -274,7 +274,12 @@ async fn idle_compaction_saves_and_resets_only_the_project_preference_without_li
     let rows = screen(&mut h.app, 100, 32);
     assert!(row(&rows, "Idle compaction").contains("Off"));
     let info = details(&rows);
-    assert!(info.contains("does not enable") && info.contains("next session"), "{info}");
+    assert!(
+        info.contains("when available")
+            && info.contains("Default: On")
+            && info.contains("next session"),
+        "{info}"
+    );
     for (key, operation, value, revision, next_revision, display) in [
         (
             KeyCode::Right,

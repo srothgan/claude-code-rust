@@ -100,7 +100,7 @@ impl ObservedIo {
                 visible: true,
                 bar: true,
                 alternate: false,
-                keyboard_depth: i32::from(cfg!(target_os = "macos")),
+                keyboard_depth: i32::from(cfg!(any(target_os = "macos", target_os = "linux"))),
             }
         );
     }
@@ -167,7 +167,7 @@ fn lifecycle_recipes_apply_terminal_effects_and_preserve_screen_ownership() {
     let operations = io.attempts();
     assert!(!modes.restore().unwrap());
     assert_eq!(io.attempts(), operations, "successful restoration is idempotent");
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         assert_eq!(operations.iter().filter(|s| *s == "\x1b[>1u").count(), 2);
         assert_eq!(operations.iter().filter(|s| *s == "\x1b[<1u").count(), 2);

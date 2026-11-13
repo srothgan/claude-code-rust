@@ -35,6 +35,7 @@ pub(crate) fn refresh_runtime_tabs_for_session_change(app: &mut App) {
     }
     refresh_status_tab(app);
     if app.config.active_tab == ConfigTab::Usage {
+        app.config.read_only.reset();
         crate::app::usage::request_refresh_if_needed(app);
     }
     if app.config.active_tab == ConfigTab::Plugins {
