@@ -73,7 +73,7 @@ Idle compaction follows the SDK's settings cascade. Reset removes the preference
 | Default permission mode | `permissions.defaultMode` | User only. `default`, `plan`, `acceptEdits`, `auto`, `dontAsk` or `bypassPermissions`, subject to workspace trust and account restrictions. |
 | Auto mode during planning | `useAutoModeDuringPlan` | User and Local only. |
 | Disable bypass | `permissions.disableBypassPermissionsMode` | Removes the bypass permission mode. Reset removes this scope's restriction. |
-| Block outside reads | `permissions.blockReadsOutsideWorkingDirectories` | Blocks Read, Grep, Glob and LSP outside working directories. On in any scope wins. |
+| Block outside reads | `permissions.blockReadsOutsideWorkingDirectories` | Blocks Read, Grep, Glob and LSP outside working directories. Shell commands naming outside paths require confirmation; an active sandbox denies outside reads. On in any scope wins. |
 | Block outside writes | `permissions.blockWritesOutsideWorkingDirectories` | Blocks Write, Edit and NotebookEdit outside working directories and writes to Claude settings files. On in any scope wins. Session-owned files are exempt. Shell commands, MCP tools and hooks are unaffected. Worktree entry and exit tools are unavailable while enabled. |
 | Allow rules, Ask rules, Deny rules | `permissions.allow`, `permissions.ask`, `permissions.deny` | See [Editing permission rules](configure.md#editing-permission-rules). |
 | Additional directories | `permissions.additionalDirectories` | One directory per entry. |

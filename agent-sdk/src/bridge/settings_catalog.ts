@@ -45,7 +45,7 @@ const DEFINITIONS: Definition[] = [
   ["permissions.ask", "Permissions: ask rules", "Add one entry per tool rule. Matching operations require confirmation unless denied.", "string_list"],
   ["permissions.deny", "Permissions: deny rules", "Add one entry per tool rule. Matching operations are denied, even if another scope allows them.", "string_list"],
   ["permissions.additionalDirectories", "Permissions: additional directories", "One directory per entry to extend the working-directory permission scope. Paths retain their native settings-file meaning.", "string_list"],
-  ["permissions.blockReadsOutsideWorkingDirectories", "Permissions: block outside reads", "Block Read, Grep, Glob and LSP outside working directories in every mode. On in any scope wins.", "boolean"],
+  ["permissions.blockReadsOutsideWorkingDirectories", "Permissions: block outside reads", "Block Read, Grep, Glob and LSP outside working directories in every mode. Shell commands naming outside paths require confirmation; an active sandbox denies outside reads. On in any scope wins.", "boolean"],
   ["permissions.blockWritesOutsideWorkingDirectories", "Permissions: block outside writes", "Block Write, Edit and NotebookEdit outside working directories and writes to Claude settings files. On in any scope wins; Off cannot override it. Session-owned files are exempt; shell commands, MCP tools and hooks are unaffected. Worktree entry and exit tools are unavailable while enabled.", "boolean"],
   ["permissions.disableBypassPermissionsMode", "Permissions: disable bypass", "Remove the bypass permission mode. Reset removes this scope's restriction.", "string", ["disable"]],
   ["autoMemoryEnabled", "Memory: automatic memory", "Read and write automatic memory for this project.", "boolean"],

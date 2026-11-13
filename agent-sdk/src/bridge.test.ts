@@ -143,6 +143,7 @@ const STARTUP_REASONS = {
   sandbox_required_unavailable: true,
   initialize_not_first: true,
   config_file_invalid: true,
+  managed_settings_not_delivered: true,
 } satisfies Record<import("@anthropic-ai/claude-agent-sdk").SDKStartupFailureReason, boolean>;
 
 test("startup result reasons remain structured, correlated, and exclusive", () => {
@@ -9139,7 +9140,7 @@ test("cut-short message_stop does not duplicate text or complete the model turn"
 });
 
 test("agent sdk version compatibility check matches pinned version", () => {
-  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.322");
+  assert.equal(resolveInstalledAgentSdkVersion(), "0.3.323");
   assert.equal(agentSdkVersionCompatibilityError(), undefined);
 });
 

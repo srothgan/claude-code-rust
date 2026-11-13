@@ -21,6 +21,28 @@ function taskScenario(run: (session: SessionState, emit: (message: Record<string
   finally { restore(); }
 }
 
+test("hook heartbeats cannot change parent tool timing, retry state or task correlation", () => taskScenario((session, emit, writes) => {
+  const parent = createToolCall("parent", "Agent", { description: "Running worker" });
+  parent.output_metadata = { timing: { duration_ms: 45_000, source: "progress" } };
+  parent.task_metadata = { subagent_retry: { state: "waiting", attempt: 1, max_retries: 3, retry_delay_ms: 10_000 } };
+  session.toolCalls.set(parent.tool_call_id, parent);
+  session.taskToolUseIds.set("worker", parent.tool_call_id);
+  const before = structuredClone(parent);
+  for (const parent_tool_use_id of [undefined, "parent", "no-tool"]) {
+    emit({ type: "tool_progress", tool_use_id: "hook-heartbeat", tool_name: "PreToolUse", parent_tool_use_id, task_id: "worker", elapsed_time_seconds: 1 });
+  }
+  assert.deepEqual(session.toolCalls.get("parent"), before);
+  assert.equal(session.toolCalls.has("hook-heartbeat"), false);
+  assert.equal(writes.length, 0);
+  emit({ type: "tool_progress", tool_use_id: "child-progress", tool_name: "Read", parent_tool_use_id: "parent", elapsed_time_seconds: 46 });
+  assert.equal(session.toolCalls.get("parent")?.output_metadata?.timing?.duration_ms, 46_000);
+  assert.ok(writes.map(line => JSON.parse(line)).some(event => event.update?.tool_call_update?.tool_call_id === "parent"));
+  const realTool = createToolCall("hook-real-tool", "Read", { file_path: "README.md" });
+  session.toolCalls.set(realTool.tool_call_id, realTool);
+  emit({ type: "tool_progress", tool_use_id: realTool.tool_call_id, tool_name: "Read", elapsed_time_seconds: 2 });
+  assert.equal(session.toolCalls.get(realTool.tool_call_id)?.output_metadata?.timing?.duration_ms, 2_000);
+}));
+
 test("init replaces question capabilities so a previous advertisement cannot leak into a new init", async () => {
   const session = makeSession();
   session.query = { supportedCommands: async () => [], supportedAgents: async () => [] } as unknown as SessionState["query"];

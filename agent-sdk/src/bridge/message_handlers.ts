@@ -1268,6 +1268,8 @@ function resolveToolProgressTarget(
   toolUseId: string,
   parentToolUseId: string,
 ): { toolUseId: string; source: ToolProgressCorrelationSource } | null {
+  // SDK hook heartbeats are not tool invocations; their parent is not a timing target.
+  if (toolUseId.startsWith("hook-") && !session.toolCalls.has(toolUseId)) return null;
   if (taskToolUseId && session.toolCalls.has(taskToolUseId)) {
     return { toolUseId: taskToolUseId, source: "task" };
   }

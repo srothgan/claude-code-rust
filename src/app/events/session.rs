@@ -321,6 +321,9 @@ fn startup_failure_message(reason: &str) -> &'static str {
         "config_file_invalid" => {
             "A configuration file contains invalid JSON. Repair the configuration before starting again; diagnostic logs identify the failure."
         }
+        "managed_settings_not_delivered" => {
+            "Required managed settings were not delivered during initialization. Check the host or wrapper script and the SDK guidance in diagnostic logs before starting again."
+        }
         _ => "Claude Code startup failed. Review diagnostic logs for details.",
     }
 }
@@ -773,6 +776,7 @@ mod tests {
             ("sandbox_required_unavailable", "sandbox"),
             ("initialize_not_first", "initialization"),
             ("config_file_invalid", "JSON"),
+            ("managed_settings_not_delivered", "Check the host or wrapper script"),
             ("future_reason", "Claude Code startup failed"),
         ] {
             let mut app = App::test_default();
