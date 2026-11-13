@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.3] - 2026-11-13 [Changes][v0.16.3]
+
+### Features
+
+- **Fable 5.2 and Agent SDK migration** (#544, @srothgan): Upgrade Agent SDK from `0.3.311` to `0.3.323` with Fable 5.2 support and improved question handling and permission controls.
+
+### Fixes
+
+- **Workflow reliability** (#546, @srothgan): Fix draft and attachment loss, terminal recovery, clipped dialogs, incomplete tool results, background updates, and diagnostic file handling.
+- **Linux keyboard shortcuts** (#534, @cambordas): Recognize Shift+Enter and Ctrl+Enter separately from Enter in supported Linux terminals.
+
+### CI and Dependencies
+
+- **Test suite overhaul** (#546, @srothgan): Replace weak and overlapping tests across Rust, the bridge, and native terminals with workflow coverage for command delivery, persistence, rendering, recovery, and session isolation.
+
 ## [0.16.2] - 2026-10-27 [Changes][v0.16.2]
 
 ### Features
@@ -1027,6 +1042,7 @@ Performance optimization was a major release theme across recent commits:
   - `PromptResponse.usage` is `None`
 - Session resume (`--resume`) is blocked on an upstream adapter release that contains a Windows path encoding fix
 
+[v0.16.3]: https://github.com/srothgan/claude-code-rust/compare/v0.16.2...v0.16.3
 [v0.16.2]: https://github.com/srothgan/claude-code-rust/compare/v0.16.1...v0.16.2
 [v0.16.1]: https://github.com/srothgan/claude-code-rust/compare/v0.16.0...v0.16.1
 [v0.16.0]: https://github.com/srothgan/claude-code-rust/compare/v0.15.2...v0.16.0
