@@ -135,6 +135,13 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Check fixture syntax
         run: node --check tests/fixtures/fake-bridge.js
+      - name: Run native macOS keymap and terminal mode regressions
+        if: runner.os == 'macOS'
+        run: |
+          cargo test --locked --all-features --lib app::keymap::tests:: -- --nocapture --test-threads=1
+          cargo test --locked --all-features --lib configured_undo_and_redo_restore_textarea_history -- --nocapture --test-threads=1
+          cargo test --locked --all-features --lib terminal_event_outcome_carries_runtime_command -- --nocapture --test-threads=1
+          cargo test --locked --all-features --lib app::terminal_runtime::lifecycle_audit_tests:: -- --nocapture --test-threads=1
       - name: Run real PTY regressions
         run: cargo test --locked --all-features --test terminal_resize -- --test-threads=1
       - name: Run system clipboard paste regression

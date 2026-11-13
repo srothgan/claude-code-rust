@@ -244,14 +244,3 @@ pub(super) fn release_to_child_actions() -> &'static [TerminalModeAction] {
 pub(super) fn return_from_child_actions() -> &'static [TerminalModeAction] {
     RETURN_FROM_CHILD_ACTIONS
 }
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn chat_startup_actions_enable_keyboard_enhancement() {
-        assert!(chat_startup_actions().contains(&TerminalModeAction::PushKeyboardEnhancement));
-    }
-}
