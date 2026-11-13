@@ -2904,9 +2904,14 @@ test("Ultracode wire failures distinguish rejected mutation from accepted unknow
             calls.filter((call) => call.type === "flags").map((call) => call.settings),
             [{ ultracode: true }],
           );
+          // The preceding successful command publishes Ultracode before its
+          // effort refresh. Attribute reads from the rejected native call,
+          // rather than from the earlier publication observed by the host.
+          const rejectedMutation = calls.findIndex((call) => call.type === "flags");
           assert.equal(
-            calls.some((call) => call.type === "applied-read"),
+            calls.slice(rejectedMutation + 1).some((call) => call.type === "applied-read"),
             false,
+            "a rejected native mutation must not trigger a verification read",
           );
           bridge.writeCommand({
             command: "refresh_ultracode",
