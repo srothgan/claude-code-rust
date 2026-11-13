@@ -88,13 +88,14 @@ fn field_label(label: &str) -> Option<&'static str> {
         "prompt" | "Prompt" => Some("Prompt"),
         "recurring" | "Recurring" => Some("Recurring"),
         "durable" | "Durable" => Some("Durable"),
+        "endedLoopWakeup" | "Loop wakeup ended" => Some("Loop wakeup ended"),
         "Jobs" => Some("Jobs"),
         _ => None,
     }
 }
 
 fn field_value(label: &str, value: &str) -> String {
-    if matches!(label, "Recurring" | "Durable") {
+    if matches!(label, "Recurring" | "Durable" | "Loop wakeup ended") {
         typed::bool_text_label(value).unwrap_or(value).to_owned()
     } else {
         value.to_owned()

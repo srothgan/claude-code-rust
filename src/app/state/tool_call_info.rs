@@ -194,6 +194,15 @@ impl ToolCallInfo {
     }
 
     #[must_use]
+    pub fn background_wakes_owner(&self) -> bool {
+        self.output_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.bash.as_ref())
+            .and_then(|metadata| metadata.background_wakes_owner)
+            .unwrap_or(false)
+    }
+
+    #[must_use]
     pub fn task_is_backgrounded(&self) -> bool {
         self.task_metadata.as_ref().and_then(|metadata| metadata.is_backgrounded).unwrap_or(false)
     }

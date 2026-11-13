@@ -17,6 +17,8 @@ All available sessions for the project directory are searchable. If no sessions 
 
 `/resume` takes no chat arguments or inline session suggestions. Command-name completion still accepts `/resu`. For a known ID, use the [shell resume syntax](cli.md#resume-or-continue).
 
+If Claude reports that session writes were lost because the disk or quota is full, received answers remain valid, but affected transcripts or global configuration changes may be missing from disk. The warning names affected transcript sessions when available. Free space or increase the quota before the next run.
+
 ## Fork from a message
 
 1. Open the session picker and select the conversation to branch from.

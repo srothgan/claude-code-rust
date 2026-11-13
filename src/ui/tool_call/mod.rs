@@ -233,6 +233,9 @@ fn tool_output_badge_spans(tc: &ToolCallInfo) -> Vec<Span<'static>> {
     if tc.background_ends_with_final_response() {
         badges.push(Span::styled("  [ends with final response]", Style::default().fg(theme::DIM)));
     }
+    if tc.background_wakes_owner() {
+        badges.push(Span::styled("  [wakes owning subagent]", Style::default().fg(theme::DIM)));
+    }
 
     if tc.task_metadata.as_ref().and_then(|metadata| metadata.terminal_reason.as_deref())
         == Some("worker_restart")

@@ -312,6 +312,18 @@ fn startup_failure_message(reason: &str) -> &'static str {
         "bypass_root" => {
             "Bypass-permissions mode cannot run as root. Use a non-root account or another permission mode."
         }
+        "sandbox_required_unavailable" => {
+            "The required sandbox is unavailable. Install or repair sandbox support, or have its requirement changed."
+        }
+        "initialize_not_first" => {
+            "Claude Code did not receive initialization first. Check the host or wrapper script for input written before initialization."
+        }
+        "config_file_invalid" => {
+            "A configuration file contains invalid JSON. Repair the configuration before starting again; diagnostic logs identify the failure."
+        }
+        "managed_settings_not_delivered" => {
+            "Required managed settings were not delivered during initialization. Check the host or wrapper script and the SDK guidance in diagnostic logs before starting again."
+        }
         _ => "Claude Code startup failed. Review diagnostic logs for details.",
     }
 }
@@ -761,6 +773,10 @@ mod tests {
             ("worktree_unverified", "manual retry may succeed"),
             ("cli_version_too_old", "Update claude-rs to a release containing a newer runtime"),
             ("bypass_root", "cannot run as root"),
+            ("sandbox_required_unavailable", "sandbox"),
+            ("initialize_not_first", "initialization"),
+            ("config_file_invalid", "JSON"),
+            ("managed_settings_not_delivered", "Check the host or wrapper script"),
             ("future_reason", "Claude Code startup failed"),
         ] {
             let mut app = App::test_default();

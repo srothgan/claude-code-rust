@@ -283,7 +283,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
     if let Some(timeout) = question.idle_timeout {
         lines.push(Line::styled(
             format!(
-                "  Auto-continue after {}s idle; unselected questions are skipped.",
+                "  Auto-continue after {}s idle; questions without selections or notes are skipped.",
                 timeout.as_secs()
             ),
             Style::default().fg(theme::DIM),
@@ -312,9 +312,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                 Style::default().fg(Color::Gray)
             };
             let marker = if checked { "[x] " } else { "[ ] " };
-            if question.prompt.multi_select {
-                spans.push(Span::styled(marker, Style::default().fg(theme::DIM)));
-            }
+            spans.push(Span::styled(marker, Style::default().fg(theme::DIM)));
             spans.push(Span::styled(opt.label.clone(), style));
         }
         lines.push(Line::from(spans));
@@ -338,11 +336,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
                     },
                 ),
                 Span::styled(
-                    if question.prompt.multi_select {
-                        if checked { "[x] " } else { "[ ] " }
-                    } else {
-                        ""
-                    },
+                    if checked { "[x] " } else { "[ ] " },
                     Style::default().fg(theme::DIM),
                 ),
                 Span::styled(opt.label.clone(), name_style),
@@ -354,7 +348,7 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
         }
     }
 
-    let answer_text_indent = question_answer_text_indent(question);
+    let answer_text_indent = "        ";
     if let Some(preview) = question
         .prompt
         .options
@@ -397,17 +391,13 @@ pub(super) fn render_question_lines(question: &InlineQuestion) -> Vec<Line<'stat
 
     lines.push(Line::from(Span::styled(
         if question.prompt.multi_select {
-            "  Left/Right move  Space toggle  Tab notes  Enter confirm  Esc cancel"
+            "  Left/Right move  Space toggle  Tab notes  Enter submit/skip  Esc cancel"
         } else {
-            "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
+            "  Left/Right select  Space toggle  Tab notes  Enter submit/skip  Esc cancel"
         },
         Style::default().fg(theme::DIM),
     )));
     lines
-}
-
-fn question_answer_text_indent(question: &InlineQuestion) -> &'static str {
-    if question.prompt.multi_select { "        " } else { "    " }
 }
 
 fn option_description_suffix(description: Option<&str>) -> Span<'static> {
@@ -500,8 +490,31 @@ mod tests {
         let footer = lines.last().expect("question footer line");
         assert_eq!(
             footer.spans[0].content.as_ref(),
-            "  Left/Right select  Tab notes  Enter confirm  Esc cancel"
+            "  Left/Right select  Space toggle  Tab notes  Enter submit/skip  Esc cancel"
         );
+    }
+
+    #[test]
+    fn initial_question_focus_is_visibly_unselected_and_selection_stays_on_its_option() {
+        let mut question = test_question();
+        question.prompt.options[0].description = Some("First choice".to_owned());
+        for selected in [false, true] {
+            if selected {
+                question.selected_option_indices.insert(0);
+            }
+            let rows = render_question_lines(&question)
+                .into_iter()
+                .map(|line| {
+                    line.spans.into_iter().map(|span| span.content.into_owned()).collect::<String>()
+                })
+                .collect::<Vec<_>>();
+            let first = rows.iter().find(|row| row.contains("Safer path")).expect("first option");
+            let second =
+                rows.iter().find(|row| row.contains("Faster path")).expect("second option");
+            assert_eq!(first.contains("[x]"), selected);
+            assert_eq!(first.contains("[ ]"), !selected);
+            assert!(second.contains("[ ]"));
+        }
     }
 
     #[test]

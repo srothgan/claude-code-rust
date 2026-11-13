@@ -9,6 +9,44 @@ import {
   unwrapToolUseResult,
 } from "../bridge.js";
 
+test("Bash owner wake metadata preserves true, false and absence independently", () => {
+  for (const value of [true, false, undefined]) {
+    const fields = buildToolResultFields(false, "", createToolCall("bash", "Bash", { command: "echo ready" }),
+      { stdout: "ready", stderr: "", interrupted: false, ...(value === undefined ? {} : { backgroundWakesOwner: value }) });
+    assert.equal(fields.output_metadata?.bash?.background_wakes_owner, value);
+    assert.match(String(fields.raw_output), /ready/);
+  }
+});
+
+test("Glob and every Grep output mode preserve partial results and distinguish timed-out empty searches", () => {
+  const cases = [
+    ["Glob", { pattern: "**/*" }, { filenames: ["partial.rs"], numFiles: 1, durationMs: 23 }, "partial.rs"],
+    ["Glob", { pattern: "**/*" }, { filenames: [], numFiles: 0, durationMs: 23 }, "No files found"],
+    ["Grep", { pattern: "needle", output_mode: "content" }, { mode: "content", content: "partial.rs:7:needle", numLines: 1, numFiles: 1 }, "partial.rs:7:needle"],
+    ["Grep", { pattern: "needle", output_mode: "files_with_matches" }, { mode: "files_with_matches", filenames: ["partial.rs"], numFiles: 1 }, "partial.rs"],
+    ["Grep", { pattern: "needle", output_mode: "count" }, { mode: "count", content: "partial.rs:3", numMatches: 3, numFiles: 1 }, "partial.rs:3"],
+    ["Grep", { pattern: "needle" }, { mode: "files_with_matches", filenames: [], numFiles: 0 }, "No matches found"],
+  ] as const;
+  for (const [name, input, result, expected] of cases) {
+    for (const timedOut of [true, false, undefined]) {
+      const fields = buildToolResultFields(false, "", createToolCall("search", name, input), { ...result, ...(timedOut === undefined ? {} : { timedOut }) });
+      assert.equal(fields.status, "completed");
+      assert.ok(String(fields.raw_output).includes(expected), JSON.stringify(fields));
+      assert.equal(String(fields.raw_output).includes("timed out"), timedOut === true);
+      assert.equal(String(fields.raw_output).includes("results may be incomplete"), timedOut === true);
+    }
+  }
+});
+
+test("CronDelete exposes a loop-wakeup ending only when the SDK reports one", () => {
+  for (const value of [true, false, undefined]) {
+    const fields = buildToolResultFields(false, "", createToolCall("delete", "CronDelete", { id: "schedule-1" }),
+      { id: "schedule-1", ...(value === undefined ? {} : { endedLoopWakeup: value }) });
+    assert.match(String(fields.raw_output), /schedule-1/);
+    assert.equal(String(fields.raw_output).includes("Loop wakeup ended"), value === true);
+  }
+});
+
 test("createToolCall builds edit diff content", () => {
   const toolCall = createToolCall("tc-1", "Edit", {
     file_path: "src/main.rs",

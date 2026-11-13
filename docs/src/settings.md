@@ -36,7 +36,7 @@ Every row has a description in the app. This section covers behavior that needs 
 | Default effort | `modelSettings.<model>.effortLevel` | Effort levels of the default model, without `max` | See below. |
 | Default agent | `agent` | Agents offered by the session | |
 | Thinking | `alwaysThinkingEnabled` | On / Off | A preference. The model may still require or restrict thinking. |
-| Fast mode | `fastMode` | On / Off | Account and model eligibility still apply. |
+| Fast mode | `fastMode` | On / Off | Account and model eligibility still apply. Vertex ignores saved values; use `/fast` each session. |
 | Output style | `outputStyle` | Text | A built-in or custom style name. |
 | Language | `language` | Text | Preferred response language. Does not translate the app. |
 | Question timeout | `askUserQuestionTimeout` | Never / 60 seconds / 5 minutes / 10 minutes | User only. See below. |
@@ -48,7 +48,7 @@ General also holds the settings described under [Presentation and scrolling](#pr
 
 **Default effort** belongs to the saved Default model and is saved per model, so changing Default model switches the effort row to the new model. `max` is available only through `/effort` in a session. The row is read-only when the default model is unknown or offers no effort levels. Environment settings, workspace trust and organization caps can still change the effort a session runs with; the chat footer shows the applied level.
 
-**Question timeout** submits a waiting question after the chosen idle time. Only answers you explicitly selected are sent, together with any notes; untouched questions are skipped. Keyboard, paste and mouse activity restart the interval, and the timer pauses while another screen has focus. Never waits for confirmation.
+**Question timeout** submits a waiting question after the chosen idle time. Explicit selections are sent with any notes; notes without a selection become a free-text answer, and untouched questions are skipped. Keyboard, paste and mouse activity restart the interval, and the timer pauses while another screen has focus. Never waits for confirmation.
 
 **Dialog expiry** cancels forwarded remote dialogs and held cross-session messages after the chosen time. Local permission prompts get no deadline. Reset restores 5 minutes. The `CLAUDE_CODE_USER_DIALOG_TIMEOUT_MS` environment variable takes precedence.
 
@@ -57,7 +57,7 @@ General also holds the settings described under [Presentation and scrolling](#pr
 | Setting | Key | Notes |
 | --- | --- | --- |
 | Auto compact | `autoCompactEnabled` | Compacts context automatically. |
-| Idle compaction | `idleCompaction` | Off stops compaction while idle. On or Default does not enable the feature. User, Project and Local scopes; saved for the next session. |
+| Idle compaction | `idleCompaction` | Compacts long conversations while idle when available. Default: On. User, Project and Local scopes; saved for the next session. |
 | File checkpoints | `fileCheckpointingEnabled` | Records file snapshots for code rewind. |
 | Automatic memory | `autoMemoryEnabled` | Reads and writes automatic memory for the project. |
 | Directory | `autoMemoryDirectory` | User and Local only; shared Project settings cannot redirect memory. Supports `~/`. |
@@ -73,9 +73,12 @@ Idle compaction follows the SDK's settings cascade. Reset removes the preference
 | Default permission mode | `permissions.defaultMode` | User only. `default`, `plan`, `acceptEdits`, `auto`, `dontAsk` or `bypassPermissions`, subject to workspace trust and account restrictions. |
 | Auto mode during planning | `useAutoModeDuringPlan` | User and Local only. |
 | Disable bypass | `permissions.disableBypassPermissionsMode` | Removes the bypass permission mode. Reset removes this scope's restriction. |
-| Block outside reads | `permissions.blockReadsOutsideWorkingDirectories` | Blocks Read, Grep, Glob and LSP outside working directories. On in any scope wins. |
+| Block outside reads | `permissions.blockReadsOutsideWorkingDirectories` | Blocks Read, Grep, Glob and LSP outside working directories. Shell commands naming outside paths require confirmation; an active sandbox denies outside reads. On in any scope wins. |
+| Block outside writes | `permissions.blockWritesOutsideWorkingDirectories` | Blocks Write, Edit and NotebookEdit outside working directories and writes to Claude settings files. On in any scope wins. Session-owned files are exempt. Shell commands, MCP tools and hooks are unaffected. Worktree entry and exit tools are unavailable while enabled. |
 | Allow rules, Ask rules, Deny rules | `permissions.allow`, `permissions.ask`, `permissions.deny` | See [Editing permission rules](configure.md#editing-permission-rules). |
 | Additional directories | `permissions.additionalDirectories` | One directory per entry. |
+
+For Block outside writes, Off in the list is a saved preference: On at any loaded scope still blocks writes. To disable the restriction, turn it off or reset it in every scope that enables it.
 
 ### Sandbox
 

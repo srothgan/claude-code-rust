@@ -58,6 +58,20 @@ if (type === "idle" || type === "usage-context") {
     hooks = 0;
   const requests = [],
     messages = [];
+  const outsidePath = path.resolve(cwd, "../outside-write.txt");
+  const readPath = path.join(cwd, "repeated-read.txt");
+  if (type === "repeated-read") fs.writeFileSync(readPath, "Repeated reads retain this exact text.\n");
+  const toolProbe = {
+    "outside-write": { name: "Write", input: { file_path: outsidePath, content: "fixture-only" }, turns: 1 },
+    "task-create": { name: "TaskCreate", input: { subject: "Review", description: "Original request" }, turns: 1 },
+    "repeated-read": { name: "Read", input: { file_path: readPath }, turns: 2 },
+    "question": { name: "AskUserQuestion", input: { questions: [{ question: "Where?", header: "Target", multiSelect: false, options: [{ label: "Production", description: "First choice" }, { label: "Staging", description: "Second choice" }] }] }, turns: 1 },
+  }[type];
+  let capabilities = [];
+  if (type === "outside-write") {
+    fs.writeFileSync(path.join(cwd, ".claude/settings.json"), JSON.stringify({ permissions: { blockWritesOutsideWorkingDirectories: policy !== "false" } }));
+    if (policy === "inherited") fs.writeFileSync(path.join(cwd, ".claude/settings.local.json"), JSON.stringify({ permissions: { blockWritesOutsideWorkingDirectories: false } }));
+  }
   const server = http.createServer(async (req, res) => {
     let raw = "";
     for await (const c of req) raw += c;
@@ -80,8 +94,10 @@ if (type === "idle" || type === "usage-context") {
       type: "message",
       role: "assistant",
       model: data.model,
-      content: [{ type: "text", text: reply, ...(type === "citations" ? { citations: [citation] } : {}) }],
-      stop_reason: "end_turn",
+      content: toolProbe && calls <= toolProbe.turns
+        ? [{ type: "tool_use", id: type === "outside-write" ? "write-outside" : `${type}-${calls}`, name: toolProbe.name, input: toolProbe.input }]
+        : [{ type: "text", text: reply, ...(type === "citations" ? { citations: [citation] } : {}) }],
+      stop_reason: toolProbe && calls <= toolProbe.turns ? "tool_use" : "end_turn",
       stop_sequence: null,
       usage: { input_tokens: 10, output_tokens: 5 },
     };
@@ -89,17 +105,18 @@ if (type === "idle" || type === "usage-context") {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       const send = (event, data) => res.write("event: " + event + "\ndata: " + JSON.stringify(data) + "\n\n");
       send("message_start", { type: "message_start", message: { ...message, content: [], stop_reason: null } });
-      send("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      const block = message.content[0];
+      send("content_block_start", { type: "content_block_start", index: 0, content_block: block.type === "tool_use" ? { ...block, input: {} } : { type: "text", text: "" } });
       send("content_block_delta", {
         type: "content_block_delta",
         index: 0,
-        delta: { type: "text_delta", text: reply },
+        delta: block.type === "tool_use" ? { type: "input_json_delta", partial_json: JSON.stringify(block.input) } : { type: "text_delta", text: reply },
       });
       if (type === "citations") send("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "citations_delta", citation } });
       send("content_block_stop", { type: "content_block_stop", index: 0 });
       send("message_delta", {
         type: "message_delta",
-        delta: { stop_reason: "end_turn", stop_sequence: null },
+        delta: { stop_reason: message.stop_reason, stop_sequence: null },
         usage: { output_tokens: 5 },
       });
       send("message_stop", { type: "message_stop" });
@@ -123,7 +140,7 @@ if (type === "idle" || type === "usage-context") {
       ? { type, command: '"' + process.execPath + '" "' + failure + '"' }
       : { type, url: base + "/hook" };
   if (policy !== "default") handler.onFailure = policy;
-  if (type !== "citations") fs.writeFileSync(
+  if (type === "command" || type === "http") fs.writeFileSync(
     path.join(cwd, ".claude/settings.json"),
     JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [handler] }] } }),
   );
@@ -134,8 +151,15 @@ if (type === "idle" || type === "usage-context") {
       settingSources: ["project"],
       mcpServers: {},
       strictMcpConfig: true,
-      tools: [],
-      maxTurns: 1,
+      tools: toolProbe ? [toolProbe.name] : [],
+      canUseTool: async (_name, input) => {
+        if (type !== "question") return { behavior: "allow", updatedInput: input };
+        const notes = policy === "notes" ? "Use canary instead" : undefined;
+        const annotation = notes ? { notes } : capabilities.includes("ask_user_question_unanswered_v1") ? { unanswered: "skipped" } : undefined;
+        return { behavior: "allow", updatedInput: { ...input, answers: { "Where?": notes ?? "Skipped" }, ...(annotation ? { annotations: { "Where?": annotation } } : {}) } };
+      },
+      maxTurns: toolProbe ? toolProbe.turns + 1 : 1,
+      ...(type === "task-create" ? { hooks: { PreToolUse: [{ matcher: "TaskCreate", hooks: [async input => ({ hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...input.tool_input, description: "Saved after the hook correction" } } })] }] } } : {}),
       persistSession: false,
       model: "claude-sonnet-4-6",
       ...(type === "citations" ? { includePartialMessages: true } : {}),
@@ -144,6 +168,7 @@ if (type === "idle" || type === "usage-context") {
   const timer = setTimeout(() => q.close(), 15000);
   try {
     for await (const msg of q) {
+      if (msg.type === "system" && msg.subtype === "init") capabilities = msg.capabilities ?? [];
       messages.push({
         type: msg.type,
         subtype: msg.subtype,
@@ -153,6 +178,7 @@ if (type === "idle" || type === "usage-context") {
         result: msg.result,
         errors: msg.errors,
         content: msg.message?.content,
+        ...(toolProbe ? { toolUseResult: msg.tool_use_result ?? msg.toolUseResult } : {}),
         ...(type === "citations" ? { event: msg.event } : {}),
       });
     }
@@ -162,5 +188,5 @@ if (type === "idle" || type === "usage-context") {
     server.closeAllConnections();
     await new Promise((r) => server.close(r));
   }
-  console.log(JSON.stringify({ calls, hooks: hooks + (fs.existsSync(marker) ? 1 : 0), requests, messages }));
+  console.log(JSON.stringify({ calls, hooks: hooks + (fs.existsSync(marker) ? 1 : 0), requests, messages, ...(type === "outside-write" ? { outsideWritten: fs.existsSync(outsidePath) } : {}) }));
 }

@@ -946,7 +946,7 @@
     {
       "id": "idleCompaction",
       "label": "Idle compaction",
-      "description": "Off stops compaction while the session is idle. On or Default does not enable the feature; SDK availability still applies. Saved for the next session.",
+      "description": "Compact long conversations while idle when available. Default: On. Saved for the next session.",
       "key_path": [
         "idleCompaction"
       ],

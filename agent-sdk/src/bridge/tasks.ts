@@ -601,7 +601,9 @@ function taskCreatePatch(
       nonEmptyString(taskRecord.subject) ??
       nonEmptyString(input.subject) ??
       taskId,
-    description: nonEmptyString(input.description),
+    description: typeof taskRecord.description === "string"
+      ? taskRecord.description
+      : nonEmptyString(input.description),
     active_form: nonEmptyString(input.activeForm),
     status: "pending",
     blocks: [],
@@ -609,6 +611,16 @@ function taskCreatePatch(
     ...(metadata !== undefined ? { metadata } : {}),
     source_tool_call_id: toolUseId,
   };
+}
+
+export function taskCreateResult(
+  rawResult: unknown,
+  rawContent: unknown,
+  rawInput: unknown,
+  toolUseId: string,
+): TaskPatch | undefined {
+  const task = firstTaskRecord(resultCandidates(rawResult, rawContent));
+  return task ? taskCreatePatch(task, asRecordOrNull(rawInput) ?? {}, toolUseId) : undefined;
 }
 
 function taskUpdatePatch(
@@ -917,13 +929,9 @@ export function applyTaskToolResult(
     return;
   }
   const input = inputRecord(base);
-  const candidates = resultCandidates(rawResult, rawContent);
 
   if (toolName === "TaskCreate") {
-    const taskRecord = firstTaskRecord(candidates);
-    const patch = taskRecord
-      ? taskCreatePatch(taskRecord, input, toolUseId)
-      : undefined;
+    const patch = taskCreateResult(rawResult, rawContent, input, toolUseId);
     if (!patch) {
       return;
     }
@@ -932,6 +940,7 @@ export function applyTaskToolResult(
     return;
   }
 
+  const candidates = resultCandidates(rawResult, rawContent);
   if (toolName === "TaskUpdate") {
     const output = firstTaskUpdateOutput(candidates);
     const taskId =

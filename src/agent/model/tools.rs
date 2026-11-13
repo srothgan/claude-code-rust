@@ -330,6 +330,7 @@ pub struct BashOutputMetadata {
     pub timed_out_after_ms: Option<u64>,
     pub background_cwd_hint: Option<String>,
     pub background_ends_with_final_response: Option<bool>,
+    pub background_wakes_owner: Option<bool>,
 }
 
 impl BashOutputMetadata {
@@ -365,6 +366,12 @@ impl BashOutputMetadata {
         background_ends_with_final_response: Option<bool>,
     ) -> Self {
         self.background_ends_with_final_response = background_ends_with_final_response;
+        self
+    }
+
+    #[must_use]
+    pub fn background_wakes_owner(mut self, background_wakes_owner: Option<bool>) -> Self {
+        self.background_wakes_owner = background_wakes_owner;
         self
     }
 }
