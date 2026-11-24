@@ -222,12 +222,13 @@ pub(super) fn parse_timestamp(raw: &str) -> Option<SystemTime> {
 }
 
 fn parse_iso8601_timestamp(raw: &str) -> Option<SystemTime> {
-    let parsed = chrono::DateTime::parse_from_rfc3339(raw.trim()).ok()?;
-    let seconds = u64::try_from(parsed.timestamp()).ok()?;
-    let nanos = parsed.timestamp_subsec_nanos();
-    // Source reset instants use ordinary seconds, not leap-second normalization.
-    if nanos >= 1_000_000_000 {
+    let raw = raw.trim();
+    // Reset instants exclude leap seconds rather than normalizing them backwards.
+    if raw.get(17..19) == Some("60") {
         return None;
     }
+    let parsed = crate::wall_time::parse_rfc3339(raw)?;
+    let seconds = u64::try_from(parsed.as_second()).ok()?;
+    let nanos = u32::try_from(parsed.subsec_nanosecond()).ok()?;
     UNIX_EPOCH.checked_add(Duration::new(seconds, nanos))
 }

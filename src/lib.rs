@@ -19,6 +19,7 @@ mod markdown;
 pub mod permission_mode;
 pub mod session_config;
 pub mod ui;
+mod wall_time;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 pub use session_config::SessionConfigArgs;

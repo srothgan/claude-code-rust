@@ -3,26 +3,26 @@
 //! Transcript clocks: SDK wall time, observed wall time, and elapsed time have distinct provenance.
 
 use crate::app::{App, ChatMessage, MessageBlock, MessageRole};
-use chrono::{DateTime, Local, Utc};
+use jiff::Timestamp;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
 thread_local! {
-    static OBSERVATION_TIME: std::cell::Cell<Option<(Instant, DateTime<Utc>)>> = const { std::cell::Cell::new(None) };
+    static OBSERVATION_TIME: std::cell::Cell<Option<(Instant, Timestamp)>> = const { std::cell::Cell::new(None) };
 }
 
-fn observation_time() -> (Instant, DateTime<Utc>) {
+fn observation_time() -> (Instant, Timestamp) {
     #[cfg(test)]
     if let Some(time) = OBSERVATION_TIME.with(std::cell::Cell::get) {
         return time;
     }
-    (Instant::now(), Utc::now())
+    (Instant::now(), Timestamp::now())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageTimestamp {
-    pub time: DateTime<Utc>,
+    pub time: Timestamp,
     pub observed: bool,
 }
 
@@ -35,8 +35,8 @@ impl MessageTimestamp {
         if slot.is_some_and(|value| !value.observed) {
             return;
         }
-        if let Ok(time) = DateTime::parse_from_rfc3339(timestamp) {
-            *slot = Some(Self { time: time.with_timezone(&Utc), observed: false });
+        if let Some(time) = crate::wall_time::parse_rfc3339(timestamp) {
+            *slot = Some(Self { time, observed: false });
         }
     }
 }
@@ -53,7 +53,7 @@ pub struct TurnDuration {
     pub elapsed: Duration,
     pub api: Option<Duration>,
     pub observed: bool,
-    pub completed_at: DateTime<Utc>,
+    pub completed_at: Timestamp,
 }
 
 impl MessageTiming {
@@ -197,54 +197,119 @@ pub struct ClockFormat<'a> {
     pub zone: Option<&'a str>,
 }
 
-pub(crate) fn clock(app: &App, timestamp: DateTime<Utc>) -> String {
+pub(crate) fn clock(app: &App, timestamp: Timestamp) -> String {
     ClockFormat { format: app.config.time_format(), zone: app.config.time_zone() }
         .format(timestamp, false)
 }
 
 impl ClockFormat<'_> {
     pub(crate) fn timestamp(self, value: &str) -> Option<String> {
-        DateTime::parse_from_rfc3339(value).ok().map(|time| self.format(time.to_utc(), true))
+        crate::wall_time::parse_rfc3339(value).map(|time| self.format(time, true))
     }
 
-    fn format(self, timestamp: DateTime<Utc>, with_date: bool) -> String {
-        let format = self.format;
+    fn format(self, timestamp: Timestamp, with_date: bool) -> String {
         let locale = sys_locale::get_locale()
-            .and_then(|locale| locale.replace('-', "_").parse::<chrono::Locale>().ok())
-            .unwrap_or(chrono::Locale::POSIX);
-        // Explicit 12-hour clocks require an AM/PM marker even in locales whose
-        // ordinary clocks use 24-hour time and leave %p empty.
-        let locale = if format == "12-hour" { chrono::Locale::POSIX } else { locale };
-        let pattern = match format {
+            .and_then(|locale| locale.replace('-', "_").parse().ok())
+            .unwrap_or(pure_rust_locales::Locale::POSIX);
+        self.format_with_locale(timestamp, with_date, locale)
+    }
+
+    fn format_with_locale(
+        self,
+        timestamp: Timestamp,
+        with_date: bool,
+        locale: pure_rust_locales::Locale,
+    ) -> String {
+        let zone = if self.format == "24-hour-utc" {
+            jiff::tz::TimeZone::UTC
+        } else {
+            self.zone
+                .and_then(|zone| jiff::tz::TimeZone::get(zone).ok())
+                .unwrap_or_else(jiff::tz::TimeZone::system)
+        };
+        let zoned = timestamp.to_zoned_datetime(zone);
+        let locale =
+            if self.format == "12-hour" { pure_rust_locales::Locale::POSIX } else { locale };
+        let preset = match self.format {
             "12-hour" => "%-I:%M %p",
             "24-hour" => "%H:%M",
             "24-hour-utc" => "%H:%MZ",
-            custom
-                if custom.contains('%')
-                    && !chrono::format::StrftimeItems::new(custom)
-                        .any(|item| matches!(item, chrono::format::Item::Error)) =>
-            {
-                custom
-            }
             _ => "%X",
         };
-        // Presets add a calendar date for tool results; explicit custom patterns stay verbatim.
-        let pattern = if with_date && pattern != format {
-            format!("%Y-%m-%d {pattern}")
-        } else {
-            pattern.to_owned()
-        };
-        let zone = self.zone.and_then(|zone| zone.parse::<chrono_tz::Tz>().ok());
-        let formatted = if format == "24-hour-utc" {
-            timestamp.format_localized(&pattern, locale).to_string()
-        } else if let Some(zone) = zone {
-            timestamp.with_timezone(&zone).format_localized(&pattern, locale).to_string()
-        } else {
-            timestamp.with_timezone(&Local).format_localized(&pattern, locale).to_string()
-        };
+        let custom =
+            self.format.contains('%').then(|| localized(&zoned, self.format, locale)).flatten();
+        let formatted = custom.unwrap_or_else(|| {
+            let pattern = if with_date { format!("%Y-%m-%d {preset}") } else { preset.to_owned() };
+            localized(&zoned, &pattern, locale)
+                .unwrap_or_else(|| zoned.strftime("%Y-%m-%d %H:%M:%S").to_string())
+        });
         // Custom patterns must not inject terminal controls or change label row structure.
         formatted.chars().map(|ch| if ch.is_control() { ' ' } else { ch }).collect()
     }
+}
+
+// Locale data supplies names and composite patterns; Jiff owns every calendar calculation.
+fn localized(
+    time: &jiff::ZonedDateTime,
+    pattern: &str,
+    locale: pure_rust_locales::Locale,
+) -> Option<String> {
+    use pure_rust_locales::locale_match;
+    let mut result = String::new();
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            result.push(ch);
+            continue;
+        }
+        let mut directive = String::from("%");
+        let mut code = chars.next()?;
+        while matches!(code, '-' | '_' | '0'..='9' | ':' | '.' | '^' | '#') {
+            directive.push(code);
+            code = chars.next()?;
+        }
+        directive.push(code);
+        // Chrono-style public patterns use nine digits for bare %f and RFC 3339 for %+.
+        if directive == "%f" {
+            directive = "%9f".into();
+        }
+        if directive == "%+" {
+            directive = "%Y-%m-%dT%H:%M:%S%.f%:z".into();
+        }
+        let composite = match code {
+            'c' => Some(locale_match!(locale => LC_TIME::D_T_FMT)),
+            'x' => Some(locale_match!(locale => LC_TIME::D_FMT)),
+            'X' => Some(locale_match!(locale => LC_TIME::T_FMT)),
+            'r' => Some(locale_match!(locale => LC_TIME::T_FMT_AMPM)),
+            _ => None,
+        };
+        if let Some(pattern) = composite {
+            result.push_str(&localized(time, pattern, locale)?);
+            continue;
+        }
+        let day = usize::try_from(time.weekday().to_sunday_zero_offset()).ok()?;
+        let month = usize::try_from(time.month() - 1).ok()?;
+        let name = match code {
+            'a' => Some(locale_match!(locale => LC_TIME::ABDAY)[day]),
+            'A' => Some(locale_match!(locale => LC_TIME::DAY)[day]),
+            'b' | 'h' => Some(locale_match!(locale => LC_TIME::ABMON)[month]),
+            'B' => Some(locale_match!(locale => LC_TIME::MON)[month]),
+            'p' | 'P' => {
+                Some(locale_match!(locale => LC_TIME::AM_PM)[usize::from(time.hour() >= 12)])
+            }
+            _ => None,
+        };
+        if let Some(name) = name {
+            if code == 'P' {
+                result.push_str(&name.to_lowercase());
+            } else {
+                result.push_str(name);
+            }
+        } else {
+            result.push_str(&jiff::fmt::strtime::format(&directive, time).ok()?);
+        }
+    }
+    Some(result)
 }
 
 pub(crate) fn invalidate_tool_clocks(app: &mut App) {
@@ -269,24 +334,21 @@ mod tests {
     use serde_json::json;
 
     struct TestClock {
-        previous: Option<(Instant, DateTime<Utc>)>,
+        previous: Option<(Instant, Timestamp)>,
         start: Instant,
-        wall: DateTime<Utc>,
+        wall: Timestamp,
     }
 
     impl TestClock {
         fn new() -> Self {
             let start = Instant::now();
-            let wall = DateTime::parse_from_rfc3339("2026-10-03T15:05:00Z").unwrap().to_utc();
+            let wall = str::parse::<Timestamp>("2026-10-03T15:05:00Z").unwrap();
             let previous = OBSERVATION_TIME.with(|clock| clock.replace(Some((start, wall))));
             Self { previous, start, wall }
         }
         fn advance(&self, elapsed: Duration) {
             OBSERVATION_TIME.with(|clock| {
-                clock.set(Some((
-                    self.start + elapsed,
-                    self.wall + chrono::Duration::from_std(elapsed).unwrap(),
-                )));
+                clock.set(Some((self.start + elapsed, self.wall + elapsed)));
             });
         }
     }
@@ -514,7 +576,7 @@ mod tests {
         let owner = source_owner(&app, &first);
         let timestamp = app.transcript.messages[owner].timing.timestamp.unwrap();
         assert!(!timestamp.observed);
-        assert_eq!(timestamp.time.to_rfc3339(), "2025-01-01T10:11:00+00:00");
+        assert_eq!(timestamp.time.to_string(), "2025-01-01T10:11:00Z");
         let shown = region(&render(&mut app, &std::collections::BTreeSet::new()), owner, None);
         assert!(shown.contains("Queued target source"));
         assert!(shown.contains("10:11Z"));
@@ -522,7 +584,7 @@ mod tests {
         assert!(!shown.contains("(observed)"));
         let pending = app.pending_user_messages.iter().next().unwrap();
         assert_eq!((&pending.uuid, pending.text.as_str()), (&second, "Queued neighbor source"));
-        assert_eq!(pending.timestamp.unwrap().time.to_rfc3339(), "2025-01-01T12:22:00+00:00");
+        assert_eq!(pending.timestamp.unwrap().time.to_string(), "2025-01-01T12:22:00Z");
         assert!(
             !app.transcript
                 .messages
@@ -535,9 +597,7 @@ mod tests {
     #[test]
     fn clock_presets_custom_patterns_and_timezone_share_one_formatter() {
         let mut app = App::test_default();
-        let time = DateTime::parse_from_rfc3339("2026-10-03T15:02:01Z")
-            .expect("clock")
-            .with_timezone(&Utc);
+        let time = str::parse::<Timestamp>("2026-10-03T15:02:01Z").expect("clock");
         for (format, expected) in [
             ("12-hour", "5:02 PM"),
             ("24-hour", "17:02"),
@@ -551,6 +611,45 @@ mod tests {
             app.config.snapshot = Some(snapshot);
             assert_eq!(clock(&app, time), expected);
         }
+    }
+
+    #[test]
+    fn localized_clocks_keep_names_and_locale_clock_conventions() {
+        let time: Timestamp = "2026-10-03T15:02:01Z".parse().unwrap();
+        let german = pure_rust_locales::Locale::de_DE;
+        let american = pure_rust_locales::Locale::en_US;
+        let clock = ClockFormat { format: "%A, %d. %B %Y %X", zone: Some("Europe/Berlin") };
+        assert_eq!(
+            clock.format_with_locale(time, false, german),
+            "Samstag, 03. Oktober 2026 17:02:01"
+        );
+        let clock = ClockFormat { format: "auto", zone: Some("UTC") };
+        assert_eq!(clock.format_with_locale(time, false, american), "03:02:01 PM");
+        assert_eq!(clock.format_with_locale(time, false, german), "15:02:01");
+        let clock = ClockFormat { format: "12-hour", zone: Some("UTC") };
+        assert_eq!(clock.format_with_locale(time, false, german), "3:02 PM");
+    }
+
+    #[test]
+    fn named_timezone_clocks_follow_both_daylight_saving_transitions() {
+        let clock = ClockFormat { format: "%Y-%m-%d %H:%M %:z", zone: Some("Europe/Berlin") };
+        for (input, expected) in [
+            ("2026-03-29T00:59:00Z", "2026-03-29 01:59 +01:00"),
+            ("2026-03-29T01:00:00Z", "2026-03-29 03:00 +02:00"),
+            ("2026-10-25T00:30:00Z", "2026-10-25 02:30 +02:00"),
+            ("2026-10-25T01:30:00Z", "2026-10-25 02:30 +01:00"),
+        ] {
+            assert_eq!(clock.timestamp(input).as_deref(), Some(expected));
+        }
+        let invalid = ClockFormat { format: "%Qinvalid%", zone: Some("UTC") };
+        assert_eq!(
+            invalid.format_with_locale(
+                "2026-10-03T15:02:01Z".parse().unwrap(),
+                true,
+                pure_rust_locales::Locale::POSIX
+            ),
+            "2026-10-03 15:02:01"
+        );
     }
 
     #[test]
@@ -577,7 +676,7 @@ mod tests {
         assert!(duration.observed);
         assert_eq!(duration.elapsed, Duration::from_millis(2700));
         assert_eq!(duration.api, None);
-        assert_eq!(duration.completed_at.to_rfc3339(), "2026-10-03T15:05:02.700+00:00");
+        assert_eq!(duration.completed_at, "2026-10-03T15:05:02.700Z".parse::<Timestamp>().unwrap());
         let rows = render(&mut app, &std::collections::BTreeSet::new());
         assert!(
             region(&rows, owner, Some(LiveRowBoundaryKind::AssistantText))

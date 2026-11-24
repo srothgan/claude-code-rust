@@ -56,7 +56,7 @@ pub(crate) enum ExportProgress {
 /// Refuses before any bridge work when an explicit destination already exists.
 /// A taken default name is not refused: the write picks the first free suffix.
 pub(crate) fn begin(app: &mut App, session_id: &str, requested: &str) -> Result<String, String> {
-    begin_at(app, session_id, requested, chrono::Utc::now())
+    begin_at(app, session_id, requested, jiff::Timestamp::now())
 }
 
 /// [`begin`] with the export instant given, so the default name is testable.
@@ -64,7 +64,7 @@ fn begin_at(
     app: &mut App,
     session_id: &str,
     requested: &str,
-    now: chrono::DateTime<chrono::Utc>,
+    now: jiff::Timestamp,
 ) -> Result<String, String> {
     let destination = resolve_destination(
         requested,
@@ -119,7 +119,7 @@ pub(crate) fn apply_chunk_with_writer(
     let Some(pending) = app.history_export.take() else {
         return ExportProgress::Ignored;
     };
-    let exported_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z").to_string();
+    let exported_at = jiff::ZonedDateTime::now().strftime("%Y-%m-%d %H:%M:%S %:z").to_string();
     let model_name = app
         .session_runtime
         .current_model
@@ -151,8 +151,8 @@ pub(crate) fn apply_chunk_with_writer(
 
 /// `export-<session-id>-<UTC stamp>`: the full session id and no title, so the
 /// name needs no sanitising beyond what a session id already is.
-fn default_stem(session_id: &str, now: chrono::DateTime<chrono::Utc>) -> String {
-    format!("export-{session_id}-{}", now.format(EXPORT_STAMP_FORMAT))
+fn default_stem(session_id: &str, now: jiff::Timestamp) -> String {
+    format!("export-{session_id}-{}", now.strftime(EXPORT_STAMP_FORMAT))
 }
 
 /// Attempt `n` of a default name: `<stem>.md`, then `<stem>-2.md`, `<stem>-3.md`, ...

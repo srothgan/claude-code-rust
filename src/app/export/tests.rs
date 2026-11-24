@@ -163,8 +163,8 @@ fn edit_and_write_calls_without_a_stored_diff_are_shown_from_their_input() {
 const SESSION_ID: &str = "11d785e2-d277-406c-9f99-31d840a3705b";
 const DEFAULT_STEM: &str = "export-11d785e2-d277-406c-9f99-31d840a3705b-20261013T123045Z";
 
-fn export_instant() -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::parse_from_rfc3339("2026-10-13T12:30:45Z").expect("fixed instant").to_utc()
+fn export_instant() -> jiff::Timestamp {
+    str::parse::<jiff::Timestamp>("2026-10-13T12:30:45Z").expect("fixed instant")
 }
 
 fn chunk(request_id: Option<&str>, updates: Vec<SessionUpdate>, last: bool) -> HistoryChunk {
