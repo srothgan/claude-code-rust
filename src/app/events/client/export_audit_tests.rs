@@ -89,7 +89,7 @@ fn a_partial_export_write_is_cleaned_up_and_releases_the_command_for_same_path_r
     let file = std::fs::read_to_string(&path).expect("retry artifact");
     let timestamp =
         file.lines().find_map(|line| line.strip_prefix("- Exported: ")).expect("export timestamp");
-    chrono::DateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S %:z").expect("valid timestamp");
+    jiff::Timestamp::strptime("%Y-%m-%d %H:%M:%S %:z", timestamp).expect("valid timestamp");
     assert_eq!(
         file,
         format!(

@@ -3,10 +3,8 @@
 /// One dispatch table defines both supported format names and their validators.
 pub(super) fn validator(format: &str) -> Option<fn(&str) -> bool> {
     match format {
-        "date" => Some(|text| {
-            text.len() == 10 && chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
-        }),
-        "date-time" => Some(|text| chrono::DateTime::parse_from_rfc3339(text).is_ok()),
+        "date" => Some(|text| text.len() == 10 && text.parse::<jiff::civil::Date>().is_ok()),
+        "date-time" => Some(|text| crate::wall_time::parse_rfc3339(text).is_some()),
         "uri" => Some(uri),
         "email" => Some(email),
         _ => None,
